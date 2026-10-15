@@ -15,6 +15,6 @@
 
 - **容器必须保持默认能力集**（无 `CAP_NET_ADMIN`）。有它就能自己改路由——netns 内的 nftables 是唯一真正的强制点，「不给路由」不构成边界。这条从「顺带的严谨」升级为**承重**：出网策略的全部效力挂在它上面。
 - `local` 后端必然 `unsupported`，请求 `required.egress` 硬失败——它连命名空间都没有（#10）。
-- netns 内 nftables 需要 **OCI hook**，于是它从「#3 里被推迟的自建件」变成 **v1 的 Worker 侧部署件**（追补 #19）。
+- netns 内 nftables **不经 OCI hook**（**修正 #22**）：docker 没有通用 hook 配置面，边界改由 Worker 在宿主侧落地——`docker create --network none` → `start` → `nsenter -t <pid> -n` 装规则 → `docker network connect`（每台 Worker 一个 user-defined 网络，容器内 `127.0.0.11` 内嵌解析器由此而来）。于是「#3 里被推迟的自建件」落成 Worker 的一个步骤，**不再是独立部署件**。`egress: none` 的实现就是永不 `connect`——连路由都没有，比接网后全拒更彻底。
 - **每次沙箱内 `git fetch` / `push` 都要一次控制层往返、都可能失败**——能力通道是租约的一次操作一次模型的直接后果，agent 的手感会比本地 git 差。Skill 文档要把它说出来，别让调用方以为是网络抖动。
 - **控制层不可达靠两条互相独立的堵法**（密钥不进挂载 / 地址无条件减去），任一条单独成立都不足以安心：前者防身份借用，后者防 `Enroll` 这个唯一未认证入口被从沙箱侧够到。
