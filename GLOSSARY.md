@@ -60,6 +60,14 @@ _Avoid_: 节点、host
 Workspace 目录所在的那台机器上的 Worker。Workspace 只能由它重建，它不在就没有这个 Workspace。
 _Avoid_: 主 Worker、宿主 Worker
 
+**机队（Fleet）**:
+一个控制层管辖的全部 Worker。升级、撤销这类动作以它为范围发生。
+_Avoid_: 集群、节点池、机群
+
+**协议代际（Protocol Generation）**:
+控制层与 Worker 之间线上协议的版本。两侧必须处在同一代际上才能对话——改一次协议因此波及整个机队。
+_Avoid_: 协议版本号、API 版本
+
 **授权标签（Authorization Labels）**:
 控制层签发给 Worker 的标签，说明它**被允许**服务谁、载什么。它在登记时由控制层写入 Worker 身份，Worker 自己不能声明。它管的是"这台机器被允许承接什么"，与资源侧的**授权**不是一回事。
 _Avoid_: 能力标签、tag
