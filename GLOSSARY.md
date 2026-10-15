@@ -29,8 +29,12 @@ _Avoid_: 调度器、驱动、driver
 _Avoid_: 能力清单、features、规格
 
 **Sandbox Scheduler（沙箱调度器）**:
-决定一个 Workspace 落到哪个 Sandbox、哪台机器上的放置决策。
+决定一个**新** Workspace 落到哪台 Worker、哪个 Sandbox 上的放置决策。已存在的 Workspace 不参与放置——它只能回到归属 Worker。
 _Avoid_: 调度、Schedule、编排
+
+**设备分配（Device Allocation）**:
+把请求里的加速器**型号选择器**（`A100-40GB`）解析成**具体设备标识**（`nvidia.com/gpu=3`）的那一步。请求说的是"要什么样的卡"，放置记录说的是"哪张卡"。
+_Avoid_: 卡号分配、GPU 调度
 
 **Control Plane（控制层）**:
 向沙箱下发任务、换发凭证、做放置决策的一侧。沙箱主动拨号连接它。
@@ -47,6 +51,14 @@ _Avoid_: 节点、host
 **归属 Worker（Origin Worker）**:
 Workspace 目录所在的那台机器上的 Worker。Workspace 只能由它重建，它不在就没有这个 Workspace。
 _Avoid_: 主 Worker、宿主 Worker
+
+**授权标签（Authorization Labels）**:
+控制层签发给 Worker 的标签，说明它**被允许**服务谁、载什么。它在登记时由控制层写入 Worker 身份，Worker 自己不能声明。
+_Avoid_: 能力标签、tag
+
+**放置标签（Placement Labels）**:
+运维给的键值对，说明一台 Worker **希望**承载什么（分区、池、灰度批次）。它是**意志**；运行时能力是自检出来的**事实**，两者不可互相推断。
+_Avoid_: 标签、亲和性、affinity
 
 **登记包（Enrollment Package）**:
 控制层签发的一次性、单次使用、短时有效的入网凭证，携带预生成的 Worker 身份、授权标签、runtime 后端与控制层 CA。Worker 用它换一份短期身份证书，此后只凭证书存续。
