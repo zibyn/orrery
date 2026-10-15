@@ -2,15 +2,15 @@
 
 面向 `#16`（注入点定为 OCI hook、v1 必须实现）与 `#19`（hook 与 Worker 是同一个二进制的两个入口）。`#3`/`#16` 定了「用 OCI hook 注入 nftables」，但 `docs/research/sandbox-isolation-and-gpu.md` 与 `#3` 的决议里**没有一个字**讲 hook 怎么配。这份只回答事实与出处，不回答「选哪个」。
 
-> **取证强度**：逐条打开一手页面与一手源码核对（OCI Runtime Spec 的 `config.md`/`runtime.md`、runc 源码、crun 源码、podman 源码、containers-common 的 `oci-hooks(5)`、`dockerd` 参考页、moby 源码），引文保留原文。文档里没写、只能从源码读出来的结论标「**源码读出**」。未能证实的一律留在 `# 附`，不填。
+> **取证强度**：逐条打开一手页面与一手源码核对（OCI Runtime Spec 的 `config.md`/`runtime.md`、runc 源码、crun 源码、podman 源码、containers-common 的 `oci-hooks(5)`、CDI `SPEC.md` 与其库源码、`dockerd` 参考页、moby 源码），引文保留原文。文档里没写、只能从源码读出来的结论标「**源码读出**」。未能证实的一律留在 `# 附`，不填。
 
 ## 0. 先读这三条
 
 1. **OCI 规范里没有「hook 配置放在哪里」这回事。** 规范只定义 `config.json` 里的 `hooks` 对象——一个容器一份，由 runtime caller 生成。「把某个 JSON 文件放进某个目录，于是所有容器都挂上这个 hook」是 **podman/containers-common 在规范之上加的一层**，不是规范的一部分。
-2. **docker 没有 OCI hook 配置面。** `daemon.json` 没有对应键，`dockerd` 没有对应 flag（`# 1`：dockerd 参考页全文 "hook" 出现 **0** 次；moby 自己写 hook 只有两处硬编码的 `prestart`，一个是 NVIDIA、一个是 buildkit setkey）。而首发后端正是 docker rootful（`#3`）——所以 `#16` 的注入点在首发后端上**不存在「放一个 hook 配置文件」这种落地方式**，只剩「换 OCI runtime」这一个明写在文档里的旋钮。
+2. **docker 上没有「配一个通用 hook 目录」这种入口。** `daemon.json` 没有对应键，`dockerd` 没有对应 flag（`# 1`），上游 RFE #36987 自 2018 年 open；dockerd 自己写的两处 hook 都是硬编码的 `prestart`。**唯一能从配置文件走到 `spec.Hooks` 的路径是 CDI spec 的 `containerEdits.hooks`**（见 `# 1` 同一节）——但它只在容器**请求了一个 CDI 设备**时才被应用，而 `#3` 定的加速器表达正是 CDI 设备名。其余只能换 OCI runtime（`--add-runtime` / `default-runtime` + `reload dockerd`）。
 3. **hook 的权限来自运行时，不来自容器。** `createRuntime`/`createContainer` 都跑在容器进程**降权之前**（runc 顺序：`prepareRootfs` → `finalizeNamespace`），拿到的是宿主 root 的 `CAP_NET_ADMIN`；容器进程本身**不需要任何额外能力**——与 `#16`「容器保持默认能力集、无 `CAP_NET_ADMIN`」相容（`# 4`）。
 
-## 1. docker：配置面不存在（Q1）
+## 1. docker：没有通用配置面，只有一条 CDI 窄路（Q1）
 
 三条独立证据，都是「数出来的」，不是推断：
 
@@ -28,7 +28,7 @@
 
 issue 里的 proposal（在 `daemon.json` 里加 `hooks` 段）**从未实现**；issue 评论里别人给的绕法正是换 runtime（"I just did something similar to what nvidia is doing now to add a 'systemd' runtime so I can use the relevant OCI hooks"）。来源：<https://github.com/moby/moby/issues/36987>。
 
-**唯一的例外，正好也是我们关心的那一类问题**：moby 自己会注入**一个** OCI hook——NVIDIA 的（`daemon/devices_nvidia_linux.go`，`injectNVIDIARuntimeHook`）：
+**第一处例外，正好也是我们关心的那一类问题**：moby 自己会注入**一个** OCI hook——NVIDIA 的（`daemon/devices_nvidia_linux.go`，`injectNVIDIARuntimeHook`）：
 
 ```go
 // This implementation uses prestart hooks, which are deprecated.
@@ -40,7 +40,7 @@ s.Hooks.Prestart = append(s.Hooks.Prestart, specs.Hook{ //nolint:staticcheck // 
     Path: path, ...
 ```
 
-触发条件是**硬编码**的：宿主 `$PATH` 上存在 `nvidia-container-runtime-hook`、且容器用了 `--gpus`（`exec.LookPath(nvidiaContainerRuntimeHookExecutableName)`）。**没有对应的配置键**——这既是「docker 侧 hook 面不存在」的反证，也解释了 nvidia-container-runtime 为什么要以「替换 runtime」的形态存在。另外 NRI（改 OCI spec 的扩展机制）在 moby 里**明确拒绝**加 hook：`daemon/internal/nri/nri.go` 里 `if adj.Hooks != nil { ... unsupported = append(unsupported, "hooks") }`。
+触发条件是**硬编码**的：宿主 `$PATH` 上存在 `nvidia-container-runtime-hook`、且容器用了 `--gpus`（`exec.LookPath(nvidiaContainerRuntimeHookExecutableName)`）。**没有对应的配置键**——这说明 dockerd 内部确实能往 `spec.Hooks` 写东西，但外部只能靠硬编码，也解释了 nvidia-container-runtime 为什么要以「替换 runtime」的形态存在。另外 NRI（改 OCI spec 的扩展机制）在 moby 里**明确拒绝**加 hook：`daemon/internal/nri/nri.go` 里 `if adj.Hooks != nil { ... unsupported = append(unsupported, "hooks") }`。
 
 **第二处更值得看，因为它是「hook 里做网络 namespace 的事」的现成先例**（`daemon/internal/builder-next/executor_linux.go:170-176`，buildkit 构建容器）：
 
@@ -56,7 +56,25 @@ s.Hooks = &specs.Hooks{
 
 三件可照抄的事实：① 它们是 **`prestart`** hook（规范已废弃、主线上仍有人在用）；② hook 的 `path` 可以指向**自己这个二进制的 `/proc/self/exe`**，靠 **argv 子命令**分流——形状与 `#19`「同一个二进制的第二个入口」一致（这是先例，不是本票的结论）；③ 普通容器（非 buildkit）的同类动作已经**不再走 hook**：`daemon/start_linux.go` 的 `initializeCreatedTask()` 直接在 daemon 里按 `/proc/<pid>/ns/net` 设 sandbox key 再 `allocateNetwork`（moby#44385、#53849、#52488 就是这条演进）。
 
-**结论**：docker 侧没有「hook 配置文件放在哪」这个问题——dockerd 自己生成 `config.json` 并直接调 runc，用户没有往 `hooks` 里塞东西的入口；dockerd 自己写过的 hook 只有两处硬编码的 `prestart` hook（NVIDIA、buildkit setkey）。
+**结论**：docker 侧没有「通用 hook 配置目录」——dockerd 自己生成 `config.json` 并直接调 runc，用户没有往 `hooks` 里塞任意东西的入口；dockerd 自己写过的 hook 只有两处硬编码的 `prestart` hook（NVIDIA、buildkit setkey）。**唯一能靠「往目录放文件」影响 `spec.Hooks` 的是 CDI spec（下一节）。**
+
+### CDI spec 的 `containerEdits.hooks`：docker 上唯一从配置文件进 hook 的路径
+
+**这是 docker 侧唯一能靠「往某个目录放文件」把 hook 送进 `spec.Hooks` 的机制**，整条链每一环都核对过：
+
+1. **CDI spec 允许 hooks**。CDI `SPEC.md`（<https://github.com/cncf-tags/container-device-interface/blob/main/SPEC.md>，第 250–256 行）：`containerEdits` 能做的编辑是 `env`、`devices`、`mounts`、`hooks`；`hooks` (array of objects, OPTIONAL) 里每项有 `hookName`、`path`、`args`、`env`、`timeout`，其中——**"`hookName` is the name of the hook to invoke, if the runtime is OCI compliant it should be one of {createRuntime, createContainer, startContainer, poststart, poststop}."**（注意：**不含 `prestart`**，实现里仍接受。）
+2. **CDI 库把它落到 OCI 规范的 `spec.Hooks.*`**（<https://github.com/cncf-tags/container-device-interface/blob/main/pkg/cdi/container-edits.go>、`internal/ociedit/spec_editor.go`）：`case CreateRuntimeHook: editor.AddCreateRuntimeHook(ociHook)` → `e.spec.Hooks.CreateRuntime = append(...)`（现有 hook 保留，CDI 的追加在后面）。
+3. **docker 走这条链**：`daemon/cdi.go` 的 `injectCDIDevices(s *specs.Spec, dev *deviceInstance)` 调 `c.registry.InjectDevices(s, cdiDeviceNames...)`。
+4. **门是「请求了 CDI 设备」**：它是 `deviceDriver.updateSpec`，只在容器带 CDI 设备请求时才跑（`docker run --device vendor.com/class=dev`）。
+
+docker 官方文档对这一能力的描述（dockerd 参考页 "Configure CDI devices" 节，原文）：
+
+> CDI is currently only supported for Linux containers and **is enabled by default since Docker Engine 28.3.0**. …
+> The default specification directories are: `/etc/cdi/` for static CDI Specs, `/var/run/cdi` for generated CDI Specs
+
+`daemon.json` 的 `cdi-spec-dirs`（或 `--cdi-spec-dir`）可改目录；用 `"features": {"cdi": false}` 关掉。
+
+**⚠️ 但 docker 文档里没有一个字提到 hook**：整张 dockerd 参考页 "hook" 出现 0 次；「Docker 会应用 CDI spec 里的 hooks」这句话在 Docker 文档里**不存在**，上面的链条是我从源码读出来的——而 `#3` 定的加速器表达正是 CDI 设备名，所以这条路径**值得实测**（见 `# 附`）。
 
 **docker 那一侧真实存在的旋钮**（同一份参考页原文）：
 
@@ -263,12 +281,14 @@ podman 默认用 crun，**所以 runc 的行为不能直接当成 podman 的行�
 **改完配置什么时候生效**：
 
 - **podman：不需要重启任何东西。** podman 是每次创建容器时读这些目录（【源码读出】`setupOCIHooks` 只在 `generateSpec` 路径上被调用，没有常驻监听），所以改完对**下一个**容器生效。`oci-hooks(5)` 提到的 "Tools consuming this format **may also opt to** monitor the hook directories for changes" 是一般性许可，podman 不需要它。
-- **docker：没有 hook 配置可改。** 最接近的旋钮（`runtimes`）在 dockerd 参考页里写死了生效方式：**"After changing the runtimes configuration in the configuration file, you must reload or restart the daemon for changes to take effect:"** → `sudo systemctl reload dockerd`；同页 "Configuration reload behavior" 节："Some options can be reconfigured when the daemon is running without requiring to restart the process. The daemon uses the SIGHUP signal in Linux to reload"。**所以首发后端上「装 hook」等价于「注册/替换一个 runtime 并 reload dockerd」**，不是「放个 JSON 文件」。
-- **别让 hook 对每个容器都触发**：podman 侧靠 `when` 条件收窄（`annotations` / `commands` / `hasBindMounts` / `always`，§2.2），否则该目录下的 hook 会挂到这台机器上创建的所有容器上。
+- **docker：通用面没有 hook 配置可改**，最接近的旋钮（`runtimes`）在 dockerd 参考页里写死了生效方式：**"After changing the runtimes configuration in the configuration file, you must reload or restart the daemon for changes to take effect:"** → `sudo systemctl reload dockerd`；同页 "Configuration reload behavior" 节："Some options can be reconfigured when the daemon is running without requiring to restart the process. The daemon uses the SIGHUP signal in Linux to reload"。**所以首发后端上「装通用 hook」等价于「注册/替换一个 runtime 并 reload dockerd」。**
+- **docker 走 CDI 那条窄路时相反：放文件就生效、不用 reload。**【源码读出】CDI 的 `cdi.NewCache` 默认 `autoRefresh: true`（"By default, auto-refresh is enabled, the list of Spec directories are monitored and the Cache is automatically refreshed whenever a change is detected."），而 moby 用的是 `cdi.NewCache(cdi.WithSpecDirs(...))`、没有关掉它（`daemon/cdi.go`）⇒ 往 `/etc/cdi` 放/改 CDI spec 会被自动拾取。
+- **别让 hook 对每个容器都触发**：podman 侧靠 `when` 条件收窄（`annotations` / `commands` / `hasBindMounts` / `always`，§2.2）；docker 的 CDI 路线天然只在**请求了对应设备**的容器上触发。
 
 ## 附：未能证实 / 未覆盖
 
 - **docker 侧包装 runtime 的具体写法**未查：只确认了 `--add-runtime` / `default-runtime` / `daemon.json.runtimes` 是文档化的三个入口，以及 moby 自己注入 NVIDIA `prestart` hook（§1）的写法可当模板。
+- **docker 会不会真的应用 CDI spec 里的 hooks**：链条是源码读出来的（moby `daemon/cdi.go` → CDI `InjectDevices` → `spec.Hooks.*`），**Docker 文档里没有一个字提到 hook**，也没有官方测试；上限未验证。鉴于 `#3` 定的加速器表达正是 CDI 设备名，这条值得实测。
 - **rootless podman 下 `createRuntime` hook 能否真的装 nftables**：netns 的 userns 归属没有一个一手来源能回答。
 - **podman 默认 hook 目录的三种说法互相矛盾**（§2.1：代码 `/usr/share/...`、`podman(1)` 两个目录、`containers.conf(5)` `/etc/...`）——没有官方结论，**落地前必须在目标机器上实测**。
 - **hook 与 netavark（podman）/ libnetwork（docker）防火墙规则的相互作用**（谁先装、会不会互相覆盖）——没有一手来源。
