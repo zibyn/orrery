@@ -2,7 +2,7 @@
 
 沙箱里的代码是不可信侧，Worker 是可信侧（`#6`）。我们决定**凭据只交付给 Worker**：git 的远端动词（clone/fetch/pull/push）由 Worker 在宿主侧代执行，S3 以**物化/收集**的形式进出（平台把输入对象放进任务级挂载点、把产物收走），沙箱内不出现任何凭据、不出现 S3 客户端。这与 #4 调研出的"所有沙箱先例都把凭据挡在执行边界之外"殊途同归，但走的是**函数调用**版本——因为 Worker 主动拨号、连接由控制层终结，brokering 对我们是一次调用，不是 TLS 中间人（Vercel 为同一件事要布 SNI 匹配 + TLS 拦截 + per-sandbox CA，还留着 domain fronting 的缺口）。
 
-**Status**: accepted（`#12`）
+**Status**: accepted（`#12`）——数据面**怎么搬**后来改过两次（`#14` 去掉物化/收集、`#20` 换成按路径的文件面，见 `0006-path-addressed-file-surface.md`），本 ADR 的主张（凭据只交付给可信侧）不变。
 
 ## Considered Options
 

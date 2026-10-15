@@ -20,6 +20,10 @@ _Avoid_: 缓存、暂停、休眠、快照、standby
 下发到一个 Workspace 里的一次执行：一条命令、它的工作目录与环境、它的超时，以及它要回收的产物。它是控制层持有并仲裁的、可取消、可观测的执行单位；它不参与任何授权判定。
 _Avoid_: 作业、job、run、build
 
+**工作区树（Workspace Tree）**:
+Workspace 的那一棵目录树：留在宿主机上的那份，也是 bind mount 进沙箱的那份。它是**文件面唯一的命名空间**，也是跨任务与冷档**唯一活着的东西**——树以外的文件平台看不见（文件面碰不到），也留不住（冷档只保树）。
+_Avoid_: 工作目录、rootfs、文件系统
+
 **远端动词（Remote Verb）**:
 需要凭据、因而触达远端仓库的 git 动作：clone、fetch、push。它们不发生在沙箱里，由归属 Worker 在宿主侧代执行。
 _Avoid_: 网络命令、服务端操作
@@ -92,10 +96,6 @@ _Avoid_: token、密钥、会话密钥
 沙箱通往外部的唯一一条人造通道：一个 bind mount 进容器的 unix domain socket，宿主侧由归属 Worker 监听，沙箱里的进程只能经由它发起白名单内的操作（v1 只有 fetch 与 push 两个远端动词，且只作用于本 Workspace 的那个仓库引用）。它交货的是**平台能力**，不是凭据；容器里的任何进程都能用它——沙箱就是信任单元。
 _Avoid_: 代理、proxy、出口代理、sidecar；git 一侧的适配件叫 shim，不是本词
 
-**产物（Artifact）**:
-Task 声明的、由 Worker 在任务过程中收走的输出文件。它按声明里的**名字**寻址，调用方凭一个短期链接取回。
-_Avoid_: 输出、结果、附件
-
 **Credential Broker（凭证代理）**:
 按"谁**授权**了哪个仓库"，从授权派生**租约**，使资源被动用。原则是**凭据只交付给可信侧（Worker）**：不可信侧（Sandbox 里的代码）通过平台能力拿资源，不拿凭据。
 _Avoid_: 密钥管理、Vault、token 服务
@@ -109,7 +109,7 @@ _Avoid_: provider、提供商（那说的是实现的类型）
 _Avoid_: 仓库地址、repo、仓库名；与 ref 混用
 
 **平台动作（Platform Action）**:
-由控制层下发、归属 Worker 在宿主侧代劳、**不是 Task** 的操作：建 Workspace、push。它不占任务的位置、不进任务串行、不产生任务的终态。
+由控制层下发、归属 Worker 在宿主侧代劳、**不是 Task** 的操作：建 Workspace、push、文件面的 `ls`/`download`/`upload`。它不占任务的位置、不进任务串行、不产生任务的终态。
 _Avoid_: 内置任务、平台任务、系统调用
 
 **Capability Surface（能力面）**:
