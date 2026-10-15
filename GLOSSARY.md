@@ -9,8 +9,12 @@
 _Avoid_: 容器、环境、机器
 
 **Workspace（工作区）**:
-一个 Sandbox 内的一份代码检出与它的生命周期，是智能体的工作场所。它在存续期内承载一个或多个 Task（同一时刻至多一个）。智能体看见的是 Workspace，不是 Sandbox。
+一份代码检出与它的生命周期，是智能体的工作场所。它在存续期内承载一个或多个 Task（同一时刻至多一个），并**比承载它的 Sandbox 活得久**：空闲时沙箱可销毁而目录留在宿主上，下次任务挂回同一台机器——智能体看见的是 Workspace，不是 Sandbox。
 _Avoid_: 项目、目录、工作目录
+
+**保留（Retention）**:
+Workspace 在没有任务时的存续：**热**是沙箱仍活着，**冷**是沙箱已销毁、只剩宿主上的目录。两档的长度由控制层裁决。
+_Avoid_: 缓存、暂停、休眠、快照、standby
 
 **Task（任务）**:
 下发到一个 Workspace 里的一次执行：一条命令、它的工作目录与环境、它的超时，以及它要回收的产物。它是控制层持有并仲裁的、可取消、可观测的租约单位；它不参与任何授权判定。
@@ -19,6 +23,10 @@ _Avoid_: 作业、job、run、build
 **Runtime Provider（运行时后端）**:
 把 Sandbox 落到具体隔离技术上的适配器：local、docker、podman。
 _Avoid_: 调度器、驱动、driver
+
+**Runtime Capabilities（运行时能力）**:
+某个运行时后端在**这台机器上当下真能做到什么**：隔离强度、资源限制是否真的生效、可用的加速器、网络形态。它是后端自检后上报的**事实**，不是它承诺能做到的；Sandbox Scheduler 据此匹配需求。
+_Avoid_: 能力清单、features、规格
 
 **Sandbox Scheduler（沙箱调度器）**:
 决定一个 Workspace 落到哪个 Sandbox、哪台机器上的放置决策。
@@ -35,6 +43,10 @@ _Avoid_: 节点、agent、runner
 **Machine（机器）**:
 一台物理或虚拟宿主，以 `machine_id` 作为**事实**被记录（一台机器上可以有多个 Worker）。它不参与任何授权判定。
 _Avoid_: 节点、host
+
+**归属 Worker（Origin Worker）**:
+Workspace 目录所在的那台机器上的 Worker。Workspace 只能由它重建，它不在就没有这个 Workspace。
+_Avoid_: 主 Worker、宿主 Worker
 
 **登记包（Enrollment Package）**:
 控制层签发的一次性、单次使用、短时有效的入网凭证，携带预生成的 Worker 身份、授权标签、runtime 后端与控制层 CA。Worker 用它换一份短期身份证书，此后只凭证书存续。
