@@ -295,3 +295,161 @@ podman 默认用 crun，**所以 runc 的行为不能直接当成 podman 的行�
 - **docker `poststart` 时网卡是否已就绪**：只有上游用户报告 moby#51077（≥28 表现与 ≤27 不同），与 `daemon/start.go` 的时序读法冲突，**未经确认**。
 - **crun 在 userns/rootless 下把 hook 放到哪个 namespace 执行**未核对（crun 有 `check_running_in_user_namespace()` 分支与 deferred-pivot 优化，我只读了调用点，没读进程创建路径）。
 - **`$HOME/.config/containers/oci/hooks.d`**：任务书假设里提到过，一手来源里**不存在**这个目录。
+
+## 附：docker 侧的替代注入路线——CDI containerEdits.hooks 是否被执行
+
+本节回答 `# 附` 里那条「**docker 会不会真的应用 CDI spec 里的 hooks**」。取证方式：把 moby 从 `--device` 到 bundle `config.json` 的整条链逐环读源（moby `df9adbfaf592ada44e91e2a3ed06542b4e693cc0`、`tags.cncf.io/container-device-interface` `aa1e2a10408a6c422706eb0150ee66d889858b4f`、docker/cli `dfc520dcc28994c4c699b9b219fd2f5a6bcec0ff`），加一手文档与上游 issue 对照。凡属「文档没写、只能从源码读出来」的结论一律标【源码读出】；没法证实的一律标**未证实**。
+
+### 0. crux 答案
+
+**会。** docker 会执行 CDI spec 里 `containerEdits.hooks` 声明的 hook——**【源码读出】，链上六环全部核对过**（§1）。它和 `env`/`deviceNodes`/`mounts` 走的是**同一个 `Apply()`**，`hooks` 不是被容忍但忽略的字段。
+
+**但这条路在 docker 文档里一个字都没有，也没有任何第一方测试覆盖**（本节 §2.2、§4）：`dockerd` 参考页全文 "hook" 出现 0 次；moby 自己的 CDI 集成测试用的 spec 只有 `env`。所以「文档级确认」这一档是**缺的**，结论建立在源码上，落地上线前建议先跑 §5 那个最小实验。
+
+**这不影响 `# 1`/`# 2` 的结论**：hook 不是 dockerd 执行的，是 **runc/crun** 执行的。docker 只是把 CDI 给的 hook **转发进 `config.json`**；「docker 没有通用 hook 配置面」依然成立——它仍然没有让用户配置任意 hook 的入口，只是 CDI 这条窄路恰好能通到 `spec.Hooks`。
+
+### 1. 证据链：`--device <cdi-name>` → `spec.Hooks.CreateRuntime`
+
+| # | 环节 | 位置 | 内容 |
+|---|---|---|---|
+| 1 | CLI 认出 CDI 设备名 | docker/cli `cli/command/container/opts.go:493-497` | `if cdi.IsQualifiedName(device) { cdiDeviceNames = append(cdiDeviceNames, device); continue }` |
+| 2 | 变成 DeviceRequest | 同上 `:609-614` | `container.DeviceRequest{Driver: "cdi", DeviceIDs: cdiDeviceNames}` 追加进 `deviceRequests`（最终落进 `HostConfig.DeviceRequests`） |
+| 3 | daemon 消费 | moby `daemon/oci_linux.go:916-920` | `WithDevices`（`:853`）里 `for _, req := range c.HostConfig.DeviceRequests { daemon.handleDevice(req, s) }` |
+| 4 | 选到 cdi driver | moby `daemon/devices.go:69-80` | `else if dd := deviceDrivers[req.Driver]; dd != nil { ... return dd.updateSpec(spec, ...) }` |
+| 5 | 调 CDI 库 | moby `daemon/cdi.go:99-112` | `injectCDIDevices(s *specs.Spec, dev)` → `c.registry.InjectDevices(s, cdiDeviceNames...)` |
+| 6 | CDI 库写 hooks | CDI `pkg/cdi/cache.go:238-271` → `pkg/cdi/container-edits.go:75-163` → `internal/ociedit/spec_editor.go:214-217` | `e.spec.Hooks.CreateRuntime = append(e.spec.Hooks.CreateRuntime, hook)` |
+
+三处细节值得单独钉住：
+
+- **就地改写、不是拷贝。** `daemon/oci_linux.go:1025` 的 `createSpec` 建 `s := oci.DefaultSpec()`，把 `WithDevices` 列进 `opts`，最后 `coci.ApplyOpts(..., &s, opts...)` 并 `return &s`。`InjectDevices` 拿到的就是这份 `s` 的指针（CDI `pkg/cdi/container-edits.go:75` 注释原文：*"Apply edits to the given OCI Spec. **Updates the OCI Spec in place.**"*）。
+- **spec 级与 device 级 edits 都会应用。** `pkg/cdi/cache.go:260-262`：先 `edits.Append(d.GetSpec().edits())`（spec 级，任一设备被请求即应用），再 `edits.Append(d.edits())`（device 级）。⇒ 把 hook 写在 **spec 级** 的 `containerEdits` 里，只要容器请求了该 `kind` 下**任一**设备，hook 就挂上。
+- **append 而不是覆盖。** `spec_editor.go:214-217` 是 `append`，CDI 的 hook 排在已有 hook **之后**；`initHooks()`（`:87-90`）只在 `spec.Hooks == nil` 时才新建。普通容器上 docker 不会预先占用 `Hooks.CreateRuntime`（它自己那两处硬编码 hook 是 `Prestart`，见 `# 1`）。
+
+**hook 字段的映射**（CDI `pkg/cdi/oci.go:23-31`，【源码读出】）：`Path`/`Args`/`Env`/`Timeout` 四个字段原样搬进 OCI 的 `spec.Hook`；`hookName` 只用于选 stage，不落进 `config.json`。
+
+**stage 白名单**（CDI `pkg/cdi/container-edits.go:33-58`，【源码读出】）：`prestart`、`createRuntime`、`createContainer`、`startContainer`、`poststart`、`poststop`。注意 CDI 实现**接受 `prestart`**，而 `SPEC.md` 的推荐列表 `{createRuntime, createContainer, startContainer, poststart, poststop}` **不含它**。写别的名字直接 `error`（`container-edits.go:161-162`）。
+
+**spec 的去向**：`daemon/start.go:167` 取 `createSpec` 的返回值，原样交给 `libcontainerd.ReplaceContainer(..., spec, ...)` → containerd `WithSpec(ociSpec)`（moby `daemon/internal/libcontainerd/remote/client.go:119-124`）→ 写成 bundle 的 `config.json`。**之后由 runc/crun 在 create 阶段执行**，权限、时序、失败语义与 `# 3`、`# 4` 完全一致（`createRuntime` = 宿主 root，`createContainer` = 容器 netns 内降权前）。
+
+### 2. 条件、目录与版本
+
+#### 2.1 spec 文件放哪、怎么改、怎么关
+
+| 项 | 值 | 出处 |
+|---|---|---|
+| 默认目录 | `/etc/cdi`（静态）、`/var/run/cdi`（生成） | CDI `pkg/cdi/spec-dirs.go:29-38` 的 `DefaultStaticDir`/`DefaultDynamicDir`/`DefaultSpecDirs`；moby `daemon/command/daemon.go:751-753` 用 `cdi.DefaultSpecDirs` 填默认值 |
+| rootless 追加 | `$XDG_CONFIG_HOME/cdi`、`$XDG_RUNTIME_DIR/cdi` | moby `daemon/command/daemon.go:755-764`（PR moby#51624） |
+| 改目录 | `daemon.json` 的 `cdi-spec-dirs`（键名见 `daemon/config/config.go:307-308`）或 `dockerd --cdi-spec-dir` | `daemon/command/daemon.go:751-781` |
+| 关闭 | `"features": {"cdi": false}` ⇒ 清空 `CDISpecDirs`；把 `cdi-spec-dirs` 设成 `[""]` 也等于清空 | `daemon/command/daemon.go:782-789` |
+| 怎么看生效值 | `docker info` 的 `CDISpecDirs` | moby `integration/container/cdi_test.go:TestCDISpecDirsAreInSystemInfo` |
+| 放文件何时生效 | **不用 reload dockerd**：CDI 缓存默认 auto-refresh，moby 没关掉它 | 见上文「5. 安装与生效」末条（【源码读出】） |
+
+#### 2.2 版本要求——**两处一手来源差一个小版本，未判定**
+
+- dockerd 参考页（<https://docs.docker.com/reference/cli/dockerd/>，2026-10-15 取）：*"CDI is currently only supported for Linux containers and **is enabled by default since Docker Engine 28.3.0**."*
+- CDI 项目 README（<https://github.com/cncf-tags/container-device-interface/blob/main/README.md>，"Docker and Podman Configuration" 节）：*"Both Docker Daemon and podman support CDI and process specified `--device` flags directly. ... Docker has CDI enabled by default beginning with version **28.2.0**."*（同节：*"Docker supports CDI since version **25.0.0**"*，25.0.0–28.1.1 需 `{"features":{"cdi":true}}`）
+
+**两处一手来源对「默认开启的版本」说法不一致（28.2.0 vs 28.3.0），我没有找到判定依据——落地前用 `docker info` 在目标机上核。** 两者一致的是「自 25.0.0 起支持、25.0.0–28.1.x 需显式开启」。另 moby PR **#49963「daemon: Enable CDI by default」**（merged）是「默认开」的落地提交。
+
+**`hooks` 不是后加的字段**：CDI `SPEC.md` 的 released-versions 表里**没有** `hooks` 的条目（只有 `hostPath`、`annotations`、`intelRdt`、`additionalGids`、`netDevices` 等），`specs-go/version.go` 的 `MinimumRequiredVersion` 也只对这些后加字段做版本门控 ⇒ 【源码读出】`hooks` **自初始 spec 起就在**，不存在「spec 版本太低所以 hook 被忽略」这条路径。moby master 依赖 `tags.cncf.io/container-device-interface v1.1.1`（moby `go.mod:126`）。
+
+### 3. 哪一级、哪个 stage、错了会怎样
+
+- **两级 `containerEdits` 都生效**：spec 级（任一设备被请求）+ device 级（该设备被请求），见 §1。想「放一份 spec 就给所有用某类加速器的容器挂 hook」，写成 **spec 级**。
+- **stage 由 `hookName` 决定**，取值见 §1 白名单；**跑 stage 的语义与上文「3. stage 与时序」「4. 身份与权限」一字不差**——hook 由 runc/crun 执行、`path` 必须是宿主绝对路径、`createRuntime` 时 netns 已存在但 docker 的网卡要等 `initializeCreatedTask()` 之后才插（上文 §3.3）。
+- **校验在 spec 加载期，不在注入期**：`Hook.Validate`（`container-edits.go:363-373`）只查 `hookName` 在白名单、`path` 非空、`env` 格式合法，**不检查 `path` 在宿主上是否存在**；`ContainerEdits.Validate` 由 `pkg/cdi/spec.go:219-232` 的 `s.validate()` 在 **spec 加载时**调用。⇒ ① 一份坏 spec 会整体加载失败，dockerd 记 `CDI setup error` 警告（moby `daemon/cdi.go:85-93`）；② `path` 指向不存在的文件时，错误**推迟到 runtime 执行期**，表现为容器创建失败（crun 的实际报错形态见下方 CDI issue #239），**不是 hook 静默不跑**——这对 `#16`「绝不静默降级」是好事。
+
+### 4. podman 一侧（Q3）——同一个库，且有实测旁证
+
+- podman vendored 的是**同一个 CDI 库、同一个版本**（`vendor/tags.cncf.io/container-device-interface`，go.mod 也是 `v1.1.1`），并且同样调 `registry.InjectDevices(...)`：
+  - `pkg/specgen/generate/config_linux.go:28-40`（`--device` 的 CDI 分支）；
+  - `libpod/container_internal_common.go:775-793`（`c.config.CDIDevices` / `GPUs` 路径，注释原文 *"Warning: CDI may alter g.Config in place."*）。
+- **一手实测证据（发生在 podman/crun 上）**：CDI 仓库 issue **#239**（*"Error: OCI runtime error: --device nvidia.com/gpu=all podman nvidia container"*，<https://github.com/cncf-tags/container-device-interface/issues/239>）里用户贴出的报错是 crun 抛的：
+
+  > `Error: OCI runtime error: /usr/local/bin/crun: {"msg":"error executing hook \`/usr/bin/nvidia-cdi-hook\` (exit code: 1)","level":"error",...}`
+
+  这直接证明「CDI spec 里声明的 `nvidia-cdi-hook` 被 runtime 执行了」。NVIDIA 的 CDI 生成器确实往 `containerEdits.hooks` 里写 hook（【源码读出】<https://github.com/NVIDIA/nvidia-container-toolkit/blob/main/internal/discover/hooks.go>：`create-symlinks`/`update-ldcache`/`enable-cuda-compat` 等，默认路径常量 `defaultNvidiaCDIHookPath = "/usr/bin/nvidia-cdi-hook"`）。
+- **⚠️ 这条旁证在 podman 上，不在 docker 上**：docker 侧我没有找到同等的一手实测报告（即有人在 docker 上看到 CDI 声明的 hook 被 runc 执行，或看到对应报错）——**未证实**，这正是本节 §5 那个实验要补的。
+
+### 5. 最小实测：判定 Q1（给人在目标机上跑，本调研未执行）
+
+**不创建容器、不改宿主配置的替代方案不存在**——Q1 只能实测。以下步骤留给人工执行，**本调研一个字都没跑**。
+
+1. **hook 脚本**（宿主绝对路径、可执行位、`args` 里不写它也要能跑）：
+
+   `/usr/local/libexec/stars-cdi-hook-probe`：
+   ```sh
+   #!/bin/sh
+   # 把 OCI state JSON 原样存到宿主，用来证明 hook 真被 runtime 调用了
+   cat > /tmp/stars-cdi-hook-probe.json
+   exit 0
+   ```
+   `chmod +x /usr/local/libexec/stars-cdi-hook-probe`
+
+2. **CDI spec**：`/etc/cdi/stars-sandbox-probe.yaml`
+   ```yaml
+   cdiVersion: "0.6.0"
+   kind: stars.sandbox/probe
+   devices:
+     - name: hookprobe
+       containerEdits:
+         env:
+           - STARS_PROBE=cdi-works
+         hooks:
+           - hookName: createRuntime
+             path: /usr/local/libexec/stars-cdi-hook-probe
+   ```
+   （`env` 那条是**对照组**：它对应 moby 自己集成测试断言过的形状，用来区分「CDI 管线没通」和「只有 hook 没被执行」。）
+
+3. **daemon 设置**：**不需要改**（≥28.3 默认开；25.0.0–28.1.x 需在 `daemon.json` 加 `{"features":{"cdi":true}}` 再 `systemctl reload dockerd`）。先确认：`docker info | grep -A3 CDISpecDirs`（应含 `/etc/cdi`）。
+
+4. **单条命令**（不加 `--rm`，留下容器便于复看）：
+   ```
+   docker run --name stars-cdi-probe --device stars.sandbox/probe=hookprobe \
+     --annotation stars.sandbox/probe=1 busybox env
+   ```
+
+5. **看什么**：
+
+   | 观察 | 判定 |
+   |---|---|
+   | `/tmp/stars-cdi-hook-probe.json` **存在** | **Q1 = 会**：docker 执行了 CDI 声明的 hook。文件内容即 stdin 收到的 state JSON（本节 §6） |
+   | 文件不存在、但 `STARS_PROBE=cdi-works` 出现在 `env` 输出里 | **Q1 = 不会**：CDI 管线通、但 `containerEdits.hooks` 被忽略 ⇒ 本节 §0 要改口，`# 22` 的候选 1 作废 |
+   | 文件不存在、`STARS_PROBE` 也没出现 | CDI 管线本身没通（目录/开关/版本问题），先修这个再判 Q1 |
+   | 容器起不来、报 `error executing hook ... /usr/local/libexec/stars-cdi-hook-probe` | hook **被应用、被调用**了，只是脚本失败（查权限位/绝对路径/shell 解释器）——仍算 **Q1 = 会** |
+
+6. **顺带值得看的两件事**：
+   - 把 `hookName` 换成 `createContainer`、`startContainer` 各跑一次 ⇒ 验证 stage 分派与「hook 在哪个 namespace 里跑」（对齐上文 §3.2/§4）。
+   - `--annotation stars.sandbox/probe=1` 的键值**是否出现在 state JSON 的 `annotations` 里** ⇒ 一次同时验证 `# 19` 那句「per-task 数据经 annotation 进 hook」在 docker 上通不通（上文 §1 末尾那条：`daemon/oci_linux.go:1047` 的 `coci.WithAnnotations`）。
+
+7. **清理**：`docker rm stars-cdi-probe`、删 `/etc/cdi/stars-sandbox-probe.yaml`、删 `/usr/local/libexec/stars-cdi-hook-probe`、删 `/tmp/stars-cdi-hook-probe.json`。
+
+### 6. Q4 复述：`createRuntime` hook 的 stdin 到底有什么（按 runtime-spec 原文）
+
+规范原文（`runtime.md` §State，main `b6f46de8f84eaa7a4d1e747f281a35f5e1b2bfe9`，<https://raw.githubusercontent.com/opencontainers/runtime-spec/main/runtime.md>）：
+
+> * **`ociVersion`** (string, REQUIRED) ...
+> * **`id`** (string, REQUIRED) is the container's ID. This MUST be unique across all containers on this host.
+> * **`status`** (string, REQUIRED) ...
+> * **`pid`** (int, **REQUIRED when `status` is `created` or `running`** on Linux, OPTIONAL on other platforms) ... For hooks executed in the runtime namespace, it is the pid as seen by the runtime. For hooks executed in the container namespace, it is the pid as seen by the container.
+> * **`bundle`** (string, REQUIRED) is the absolute path to the container's bundle directory. This is provided so that consumers can find the container's configuration and root filesystem on the host.
+> * **`annotations`** (map, **OPTIONAL**) contains the list of annotations associated with the container. If no annotations were provided then this property MAY either be absent or an empty map.
+
+以及 `config.md` 的硬约定：*"The [state](runtime.md#state) of the container MUST be passed to hooks over stdin"*。
+
+逐条落到「per-container 的出网策略怎么送到 hook 里」：
+
+- **`id`（REQUIRED）在。** 容器 id 一定在，是 hook 可用的**唯一必然在场的 per-container 标识**。
+- **`pid`**：**规范只保证 `status` 为 `created`/`running` 时必有**，而 create 阶段各家传的 `status` 不一（runc `creating`、**crun `created`**，上文 §3.2/§3.5）——runc/crun **实际上**都填了 `pid`，但**不能当成契约**。
+- **`bundle`（REQUIRED）在**，绝对路径，指向含 `config.json` 的目录。
+- **`annotations` 是 OPTIONAL**，没传就**可能整个字段缺席**。docker 侧要它出现，得显式带 `docker run --annotation`（上文 §1 末尾）——**「不传就是空/缺」是规范允许的**，hook 必须处理 `annotations` 缺失。
+- ⇒ **「per-container 策略怎么到达 hook」目前只有两条规范内的通道**：① `id` → hook 自己去宿主上查（worker 侧存一份 id→策略的表）；② `--annotation` → 直接进 state。两条都不需要容器内配合。哪条作为落地设计**不在本节范围**。
+
+### 7. 本节未能证实 / 需要实测的
+
+- **docker 上没有任何一手实测**证明 CDI hook 被执行（源码链条完整、但无文档、无测试、无上游报告）。**「源码读出」是本节的最高取证强度**，本节 §5 是补这一档的唯一办法。
+- **CDI 默认开启的版本号两处一手来源矛盾**（dockerd 文档 28.3.0 vs CDI README 28.2.0），未判定。
+- **CDI 的 hook 是否受 `features.cdi` 之外的第二道门控**（例如某些 API 版本下限）未查；只确认了 `--device <限定名>` 这条 CLI 路径。
+- **`docker create` / compose / API 直接传 `DeviceRequests`** 三种入口是否与 `docker run --device` 等价：`HostConfig.DeviceRequests` 是同一份数据（moby 集成测试断言的就是它），但 `docker compose` 的 `devices:` 字段走哪条**未查**。
+- **CDI hook 与 dockerd 自己那两处硬编码 `Prestart` hook 的实际共存形态**（同一容器上会不会同时出现）未实测；源码上 `Hooks.CreateRuntime` 与 `Hooks.Prestart` 是不同列表，不冲突。
+- **`cdi_spec_dirs` 的 podman 默认值**：`containers.conf(5)` 写 `["/etc/cdi", "/var/run/cdi", ...]`（<https://github.com/containers/container-libs/blob/main/common/docs/containers.conf.5.md>），未与 podman 代码逐行核对。
