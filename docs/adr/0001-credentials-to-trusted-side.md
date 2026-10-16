@@ -16,3 +16,4 @@
 - 目标只在**可信侧**：宿主上执行的换发必须把凭据留在进程环境里，**绝不进 argv**（`/proc/<pid>/cmdline` 是同机任何用户可读），并且执行前要把 `credential.helper` 重置为空——否则宿主上已有的 `store` 类 helper 会把凭据写进 `~/.git-credentials`。
 - 租约变为**一次操作一次**、用完即撤，续期机制不存在；授权撤销的时延因此有界（在飞操作最多活一次操作的时长）。代价是**每次操作都要控制层在场**。
 - 契约里保留另一种 delivery（交付短期凭据给沙箱），不实现；将来若有任务确实需要直连资源，是改这一条，而不是重做架构。
+- **先例的两侧**（2026-10-16 补，见 `docs/research/container-sandbox-architecture.md` §8.5 与 ⚠️8）：站在我们这边的是 **Argo Workflows**——对象存储凭据只挂给搬运的 init/wait/supervisor 容器，主容器没有，形状与我们同构。反面是四家四个形式，同一个取舍：DevPod 明写「forward git credentials to a remote machine」、Tekton 的 `git-clone` 用 `basic-auth`/`ssh-directory` **工作区**把凭据送进 step 容器、OpenHands 把 `OH_SESSION_API_KEYS_0` 写进容器环境、Agent Sandbox 的 `sandboxd` 在沙箱内校验 bearer token。下次有人问「为什么凭据不给沙箱」，这两组就是答案，不必重新论证。
