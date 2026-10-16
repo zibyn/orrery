@@ -113,7 +113,7 @@ _Avoid_: 仓库地址、repo、仓库名；与 ref 混用
 _Avoid_: 产物、缓存、暂存区、临时目录
 
 **平台动作（Platform Action）**:
-由控制层下发、归属 Worker 在宿主侧代劳、**不是 Task** 的操作：建 Workspace、push、文件面的 `ls`/`download`/`upload`。它不占任务的位置、不进任务串行、不产生任务的终态。
+由控制层下发、归属 Worker 在宿主侧代劳、**不是 Task** 的操作：建 Workspace、push、文件面的 `ls`/`download`/`upload` 与上传的完成调用。它不占任务的位置、不进任务串行、不产生任务的终态。
 _Avoid_: 内置任务、平台任务、系统调用
 
 **Capability Surface（能力面）**:
