@@ -27,7 +27,7 @@
 | **#12 / #13** Broker 与 Git Provider | 授权 / 租约两域对象；铸造面与注入面拆开；Worker 代码里不出现 provider 名 | **Argo 是正面先例**：凭据只挂 init/wait/supervisor 容器，主容器没有；反面是 DevPod/Tekton/OpenHands/`sandboxd` 四家（`architecture` §8.5、⚠️8） | **保留**，并把正反两面写进 ADR-0001（§4） |
 | **#14 + #5** 平台存储 | 一次存取一个预签名 URL；中转区无主、按前缀切 | 中转区之所以存在是**拓扑决定的**：Worker 只拨出、不可被连入 ⇒ 字节必须落在 Worker 能去取的地方（rustFS 已经是那个地方） | **保留**——这不是多余的一层，是「沙箱不可被连入」的直接代价 |
 | **#15** 能力面 | CLI ⊇ MCP；无复合工具、无文件面工具（要文件＝文件面三动词） | Agent Sandbox 的 `sandboxd` 把文件面与命令面切成**两个协议端口**并写死了理由；OpenHands「读写在命令通道上 / 批量搬运独立」；Tekton 的 Workspace 与 Result 本就是两个对象（`architecture` §8.3） | **保留**——三处独立确认「两个面」，我们站在多数派 |
-| **#16** 出网边界 | 默认开、三档、私有无条件拒、控制层地址无条件减去、零监听端口 | 默认开是行业默认（14 家里只有两家默认关）；`@allow` 排在 `@deny` 之后是**反先例**但更严（`network-policy` §先读 2） | **保留**；两处补表态（§4） |
+| **#16** 出网边界 | 默认开、三档、私有无条件拒、控制层地址无条件减去、零监听端口 | 默认开是行业默认（14 家里只有两家默认关）；`@allow` 排在 `@deny` 之后是**反先例**但更严（`network-policy` §先读 2） | **保留**；两处补表态（§4）。**2026-10-16 复议：加一层「出网开口」**（ADR-0003、GLOSSARY） |
 | **#17 / #18** 对外 API | 手写 OpenAPI 单一真源；长轮询；problem+json；两类 Bearer | 未逐家对照（本批未覆盖对外 API 形态） | **保留**；无新证据 |
 | **#19** Worker 升级 | 闸门是协议代际；控制层必须说得出口窗口内每一代；不排空、收养 | **先例里没有一家讲过 agent 怎么装/升/灰/退**（`prior-art` 结论，本批仍未找到） | **已简化：单代 + 停机升级**（§3.1，落 ADR-0005） |
 | **#20 / #25** 文件面 | 按路径四动词；元数据走流、字节走对象存储；上传两阶段 + 完成调用 | Docker Sandboxes 只有 `sbx cp` 一个动词（无列目录、无完成信号）；Agent Sandbox 有四个 HTTP 方法但**也没有完成信号**（`architecture` §8.4） | **保留**——第四动词是「字节不经控制层」的直接代价，不是多余 |
@@ -110,7 +110,7 @@
 
 ### ADR-0003（出网边界）
 
-- **`@deny` 是基座、别家的 `deny` 是补丁**：E2B 原文 "allow rules always take precedence over deny rules"、Vercel 拿 `subnets.allow: 10.0.0.0/8` 当 private network access 的正常用法、Daytona 的 IP 列表无私有段约束（`network-policy` §缺口 6）。**把这条写成一句可被引用的对比**，否则将来有人拿 E2B 要求对齐。
+- **`@deny` 是基座、别家的 `deny` 是补丁**：E2B 原文 "allow rules always take precedence over deny rules"、Vercel 拿 `subnets.allow: 10.0.0.0/8` 当 private network access 的正常用法、Daytona 的 IP 列表无私有段约束（`network-policy` §缺口 6）。**把这条写成一句可被引用的对比**，否则将来有人拿 E2B 要求对齐。**（2026-10-16 复议）**：对它的回答不是翻转次序，而是加一层**出网开口**——厂商那边「`allow` 能开私有段」这件功能，我们用一份**平台侧录入、可随策略下发**的名单承接；调用方仍然只能请求，能不能开由名单裁决（理由：调用方是不可信侧，上下文里带不可信仓库内容）。见 ADR-0003 与 `GLOSSARY.md` 的「出网开口」。
 - **活连接轴要表态**：Modal 会掐掉不再允许的已建立连接，Cilium 明确不掐；我们的 `ct state established,related accept` 事实上选了 Cilium 那侧，但 #24 与 ADR-0003 都没写成决定（`network-policy` §推论 6）。
 - **Considered Options 补两条默认值**：Agent Sandbox 的 `NetworkPolicySpec` 空列表 = ingress/egress 双 Default Deny；Docker Sandboxes 初始化后白名单制且推荐 `balanced` 中间档（`architecture` ⚠️4）。
 - **Claude Code devcontainer 为了在容器里装防火墙必须给 `NET_ADMIN`+`NET_RAW`**——「容器保持默认能力集」的反面对照，也是我们选「Worker 在宿主侧 `nsenter` 装规则」的正面理由（`architecture` §8.8）。进 Consequences。
