@@ -99,8 +99,8 @@ The control-plane process that compares durable desired state with Node-observed
 _Avoid_: event handler
 
 **Node Unreachable**:
-A condition in which the Control Plane cannot currently confirm Node Agent state; it is not itself proof that a running Exec stopped.
-_Avoid_: Exec failure
+A condition in which the Control Plane cannot currently confirm Node Agent state; it is not itself proof that a running Exec stopped, nor that the Node is lost. Only an administrator declares a Node lost.
+_Avoid_: Exec failure, Node lost
 
 **Log Retention Policy**:
 The rule that determines which ordered portions of an Execution Log remain resumable or available as a snapshot.
@@ -125,6 +125,10 @@ _Avoid_: Runtime state
 **Node**:
 A registered compute host whose Node Agent reports available Runtime Providers, hardware, and capabilities.
 _Avoid_: worker container, Sandbox
+
+**Paused Node**:
+A Node that receives no new allocations while its running Sandboxes continue undisturbed. A paused Node with no running Sandbox is drained; drained is a fact, not a separate state.
+_Avoid_: cordoned, draining state, evicting
 
 **Node Agent**:
 The trusted process on a Node that connects outbound to the Control Plane and performs authorized runtime, file, and execution operations.

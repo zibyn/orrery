@@ -29,7 +29,7 @@
 
 ## Consequences
 
-- Phase 1 needs an OCI registry deployment on top of MinIO; its listening surface belongs with `#38`.
+- Phase 1 needs an OCI registry deployment on top of MinIO; its deployment, authentication and listening surface are ADR-0014, which also makes registry blob GC an offline maintenance operation rather than part of the online sweep.
 - Whether MinIO verifies `x-amz-checksum-sha256` on presigned PUTs must be tested before implementation; if not, the Upload paragraph needs a server-side hashing step.
 - Agents running parallel Execs against one Workspace must not expect Artifact snapshots to be point-in-time consistent.
 - Which phase ships Resource and Snapshot is `#39`'s call; this ADR fixes only their semantics.
