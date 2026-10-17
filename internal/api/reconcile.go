@@ -119,7 +119,7 @@ func (r *reconciler) once(ctx context.Context) {
 		case "stopped":
 			r.stop(ctx, sb)
 		case "deleted":
-			r.delete(ctx, sb)
+			r.stopForDelete(ctx, sb)
 		}
 	}
 	r.deleteWorkspaces(ctx)
@@ -163,14 +163,14 @@ func (r *reconciler) execs(ctx context.Context) {
 				continue
 			}
 			delivered := row.SandboxNodeID != nil &&
-				r.hub.wasSent(*row.SandboxNodeID, execCommandId("start-exec", e))
+				r.hub.wasSent(*row.SandboxNodeID, commandID("start-exec", e.ID, e.Generation))
 			if !e.StartedAt.Valid && !delivered {
 				// The command never reached the Supervisor; there is nothing
 				// to signal.
 				r.finishExec(ctx, e.ID, "canceled")
 				continue
 			}
-			id := execCommandId("cancel-exec", e)
+			id := commandID("cancel-exec", e.ID, e.Generation)
 			r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
 				Message: &nodev1.ControlMessage_CancelExec{CancelExec: &nodev1.CancelExec{
 					CommandId: id, ExecId: e.ID.String(),
@@ -217,7 +217,7 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 		}
 		pty = &nodev1.PtySpec{Rows: int32(size.Rows), Cols: int32(size.Cols)}
 	}
-	id := execCommandId("start-exec", e)
+	id := commandID("start-exec", e.ID, e.Generation)
 	r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
 		Message: &nodev1.ControlMessage_StartExec{StartExec: &nodev1.StartExec{
 			CommandId: id, ExecId: e.ID.String(), SandboxId: e.SandboxID.String(),
@@ -289,7 +289,7 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 		r.s.log.Warn("reconcile: list sandbox GPUs", "sandbox_id", sb.ID, "error", err)
 		return
 	}
-	id := sandboxCommandId("create-sandbox", sb)
+	id := commandID("create-sandbox", sb.ID, sb.Generation)
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{
 		CreateSandbox: &nodev1.CreateSandbox{
 			CommandId:   id,
@@ -317,7 +317,13 @@ func (r *reconciler) stop(ctx context.Context, sb store.Sandbox) {
 	if !r.execsDrained(ctx, sb.ID) {
 		return
 	}
-	id := sandboxCommandId("stop-sandbox", sb)
+	r.sendStopRuntime(ctx, sb)
+}
+
+// sendStopRuntime asks the Node to tear down a Sandbox's runtime. Stopping and
+// deleting share it; deletion finishes when the Node observes the runtime gone.
+func (r *reconciler) sendStopRuntime(ctx context.Context, sb store.Sandbox) {
+	id := commandID("stop-sandbox", sb.ID, sb.Generation)
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_StopSandbox{
 		StopSandbox: &nodev1.StopSandbox{
 			CommandId: id, SandboxId: sb.ID.String(), Generation: sb.Generation,
@@ -339,12 +345,8 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 		r.s.log.Warn("reconcile: mark stopped", "sandbox_id", sandboxID, "error", err)
 		return
 	}
-	if err := q.ReleaseCompute(ctx, sandboxID); err != nil {
-		r.s.log.Warn("reconcile: delete allocation", "sandbox_id", sandboxID, "error", err)
-		return
-	}
-	if err := q.DeleteAttachment(ctx, sandboxID); err != nil {
-		r.s.log.Warn("reconcile: delete attachment", "sandbox_id", sandboxID, "error", err)
+	if err := releaseCompute(ctx, q, sandboxID); err != nil {
+		r.s.log.Warn("reconcile: release compute", "sandbox_id", sandboxID, "error", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -352,7 +354,10 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 	}
 }
 
-func (r *reconciler) delete(ctx context.Context, sb store.Sandbox) {
+// stopForDelete tears down a Sandbox whose desired state is deleted. Without a
+// Node there is nothing to stop; otherwise the Node's observed "gone" completes
+// the deletion.
+func (r *reconciler) stopForDelete(ctx context.Context, sb store.Sandbox) {
 	if sb.NodeID == nil {
 		// Nothing ever ran. Release the Attachment, then either let the
 		// implicit Workspace's cleanup finish the Sandbox or keep a persistent
@@ -380,12 +385,7 @@ func (r *reconciler) delete(ctx context.Context, sb store.Sandbox) {
 	if !r.execsDrained(ctx, sb.ID) {
 		return
 	}
-	id := sandboxCommandId("stop-sandbox", sb)
-	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_StopSandbox{
-		StopSandbox: &nodev1.StopSandbox{
-			CommandId: id, SandboxId: sb.ID.String(), Generation: sb.Generation,
-		},
-	}})
+	r.sendStopRuntime(ctx, sb)
 }
 
 // execsDrained marks a Sandbox's active Execs for cancellation and reports
@@ -436,7 +436,7 @@ func (r *reconciler) workspaces(ctx context.Context) {
 		if !parseWorkspaceConditions(ws.Conditions).provisionDue(now) {
 			continue
 		}
-		id := workspaceCommandId("provision-workspace", ws)
+		id := commandID("provision-workspace", ws.ID, ws.Generation)
 		r.send(ctx, ws.NodeID, id, &nodev1.ControlMessage{
 			Message: &nodev1.ControlMessage_ProvisionWorkspace{
 				ProvisionWorkspace: &nodev1.ProvisionWorkspace{
@@ -534,7 +534,7 @@ func (r *reconciler) deleteWorkspaces(ctx context.Context) {
 			r.finalizeWorkspace(ctx, ws)
 			continue
 		}
-		id := workspaceCommandId("delete-workspace", ws)
+		id := commandID("delete-workspace", ws.ID, ws.Generation)
 		r.send(ctx, ws.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_DeleteWorkspace{
 			DeleteWorkspace: &nodev1.DeleteWorkspace{
 				CommandId: id, WorkspaceId: ws.ID.String(), Generation: ws.Generation,
@@ -572,12 +572,8 @@ func (r *reconciler) fail(ctx context.Context, sb store.Sandbox, cause string) {
 		return
 	}
 	if rows > 0 {
-		if err := q.ReleaseCompute(ctx, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: release allocation", "sandbox_id", sb.ID, "error", err)
-			return
-		}
-		if err := q.DeleteAttachment(ctx, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: release attachment", "sandbox_id", sb.ID, "error", err)
+		if err := releaseCompute(ctx, q, sb.ID); err != nil {
+			r.s.log.Warn("reconcile: release compute", "sandbox_id", sb.ID, "error", err)
 			return
 		}
 	}
@@ -594,16 +590,10 @@ func (r *reconciler) send(ctx context.Context, nodeID *uuid.UUID, commandID stri
 	r.hub.send(*nodeID, commandID, msg)
 }
 
-func sandboxCommandId(prefix string, sb store.Sandbox) string {
-	return fmt.Sprintf("%s:%s:%d", prefix, sb.ID, sb.Generation)
-}
-
-func workspaceCommandId(prefix string, ws store.Workspace) string {
-	return fmt.Sprintf("%s:%s:%d", prefix, ws.ID, ws.Generation)
-}
-
-func execCommandId(prefix string, e store.Exec) string {
-	return fmt.Sprintf("%s:%s:%d", prefix, e.ID, e.Generation)
+// commandID names one derived command. The Reconciler derives the same id for
+// the same work, so the Node can ignore a duplicate delivery.
+func commandID(prefix string, id uuid.UUID, generation int64) string {
+	return fmt.Sprintf("%s:%s:%d", prefix, id, generation)
 }
 
 // nodeHub fans commands out to the Agent's Control stream. A command id that

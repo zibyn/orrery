@@ -465,12 +465,8 @@ func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, gener
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := n.s.q.WithTx(tx)
-	if err := q.ReleaseCompute(ctx, id); err != nil {
-		n.s.log.Warn("release allocation", "sandbox_id", id, "error", err)
-		return
-	}
-	if err := q.DeleteAttachment(ctx, id); err != nil {
-		n.s.log.Warn("release attachment", "sandbox_id", id, "error", err)
+	if err := releaseCompute(ctx, q, id); err != nil {
+		n.s.log.Warn("release compute", "sandbox_id", id, "error", err)
 		return
 	}
 	ws, wsErr := q.GetSandboxWorkspace(ctx, id)
@@ -632,12 +628,23 @@ func (n *nodeService) ExecOutput(stream nodev1.Node_ExecOutputServer) error {
 	}
 }
 
-func (n *nodeService) releaseCompute(ctx context.Context, id uuid.UUID) {
-	if err := n.s.q.ReleaseCompute(ctx, id); err != nil {
-		n.s.log.Warn("release allocation", "sandbox_id", id, "error", err)
+// releaseCompute drops the Allocation and the Attachment, which exist only
+// while a runtime does. Both are attempted so one failure does not hide the
+// other.
+func releaseCompute(ctx context.Context, q *store.Queries, id uuid.UUID) error {
+	var errs []error
+	if err := q.ReleaseCompute(ctx, id); err != nil {
+		errs = append(errs, fmt.Errorf("release allocation: %w", err))
 	}
-	if err := n.s.q.DeleteAttachment(ctx, id); err != nil {
-		n.s.log.Warn("release attachment", "sandbox_id", id, "error", err)
+	if err := q.DeleteAttachment(ctx, id); err != nil {
+		errs = append(errs, fmt.Errorf("release attachment: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func (n *nodeService) releaseCompute(ctx context.Context, id uuid.UUID) {
+	if err := releaseCompute(ctx, n.s.q, id); err != nil {
+		n.s.log.Warn("release compute", "sandbox_id", id, "error", err)
 	}
 }
 

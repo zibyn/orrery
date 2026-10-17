@@ -359,11 +359,8 @@ func (r *reconciler) failAdmission(ctx context.Context, q *store.Queries, sb sto
 		r.endAdmission(ctx, q, sb.ID, "canceled")
 		return
 	}
-	if err := q.ReleaseCompute(ctx, sb.ID); err != nil {
-		r.s.log.Warn("reconcile: release allocation", "sandbox_id", sb.ID, "error", err)
-	}
-	if err := q.DeleteAttachment(ctx, sb.ID); err != nil {
-		r.s.log.Warn("reconcile: release attachment", "sandbox_id", sb.ID, "error", err)
+	if err := releaseCompute(ctx, q, sb.ID); err != nil {
+		r.s.log.Warn("reconcile: release compute", "sandbox_id", sb.ID, "error", err)
 	}
 	r.endAdmission(ctx, q, sb.ID, cause)
 }
