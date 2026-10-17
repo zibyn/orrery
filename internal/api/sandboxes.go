@@ -469,6 +469,21 @@ func (s *Server) getOwnedSandbox(w http.ResponseWriter, ctx context.Context, p *
 	return sb, true
 }
 
+// getOwnerSandbox is getOwnedSandbox without the admin bypass: port
+// forwarding is for the owner alone, and everyone else sees 404 (api.md §6).
+func (s *Server) getOwnerSandbox(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Sandbox, bool) {
+	sb, err := s.q.GetSandbox(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && p.user.ID != sb.OwnerID) {
+		writeProblem(w, "not_found", "no such Sandbox")
+		return store.Sandbox{}, false
+	}
+	if err != nil {
+		s.internal(w, "get Sandbox", err)
+		return store.Sandbox{}, false
+	}
+	return sb, true
+}
+
 func (s *Server) ownerOrAdmin(p *principal, owner uuid.UUID) bool {
 	return p.isAdmin() || p.user.ID == owner
 }

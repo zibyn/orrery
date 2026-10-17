@@ -132,13 +132,21 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		})
 	case *nodev1.ControlMessage_OpenTunnel:
 		cmd := m.OpenTunnel
-		if cmd.GetAgentHttp() == nil {
-			// sandbox_port arrives with port forwarding (#55).
+		var serve func(context.Context, string) error
+		switch {
+		case cmd.GetAgentHttp() != nil:
+			serve = c.rt.openTunnel
+		case cmd.GetSandboxPort() != nil:
+			target := cmd.GetSandboxPort()
+			serve = func(ctx context.Context, tunnelID string) error {
+				return c.rt.forwardSandboxPort(ctx, tunnelID, target)
+			}
+		default:
 			c.result(cmd.CommandId, "unsupported tunnel target")
 			return
 		}
 		go c.run("tunnel:"+cmd.TunnelId, cmd.CommandId, noGenerationFence, func() error {
-			return c.rt.openTunnel(c.ctx, cmd.TunnelId)
+			return serve(c.ctx, cmd.TunnelId)
 		})
 	}
 }

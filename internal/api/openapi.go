@@ -25,9 +25,13 @@ func (s *Server) OpenAPIDocument() map[string]any {
 		}
 		var params []any
 		for _, name := range pathParams(rt.Path) {
+			schema := map[string]any{"type": "string", "format": "uuid"}
+			if name == "port" {
+				schema = map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}
+			}
 			params = append(params, map[string]any{
 				"name": name, "in": "path", "required": true,
-				"schema": map[string]any{"type": "string", "format": "uuid"},
+				"schema": schema,
 			})
 		}
 		for _, name := range rt.Query {
@@ -91,7 +95,10 @@ func responsesFor(rt route) map[string]any {
 	}
 	responses := map[string]any{strconv.Itoa(rt.SuccessStatus): success}
 	if rt.SuccessStatus == http.StatusSwitchingProtocols {
-		success["description"] = "Switching Protocols. The WebSocket subprotocol is sandbox.v1; binary frames carry terminal bytes and text frames carry controls."
+		success["description"] = "Switching Protocols. The WebSocket subprotocol is sandbox.v1."
+		if rt.OperationID == "attachExecPTY" {
+			success["description"] = "Switching Protocols. The WebSocket subprotocol is sandbox.v1; binary frames carry terminal bytes and text frames carry controls."
+		}
 		responses["503"] = map[string]any{
 			"description": problemTitle["unavailable"],
 			"content":     map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
@@ -508,6 +515,13 @@ func schemas() map[string]any {
 			"properties": map[string]any{
 				"from": map[string]any{"type": "string"},
 				"to":   map[string]any{"type": "string"},
+			},
+		},
+		"PortTicket": map[string]any{
+			"type":     "object",
+			"required": []string{"url"},
+			"properties": map[string]any{
+				"url": map[string]any{"type": "string", "description": "Signed URL on the port's subdomain; valid for 60 seconds."},
 			},
 		},
 	}

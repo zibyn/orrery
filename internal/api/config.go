@@ -24,6 +24,12 @@ type Config struct {
 	ExecLogCap int64
 	// PtyIdleSeconds is the deployment PTY idle reap (defaults.md, 300 s).
 	PtyIdleSeconds int64
+	// AppsDomain is the wildcard domain port forwarding serves (api.md §6).
+	// Empty means the Gateway is off; the CLI tunnel still works.
+	AppsDomain string
+	// PortTicketKey signs port-forward tickets and Gateway cookies. Empty
+	// means a per-process random key, which only invalidates live cookies.
+	PortTicketKey []byte
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -34,6 +40,8 @@ func ConfigFromEnv() (Config, error) {
 		NodeTLSCert:    os.Getenv("STARS_NODE_TLS_CERT"),
 		NodeTLSKey:     os.Getenv("STARS_NODE_TLS_KEY"),
 		SnapshotDigest: os.Getenv("STARS_DEFAULT_SNAPSHOT_DIGEST"),
+		AppsDomain:     os.Getenv("STARS_APPS_DOMAIN"),
+		PortTicketKey:  []byte(os.Getenv("STARS_PORT_TICKET_KEY")),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("STARS_DATABASE_URL is required")

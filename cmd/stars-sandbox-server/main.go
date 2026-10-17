@@ -60,6 +60,8 @@ environment:
   STARS_API_ADDR                listen address (default :8080)
   STARS_DEFAULT_GPU_QUOTA       new User GPU quota (default 0)
   STARS_DEFAULT_SANDBOX_QUOTA   new User Sandbox quota (default 0)
+  STARS_APPS_DOMAIN             wildcard domain for port forwarding (off when empty)
+  STARS_PORT_TICKET_KEY         signs port tickets and Gateway cookies
 `)
 }
 

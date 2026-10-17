@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,7 +117,7 @@ func (s *Server) handleExecPTY(w http.ResponseWriter, r *http.Request, p *princi
 		writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
 		return
 	}
-	conn, ok := s.openTunnel(w, r, *row.SandboxNodeID)
+	conn, ok := s.openTunnel(w, r, *row.SandboxNodeID, agentHTTPTarget())
 	if !ok {
 		return
 	}
@@ -124,17 +125,59 @@ func (s *Server) handleExecPTY(w http.ResponseWriter, r *http.Request, p *princi
 	proxyPTY(w, r, conn)
 }
 
+// handlePortTunnel is the Gateway end of
+// `GET /sandboxes/{id}/ports/{port}/tunnel` (api.md §6). It carries raw TCP so
+// the CLI can forward any protocol.
+func (s *Server) handlePortTunnel(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "invalid_request", "id must be a UUID")
+		return
+	}
+	port, ok := pathPort(w, r)
+	if !ok {
+		return
+	}
+	sb, ok := s.getOwnerSandbox(w, r.Context(), p, id)
+	if !ok {
+		return
+	}
+	if sb.State != "ready" {
+		writeProblem(w, "conflict", "the Sandbox is not ready")
+		return
+	}
+	if sb.NodeID == nil {
+		writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
+		return
+	}
+	conn, ok := s.openTunnel(w, r, *sb.NodeID, sandboxPortTarget(id, port))
+	if !ok {
+		return
+	}
+	defer conn.Close() //nolint:errcheck // one tunnel per WebSocket
+	server := websocket.Server{
+		Handshake: func(config *websocket.Config, _ *http.Request) error {
+			config.Protocol = []string{"sandbox.v1"}
+			return nil
+		},
+		Handler: func(ws *websocket.Conn) { relayWebSocket(ws, conn) },
+	}
+	server.ServeHTTP(w, r)
+}
+
+func agentHTTPTarget() *nodev1.OpenTunnel {
+	return &nodev1.OpenTunnel{Target: &nodev1.OpenTunnel_AgentHttp{AgentHttp: &nodev1.AgentHTTP{}}}
+}
+
 // openTunnel asks the Node to dial back and waits for the stream.
-func (s *Server) openTunnel(w http.ResponseWriter, r *http.Request, nodeID uuid.UUID) (net.Conn, bool) {
+func (s *Server) openTunnel(w http.ResponseWriter, r *http.Request, nodeID uuid.UUID, target *nodev1.OpenTunnel) (net.Conn, bool) {
 	id := uuid.NewString()
 	conns := s.tunnels.register(nodeID, id)
 	defer s.tunnels.drop(id)
+	target.CommandId = "open-tunnel:" + id
+	target.TunnelId = id
 	if !s.reconcile.hub.direct(nodeID, &nodev1.ControlMessage{
-		Message: &nodev1.ControlMessage_OpenTunnel{OpenTunnel: &nodev1.OpenTunnel{
-			CommandId: "open-tunnel:" + id,
-			TunnelId:  id,
-			Target:    &nodev1.OpenTunnel_AgentHttp{AgentHttp: &nodev1.AgentHTTP{}},
-		}},
+		Message: &nodev1.ControlMessage_OpenTunnel{OpenTunnel: target},
 	}) {
 		writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
 		return nil, false
@@ -161,22 +204,57 @@ func (s *Server) openTunnel(w http.ResponseWriter, r *http.Request, nodeID uuid.
 	}
 }
 
-// proxyPTY forwards the upgrade request and then copies raw bytes in both
-// directions (ADR-0018). The Agent sees no ambient credentials: the tunnel is
-// already authenticated by the Node Token.
+// forwardedRequest removes the caller's platform credentials. keepCookies
+// keeps application cookies but always drops the Gateway's own grants.
+func forwardedRequest(r *http.Request, keepCookies bool) *http.Request {
+	forward := r.Clone(r.Context())
+	forward.Header = r.Header.Clone()
+	forward.Header.Del("Authorization")
+	forward.Header.Del("Proxy-Authorization")
+	if !keepCookies {
+		forward.Header.Del("Cookie")
+	} else {
+		kept := appCookies(r.Header.Values("Cookie"))
+		if kept == "" {
+			forward.Header.Del("Cookie")
+		} else {
+			forward.Header.Set("Cookie", kept)
+		}
+	}
+	forward.RequestURI = ""
+	return forward
+}
+
+// appCookies drops the Session and port-grant cookies, leaving the app's own.
+func appCookies(values []string) string {
+	var kept []string
+	for _, value := range values {
+		for part := range strings.SplitSeq(value, ";") {
+			name, _, _ := strings.Cut(strings.TrimSpace(part), "=")
+			if name != sessionCookieName && name != gatewayCookieName {
+				kept = append(kept, strings.TrimSpace(part))
+			}
+		}
+	}
+	return strings.Join(kept, "; ")
+}
+
+// proxyPTY forwards the upgrade request and then copies raw bytes (ADR-0018).
 func proxyPTY(w http.ResponseWriter, r *http.Request, tunnelConn net.Conn) {
+	forward := forwardedRequest(r, false)
+	forward.URL.Path = "/execs/" + r.PathValue("id") + "/pty"
+	proxyUpgrade(w, tunnelConn, forward)
+}
+
+// proxyUpgrade hijacks the client, writes an already-prepared request to the
+// tunnel and splices raw bytes in both directions.
+func proxyUpgrade(w http.ResponseWriter, tunnelConn net.Conn, forward *http.Request) {
 	client, buffered, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		return
 	}
 	defer client.Close() //nolint:errcheck // connection lifetime
 
-	forward := r.Clone(r.Context())
-	forward.Header = r.Header.Clone()
-	forward.Header.Del("Authorization")
-	forward.Header.Del("Cookie")
-	forward.Header.Del("Proxy-Authorization")
-	forward.URL.Path = "/execs/" + r.PathValue("id") + "/pty"
 	if err := forward.Write(tunnelConn); err != nil {
 		return
 	}
@@ -187,10 +265,48 @@ func proxyPTY(w http.ResponseWriter, r *http.Request, tunnelConn net.Conn) {
 		}
 		_, _ = buffered.Reader.Discard(n)
 	}
+	relayRaw(client, tunnelConn)
+}
 
+// relayRaw copies bytes both ways until either side closes.
+func relayRaw(a, b net.Conn) {
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(tunnelConn, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, tunnelConn); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
+	<-done
+}
+
+// relayWebSocket carries raw TCP between the client's WebSocket and the
+// tunnel. Binary messages avoid the text frame's UTF-8 assumption.
+func relayWebSocket(ws *websocket.Conn, conn net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				if err := websocket.Message.Send(ws, append([]byte(nil), buf[:n]...)); err != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			var data []byte
+			if err := websocket.Message.Receive(ws, &data); err != nil {
+				return
+			}
+			if _, err := conn.Write(data); err != nil {
+				return
+			}
+		}
+	}()
 	<-done
 }
 

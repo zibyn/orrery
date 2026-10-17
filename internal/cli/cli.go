@@ -87,6 +87,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runShell(c, rest[1:], stderr)
 	case "files":
 		err = runFiles(c, rest[1:], stderr)
+	case "port-forward":
+		err = runPortForward(c, rest[1:])
 	default:
 		err = fmt.Errorf("unknown command %q", rest[0])
 	}
@@ -109,6 +111,8 @@ commands:
   shell <sandbox-id> [-- argv...]   open an interactive terminal
   files ls <sandbox-id> [path]      list a Workspace directory
   files cp <src> <dst>              copy a file to or from <sandbox-id>:<path>
+  port-forward <sandbox-id> [LOCAL:]REMOTE
+                                    tunnel a local TCP port to a Sandbox port
 
 global flags:
   --config PATH    config file (default $STARS_SANDBOX_CONFIG or $XDG_CONFIG_HOME/stars-sandbox/config.json)
@@ -127,6 +131,7 @@ examples:
   stars-sandbox files ls <sandbox-id> src
   stars-sandbox files cp ./config.toml <sandbox-id>:src/config.toml
   stars-sandbox files cp <sandbox-id>:out/report.txt .
+  stars-sandbox port-forward <sandbox-id> 8080:3000
 `)
 }
 

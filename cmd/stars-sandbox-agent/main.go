@@ -62,7 +62,8 @@ func usage() {
   stars-sandbox-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--docker SOCKET] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
   stars-sandbox-agent supervisor init
   stars-sandbox-agent supervisor probe [WORKSPACE]
-  stars-sandbox-agent supervisor run EXEC_ID`)
+  stars-sandbox-agent supervisor run EXEC_ID
+  stars-sandbox-agent supervisor forward PORT SOCKET`)
 	os.Exit(2)
 }
 
@@ -115,6 +116,11 @@ func supervise(args []string) error {
 			usage()
 		}
 		return supervisor.Run(args[1])
+	case "forward":
+		if len(args) != 3 {
+			usage()
+		}
+		return supervisor.Forward(args[1], args[2])
 	default:
 		usage()
 		return nil

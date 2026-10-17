@@ -51,7 +51,7 @@ func (s *Server) fileHandler(suffix string, write bool) handlerFunc {
 			writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
 			return
 		}
-		conn, ok := s.openTunnel(w, r, *sb.NodeID)
+		conn, ok := s.openTunnel(w, r, *sb.NodeID, agentHTTPTarget())
 		if !ok {
 			return
 		}

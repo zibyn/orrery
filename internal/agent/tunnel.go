@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,23 +25,11 @@ import (
 // (ADR-0018). The Control Plane forwards one request per tunnel: the Gateway
 // hijacks the client connection and copies bytes.
 func (r *Runtime) openTunnel(ctx context.Context, tunnelID string) error {
-	if r.tunnelStream == nil {
-		return errors.New("agent is not connected")
-	}
-	// The Conn's pump blocks in Recv; cancelling the stream context is what
-	// releases it once the attachment is over.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stream, err := r.tunnelStream(ctx)
+	conn, cancel, err := r.dialTunnel(ctx, tunnelID)
 	if err != nil {
 		return err
 	}
-	// The first frame names the tunnel so the Control Plane can match this dial
-	// to its OpenTunnel command (node-protocol.md).
-	if err := stream.Send(&nodev1.TunnelFrame{TunnelId: tunnelID}); err != nil {
-		return err
-	}
-	conn := tunnel.NewConn(tunnelID, stream)
+	defer cancel()
 	listener := &oneConnListener{conn: conn, closed: make(chan struct{})}
 	srv := &http.Server{
 		Handler:           r.tunnelMux(),
@@ -53,6 +43,99 @@ func (r *Runtime) openTunnel(ctx context.Context, tunnelID string) error {
 		conn.Close() //nolint:errcheck // shutdown
 	}
 	return srv.Close()
+}
+
+// forwardSandboxPort bridges one Tunnel to a port inside the Sandbox. The
+// Supervisor stays in the Sandbox's network namespace, so the Agent never
+// needs netns privileges (api.md §6).
+func (r *Runtime) forwardSandboxPort(ctx context.Context, tunnelID string, target *nodev1.SandboxPort) error {
+	sandboxID, err := uuid.Parse(target.GetSandboxId())
+	if err != nil {
+		return errors.New("invalid sandbox id")
+	}
+	port := int(target.GetPort())
+	if port < 1 || port > 65535 {
+		return errors.New("invalid port")
+	}
+	conn, cancel, err := r.dialTunnel(ctx, tunnelID)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	defer conn.Close() //nolint:errcheck // one tunnel per connection
+	local, err := r.dialSandboxPort(ctx, sandboxID, port)
+	if err != nil {
+		return err
+	}
+	defer local.Close() //nolint:errcheck // bridge ends
+	bridge(local, conn)
+	return nil
+}
+
+// dialTunnel opens the reverse tunnel and sends the frame that names it, so
+// the Control Plane can match this dial to its OpenTunnel (node-protocol.md).
+func (r *Runtime) dialTunnel(ctx context.Context, tunnelID string) (*tunnel.Conn, context.CancelFunc, error) {
+	if r.tunnelStream == nil {
+		return nil, nil, errors.New("agent is not connected")
+	}
+	// The Conn's pump blocks in Recv; cancelling the stream context is what
+	// releases it once the attachment is over.
+	ctx, cancel := context.WithCancel(ctx)
+	stream, err := r.tunnelStream(ctx)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	if err := stream.Send(&nodev1.TunnelFrame{TunnelId: tunnelID}); err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return tunnel.NewConn(tunnelID, stream), cancel, nil
+}
+
+// dialSandboxPort starts a forwarder inside the Sandbox and connects to it.
+// An already running forwarder for the same port is reused.
+func (r *Runtime) dialSandboxPort(ctx context.Context, sandboxID uuid.UUID, port int) (net.Conn, error) {
+	dir := filepath.Join(sandboxRunPath(r.dataRoot, sandboxID), "ports")
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		return nil, err
+	}
+	socket := filepath.Join(dir, strconv.Itoa(port)+".sock")
+	if conn, err := dialSocket(socket); err == nil {
+		return conn, nil
+	}
+	if err := r.d.negotiate(ctx); err != nil {
+		return nil, err
+	}
+	create := map[string]any{
+		"AttachStdout": false,
+		"AttachStderr": false,
+		"Tty":          false,
+		"Cmd": []string{supervisorBin, "forward", strconv.Itoa(port),
+			runMount + "/ports/" + filepath.Base(socket)},
+	}
+	var created struct {
+		ID string `json:"Id"`
+	}
+	if err := r.d.do(ctx, "POST", r.d.api("/containers/"+containerName(sandboxID)+"/exec"), create, &created); err != nil {
+		return nil, fmt.Errorf("create forward exec: %w", err)
+	}
+	if err := r.d.do(ctx, "POST", r.d.api("/exec/"+created.ID+"/start"),
+		map[string]any{"Detach": true, "Tty": false}, nil); err != nil {
+		return nil, fmt.Errorf("start forward exec: %w", err)
+	}
+	return dialUnix(ctx, socket, 5*time.Second)
+}
+
+// bridge copies bytes both ways until either side closes.
+func bridge(a, b net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
+	<-done
 }
 
 func (r *Runtime) tunnelMux() http.Handler {

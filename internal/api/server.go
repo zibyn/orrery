@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"errors"
 	"log/slog"
@@ -31,6 +32,12 @@ type Server struct {
 }
 
 func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
+	if len(cfg.PortTicketKey) == 0 {
+		cfg.PortTicketKey = make([]byte, 32)
+		if _, err := rand.Read(cfg.PortTicketKey); err != nil {
+			panic(err) // no entropy, no serving
+		}
+	}
 	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter(),
 		tunnels: newTunnelRegistry()}
 	s.reconcile = newReconciler(s)
@@ -106,6 +113,8 @@ func (s *Server) routes() []route {
 		{http.MethodDelete, "/sandboxes/{id}/files", "user", "deleteSandboxFile", "Delete a Workspace path", "", "", []string{"path"}, http.StatusNoContent, s.fileHandler("", true)},
 		{http.MethodGet, "/sandboxes/{id}/files/archive", "user", "downloadSandboxArchive", "Download a Workspace subtree as tar", "", "", []string{"path"}, http.StatusOK, s.fileHandler("/archive", false)},
 		{http.MethodPut, "/sandboxes/{id}/files/archive", "user", "uploadSandboxArchive", "Unpack a tar into the Workspace", "", "", []string{"path"}, http.StatusNoContent, s.fileHandler("/archive", true)},
+		{http.MethodPost, "/sandboxes/{id}/ports/{port}/ticket", "user", "createSandboxPortTicket", "Issue a port-forward ticket", "", "PortTicket", nil, http.StatusOK, s.handlePortTicket},
+		{http.MethodGet, "/sandboxes/{id}/ports/{port}/tunnel", "user", "openSandboxPortTunnel", "Forward a Sandbox port over a WebSocket", "", "", nil, http.StatusSwitchingProtocols, s.handlePortTunnel},
 	}
 }
 
@@ -124,14 +133,21 @@ func (s *Server) Handler() http.Handler {
 	}
 	// Unknown paths and methods answer with problem+json; the closed code
 	// catalog has no 405, so a wrong method is reported as not found.
-	notFound := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := mux.Handler(r); pattern == "" {
 			writeProblem(w, "not_found", "no such endpoint")
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})
-	return s.withRequestLog(notFound)
+	// A port subdomain is the Gateway, not the API (api.md §6).
+	return s.withRequestLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id, port, ok := parseAppHost(r.Host, s.cfg.AppsDomain); ok {
+			s.servePortGateway(w, r, id, port)
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
 }
 
 func (s *Server) wrapAuth(level string, next handlerFunc) http.HandlerFunc {

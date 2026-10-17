@@ -51,6 +51,9 @@ CGO_ENABLED=0 "$GO" build -o .e2e/stars-sandbox-agent ./cmd/stars-sandbox-agent
 # idle window keeps the pty-idle scenario fast.
 export STARS_EXEC_LOG_CAP="${STARS_EXEC_LOG_CAP:-1048576}"
 export STARS_PTY_IDLE_SECONDS="${STARS_PTY_IDLE_SECONDS:-10}"
+# The Gateway tests reach port subdomains with a Host header, so no DNS entry
+# is needed; only the domain the server signs into tickets matters.
+export STARS_APPS_DOMAIN="${STARS_APPS_DOMAIN:-apps.test}"
 
 # Warm the cache; the Agent pulls the image itself if this misses.
 docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null
