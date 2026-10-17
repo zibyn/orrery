@@ -25,7 +25,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 - `Capabilities{runtime, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`
 - `SandboxObserved{sandbox_id, generation, phase: running|gone|create_failed, cause?}`
 - `WorkspaceObserved{workspace_id, phase, cause?}`
-- `ExecObserved{exec_id, started_at?, finished?{cause, exit_code?, signal?}}`
+- `ExecObserved{exec_id, started_at}`（结果不走这里，见 ExecOutput）
 - `CommandResult{command_id, error?}`
 
 `ControlMessage`（oneof）：
@@ -43,7 +43,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 
 ## ExecOutput：每个 Exec 一条
 
-Agent 推送 `OutputBatch{exec_id, frames[{seq, stream, data}]}`。Control Plane 写入 `exec_log_chunks` 后回 `OutputAck{exec_id, stored_seq}`。重连后，Agent 从 `stored_seq` 之后接着推。PTY 的输出不走这条流（ADR-0017）。
+Agent 推送 `OutputBatch{exec_id, frames[{seq, stream, data}]}`。Control Plane 写入 `exec_log_chunks` 后回 `OutputAck{exec_id, stored_seq}`。重连后，Agent 从 `stored_seq` 之后接着推。`seq` 是帧在 Node 记录文件里的字节偏移（`runtime.md`）。最后一帧的 `stream` 是 `exit`，携带 `{cause, exit_code?, signal?}`；它的 `OutputAck` 到达后，Agent 删除该 Exec 在 Node 上的记录（ADR-0019）。PTY 的输出不走这条流（ADR-0017），PTY Exec 的这条流只传 exit 帧。
 
 ## Tunnel：反向拨号的字节流
 

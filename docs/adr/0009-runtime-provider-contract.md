@@ -1,6 +1,6 @@
 # ADR-0009: Freeze the Runtime Provider contract
 
-- Status: accepted
+- Status: accepted; mounts amended by ADR-0019
 - Date: 2026-10-17
 
 ## Context
@@ -21,7 +21,7 @@ The platform supports Docker, Podman, and a trusted Local Runtime. They do not p
 
 `Stop` terminates and removes the Runtime instance; it is idempotent and never deletes the Workspace. There is no `Start`, so a stopped Runtime is never reused and a restarted Sandbox gets a new one from `Create`. `Exec` never implicitly creates a missing Runtime.
 
-The common request surface is one platform-managed, read-write Workspace at `/workspace`. No arbitrary host mounts, host network, privileged mode, or caller-selected uid/gid are exposed; the read-only Exec Supervisor is the one named mount exception. Docker and Podman accept immutable platform image digests. Local Runtime uses the Node host environment and returns `unsupported` when a concrete image digest is requested.
+The common request surface is one platform-managed, read-write Workspace at `/workspace`. No arbitrary host mounts, host network, privileged mode, or caller-selected uid/gid are exposed; the platform mounts are the Workspace, read-only Resources, and under `/.stars` the read-only Exec Supervisor binary and the Sandbox's read-write Exec record directory (ADR-0019). Docker and Podman accept immutable platform image digests. Local Runtime uses the Node host environment and returns `unsupported` when a concrete image digest is requested.
 
 The common hard resource limits are CPU, memory, and PID count. IO bandwidth and GPU memory limits are not common Provider guarantees. Disk capacity is enforced only where the Node's Workspace filesystem is XFS with project quotas; elsewhere it is admission accounting plus a Node disk watermark, not isolation. GPU requests use resolved vendor/device/kind records; the Scheduler allocates concrete devices and the Provider only attaches them or rejects the request.
 

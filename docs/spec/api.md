@@ -150,7 +150,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 `cause` 的取值：`exited`、`canceled`、`timed_out`、`oom_killed`、`runtime_lost`、`node_lost`、`pty_idle`、`start_failed`。`start_failed` 表示命令从未开始，可以重试（ADR-0015）。
 
-**输出**（仅限非 PTY）：`GET /execs/{id}/output?after=<seq>` 返回一页 `[{seq, stream, data, encoding?}]`。`stream` 取 `stdout`、`stderr`、`truncated` 之一。`data` 是 UTF-8 文本，Agent 只在字符边界上切分；遇到非法字节时，该帧带 `encoding: base64`。加 `&follow=true` 就升级为 WebSocket，推送同样的帧，Exec 结束后以一条 `{type: "result", ...}` 帧收尾。
+**输出**（仅限非 PTY）：`GET /execs/{id}/output?after=<seq>` 返回一页 `[{seq, stream, data, encoding?}]`。`stream` 取 `stdout`、`stderr`、`truncated` 之一。`data` 是 UTF-8 文本，Exec Supervisor 只在字符边界上切分；遇到非法字节时，该帧带 `encoding: base64`。加 `&follow=true` 就升级为 WebSocket，推送同样的帧，Exec 结束后以一条 `{type: "result", ...}` 帧收尾。
 
 **PTY**：`GET /execs/{id}/pty` 是 WebSocket，子协议为 `sandbox.v1`。二进制帧传终端字节，文本帧传控制消息（`resize {rows, cols}`）。服务端先回放 Node 上的环形缓冲；进程退出时，在关闭连接之前发送 `{type: "exit", ...}` 文本帧。多个连接可以同时写入。
 
