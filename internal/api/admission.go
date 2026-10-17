@@ -249,6 +249,22 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
+// nodeSchedulable reports whether a Node may take this admission. A paused
+// Node takes no new Workspace, but a Workspace already bound there can still
+// start Sandboxes (ADR-0017). Paused only relaxes that rule: the Node must
+// still be reachable, healthy and compatible, so clear the flag and derive the
+// rest of the status.
+func nodeSchedulable(node store.Node, now time.Time, workspaceHere bool) bool {
+	if deriveNodeStatus(node, now) == "ready" {
+		return true
+	}
+	if !workspaceHere || !node.Paused {
+		return false
+	}
+	node.Paused = false
+	return deriveNodeStatus(node, now) == "ready"
+}
+
 // tryAdmit places a Sandbox on the first Node that fits. A Sandbox bound to a
 // Node stays there (a Workspace never moves), and so does one whose Workspace
 // is already bound (ADR-0015 locality). A GPU Sandbox claims whole cards;
@@ -261,7 +277,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		if ws.NodeID != nil && node.ID != *ws.NodeID {
 			continue
 		}
-		if deriveNodeStatus(node, now) != "ready" || !r.hub.connected(node.ID) {
+		if !nodeSchedulable(node, now, ws.NodeID != nil) || !r.hub.connected(node.ID) {
 			continue
 		}
 		used, err := q.NodePlacement(ctx, node.ID)

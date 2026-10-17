@@ -2731,6 +2731,22 @@ func (q *Queries) NodePlacement(ctx context.Context, nodeID uuid.UUID) (NodePlac
 	return i, err
 }
 
+const purgeAuditRecords = `-- name: PurgeAuditRecords :exec
+DELETE FROM audit_records
+WHERE id IN (
+    SELECT id FROM audit_records
+    WHERE at < now() - $1::bigint * interval '1 second'
+    LIMIT 10000
+)
+`
+
+// Audit retention is deployment configuration; 0 means keep forever, so the
+// caller skips this query then (defaults.md).
+func (q *Queries) PurgeAuditRecords(ctx context.Context, retentionSeconds int64) error {
+	_, err := q.db.Exec(ctx, purgeAuditRecords, retentionSeconds)
+	return err
+}
+
 const purgeEnrollmentPackets = `-- name: PurgeEnrollmentPackets :exec
 DELETE FROM enrollment_packets
 WHERE used_at IS NOT NULL OR expires_at < now()
@@ -2741,6 +2757,40 @@ func (q *Queries) PurgeEnrollmentPackets(ctx context.Context) error {
 	return err
 }
 
+const purgeExecutionLogs = `-- name: PurgeExecutionLogs :exec
+DELETE FROM exec_log_chunks
+WHERE ctid IN (
+    SELECT c.ctid
+    FROM exec_log_chunks c
+    JOIN execs e ON e.id = c.exec_id
+    WHERE e.finished_at IS NOT NULL
+      AND e.finished_at < now() - $1::bigint * interval '1 second'
+    LIMIT 10000
+)
+`
+
+// Execution Log retention is counted from the Exec's terminal state
+// (defaults.md); the Exec row itself is not an expiring row.
+func (q *Queries) PurgeExecutionLogs(ctx context.Context, retentionSeconds int64) error {
+	_, err := q.db.Exec(ctx, purgeExecutionLogs, retentionSeconds)
+	return err
+}
+
+const purgeExpiredTokens = `-- name: PurgeExpiredTokens :exec
+DELETE FROM api_tokens
+WHERE id IN (
+    SELECT id FROM api_tokens
+    WHERE expires_at IS NOT NULL AND expires_at < now()
+    LIMIT 10000
+)
+`
+
+// A bounded delete keeps one purge tick from holding a long transaction.
+func (q *Queries) PurgeExpiredTokens(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeExpiredTokens)
+	return err
+}
+
 const purgeSandboxIdempotencyKeys = `-- name: PurgeSandboxIdempotencyKeys :exec
 UPDATE sandboxes SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
@@ -2748,6 +2798,21 @@ WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
 
 func (q *Queries) PurgeSandboxIdempotencyKeys(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, purgeSandboxIdempotencyKeys)
+	return err
+}
+
+const purgeTerminalAdmissionRequests = `-- name: PurgeTerminalAdmissionRequests :exec
+DELETE FROM admission_requests
+WHERE id IN (
+    SELECT id FROM admission_requests
+    WHERE ended_at IS NOT NULL
+    LIMIT 10000
+)
+`
+
+// Ended requests no longer hold quota or a queue position.
+func (q *Queries) PurgeTerminalAdmissionRequests(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeTerminalAdmissionRequests)
 	return err
 }
 

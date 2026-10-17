@@ -22,6 +22,11 @@ type Config struct {
 	SnapshotDigest string
 	// ExecLogCap bounds an Execution Log (defaults.md, 16 MiB).
 	ExecLogCap int64
+	// ExecLogRetention keeps an Execution Log this long after its Exec is
+	// terminal (defaults.md, 30 days; 0 keeps it forever).
+	ExecLogRetention time.Duration
+	// AuditRetention keeps Audit Records this long (defaults.md, 0 = forever).
+	AuditRetention time.Duration
 	// PtyIdleSeconds is the deployment PTY idle reap (defaults.md, 300 s).
 	PtyIdleSeconds int64
 	// IdleStopSeconds is the deployment default for a Sandbox's Idle Stop
@@ -65,6 +70,12 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.ExecLogCap, err = envInt64("STARS_EXEC_LOG_CAP", 16<<20); err != nil {
 		return Config{}, err
 	}
+	if cfg.ExecLogRetention, err = envRetention("STARS_EXEC_LOG_RETENTION", 30*24*time.Hour); err != nil {
+		return Config{}, err
+	}
+	if cfg.AuditRetention, err = envRetention("STARS_AUDIT_RETENTION", 0); err != nil {
+		return Config{}, err
+	}
 	if cfg.PtyIdleSeconds, err = envInt64("STARS_PTY_IDLE_SECONDS", 300); err != nil {
 		return Config{}, err
 	}
@@ -85,6 +96,21 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	d, err := time.ParseDuration(v)
 	if err != nil || d <= 0 {
 		return 0, fmt.Errorf("%s must be a positive duration", key)
+	}
+	return d, nil
+}
+
+// envRetention reads a duration where 0 means "keep forever" (defaults.md,
+// purge configuration). Retention is applied in whole seconds, so a positive
+// sub-second value would truncate to 0 and delete everything.
+func envRetention(key string, fallback time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 || (d > 0 && d < time.Second) {
+		return 0, fmt.Errorf("%s must be 0 or a duration of at least 1s", key)
 	}
 	return d, nil
 }

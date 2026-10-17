@@ -13,32 +13,10 @@ import (
 
 func TestDeriveNodeStatus(t *testing.T) {
 	now := time.Now()
-	seen := pgtype.Timestamptz{Time: now.Add(-time.Second), Valid: true}
-	healthy := "healthy"
 	unhealthy := "unhealthy"
-	minor := int32(nodeproto.Minor)
+	ready := readyNode(t, now)
+	weakCaps := capabilityReport(t, true)
 
-	required := make([]nodeproto.CapabilityEntry, 0, len(nodeproto.Required))
-	for _, name := range nodeproto.Required {
-		required = append(required, nodeproto.CapabilityEntry{Name: name, Value: nodeproto.ValueEnforced})
-	}
-	caps, err := json.Marshal(nodeproto.CapabilityReport{Runtime: "docker", Entries: required})
-	if err != nil {
-		t.Fatal(err)
-	}
-	unsupported := append([]nodeproto.CapabilityEntry(nil), required...)
-	unsupported[0].Value = nodeproto.ValueUnsupported
-	weakCaps, err := json.Marshal(nodeproto.CapabilityReport{Runtime: "docker", Entries: unsupported})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ready := store.Node{
-		LastSeenAt:    seen,
-		RuntimeHealth: &healthy,
-		Capabilities:  caps,
-		ProtoMinor:    &minor,
-	}
 	tests := []struct {
 		name string
 		node store.Node
@@ -69,9 +47,76 @@ func TestDeriveNodeStatus(t *testing.T) {
 	}
 }
 
+// A paused Node takes no new Workspace, but a Sandbox whose Workspace is
+// already bound there can still start (ADR-0017).
+func TestNodeSchedulable(t *testing.T) {
+	now := time.Now()
+	ready := readyNode(t, now)
+	paused := mutate(ready, func(n *store.Node) { n.Paused = true })
+	unavailable := mutate(ready, func(n *store.Node) { n.RuntimeHealth = nil })
+	pausedUnavailable := mutate(unavailable, func(n *store.Node) { n.Paused = true })
+	minorTooOld := int32(nodeproto.Minor) - 1
+	outdated := mutate(ready, func(n *store.Node) { n.ProtoMinor = &minorTooOld })
+	pausedOutdated := mutate(outdated, func(n *store.Node) { n.Paused = true })
+
+	tests := []struct {
+		name          string
+		node          store.Node
+		workspaceHere bool
+		want          bool
+	}{
+		{"ready takes a new Workspace", ready, false, true},
+		{"paused refuses a new Workspace", paused, false, false},
+		{"paused runs a Sandbox for its bound Workspace", paused, true, true},
+		{"unavailable takes nothing", unavailable, true, false},
+		{"paused does not bypass an unhealthy Runtime", pausedUnavailable, true, false},
+		{"paused does not bypass an outdated Agent", pausedOutdated, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nodeSchedulable(tt.node, now, tt.workspaceHere); got != tt.want {
+				t.Fatalf("nodeSchedulable = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func mutate(node store.Node, change func(*store.Node)) store.Node {
 	change(&node)
 	return node
+}
+
+// readyNode is a Node that reports a healthy Runtime and every required
+// capability, so deriveNodeStatus calls it ready.
+func readyNode(t *testing.T, now time.Time) store.Node {
+	t.Helper()
+	healthy := "healthy"
+	minor := int32(nodeproto.Minor)
+	return store.Node{
+		LastSeenAt:    pgtype.Timestamptz{Time: now, Valid: true},
+		RuntimeHealth: &healthy,
+		Capabilities:  capabilityReport(t, false),
+		ProtoMinor:    &minor,
+	}
+}
+
+// capabilityReport is a complete Capability report; unsupported flips the
+// first required entry.
+func capabilityReport(t *testing.T, unsupported bool) json.RawMessage {
+	t.Helper()
+	entries := make([]nodeproto.CapabilityEntry, 0, len(nodeproto.Required))
+	for i, name := range nodeproto.Required {
+		value := nodeproto.ValueEnforced
+		if unsupported && i == 0 {
+			value = nodeproto.ValueUnsupported
+		}
+		entries = append(entries, nodeproto.CapabilityEntry{Name: name, Value: value})
+	}
+	raw, err := json.Marshal(nodeproto.CapabilityReport{Runtime: "docker", Entries: entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 // The per-GPU share is three quarters of the allocatable amount, split evenly

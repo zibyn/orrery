@@ -339,6 +339,16 @@ func (s *Server) enqueueAdmission(ctx context.Context, q *store.Queries, sandbox
 	return err
 }
 
+// sandboxListOwner resolves GET /sandboxes' owner filter: a caller always sees
+// its own Sandboxes, and an admin may name another User (api.md §3).
+func sandboxListOwner(p *principal, raw string) (uuid.UUID, bool) {
+	if raw == "" || !p.isAdmin() {
+		return p.user.ID, true
+	}
+	id, err := uuid.Parse(raw)
+	return id, err == nil
+}
+
 func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request, p *principal) {
 	limit, ok := parseLimit(r)
 	if !ok {
@@ -350,7 +360,12 @@ func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request, p *
 		writeProblem(w, "invalid_request", "invalid cursor")
 		return
 	}
-	params := store.ListSandboxesParams{OwnerID: p.user.ID, After: after, Limit: limit + 1}
+	owner, ok := sandboxListOwner(p, r.URL.Query().Get("owner"))
+	if !ok {
+		writeProblem(w, "invalid_request", "owner must be a User id")
+		return
+	}
+	params := store.ListSandboxesParams{OwnerID: owner, After: after, Limit: limit + 1}
 	if state := r.URL.Query().Get("state"); state != "" {
 		if !sandboxStates[state] {
 			writeProblem(w, "invalid_request", "unknown Sandbox state")

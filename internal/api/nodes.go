@@ -49,6 +49,8 @@ type nodeList struct {
 }
 
 func (s *Server) handleCreateEnrollmentPacket(w http.ResponseWriter, r *http.Request, p *principal) {
+	// No Idempotency-Key: the raw Packet exists only in this response, so a
+	// retry cannot return the earlier one (api.md §1).
 	raw, id, hash, err := NewEnrollmentPacket()
 	if err != nil {
 		s.internal(w, "generate enrollment packet", err)
@@ -161,8 +163,10 @@ func (s *Server) nodeToDTO(ctx context.Context, node store.Node, now time.Time) 
 }
 
 // deriveNodeStatus computes the read-time status (api.md §3, ADR-0014).
-// `ready` means schedulable; `outdated` is accepted but flagged; `unavailable`
-// covers both a stale heartbeat and a Runtime that cannot take work.
+// `ready` is fully schedulable; `paused` takes no new Workspace but can still
+// run Sandboxes whose Workspace is bound there (ADR-0017). `outdated` is
+// accepted but flagged; `unavailable` covers both a stale heartbeat and a
+// Runtime that cannot take work.
 func deriveNodeStatus(node store.Node, now time.Time) string {
 	switch {
 	case node.LostAt.Valid:

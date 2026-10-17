@@ -84,7 +84,8 @@ func (s *Server) createLoginToken(w http.ResponseWriter, r *http.Request, user s
 func (s *Server) createBrowserSession(w http.ResponseWriter, r *http.Request, user store.User) {
 	ctx := r.Context()
 	// No idempotency key: the cookie is the only copy of the secret, so a
-	// retried login cannot return the old one; a fresh Session is correct.
+	// retried login cannot return the old one; a fresh Session is correct
+	// (api.md §1).
 	raw, id, hash, err := NewToken()
 	if err != nil {
 		s.internal(w, "generate session token", err)

@@ -11,7 +11,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 - **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
 - **创建**返回 `201` 和初始状态的资源；**动作**（`POST /{资源}/{id}/{动词}`）返回 `202` 和当前资源；删除用 `DELETE`，返回 `202`，资源进入 `deleting`。
-- **幂等**：所有创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。
+- **幂等**：创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。两个例外：`POST /enrollment-packets` 和 `POST /sessions` 的浏览器 Session 分支——响应里的 secret 只存哈希，重试拿不回旧值，只能新发一个，所以不读该头；`POST /sessions` 带 `token` 的分支仍幂等。
 - **等待**：`GET /sandboxes/{id}?wait_for=<state>` 最多挂起 60 秒，到期返回当前状态，不报错。
 - **分页**：`?limit=`（默认 50，上限 200）和不透明的 `?cursor=`；响应 `{items, next_cursor}`。
 - **条件更新**：`If-Match` 只用于移动 Resource 的 current 指针（ADR-0012）。

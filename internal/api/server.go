@@ -152,7 +152,7 @@ func (s *Server) routes() []route {
 		{http.MethodGet, "/workspaces/{id}", "user", "getWorkspace", "Get a Workspace", "", "Workspace", nil, http.StatusOK, s.handleGetWorkspace},
 		{http.MethodDelete, "/workspaces/{id}", "user", "deleteWorkspace", "Delete a Workspace", "", "Workspace", nil, http.StatusAccepted, s.handleDeleteWorkspace},
 		{http.MethodPost, "/sandboxes", "user", "createSandbox", "Create a Sandbox", "CreateSandboxRequest", "Sandbox", nil, http.StatusCreated, s.handleCreateSandbox},
-		{http.MethodGet, "/sandboxes", "user", "listSandboxes", "List Sandboxes", "", "SandboxList", []string{"state", "label", "node", "has_gpu", "limit", "cursor"}, http.StatusOK, s.handleListSandboxes},
+		{http.MethodGet, "/sandboxes", "user", "listSandboxes", "List Sandboxes", "", "SandboxList", []string{"owner", "state", "label", "node", "has_gpu", "limit", "cursor"}, http.StatusOK, s.handleListSandboxes},
 		{http.MethodGet, "/sandboxes/{id}", "user", "getSandbox", "Get a Sandbox", "", "Sandbox", []string{"wait_for"}, http.StatusOK, s.handleGetSandbox},
 		{http.MethodDelete, "/sandboxes/{id}", "user", "deleteSandbox", "Delete a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleDeleteSandbox},
 		{http.MethodPost, "/sandboxes/{id}/start", "user", "startSandbox", "Start a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleStartSandbox},
@@ -352,32 +352,64 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
-// purgeExpired enforces the 24-hour idempotency retention (api.md §1) and
-// removes used or expired Enrollment Packets (ADR-0017).
+// purgeInterval is the periodic cleanup cadence (defaults.md, 10 minutes).
+const purgeInterval = 10 * time.Minute
+
+// purgeLockID guards the purge across replicas (ADR-0017).
+const purgeLockID = 724002
+
+// purgeExpired removes every row whose retention has passed: Idempotency Keys
+// (api.md §1), used or expired Enrollment Packets, expired API Tokens and
+// terminal admission requests, plus Execution Logs and Audit Records at the
+// deployment retentions (ADR-0017). Deletes are bounded, so a backlog drains
+// over several ticks.
 func (s *Server) purgeExpired(ctx context.Context) {
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(purgeInterval)
 	defer ticker.Stop()
 	for {
-		if err := s.q.PurgeUserIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
-			s.log.Warn("purge User idempotency keys", "error", err)
-		}
-		if err := s.q.PurgeTokenIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
-			s.log.Warn("purge token idempotency keys", "error", err)
-		}
-		if err := s.q.PurgeSandboxIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
-			s.log.Warn("purge Sandbox idempotency keys", "error", err)
-		}
-		if err := s.q.PurgeWorkspaceIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
-			s.log.Warn("purge Workspace idempotency keys", "error", err)
-		}
-		if err := s.q.PurgeEnrollmentPackets(ctx); err != nil && ctx.Err() == nil {
-			s.log.Warn("purge Enrollment Packets", "error", err)
-		}
+		s.purgeOnce(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+func (s *Server) purgeOnce(ctx context.Context) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Warn("purge: begin", "error", err)
+		}
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // released with the lock either way
+	var locked bool
+	if err := tx.QueryRow(ctx, "SELECT pg_try_advisory_xact_lock($1)", purgeLockID).Scan(&locked); err != nil || !locked {
+		return
+	}
+	q := s.q.WithTx(tx)
+	check := func(what string, err error) {
+		if err != nil && ctx.Err() == nil {
+			s.log.Warn("purge "+what, "error", err)
+		}
+	}
+	check("User idempotency keys", q.PurgeUserIdempotencyKeys(ctx))
+	check("token idempotency keys", q.PurgeTokenIdempotencyKeys(ctx))
+	check("Sandbox idempotency keys", q.PurgeSandboxIdempotencyKeys(ctx))
+	check("Workspace idempotency keys", q.PurgeWorkspaceIdempotencyKeys(ctx))
+	check("Enrollment Packets", q.PurgeEnrollmentPackets(ctx))
+	check("expired tokens", q.PurgeExpiredTokens(ctx))
+	check("terminal admission requests", q.PurgeTerminalAdmissionRequests(ctx))
+	if s.cfg.ExecLogRetention > 0 {
+		check("Execution Logs", q.PurgeExecutionLogs(ctx, int64(s.cfg.ExecLogRetention/time.Second)))
+	}
+	if s.cfg.AuditRetention > 0 {
+		check("Audit Records", q.PurgeAuditRecords(ctx, int64(s.cfg.AuditRetention/time.Second)))
+	}
+	if err := tx.Commit(ctx); err != nil && ctx.Err() == nil {
+		s.log.Warn("purge: commit", "error", err)
 	}
 }
 

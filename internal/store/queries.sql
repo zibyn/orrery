@@ -105,6 +105,15 @@ LIMIT sqlc.arg('limit');
 -- name: DeleteToken :execrows
 DELETE FROM api_tokens WHERE id = $1 AND user_id = $2;
 
+-- A bounded delete keeps one purge tick from holding a long transaction.
+-- name: PurgeExpiredTokens :exec
+DELETE FROM api_tokens
+WHERE id IN (
+    SELECT id FROM api_tokens
+    WHERE expires_at IS NOT NULL AND expires_at < now()
+    LIMIT 10000
+);
+
 -- TouchToken records use and slides a Session's idle expiry (defaults.md
 -- "身份"); API Tokens keep their fixed expiry. The caller supplies the new
 -- expiry so the idle TTL has one source of truth.
@@ -140,6 +149,16 @@ WHERE (sqlc.narg('actor_id')::uuid IS NULL OR a.actor_user_id = sqlc.narg('actor
   AND (sqlc.narg('before_id')::bigint IS NULL OR a.id < sqlc.narg('before_id'))
 ORDER BY a.id DESC
 LIMIT sqlc.arg('limit');
+
+-- Audit retention is deployment configuration; 0 means keep forever, so the
+-- caller skips this query then (defaults.md).
+-- name: PurgeAuditRecords :exec
+DELETE FROM audit_records
+WHERE id IN (
+    SELECT id FROM audit_records
+    WHERE at < now() - sqlc.arg('retention_seconds')::bigint * interval '1 second'
+    LIMIT 10000
+);
 
 -- name: PurgeUserIdempotencyKeys :exec
 UPDATE users SET idempotency_key = NULL
@@ -428,6 +447,15 @@ WHERE other.ended_at IS NULL
    <= (CASE me.priority WHEN 'system' THEN 0 ELSE 1 END, me.enqueued_at, me.id)
 HAVING count(*) > 0;
 
+-- Ended requests no longer hold quota or a queue position.
+-- name: PurgeTerminalAdmissionRequests :exec
+DELETE FROM admission_requests
+WHERE id IN (
+    SELECT id FROM admission_requests
+    WHERE ended_at IS NOT NULL
+    LIMIT 10000
+);
+
 -- Workspaces
 
 -- name: CreateWorkspace :one
@@ -640,3 +668,16 @@ FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id
 WHERE e.finished_at IS NULL
 ORDER BY e.id;
+
+-- Execution Log retention is counted from the Exec's terminal state
+-- (defaults.md); the Exec row itself is not an expiring row.
+-- name: PurgeExecutionLogs :exec
+DELETE FROM exec_log_chunks
+WHERE ctid IN (
+    SELECT c.ctid
+    FROM exec_log_chunks c
+    JOIN execs e ON e.id = c.exec_id
+    WHERE e.finished_at IS NOT NULL
+      AND e.finished_at < now() - sqlc.arg('retention_seconds')::bigint * interval '1 second'
+    LIMIT 10000
+);
