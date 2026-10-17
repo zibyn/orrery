@@ -2,6 +2,9 @@ package api
 
 import (
 	"net/http"
+	"strings"
+
+	"github.com/zibyn/stars-sandbox/web"
 )
 
 type handlerFunc func(http.ResponseWriter, *http.Request, *principal)
@@ -97,12 +100,19 @@ func (s *Server) Handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
-	// A port subdomain is the Gateway, not the API (api.md §6).
+	// A port subdomain is the Gateway, not the API (api.md §6). The API
+	// prefix and /metrics stay on the API listener; every other path is the
+	// Web console (api.md §1, §8).
+	console := consoleHandler(web.FS())
 	return s.withRequestLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if id, port, ok := parseAppHost(r.Host, s.cfg.AppsDomain); ok {
 			s.servePortGateway(w, r, id, port)
 			return
 		}
-		api.ServeHTTP(w, r)
+		if r.URL.Path == "/api/v1" || strings.HasPrefix(r.URL.Path, "/api/v1/") || r.URL.Path == "/metrics" {
+			api.ServeHTTP(w, r)
+			return
+		}
+		console.ServeHTTP(w, r)
 	}))
 }

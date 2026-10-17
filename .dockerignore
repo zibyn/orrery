@@ -1,4 +1,7 @@
 .git
 .e2e
+.e2e-run.log
 docs
 *.md
+web/node_modules
+web/dist

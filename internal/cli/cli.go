@@ -61,7 +61,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	base := firstNonEmpty(*apiURL, os.Getenv("STARS_SANDBOX_API_URL"), os.Getenv("STARS_URL"), fc.APIURL, "http://localhost:8080")
 	if rest[0] == "login" {
-		if err := runLogin(base, path, rest[1:], stdout, stderr); err != nil {
+		if err := runLogin(base, path, rest[1:], os.Stdin, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
@@ -107,7 +107,7 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: stars-sandbox [global flags] <command> [flags]
 
 commands:
-  login            log in with a password and store a named API Token
+  login            log in and store an API Token (--username for a password login)
   user list|get|create|update|delete|quota
   token list|create|revoke
   token <provider>                  fetch a Git credential by provider id
@@ -147,27 +147,26 @@ examples:
 `)
 }
 
-// runLogin trades a password for a named API Token (ADR-0020). The password
-// User's token only proves the password once; the stored token is a normal
-// API Token afterwards. OIDC Users go to the console's /cli-auth instead, which
-// arrives with the console in M3 (#48 does not build it).
-func runLogin(base, configPath string, args []string, stdout, stderr io.Writer) error {
+// runLogin gets the CLI a named API Token (ADR-0020). With --username it trades
+// a password for one; without, the User signs in at the console's /cli-auth,
+// which creates a token with the browser Session, and pastes it back.
+func runLogin(base, configPath string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	username := fs.String("username", "", "username")
-	name := fs.String("name", "", "token name (default cli-<UTC timestamp>)")
-	scope := fs.String("scope", "user", "token scope: read_only, user, or admin")
+	username := fs.String("username", "", "username; omit to finish the login in the Web console")
+	name := fs.String("name", "", "token name (default cli-<UTC timestamp>; password login only)")
+	scope := fs.String("scope", "user", "token scope (password login only): read_only, user, or admin")
 	passwordStdin := fs.Bool("password-stdin", false, "read the password from stdin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: stars-sandbox login --username NAME [flags]")
+		return fmt.Errorf("usage: stars-sandbox login [--username NAME] [flags]")
 	}
 	if *username == "" {
-		return fmt.Errorf("--username is required")
+		return consoleLogin(base, configPath, stdin, stdout, stderr)
 	}
-	password, err := readPassword(*passwordStdin, stderr)
+	password, err := readPassword(*passwordStdin, stdin, stderr)
 	if err != nil {
 		return err
 	}
@@ -181,7 +180,7 @@ func runLogin(base, configPath string, args []string, stdout, stderr io.Writer) 
 		"token":    map[string]any{"name": *name, "scope": *scope},
 	}, "")
 	if err != nil {
-		return err
+		return fmt.Errorf("%w (if this User does not log in with a password, run again without --username and finish in the Web console)", err)
 	}
 	var out struct {
 		Token string `json:"token"`
@@ -199,13 +198,47 @@ func runLogin(base, configPath string, args []string, stdout, stderr io.Writer) 
 	return nil
 }
 
-func readPassword(fromStdin bool, stderr io.Writer) (string, error) {
+// consoleLogin handles a User who logs in at an IdP: the console creates the
+// token with the browser Session, and the User pastes it here like `coder login`.
+func consoleLogin(base, configPath string, stdin io.Reader, stdout, stderr io.Writer) error {
+	consoleURL := strings.TrimRight(base, "/") + "/login?return=%2Fcli-auth"
+	fmt.Fprintf(stderr, "Open %s, sign in, and create a token on the CLI authorization page.\n", consoleURL)
+	fmt.Fprint(stderr, "Paste the token: ")
+	token, err := readLine(stdin)
+	if err != nil {
+		return err
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("no token pasted")
+	}
+	// Validate before storing: a typo must not replace a working config.
+	c := &client{base: base, token: token, http: &http.Client{Timeout: 30 * time.Second}, out: stdout}
+	data, err := c.do(http.MethodGet, "/api/v1/users/me", nil, nil, "")
+	if err != nil {
+		return fmt.Errorf("the token was rejected: %w", err)
+	}
+	var me struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &me); err != nil {
+		return fmt.Errorf("decode user: %w", err)
+	}
+	if err := writeConfig(configPath, fileConfig{APIURL: base, Token: token}); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "logged in as %s; token written to %s\n", me.Name, configPath)
+	return nil
+}
+
+func readPassword(fromStdin bool, stdin io.Reader, stderr io.Writer) (string, error) {
 	if fromStdin {
-		return resolvePassword("", true)
+		return readLine(stdin)
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return "", fmt.Errorf("--password-stdin is required when stdin is not a terminal")
 	}
+	// The terminal reads from the process's stdin, not the injected reader.
 	fmt.Fprint(stderr, "Password: ")
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Fprintln(stderr)
@@ -213,6 +246,15 @@ func readPassword(fromStdin bool, stderr io.Writer) (string, error) {
 		return "", err
 	}
 	return string(password), nil
+}
+
+// readLine reads one trimmed line, accepting EOF as the end of the input.
+func readLine(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 func writeConfig(path string, fc fileConfig) error {
@@ -652,11 +694,7 @@ func resolvePassword(value string, fromStdin bool) (string, error) {
 	if !fromStdin {
 		return value, nil
 	}
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
-	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return readLine(os.Stdin)
 }
 
 func (c *client) getAndPrint(path string, query url.Values) error {
