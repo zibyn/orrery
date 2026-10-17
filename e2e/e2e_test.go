@@ -32,7 +32,7 @@ var (
 
 func TestBootstrapAndToken(t *testing.T) {
 	admin := adminToken(t)
-	adminCLI := newRunner(t, admin)
+	adminCLI := newCLIRunner(t, admin)
 	suffix := time.Now().UnixNano()
 	username := fmt.Sprintf("alice-%d", suffix)
 
@@ -52,7 +52,7 @@ func TestBootstrapAndToken(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("login as %s: %d %s", username, status, data)
 	}
-	aliceCLI := newRunner(t, alice)
+	aliceCLI := newCLIRunner(t, alice)
 
 	first := aliceCLI.run(t, "", "token", "create", "--name", fmt.Sprintf("ci-%d", suffix), "--scope", "read_only")
 	var tokenA struct {
@@ -101,7 +101,7 @@ func TestBootstrapAndToken(t *testing.T) {
 
 func TestAuditQuery(t *testing.T) {
 	admin := adminToken(t)
-	adminCLI := newRunner(t, admin)
+	adminCLI := newCLIRunner(t, admin)
 	suffix := time.Now().UnixNano()
 	username := fmt.Sprintf("bob-%d", suffix)
 
@@ -116,7 +116,7 @@ func TestAuditQuery(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("login as %s: %d %s", username, status, data)
 	}
-	bobCLI := newRunner(t, bob)
+	bobCLI := newCLIRunner(t, bob)
 	made := bobCLI.run(t, "", "token", "create", "--name", fmt.Sprintf("bob-ci-%d", suffix), "--scope", "user")
 	var token struct {
 		ID string `json:"id"`
@@ -155,7 +155,7 @@ func TestAuditQuery(t *testing.T) {
 // TestPasswordSession is the "password-session" acceptance scenario (#48).
 func TestPasswordSession(t *testing.T) {
 	admin := adminToken(t)
-	adminCLI := newRunner(t, admin)
+	adminCLI := newCLIRunner(t, admin)
 	suffix := time.Now().UnixNano()
 	username := fmt.Sprintf("carol-%d", suffix)
 	password := "carol-password-123"
@@ -256,7 +256,7 @@ func TestPasswordSession(t *testing.T) {
 
 func TestLoginRateLimit(t *testing.T) {
 	admin := adminToken(t)
-	adminCLI := newRunner(t, admin)
+	adminCLI := newCLIRunner(t, admin)
 	suffix := time.Now().UnixNano()
 	username := fmt.Sprintf("dave-%d", suffix)
 	password := "dave-password-123"
@@ -287,7 +287,7 @@ func TestLoginRateLimit(t *testing.T) {
 
 func TestCLILogin(t *testing.T) {
 	admin := adminToken(t)
-	adminCLI := newRunner(t, admin)
+	adminCLI := newCLIRunner(t, admin)
 	suffix := time.Now().UnixNano()
 	username := fmt.Sprintf("erin-%d", suffix)
 	password := "erin-password-123"
@@ -478,12 +478,12 @@ func loginRaw(username, password, tokenName, scope string) (string, int, []byte,
 	return out.Token, status, data, nil
 }
 
-type runner struct {
+type cliRunner struct {
 	path   string
 	config string
 }
 
-func newRunner(t *testing.T, token string) *runner {
+func newCLIRunner(t *testing.T, token string) *cliRunner {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -491,10 +491,10 @@ func newRunner(t *testing.T, token string) *runner {
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return &runner{path: cliPath(t), config: path}
+	return &cliRunner{path: cliPath(t), config: path}
 }
 
-func (r *runner) run(t *testing.T, stdin string, args ...string) []byte {
+func (r *cliRunner) run(t *testing.T, stdin string, args ...string) []byte {
 	t.Helper()
 	full := append([]string{"--config", r.config}, args...)
 	cmd := exec.Command(r.path, full...)

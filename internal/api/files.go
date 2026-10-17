@@ -30,7 +30,7 @@ func (s *Server) fileHandler(suffix string, write bool) handlerFunc {
 			return
 		}
 		if write {
-			// The read-write Attachment is the write Lease (ADR-0018).
+			// Only the read-write Attachment may write (ADR-0018).
 			// ponytail: its generation is not forwarded as a fence; OpenTunnel
 			// carries none. Add one if a writer-revoke race ever matters.
 			att, err := s.q.GetAttachment(r.Context(), id)

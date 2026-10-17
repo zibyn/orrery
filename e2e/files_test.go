@@ -145,7 +145,7 @@ func TestFilesAPI(t *testing.T) {
 	if err := os.WriteFile(local, []byte("cli round trip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cli := newRunner(t, admin)
+	cli := newCLIRunner(t, admin)
 	cli.run(t, "", "files", "cp", local, sandboxID+":cli/cli.txt")
 	if out := cli.run(t, "", "files", "ls", sandboxID, "cli"); !strings.Contains(string(out), "cli.txt") {
 		t.Fatalf("files ls = %s", out)

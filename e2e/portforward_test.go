@@ -87,7 +87,7 @@ func TestPortForward(t *testing.T) {
 	}
 
 	username := "port-" + time.Now().Format("150405.000000000")
-	adminCLI := newRunner(t, admin)
+	adminCLI := newCLIRunner(t, admin)
 	adminCLI.run(t, "port-password-123\n", "user", "create",
 		"--name", username, "--login-type", "password", "--password-stdin")
 	other, status, data := login(t, username, "port-password-123", "port-"+time.Now().Format("150405.000000000"), "user")
