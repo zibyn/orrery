@@ -85,6 +85,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runExec(c, rest[1:], stderr)
 	case "shell":
 		err = runShell(c, rest[1:], stderr)
+	case "files":
+		err = runFiles(c, rest[1:], stderr)
 	default:
 		err = fmt.Errorf("unknown command %q", rest[0])
 	}
@@ -105,6 +107,8 @@ commands:
   audit list
   exec run|cancel
   shell <sandbox-id> [-- argv...]   open an interactive terminal
+  files ls <sandbox-id> [path]      list a Workspace directory
+  files cp <src> <dst>              copy a file to or from <sandbox-id>:<path>
 
 global flags:
   --config PATH    config file (default $STARS_SANDBOX_CONFIG or $XDG_CONFIG_HOME/stars-sandbox/config.json)
@@ -120,6 +124,9 @@ examples:
   stars-sandbox exec run <sandbox-id> -- uname -a
   stars-sandbox exec cancel <exec-id>
   stars-sandbox shell <sandbox-id> -- /bin/bash
+  stars-sandbox files ls <sandbox-id> src
+  stars-sandbox files cp ./config.toml <sandbox-id>:src/config.toml
+  stars-sandbox files cp <sandbox-id>:out/report.txt .
 `)
 }
 

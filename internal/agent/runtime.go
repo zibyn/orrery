@@ -162,6 +162,14 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	if err := os.Chmod(runDir, 0o777); err != nil {
 		return "runtime_create_failed", err
 	}
+	mode := cmd.workspaceMode
+	if mode != "rw" && mode != "ro" {
+		mode = "rw"
+	}
+	// Recorded before adoption so the file API survives an Agent restart.
+	if err := r.writeWorkspaceRefFile(id, workspaceRef{ID: workspaceID.String(), Mode: mode}); err != nil {
+		return "runtime_create_failed", err
+	}
 	name := containerName(id)
 
 	if running, exists, err := r.d.inspectContainer(ctx, name); err == nil && exists {
@@ -172,11 +180,6 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 		if err := r.d.removeContainer(ctx, name); err != nil {
 			return "runtime_create_failed", err
 		}
-	}
-
-	mode := cmd.workspaceMode
-	if mode != "rw" && mode != "ro" {
-		mode = "rw"
 	}
 	nanoCPUs := int64(cmd.cpu * 1e9)
 	if nanoCPUs < 1e6 {

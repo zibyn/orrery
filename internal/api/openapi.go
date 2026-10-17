@@ -475,5 +475,40 @@ func schemas() map[string]any {
 			"items":       schemaRef("ExecOutputFrame"),
 			"description": "A page of frames. With follow=true the same frames arrive as WebSocket text messages, ending with a {type: \"result\"} frame.",
 		},
+		"FileEntry": map[string]any{
+			"type":     "object",
+			"required": []string{"path", "name", "type", "size", "mode", "mod_time"},
+			"properties": map[string]any{
+				"path":        map[string]any{"type": "string", "description": "Relative to /workspace."},
+				"name":        map[string]any{"type": "string"},
+				"type":        map[string]any{"type": "string", "enum": []string{"file", "dir", "symlink", "other"}},
+				"size":        map[string]any{"type": "integer"},
+				"mode":        map[string]any{"type": "integer", "description": "Permission bits."},
+				"mod_time":    map[string]any{"type": "string", "format": "date-time"},
+				"link_target": map[string]any{"type": "string", "description": "Present for a symlink."},
+			},
+		},
+		"FileList": map[string]any{
+			"type":     "object",
+			"required": []string{"items"},
+			"properties": map[string]any{
+				"items": map[string]any{"type": "array", "items": schemaRef("FileEntry")},
+			},
+		},
+		"FileMkdirRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"path"},
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+		},
+		"FileMoveRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"from", "to"},
+			"properties": map[string]any{
+				"from": map[string]any{"type": "string"},
+				"to":   map[string]any{"type": "string"},
+			},
+		},
 	}
 }

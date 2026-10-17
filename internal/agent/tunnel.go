@@ -58,6 +58,15 @@ func (r *Runtime) openTunnel(ctx context.Context, tunnelID string) error {
 func (r *Runtime) tunnelMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /execs/{id}/pty", r.handlePTY)
+	mux.HandleFunc("GET /sandboxes/{id}/files", r.handleFileList)
+	mux.HandleFunc("DELETE /sandboxes/{id}/files", r.handleFileDelete)
+	mux.HandleFunc("GET /sandboxes/{id}/files/stat", r.handleFileStat)
+	mux.HandleFunc("GET /sandboxes/{id}/files/content", r.handleFileContent)
+	mux.HandleFunc("PUT /sandboxes/{id}/files/content", r.handleFileContent)
+	mux.HandleFunc("POST /sandboxes/{id}/files/mkdir", r.handleFileMkdir)
+	mux.HandleFunc("POST /sandboxes/{id}/files/move", r.handleFileMove)
+	mux.HandleFunc("GET /sandboxes/{id}/files/archive", r.handleArchiveGet)
+	mux.HandleFunc("PUT /sandboxes/{id}/files/archive", r.handleArchivePut)
 	return mux
 }
 

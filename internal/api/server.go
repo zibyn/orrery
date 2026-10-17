@@ -97,6 +97,15 @@ func (s *Server) routes() []route {
 		{http.MethodPost, "/execs/{id}/cancel", "user", "cancelExec", "Cancel an Exec", "", "Exec", nil, http.StatusAccepted, s.handleCancelExec},
 		{http.MethodGet, "/execs/{id}/output", "user", "getExecOutput", "Read an Exec's output", "", "ExecOutput", []string{"after", "follow"}, http.StatusOK, s.handleExecOutput},
 		{http.MethodGet, "/execs/{id}/pty", "user", "attachExecPTY", "Attach to an Exec's PTY", "", "", nil, http.StatusSwitchingProtocols, s.handleExecPTY},
+		{http.MethodGet, "/sandboxes/{id}/files", "user", "listSandboxFiles", "List Workspace files", "", "FileList", []string{"path"}, http.StatusOK, s.fileHandler("", false)},
+		{http.MethodGet, "/sandboxes/{id}/files/stat", "user", "statSandboxFile", "Stat a Workspace path", "", "FileEntry", []string{"path"}, http.StatusOK, s.fileHandler("/stat", false)},
+		{http.MethodGet, "/sandboxes/{id}/files/content", "user", "downloadSandboxFile", "Download a Workspace file", "", "", []string{"path"}, http.StatusOK, s.fileHandler("/content", false)},
+		{http.MethodPut, "/sandboxes/{id}/files/content", "user", "uploadSandboxFile", "Upload a Workspace file", "", "", []string{"path"}, http.StatusNoContent, s.fileHandler("/content", true)},
+		{http.MethodPost, "/sandboxes/{id}/files/mkdir", "user", "createSandboxDirectory", "Create a Workspace directory", "FileMkdirRequest", "", nil, http.StatusNoContent, s.fileHandler("/mkdir", true)},
+		{http.MethodPost, "/sandboxes/{id}/files/move", "user", "moveSandboxFile", "Move a Workspace path", "FileMoveRequest", "", nil, http.StatusNoContent, s.fileHandler("/move", true)},
+		{http.MethodDelete, "/sandboxes/{id}/files", "user", "deleteSandboxFile", "Delete a Workspace path", "", "", []string{"path"}, http.StatusNoContent, s.fileHandler("", true)},
+		{http.MethodGet, "/sandboxes/{id}/files/archive", "user", "downloadSandboxArchive", "Download a Workspace subtree as tar", "", "", []string{"path"}, http.StatusOK, s.fileHandler("/archive", false)},
+		{http.MethodPut, "/sandboxes/{id}/files/archive", "user", "uploadSandboxArchive", "Unpack a tar into the Workspace", "", "", []string{"path"}, http.StatusNoContent, s.fileHandler("/archive", true)},
 	}
 }
 
