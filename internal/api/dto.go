@@ -123,6 +123,15 @@ type sessionRequest struct {
 	Token    *createTokenRequest `json:"token"`
 }
 
+type changePasswordRequest struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+type resetPasswordRequest struct {
+	Password string `json:"password"`
+}
+
 func userToDTO(u store.User) userDTO {
 	return userDTO{
 		ID:        u.ID.String(),

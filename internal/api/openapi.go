@@ -95,6 +95,15 @@ func responsesFor(rt route) map[string]any {
 			"content":     map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
 		}
 	}
+	if rt.OperationID == "createSession" {
+		responses["429"] = map[string]any{
+			"description": problemTitle["rate_limited"],
+			"headers": map[string]any{
+				"Retry-After": map[string]any{"schema": map[string]any{"type": "integer", "description": "Seconds until another attempt is allowed."}},
+			},
+			"content": map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
+		}
+	}
 	return responses
 }
 
@@ -248,6 +257,26 @@ func schemas() map[string]any {
 				"username": map[string]any{"type": "string"},
 				"password": map[string]any{"type": "string"},
 				"token":    schemaRef("CreateTokenRequest"),
+			},
+		},
+		"ChangePasswordRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"old", "new"},
+			"properties": map[string]any{
+				"old": map[string]any{"type": "string"},
+				"new": map[string]any{"type": "string", "minLength": minPasswordLen},
+			},
+		},
+		"LoginResponse": map[string]any{
+			"oneOf": []any{schemaRef("Token"), schemaRef("CreatedToken")},
+			"description": "Token is the browser login shape (the Session travels in Set-Cookie). " +
+				"CreatedToken is returned when the request asked for a named API Token.",
+		},
+		"ResetPasswordRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"password"},
+			"properties": map[string]any{
+				"password": map[string]any{"type": "string", "minLength": minPasswordLen},
 			},
 		},
 		"AuditRecord": map[string]any{

@@ -56,6 +56,12 @@ SET gpu_quota = $2, sandbox_quota = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
+-- name: UpdateUserPassword :one
+UPDATE users
+SET password_hash = $2, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
 -- name: SoftDeleteUser :one
 UPDATE users
 SET deleted_at = now(), updated_at = now()
@@ -94,8 +100,20 @@ LIMIT sqlc.arg('limit');
 -- name: DeleteToken :execrows
 DELETE FROM api_tokens WHERE id = $1 AND user_id = $2;
 
+-- TouchToken records use and slides a Session's idle expiry (defaults.md
+-- "身份"); API Tokens keep their fixed expiry. The caller supplies the new
+-- expiry so the idle TTL has one source of truth.
 -- name: TouchToken :exec
-UPDATE api_tokens SET last_used_at = now() WHERE id = $1;
+UPDATE api_tokens
+SET last_used_at = now(),
+    expires_at = CASE
+        WHEN kind = 'session' THEN sqlc.arg('session_expires_at')::timestamptz
+        ELSE expires_at
+    END
+WHERE id = sqlc.arg('id');
+
+-- name: DeleteUserSessions :execrows
+DELETE FROM api_tokens WHERE user_id = $1 AND kind = 'session';
 
 -- Audit records
 

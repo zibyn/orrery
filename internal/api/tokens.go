@@ -1,13 +1,17 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
+
+var errTokenNameTaken = errors.New("a token with that name already exists")
 
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, p *principal) {
 	key, ok := idempotencyKey(r)
@@ -23,28 +27,50 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, p *pr
 		writeProblem(w, code, detail)
 		return
 	}
-	ctx := r.Context()
+	token, raw, replayed, err := s.issueNamedToken(r.Context(), p.user.ID, req, key)
+	if errors.Is(err, errTokenNameTaken) {
+		writeProblem(w, "conflict", "a token with that name already exists")
+		return
+	}
+	if err != nil {
+		s.internal(w, "create token", err)
+		return
+	}
+	if replayed {
+		// The plaintext secret exists only in the first response.
+		writeJSON(w, http.StatusOK, tokenToDTO(token))
+		return
+	}
+	s.audit(r.Context(), p, "token.create", "token", token.ID.String(), map[string]any{
+		"name": token.Name, "scope": token.Scope,
+	})
+	writeJSON(w, http.StatusCreated, createdTokenDTO{tokenDTO: tokenToDTO(token), Token: raw})
+}
+
+// issueNamedToken creates one named API Token. replayed means the idempotency
+// key already produced a token: its row is returned and raw is empty.
+func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req createTokenRequest, key *string) (store.ApiToken, string, bool, error) {
+	lookup := func() (store.ApiToken, error) {
+		return s.q.GetTokenByIdempotencyKey(ctx, store.GetTokenByIdempotencyKeyParams{
+			UserID: userID, IdempotencyKey: key,
+		})
+	}
 	if key != nil {
-		if existing, err := s.q.GetTokenByIdempotencyKey(ctx, store.GetTokenByIdempotencyKeyParams{
-			UserID: p.user.ID, IdempotencyKey: key,
-		}); err == nil {
-			// The plaintext secret exists only in the first response.
-			writeJSON(w, http.StatusOK, tokenToDTO(existing))
-			return
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			s.internal(w, "look up idempotent token", err)
-			return
+		existing, err := lookup()
+		if err == nil {
+			return existing, "", true, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return store.ApiToken{}, "", false, err
 		}
 	}
-
 	raw, id, hash, err := NewToken()
 	if err != nil {
-		s.internal(w, "generate token", err)
-		return
+		return store.ApiToken{}, "", false, err
 	}
 	token, err := s.q.CreateToken(ctx, store.CreateTokenParams{
 		ID:             id,
-		UserID:         p.user.ID,
+		UserID:         userID,
 		Kind:           "token",
 		Name:           req.Name,
 		SecretHash:     hash,
@@ -55,25 +81,18 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, p *pr
 	if err != nil {
 		switch uniqueViolation(err) {
 		case "api_tokens_name_unique":
-			writeProblem(w, "conflict", "a token with that name already exists")
-			return
+			return store.ApiToken{}, "", false, errTokenNameTaken
 		case "api_tokens_idempotency_key_unique":
+			// A concurrent request claimed the key; return its token.
 			if key != nil {
-				if existing, lookupErr := s.q.GetTokenByIdempotencyKey(ctx, store.GetTokenByIdempotencyKeyParams{
-					UserID: p.user.ID, IdempotencyKey: key,
-				}); lookupErr == nil {
-					writeJSON(w, http.StatusOK, tokenToDTO(existing))
-					return
+				if existing, lookupErr := lookup(); lookupErr == nil {
+					return existing, "", true, nil
 				}
 			}
 		}
-		s.internal(w, "create token", err)
-		return
+		return store.ApiToken{}, "", false, err
 	}
-	s.audit(ctx, p, "token.create", "token", token.ID.String(), map[string]any{
-		"name": token.Name, "scope": token.Scope,
-	})
-	writeJSON(w, http.StatusCreated, createdTokenDTO{tokenDTO: tokenToDTO(token), Token: raw})
+	return token, raw, false, nil
 }
 
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -136,88 +155,6 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request, p *pr
 		"name": token.Name, "scope": token.Scope, "kind": token.Kind,
 	})
 	writeJSON(w, http.StatusAccepted, tokenToDTO(token))
-}
-
-// handleCreateSession implements the token half of POST /sessions. Cookie
-// Sessions arrive with the password-login ticket.
-func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, p *principal) {
-	var req sessionRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.Token == nil {
-		writeProblem(w, "invalid_request", "browser Sessions are not implemented yet; send token to receive a named API Token")
-		return
-	}
-	ctx := r.Context()
-	user, err := s.q.GetUserByName(ctx, req.Username)
-	if err != nil || user.LoginType != "password" || user.PasswordHash == nil {
-		burnPasswordCheck(req.Password)
-		writeProblem(w, "unauthenticated", "invalid username or password")
-		return
-	}
-	if !VerifyPassword(*user.PasswordHash, req.Password) {
-		writeUnauthenticated(w, "invalid username or password")
-		return
-	}
-	tokenReq := *req.Token
-	if code, detail, ok := s.validateTokenRequest(tokenReq, &principal{user: user}); !ok {
-		writeProblem(w, code, detail)
-		return
-	}
-	key, ok := idempotencyKey(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
-		return
-	}
-	if key != nil {
-		if existing, err := s.q.GetTokenByIdempotencyKey(ctx, store.GetTokenByIdempotencyKeyParams{
-			UserID: user.ID, IdempotencyKey: key,
-		}); err == nil {
-			writeJSON(w, http.StatusOK, tokenToDTO(existing))
-			return
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			s.internal(w, "look up idempotent token", err)
-			return
-		}
-	}
-	raw, id, hash, err := NewToken()
-	if err != nil {
-		s.internal(w, "generate token", err)
-		return
-	}
-	token, err := s.q.CreateToken(ctx, store.CreateTokenParams{
-		ID:             id,
-		UserID:         user.ID,
-		Kind:           "token",
-		Name:           tokenReq.Name,
-		SecretHash:     hash,
-		Scope:          tokenReq.Scope,
-		ExpiresAt:      timestamptzPtr(tokenReq.ExpiresAt),
-		IdempotencyKey: key,
-	})
-	if err != nil {
-		switch uniqueViolation(err) {
-		case "api_tokens_name_unique":
-			writeProblem(w, "conflict", "a token with that name already exists")
-			return
-		case "api_tokens_idempotency_key_unique":
-			if key != nil {
-				if existing, lookupErr := s.q.GetTokenByIdempotencyKey(ctx, store.GetTokenByIdempotencyKeyParams{
-					UserID: user.ID, IdempotencyKey: key,
-				}); lookupErr == nil {
-					writeJSON(w, http.StatusOK, tokenToDTO(existing))
-					return
-				}
-			}
-		}
-		s.internal(w, "create login token", err)
-		return
-	}
-	s.auditAs(ctx, &user.ID, nil, "token.create", "token", token.ID.String(), map[string]any{
-		"name": token.Name, "scope": token.Scope, "via": "session",
-	})
-	writeJSON(w, http.StatusCreated, createdTokenDTO{tokenDTO: tokenToDTO(token), Token: raw})
 }
 
 // validateTokenRequest validates everything except the permission to ask for

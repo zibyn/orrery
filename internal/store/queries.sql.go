@@ -195,6 +195,18 @@ func (q *Queries) DeleteToken(ctx context.Context, arg DeleteTokenParams) (int64
 	return result.RowsAffected(), nil
 }
 
+const deleteUserSessions = `-- name: DeleteUserSessions :execrows
+DELETE FROM api_tokens WHERE user_id = $1 AND kind = 'session'
+`
+
+func (q *Queries) DeleteUserSessions(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserSessions, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getToken = `-- name: GetToken :one
 SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at FROM api_tokens WHERE id = $1
 `
@@ -664,11 +676,25 @@ func (q *Queries) SoftDeleteUser(ctx context.Context, id uuid.UUID) (User, error
 }
 
 const touchToken = `-- name: TouchToken :exec
-UPDATE api_tokens SET last_used_at = now() WHERE id = $1
+UPDATE api_tokens
+SET last_used_at = now(),
+    expires_at = CASE
+        WHEN kind = 'session' THEN $1::timestamptz
+        ELSE expires_at
+    END
+WHERE id = $2
 `
 
-func (q *Queries) TouchToken(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, touchToken, id)
+type TouchTokenParams struct {
+	SessionExpiresAt pgtype.Timestamptz
+	ID               uuid.UUID
+}
+
+// TouchToken records use and slides a Session's idle expiry (defaults.md
+// "身份"); API Tokens keep their fixed expiry. The caller supplies the new
+// expiry so the idle TTL has one source of truth.
+func (q *Queries) TouchToken(ctx context.Context, arg TouchTokenParams) error {
+	_, err := q.db.Exec(ctx, touchToken, arg.SessionExpiresAt, arg.ID)
 	return err
 }
 
@@ -708,6 +734,41 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		arg.GpuQuota,
 		arg.SandboxQuota,
 	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.IsAdmin,
+		&i.LoginType,
+		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
+		&i.GpuQuota,
+		&i.SandboxQuota,
+		&i.IdempotencyKey,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const updateUserPassword = `-- name: UpdateUserPassword :one
+UPDATE users
+SET password_hash = $2, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at
+`
+
+type UpdateUserPasswordParams struct {
+	ID           uuid.UUID
+	PasswordHash *string
+}
+
+func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserPassword, arg.ID, arg.PasswordHash)
 	var i User
 	err := row.Scan(
 		&i.ID,

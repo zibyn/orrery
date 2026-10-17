@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // The external CLI speaks only the public REST API (ADR-0017).
@@ -49,12 +51,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	path := resolveConfigPath(*configPath)
-	fc, err := loadConfig(path, *configPath != "")
+	// login writes the config, so an explicit path that does not exist yet is
+	// fine for it and an error for every other command.
+	required := *configPath != "" && rest[0] != "login"
+	fc, err := loadConfig(path, required)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	base := firstNonEmpty(*apiURL, os.Getenv("STARS_SANDBOX_API_URL"), fc.APIURL, "http://localhost:8080")
+	if rest[0] == "login" {
+		if err := runLogin(base, path, rest[1:], stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		return 0
+	}
 	tok := firstNonEmpty(*token, os.Getenv("STARS_SANDBOX_TOKEN"), fc.Token)
 	if tok == "" {
 		fmt.Fprintf(stderr, "error: no API token configured; set STARS_SANDBOX_TOKEN, pass --token, or write one to %s\n", path)
@@ -83,6 +95,7 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: stars-sandbox [global flags] <command> [flags]
 
 commands:
+  login            log in with a password and store a named API Token
   user list|get|create|update|delete|quota
   token list|create|revoke
   audit list
@@ -93,11 +106,94 @@ global flags:
   --token TOKEN    API token (default $STARS_SANDBOX_TOKEN or the config file)
 
 examples:
+  stars-sandbox login --username alice
   stars-sandbox user list
   stars-sandbox user create --name alice --login-type password --password-stdin
   stars-sandbox token create --name ci --scope read_only
   stars-sandbox audit list --action token.create --limit 20
 `)
+}
+
+// runLogin trades a password for a named API Token (ADR-0020). The password
+// User's token only proves the password once; the stored token is a normal
+// API Token afterwards. OIDC Users go to the console's /cli-auth instead, which
+// arrives with the console in M3 (#48 does not build it).
+func runLogin(base, configPath string, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	username := fs.String("username", "", "username")
+	name := fs.String("name", "", "token name (default cli-<UTC timestamp>)")
+	scope := fs.String("scope", "user", "token scope: read_only, user, or admin")
+	passwordStdin := fs.Bool("password-stdin", false, "read the password from stdin")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: stars-sandbox login --username NAME [flags]")
+	}
+	if *username == "" {
+		return fmt.Errorf("--username is required")
+	}
+	password, err := readPassword(*passwordStdin, stderr)
+	if err != nil {
+		return err
+	}
+	if *name == "" {
+		*name = "cli-" + time.Now().UTC().Format("20060102T150405Z")
+	}
+	c := &client{base: base, http: &http.Client{Timeout: 30 * time.Second}, out: stdout}
+	data, err := c.do(http.MethodPost, "/api/v1/sessions", nil, map[string]any{
+		"username": *username,
+		"password": password,
+		"token":    map[string]any{"name": *name, "scope": *scope},
+	}, "")
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return fmt.Errorf("decode login response: %w", err)
+	}
+	if out.Token == "" {
+		return fmt.Errorf("login response did not contain a token")
+	}
+	if err := writeConfig(configPath, fileConfig{APIURL: base, Token: out.Token}); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "logged in as %s; token %q written to %s\n", *username, *name, configPath)
+	return nil
+}
+
+func readPassword(fromStdin bool, stderr io.Writer) (string, error) {
+	if fromStdin {
+		return resolvePassword("", true)
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("--password-stdin is required when stdin is not a terminal")
+	}
+	fmt.Fprint(stderr, "Password: ")
+	password, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(stderr)
+	if err != nil {
+		return "", err
+	}
+	return string(password), nil
+}
+
+func writeConfig(path string, fc fileConfig) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	data, err := json.MarshalIndent(fc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func resolveConfigPath(explicit string) string {
@@ -158,7 +254,9 @@ func (c *client) do(method, path string, query url.Values, body any, idempotency
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

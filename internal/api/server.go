@@ -16,19 +16,22 @@ import (
 )
 
 type Server struct {
-	cfg  Config
-	pool *pgxpool.Pool
-	q    *store.Queries
-	log  *slog.Logger
+	cfg         Config
+	pool        *pgxpool.Pool
+	q           *store.Queries
+	log         *slog.Logger
+	logins      *loginLimiter
+	crossOrigin http.CrossOriginProtection
 }
 
 func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log}
+	return &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter()}
 }
 
 type principal struct {
-	user  store.User
-	token store.GetTokenWithUserRow
+	user      store.User
+	token     store.GetTokenWithUserRow
+	viaCookie bool
 }
 
 // isAdmin is the effective authority: an admin-scoped token only acts as admin
@@ -65,7 +68,10 @@ func (s *Server) routes() []route {
 		{http.MethodPost, "/users/me/tokens", "user", "createToken", "Create an API Token", "CreateTokenRequest", "CreatedToken", nil, http.StatusCreated, s.handleCreateToken},
 		{http.MethodGet, "/users/me/tokens", "user", "listTokens", "List API Tokens", "", "TokenList", []string{"limit", "cursor"}, http.StatusOK, s.handleListTokens},
 		{http.MethodDelete, "/users/me/tokens/{id}", "user", "revokeToken", "Revoke an API Token", "", "Token", nil, http.StatusAccepted, s.handleRevokeToken},
-		{http.MethodPost, "/sessions", "", "createSession", "Exchange a password for a named API Token", "SessionRequest", "CreatedToken", nil, http.StatusCreated, s.handleCreateSession},
+		{http.MethodPut, "/users/me/password", "user", "changeMyPassword", "Change the calling User's password", "ChangePasswordRequest", "User", nil, http.StatusOK, s.handleChangeMyPassword},
+		{http.MethodPut, "/users/{id}/password", "admin", "resetUserPassword", "Reset a User's password", "ResetPasswordRequest", "User", nil, http.StatusOK, s.handleResetUserPassword},
+		{http.MethodPost, "/sessions", "", "createSession", "Log in with a password", "SessionRequest", "LoginResponse", nil, http.StatusCreated, s.handleCreateSession},
+		{http.MethodDelete, "/sessions/current", "user", "deleteCurrentSession", "Log out the current Session", "", "Token", nil, http.StatusAccepted, s.handleDeleteCurrentSession},
 		{http.MethodGet, "/audit", "admin", "listAudit", "List Audit Records", "", "AuditList", []string{"actor", "action", "target", "target_type", "from", "to", "limit", "cursor"}, http.StatusOK, s.handleListAudit},
 	}
 }
@@ -110,9 +116,9 @@ func (s *Server) wrapAuth(level string, next handlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*principal, bool) {
-	raw := bearerToken(r)
+	raw, viaCookie := credential(r)
 	if raw == "" {
-		writeUnauthenticated(w, "a Bearer API token is required")
+		writeUnauthenticated(w, "a Bearer API token or a Session cookie is required")
 		return nil, false
 	}
 	parts, ok := ParseToken(raw)
@@ -151,12 +157,40 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*principa
 		s.internal(w, "look up token owner", err)
 		return nil, false
 	}
+	// Only cookie-authenticated requests carry ambient browser credentials, so
+	// only they need the browser-facing checks (ADR-0020).
+	if viaCookie {
+		if isWebSocketUpgrade(r) {
+			if !sameOrigin(r, r.Header.Get("Origin")) {
+				writeProblem(w, "permission_denied", "WebSocket Origin must match the API origin")
+				return nil, false
+			}
+		} else if !isSafeMethod(r.Method) {
+			if err := s.crossOrigin.Check(r); err != nil {
+				writeProblem(w, "permission_denied", "cross-origin request rejected")
+				return nil, false
+			}
+		}
+	}
 	// last_used_at is observability, not authorization; a failed write must not
-	// fail the request.
-	if err := s.q.TouchToken(ctx, row.ID); err != nil {
+	// fail the request. Session use slides its idle expiry.
+	sessionExpires := time.Now().Add(sessionIdleTTL)
+	if err := s.q.TouchToken(ctx, store.TouchTokenParams{ID: row.ID, SessionExpiresAt: timestamptzPtr(&sessionExpires)}); err != nil {
 		s.log.Warn("touch token failed", "token_id", row.ID, "error", err)
 	}
-	return &principal{user: user, token: row}, true
+	return &principal{user: user, token: row, viaCookie: viaCookie}, true
+}
+
+// credential accepts a Bearer token or the Session cookie. A Bearer header
+// wins, so a client that sends one is never treated as a browser.
+func credential(r *http.Request) (raw string, viaCookie bool) {
+	if raw := bearerToken(r); raw != "" {
+		return raw, false
+	}
+	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+		return c.Value, true
+	}
+	return "", false
 }
 
 func bearerToken(r *http.Request) string {

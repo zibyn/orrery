@@ -182,6 +182,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 	}
 
 	var changed []string
+	passwordChanged := false
 	if req.Name != nil {
 		if !validDisplayName(*req.Name) {
 			writeProblem(w, "invalid_request", "name must be non-empty, trimmed, and at most 255 characters")
@@ -221,6 +222,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 			return
 		}
 		user.PasswordHash = &hash
+		passwordChanged = true
 		changed = append(changed, "password")
 	}
 	if req.IsAdmin != nil {
@@ -232,7 +234,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		user.PasswordHash = nil
 	}
 
-	updated, err := s.q.UpdateUser(ctx, store.UpdateUserParams{
+	params := store.UpdateUserParams{
 		ID:           user.ID,
 		Name:         user.Name,
 		Email:        user.Email,
@@ -241,7 +243,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		PasswordHash: user.PasswordHash,
 		GpuQuota:     user.GpuQuota,
 		SandboxQuota: user.SandboxQuota,
-	})
+	}
+	var updated store.User
+	if passwordChanged {
+		// ADR-0020: every password change revokes the User's Sessions.
+		updated, err = s.updateUserAndRevokeSessions(ctx, params)
+	} else {
+		updated, err = s.q.UpdateUser(ctx, params)
+	}
 	if err != nil {
 		if constraint := uniqueViolation(err); constraint == "users_name_key" {
 			writeProblem(w, "conflict", "a User with that name already exists")
@@ -255,6 +264,28 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 	}
 	s.audit(ctx, p, "user.update", "user", updated.ID.String(), map[string]any{"fields": changed})
 	writeJSON(w, http.StatusOK, userToDTO(updated))
+}
+
+// updateUserAndRevokeSessions commits the update and the Session revocation
+// together, so a password change cannot leave old Sessions valid.
+func (s *Server) updateUserAndRevokeSessions(ctx context.Context, params store.UpdateUserParams) (store.User, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.User{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	user, err := q.UpdateUser(ctx, params)
+	if err != nil {
+		return store.User{}, err
+	}
+	if _, err := q.DeleteUserSessions(ctx, params.ID); err != nil {
+		return store.User{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.User{}, err
+	}
+	return user, nil
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, p *principal) {
