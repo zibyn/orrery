@@ -693,3 +693,17 @@ func (h *nodeHub) failed(nodeID uuid.UUID, commandID string) {
 	defer h.mu.Unlock()
 	delete(h.sent[nodeID], commandID)
 }
+
+// releaseCompute drops the Allocation and the Attachment, which exist only
+// while a runtime does. Both are attempted so one failure does not hide the
+// other.
+func releaseCompute(ctx context.Context, q *store.Queries, id uuid.UUID) error {
+	var errs []error
+	if err := q.ReleaseCompute(ctx, id); err != nil {
+		errs = append(errs, fmt.Errorf("release allocation: %w", err))
+	}
+	if err := q.DeleteAttachment(ctx, id); err != nil {
+		errs = append(errs, fmt.Errorf("release attachment: %w", err))
+	}
+	return errors.Join(errs...)
+}

@@ -272,3 +272,5 @@ func replayConflict[T any](key *string, err error, constraint string, lookup fun
 	}
 	return row, true
 }
+
+func strPtr(s string) *string { return &s }
