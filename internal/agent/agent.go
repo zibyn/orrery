@@ -342,9 +342,16 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	go rt.adopt(streamCtx, func(sandboxID string, generation int64) {
 		reportSandbox(sandboxID, generation, "running", "")
 	})
-	go rt.watchEvents(streamCtx, func(sandboxID string, generation int64) {
+	// A Runtime that died takes its Specs with it: end the local records first
+	// so their deliveries end with an exit frame.
+	reportGone := func(sandboxID string, generation int64) {
+		rt.finalizeLost(sandboxID)
 		reportSandbox(sandboxID, generation, "gone", "")
-	})
+	}
+	go rt.watchEvents(streamCtx, reportGone)
+	// Repair what a previous Agent process, or an earlier connection, left
+	// unfinished (runtime.md §8).
+	go rt.reconcileRecords(streamCtx, reportGone)
 
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
@@ -368,9 +375,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 			hcancel()
 			send(heartbeat())
 			// A container that died on a live Node is reported once.
-			go rt.scan(streamCtx, func(sandboxID string, generation int64) {
-				reportSandbox(sandboxID, generation, "gone", "")
-			})
+			go rt.scan(streamCtx, reportGone)
 		}
 	}
 }

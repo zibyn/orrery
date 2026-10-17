@@ -181,7 +181,7 @@ func runIn(dir string) error {
 	}
 
 	exit := resultOf(cmd.ProcessState, ctl.cause(), oomBefore)
-	return writeExit(dir, exit)
+	return WriteExit(dir, exit)
 }
 
 type pipe struct {
@@ -379,10 +379,12 @@ func writeStarted(dir string, at time.Time) error {
 }
 
 func failStart(dir string) error {
-	return writeExit(dir, Exit{Cause: "start_failed", FinishedAt: time.Now().UTC()})
+	return WriteExit(dir, Exit{Cause: "start_failed", FinishedAt: time.Now().UTC()})
 }
 
-func writeExit(dir string, exit Exit) error {
+// WriteExit atomically writes the `exit` record. The Agent uses it when it has
+// to end an Exec the Supervisor no longer can (runtime.md §8).
+func WriteExit(dir string, exit Exit) error {
 	raw, err := json.Marshal(exit)
 	if err != nil {
 		return err

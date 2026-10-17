@@ -48,9 +48,15 @@ func readyExecSandbox(t *testing.T, admin string, memory int64) string {
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
+	return createReadySandbox(t, admin, fmt.Sprintf("exec-%d", suffix), memory)
+}
 
+// createReadySandbox creates a Sandbox on an already-ready Node and waits for
+// it to reach ready.
+func createReadySandbox(t *testing.T, admin, name string, memory int64) string {
+	t.Helper()
 	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
-		"name":      fmt.Sprintf("exec-%d", suffix),
+		"name":      name,
 		"cpu":       0.5,
 		"memory":    memory,
 		"idle_stop": 0,

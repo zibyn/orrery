@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +29,9 @@ const (
 	supervisorBin    = "/.stars/bin/supervisor"
 	workspaceMount   = "/workspace"
 	runMount         = "/.stars/run"
+	// recordSettle is how long a startup reconciliation waits for a
+	// just-created Supervisor to listen before calling it dead (runtime.md §8).
+	recordSettle = time.Second
 )
 
 // Runtime is the Docker adapter for this Node (runtime.md §2, §9). Its data
@@ -92,8 +97,12 @@ func workspacePath(root string, id uuid.UUID) string {
 	return filepath.Join(root, "workspaces", id.String())
 }
 
+func sandboxPath(root string, id uuid.UUID) string {
+	return filepath.Join(root, "sandboxes", id.String())
+}
+
 func sandboxRunPath(root string, id uuid.UUID) string {
-	return filepath.Join(root, "sandboxes", id.String(), "run")
+	return filepath.Join(sandboxPath(root, id), "run")
 }
 
 func containerName(id uuid.UUID) string { return "stars-sandbox-" + id.String() }
@@ -301,6 +310,158 @@ func (r *Runtime) adopt(ctx context.Context, report func(sandboxID string, gener
 	}
 }
 
+// reconcileRecords applies runtime.md §8 to the records a previous Agent
+// process left behind. It runs after every (re)connect: finished Execs are
+// pushed again, running ones resume from stored_seq, and an Exec whose
+// Supervisor or Runtime died gets a runtime_lost exit. A Sandbox whose
+// Runtime is gone is reported so the Control Plane stops it and releases its
+// resources (ADR-0017).
+func (r *Runtime) reconcileRecords(ctx context.Context, report func(sandboxID string, generation int64)) {
+	entries, err := os.ReadDir(filepath.Join(r.dataRoot, "sandboxes"))
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		sandboxID, err := uuid.Parse(entry.Name())
+		if err != nil {
+			continue
+		}
+		runDir := sandboxRunPath(r.dataRoot, sandboxID)
+		dirs, _ := filepath.Glob(filepath.Join(runDir, "*"))
+		alive, known := r.runtimeAlive(ctx, sandboxID)
+		if known && !alive {
+			r.finalizeLost(sandboxID.String())
+			// A missing generation file predates this Agent; without it the
+			// Control Plane's fence rejects the observation, so say nothing.
+			if generation, ok := readGeneration(sandboxPath(r.dataRoot, sandboxID)); ok {
+				report(sandboxID.String(), generation)
+			}
+		}
+		for _, dir := range dirs {
+			execID, err := uuid.Parse(filepath.Base(dir))
+			if err != nil {
+				continue
+			}
+			// An unknown Runtime state is not proof the Exec stopped, so only a
+			// daemon that answered may settle the record.
+			go r.reconcileRecord(ctx, sandboxID, execID, dir, alive)
+		}
+	}
+}
+
+// reconcileRecord settles one Exec record and delivers it. With the Runtime
+// alive and no exit, a dead Supervisor is the only explanation left once the
+// socket has had a moment to appear (a Supervisor listens before it waits for
+// its spec).
+func (r *Runtime) reconcileRecord(ctx context.Context, sandboxID, execID uuid.UUID, dir string, runtimeAlive bool) {
+	if raw, err := os.ReadFile(filepath.Join(dir, "started")); err == nil {
+		// The observation is lost whenever the Control stream was down; the
+		// record still knows the truth.
+		r.sendExecObserved(execID.String(), string(raw))
+	}
+	if runtimeAlive {
+		if _, err := os.Stat(filepath.Join(dir, "exit")); err != nil {
+			if !socketUp(dir) && !waitSocket(ctx, dir) {
+				// A canceled context means this connection is going away, not
+				// that the Supervisor died: settle on the next one.
+				if ctx.Err() != nil {
+					return
+				}
+				if _, err := os.Stat(filepath.Join(dir, "exit")); err != nil {
+					writeRuntimeLost(dir)
+				}
+			}
+		}
+	}
+	r.streamExec(ctx, sandboxID, execID, dir)
+}
+
+// finalizeLost ends every unfinished Exec of a Sandbox whose Runtime is gone
+// (runtime.md §8). Deliveries already in flight pick the exit up; the startup
+// scan streams the rest.
+func (r *Runtime) finalizeLost(sandboxID string) {
+	dirs, _ := filepath.Glob(filepath.Join(r.dataRoot, "sandboxes", sandboxID, "run", "*"))
+	for _, dir := range dirs {
+		if _, err := os.Stat(filepath.Join(dir, "exit")); err == nil {
+			continue
+		}
+		writeRuntimeLost(dir)
+	}
+}
+
+func writeRuntimeLost(dir string) {
+	if err := supervisor.WriteExit(dir, supervisor.Exit{
+		Cause: "runtime_lost", FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		slog.Warn("write runtime_lost record", "dir", dir, "error", err)
+	}
+}
+
+// runtimeAlive reports the container's state. known is false when the daemon
+// cannot be asked; that is not evidence the Runtime is gone.
+func (r *Runtime) runtimeAlive(ctx context.Context, id uuid.UUID) (alive, known bool) {
+	if err := r.d.negotiate(ctx); err != nil {
+		return false, false
+	}
+	running, exists, err := r.d.inspectContainer(ctx, containerName(id))
+	if err != nil {
+		return false, false
+	}
+	return exists && running, true
+}
+
+func socketUp(dir string) bool {
+	conn, err := dialSocket(filepath.Join(dir, "ctl.sock"))
+	if err != nil {
+		return false
+	}
+	conn.Close() //nolint:errcheck // the liveness check is the dial
+	return true
+}
+
+// waitSocket gives a just-created Supervisor time to listen, and stops early
+// when it exits instead.
+func waitSocket(ctx context.Context, dir string) bool {
+	deadline := time.Now().Add(recordSettle)
+	for {
+		if socketUp(dir) {
+			return true
+		}
+		if _, err := os.Stat(filepath.Join(dir, "exit")); err == nil {
+			return false
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+// writeGeneration records the Sandbox generation beside its run record.
+func writeGeneration(dir string, generation int64) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, "generation.tmp")
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(generation, 10)), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "generation"))
+}
+
+func readGeneration(dir string) (int64, bool) {
+	raw, err := os.ReadFile(filepath.Join(dir, "generation"))
+	if err != nil {
+		return 0, false
+	}
+	generation, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	return generation, err == nil
+}
+
 // watchEvents reports a Sandbox whose container died without a Stop command
 // (runtime.md §9); the periodic scan is the fallback when the stream breaks.
 func (r *Runtime) watchEvents(ctx context.Context, report func(sandboxID string, generation int64)) {
@@ -334,7 +495,13 @@ func (r *Runtime) watchEvents(ctx context.Context, report func(sandboxID string,
 				break
 			}
 			id := event.Actor.Attributes["stars.sandbox_id"]
-			if gen, tracked := r.take(id); tracked {
+			gen, err := strconv.ParseInt(event.Actor.Attributes["stars.generation"], 10, 64)
+			if err != nil {
+				continue
+			}
+			// A die event from a replaced container must not end the Execs of
+			// the generation running now.
+			if gen, tracked := r.takeIf(id, gen); tracked {
 				report(id, gen)
 			}
 		}
@@ -342,18 +509,27 @@ func (r *Runtime) watchEvents(ctx context.Context, report func(sandboxID string,
 	}
 }
 
-// take removes a tracked Sandbox and returns the generation it was running at.
-func (r *Runtime) take(id string) (int64, bool) {
+// takeIf removes a tracked Sandbox only when the event belongs to the
+// generation it is running; a delayed die from a replaced container is
+// ignored. It returns the generation it was running at.
+func (r *Runtime) takeIf(id string, generation int64) (int64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	gen, ok := r.managed[id]
-	if ok {
-		delete(r.managed, id)
+	if !ok || gen != generation {
+		return 0, false
 	}
-	return gen, ok
+	delete(r.managed, id)
+	return gen, true
 }
 
 func (r *Runtime) track(id uuid.UUID, generation int64) {
+	// Only a Sandbox that reached running may be reported gone, so the marker
+	// is written here and not while the container is still being created: a
+	// restart mid-create must not fence the new generation off as dead.
+	if err := writeGeneration(sandboxPath(r.dataRoot, id), generation); err != nil {
+		slog.Warn("record sandbox generation", "sandbox_id", id, "error", err)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.managed[id.String()] = generation

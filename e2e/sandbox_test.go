@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -196,27 +195,38 @@ func enrollAgent(t *testing.T, admin, name string) (state, dataRoot string) {
 	return state, t.TempDir()
 }
 
-func startAgent(t *testing.T, state, dataRoot string) {
+// agentProcess is an Agent the test can stop and bring back with the same
+// identity and data root.
+type agentProcess struct {
+	cmd *exec.Cmd
+	log *bytes.Buffer
+}
+
+func startAgent(t *testing.T, state, dataRoot string) *agentProcess {
 	t.Helper()
-	agent := runAgentCommand(t, "--ca", nodeCA(), "--state", state, "--data-root", dataRoot)
-	var log bytes.Buffer
-	agent.Stdout, agent.Stderr = &log, &log
-	if err := agent.Start(); err != nil {
+	p := &agentProcess{
+		cmd: runAgentCommand(t, "--ca", nodeCA(), "--state", state, "--data-root", dataRoot),
+		log: &bytes.Buffer{},
+	}
+	p.cmd.Stdout, p.cmd.Stderr = p.log, p.log
+	if err := p.cmd.Start(); err != nil {
 		t.Fatalf("start agent: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = agent.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { _ = agent.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = agent.Process.Kill()
-		}
+		p.stop()
 		if t.Failed() {
-			t.Logf("agent log:\n%s", log.String())
+			t.Logf("agent log:\n%s", p.log.String())
 		}
 	})
+	return p
+}
+
+func (p *agentProcess) stop() {
+	if p.cmd.ProcessState != nil {
+		return
+	}
+	_ = p.cmd.Process.Kill()
+	_ = p.cmd.Wait()
 }
 
 func waitForNodeReady(t *testing.T, admin, name string) {

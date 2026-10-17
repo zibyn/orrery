@@ -61,14 +61,19 @@ func TestCommandRunnerFencesByGeneration(t *testing.T) {
 }
 
 func TestTakeReportsEachSandboxOnce(t *testing.T) {
-	r := &Runtime{managed: map[string]int64{}}
+	r := &Runtime{dataRoot: t.TempDir(), managed: map[string]int64{}}
 	id := uuid.New()
-	r.track(id, 3)
-	if gen, ok := r.take(id.String()); !ok || gen != 3 {
-		t.Fatalf("take = %d, %v; want 3, true", gen, ok)
+	r.track(id, 2)
+	// A delayed die event from the container this generation replaced is not
+	// evidence the current Runtime died.
+	if _, ok := r.takeIf(id.String(), 1); ok {
+		t.Fatal("a replaced generation's die event was reported")
+	}
+	if gen, ok := r.takeIf(id.String(), 2); !ok || gen != 2 {
+		t.Fatalf("takeIf = %d, %v; want 2, true", gen, ok)
 	}
 	// A second die event for the same container must not report again.
-	if _, ok := r.take(id.String()); ok {
+	if _, ok := r.takeIf(id.String(), 2); ok {
 		t.Fatal("an untracked Sandbox was reported")
 	}
 }
