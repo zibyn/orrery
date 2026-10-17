@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/zibyn/stars-sandbox/internal/httpjson"
 )
 
 // maxFileSize mirrors api.md §2: a single file is at most 5 GiB.
@@ -74,31 +76,10 @@ func isEscapeErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "escapes from parent")
 }
 
-var fileProblemTitles = map[string]string{
-	"invalid_request":   "Invalid request",
-	"not_found":         "Not found",
-	"conflict":          "Conflict",
-	"payload_too_large": "Payload too large",
-	"internal":          "Internal error",
-}
-
+// writeFileProblem and its siblings keep the Agent's file handlers readable;
+// the wire format itself is shared with the Control Plane API.
 func writeFileProblem(w http.ResponseWriter, code, detail string) {
-	status := map[string]int{
-		"invalid_request":   http.StatusBadRequest,
-		"not_found":         http.StatusNotFound,
-		"conflict":          http.StatusConflict,
-		"payload_too_large": http.StatusRequestEntityTooLarge,
-		"internal":          http.StatusInternalServerError,
-	}[code]
-	if status == 0 {
-		status, code = http.StatusInternalServerError, "internal"
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"type": "about:blank", "title": fileProblemTitles[code],
-		"status": status, "detail": detail, "code": code,
-	})
+	httpjson.Problem(w, code, detail)
 }
 
 func writeFileError(w http.ResponseWriter, err error) {
@@ -119,23 +100,11 @@ func writeFileError(w http.ResponseWriter, err error) {
 }
 
 func writeFileJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	httpjson.JSON(w, status, v)
 }
 
 func decodeFileJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		writeFileProblem(w, "invalid_request", "invalid JSON body: "+err.Error())
-		return false
-	}
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeFileProblem(w, "invalid_request", "body must contain exactly one JSON object")
-		return false
-	}
-	return true
+	return httpjson.Decode(w, r, dst)
 }
 
 // withWorkspace opens a Sandbox's Workspace and applies the read-only rule for

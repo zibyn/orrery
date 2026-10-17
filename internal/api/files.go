@@ -87,7 +87,13 @@ func proxyFile(w http.ResponseWriter, r *http.Request, conn net.Conn, suffix str
 	forward.RequestURI = ""
 	forward.URL.Path = "/sandboxes/" + r.PathValue("id") + "/files" + suffix
 	forward.URL.RawPath = ""
+	relayHTTP(w, conn, forward, "the Agent did not answer")
+}
 
+// relayHTTP writes one tunnelled request, reads the peer's response and copies
+// it back. The tunnel already carries the Node's authority, so the caller
+// prepares forward without ambient credentials.
+func relayHTTP(w http.ResponseWriter, conn net.Conn, forward *http.Request, unavailable string) {
 	type answer struct {
 		resp *http.Response
 		err  error
@@ -100,29 +106,28 @@ func proxyFile(w http.ResponseWriter, r *http.Request, conn net.Conn, suffix str
 
 	var got answer
 	if err := forward.Write(conn); err != nil {
-		// The Agent can reject early (400 for a traversal path, 413 for an
+		// The peer can reject early (400 for a traversal path, 413 for an
 		// oversized file) and hang up before the upload is drained; still
-		// deliver its answer instead of reporting the Node unreachable.
+		// deliver its answer instead of reporting it unreachable.
 		select {
 		case got = <-answers:
 		case <-time.After(5 * time.Second):
-			writeProblem(w, "unavailable", "the Tunnel closed before the request was sent")
+			writeProblem(w, "unavailable", unavailable)
 			return
 		}
 	} else {
 		got = <-answers
 	}
 	if got.err != nil {
-		writeProblem(w, "unavailable", "the Agent did not answer")
+		writeProblem(w, "unavailable", unavailable)
 		return
 	}
-	resp := got.resp
-	defer resp.Body.Close() //nolint:errcheck // tunnel closes
-	for k, vv := range resp.Header {
+	defer got.resp.Body.Close() //nolint:errcheck // tunnel closes
+	for k, vv := range got.resp.Header {
 		if !hopByHop[k] {
 			w.Header()[k] = vv
 		}
 	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	w.WriteHeader(got.resp.StatusCode)
+	_, _ = io.Copy(w, got.resp.Body)
 }

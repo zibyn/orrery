@@ -56,10 +56,11 @@ func forwardConn(conn net.Conn, port int) {
 		return
 	}
 	defer upstream.Close() //nolint:errcheck // connection lifetime
-	bridge(conn, upstream)
+	Bridge(conn, upstream)
 }
 
-func bridge(a, b net.Conn) {
+// Bridge copies bytes both ways until either side closes.
+func Bridge(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()

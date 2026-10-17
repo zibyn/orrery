@@ -1,13 +1,11 @@
 package api
 
 import (
-	"bufio"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -254,29 +252,7 @@ func proxyPort(w http.ResponseWriter, r *http.Request, conn net.Conn) {
 	forward.Header.Del("Expect")
 	forward.Header.Set("Connection", "close")
 	dropTicketParam(forward)
-
-	type answer struct {
-		resp *http.Response
-		err  error
-	}
-	answers := make(chan answer, 1)
-	go func() {
-		resp, err := http.ReadResponse(bufio.NewReader(conn), forward)
-		answers <- answer{resp, err}
-	}()
-	got := <-answers
-	if got.err != nil {
-		writeProblem(w, "unavailable", "the Sandbox port did not answer")
-		return
-	}
-	defer got.resp.Body.Close() //nolint:errcheck // tunnel closes
-	for k, vv := range got.resp.Header {
-		if !hopByHop[k] {
-			w.Header()[k] = vv
-		}
-	}
-	w.WriteHeader(got.resp.StatusCode)
-	_, _ = io.Copy(w, got.resp.Body)
+	relayHTTP(w, conn, forward, "the Sandbox port did not answer")
 }
 
 func dropTicketParam(r *http.Request) {

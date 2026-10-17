@@ -14,32 +14,9 @@ import (
 
 	"golang.org/x/net/websocket"
 	"golang.org/x/term"
+
+	"github.com/zibyn/stars-sandbox/internal/ptywire"
 )
-
-// ptyFrame keeps the payload type: binary frames are terminal bytes, text
-// frames are controls (api.md §4).
-type ptyFrame struct {
-	text bool
-	data []byte
-}
-
-var ptyCodec = websocket.Codec{
-	Marshal: func(v interface{}) ([]byte, byte, error) {
-		switch data := v.(type) {
-		case []byte:
-			return data, websocket.BinaryFrame, nil
-		case string:
-			return []byte(data), websocket.TextFrame, nil
-		}
-		return nil, websocket.UnknownFrame, websocket.ErrNotSupported
-	},
-	Unmarshal: func(data []byte, payloadType byte, v interface{}) error {
-		f := v.(*ptyFrame)
-		f.text = payloadType == websocket.TextFrame
-		f.data = data
-		return nil
-	},
-}
 
 func runShell(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -77,7 +54,7 @@ func runShell(c *client, args []string, stderr io.Writer) error {
 	send := func(v any) error {
 		sendMu.Lock()
 		defer sendMu.Unlock()
-		return ptyCodec.Send(conn, v)
+		return ptywire.Codec.Send(conn, v)
 	}
 
 	fd := int(os.Stdin.Fd())
@@ -113,12 +90,12 @@ func runShell(c *client, args []string, stderr io.Writer) error {
 	}()
 
 	for {
-		var frame ptyFrame
-		if err := ptyCodec.Receive(conn, &frame); err != nil {
+		var frame ptywire.Frame
+		if err := ptywire.Codec.Receive(conn, &frame); err != nil {
 			return fmt.Errorf("terminal connection closed")
 		}
-		if !frame.text {
-			if _, err := c.out.Write(frame.data); err != nil {
+		if !frame.Text {
+			if _, err := c.out.Write(frame.Data); err != nil {
 				return err
 			}
 			continue
@@ -128,7 +105,7 @@ func runShell(c *client, args []string, stderr io.Writer) error {
 			Cause    string `json:"cause"`
 			ExitCode *int32 `json:"exit_code"`
 		}
-		if json.Unmarshal(frame.data, &control) != nil || control.Type != "exit" {
+		if json.Unmarshal(frame.Data, &control) != nil || control.Type != "exit" {
 			continue
 		}
 		if control.ExitCode != nil && *control.ExitCode != 0 {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +17,8 @@ import (
 	"golang.org/x/net/websocket"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/ptywire"
+	"github.com/zibyn/stars-sandbox/internal/supervisor"
 	"github.com/zibyn/stars-sandbox/internal/tunnel"
 )
 
@@ -68,7 +69,7 @@ func (r *Runtime) forwardSandboxPort(ctx context.Context, tunnelID string, targe
 		return err
 	}
 	defer local.Close() //nolint:errcheck // bridge ends
-	bridge(local, conn)
+	supervisor.Bridge(local, conn)
 	return nil
 }
 
@@ -128,14 +129,6 @@ func (r *Runtime) dialSandboxPort(ctx context.Context, sandboxID uuid.UUID, port
 		return nil, fmt.Errorf("start forward exec: %w", err)
 	}
 	return dialUnix(ctx, socket, 5*time.Second)
-}
-
-// bridge copies bytes both ways until either side closes.
-func bridge(a, b net.Conn) {
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
-	<-done
 }
 
 func (r *Runtime) tunnelMux() http.Handler {
@@ -229,31 +222,6 @@ func (r *Runtime) waitPTYDetached(ctx context.Context, id string) {
 	}
 }
 
-// wsFrame keeps what Receive normally discards: the frame's payload type.
-// Message.Receive unmarshals text and binary frames alike.
-type wsFrame struct {
-	text bool
-	data []byte
-}
-
-var frameCodec = websocket.Codec{
-	Marshal: func(v interface{}) ([]byte, byte, error) {
-		switch data := v.(type) {
-		case []byte:
-			return data, websocket.BinaryFrame, nil
-		case string:
-			return []byte(data), websocket.TextFrame, nil
-		}
-		return nil, websocket.UnknownFrame, websocket.ErrNotSupported
-	},
-	Unmarshal: func(data []byte, payloadType byte, v interface{}) error {
-		f := v.(*wsFrame)
-		f.text = payloadType == websocket.TextFrame
-		f.data = data
-		return nil
-	},
-}
-
 // servePTY relays one attachment. Output arrives on the same ctl.sock
 // connection: the Supervisor writes the ring replay and then live bytes, so a
 // reattach restores the screen (ADR-0017).
@@ -275,7 +243,7 @@ func servePTY(ws *websocket.Conn, ctl net.Conn, dir string) {
 		for {
 			n, err := ctl.Read(buf)
 			if n > 0 {
-				if err := frameCodec.Send(ws, append([]byte(nil), buf[:n]...)); err != nil {
+				if err := ptywire.Codec.Send(ws, append([]byte(nil), buf[:n]...)); err != nil {
 					return
 				}
 			}
@@ -289,17 +257,17 @@ func servePTY(ws *websocket.Conn, ctl net.Conn, dir string) {
 	go func() {
 		defer close(in)
 		for {
-			var frame wsFrame
-			if err := frameCodec.Receive(ws, &frame); err != nil {
+			var frame ptywire.Frame
+			if err := ptywire.Codec.Receive(ws, &frame); err != nil {
 				return
 			}
-			if frame.text {
+			if frame.Text {
 				var control struct {
 					Type string `json:"type"`
 					Rows uint16 `json:"rows"`
 					Cols uint16 `json:"cols"`
 				}
-				if json.Unmarshal(frame.data, &control) != nil || control.Type != "resize" {
+				if json.Unmarshal(frame.Data, &control) != nil || control.Type != "resize" {
 					continue
 				}
 				if _, err := fmt.Fprintf(ctl, "resize %d %d\n", control.Rows, control.Cols); err != nil {
@@ -307,10 +275,10 @@ func servePTY(ws *websocket.Conn, ctl net.Conn, dir string) {
 				}
 				continue
 			}
-			if _, err := fmt.Fprintf(ctl, "input %d\n", len(frame.data)); err != nil {
+			if _, err := fmt.Fprintf(ctl, "input %d\n", len(frame.Data)); err != nil {
 				return
 			}
-			if _, err := ctl.Write(frame.data); err != nil {
+			if _, err := ctl.Write(frame.Data); err != nil {
 				return
 			}
 		}
@@ -337,7 +305,7 @@ func sendExit(ws *websocket.Conn, dir string) {
 	}
 	frame["type"] = "exit"
 	msg, _ := json.Marshal(frame)
-	_ = frameCodec.Send(ws, string(msg))
+	_ = ptywire.Codec.Send(ws, string(msg))
 }
 
 // oneConnListener serves one already-established connection and then blocks

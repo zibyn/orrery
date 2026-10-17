@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/zibyn/stars-sandbox/internal/httpjson"
 )
 
 // OpenAPIDocument is generated from the same route table that serves requests,
@@ -100,19 +102,19 @@ func responsesFor(rt route) map[string]any {
 			success["description"] = "Switching Protocols. The WebSocket subprotocol is sandbox.v1; binary frames carry terminal bytes and text frames carry controls."
 		}
 		responses["503"] = map[string]any{
-			"description": problemTitle["unavailable"],
+			"description": httpjson.Title("unavailable"),
 			"content":     map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
 		}
 	}
 	for _, status := range []string{"400", "401", "403", "404", "409", "500"} {
 		responses[status] = map[string]any{
-			"description": problemTitle[problemCodeFor(status)],
+			"description": httpjson.Title(problemCodeFor(status)),
 			"content":     map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
 		}
 	}
 	if rt.OperationID == "createSession" {
 		responses["429"] = map[string]any{
-			"description": problemTitle["rate_limited"],
+			"description": httpjson.Title("rate_limited"),
 			"headers": map[string]any{
 				"Retry-After": map[string]any{"schema": map[string]any{"type": "integer", "description": "Seconds until another attempt is allowed."}},
 			},
@@ -123,12 +125,8 @@ func responsesFor(rt route) map[string]any {
 }
 
 func problemCodeFor(status string) string {
-	for code, s := range problemStatus {
-		if strconv.Itoa(s) == status {
-			return code
-		}
-	}
-	return "internal"
+	n, _ := strconv.Atoi(status)
+	return httpjson.CodeForStatus(n)
 }
 
 func schemas() map[string]any {
