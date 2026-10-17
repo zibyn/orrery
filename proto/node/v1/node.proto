@@ -4,8 +4,8 @@ package stars.node.v1;
 
 option go_package = "github.com/zibyn/stars-sandbox/gen/node/v1;nodev1";
 
-// Node is the Agent-facing service on the `node` listener. Sandbox commands,
-// Tunnel and ExecOutput arrive with later tickets (docs/spec/node-protocol.md).
+// Node is the Agent-facing service on the `node` listener. ExecOutput and
+// Tunnel arrive with later tickets (docs/spec/node-protocol.md).
 service Node {
   // Redeem is the only unauthenticated entry point: an Enrollment Packet buys
   // one Node Token. Both travel over TLS.
@@ -33,6 +33,9 @@ message AgentMessage {
     Hello hello = 1;
     Heartbeat heartbeat = 2;
     Capabilities capabilities = 3;
+    SandboxObserved sandbox_observed = 4;
+    WorkspaceObserved workspace_observed = 5;
+    CommandResult command_result = 6;
   }
 }
 
@@ -48,6 +51,12 @@ message Heartbeat {
   string runtime_health = 1;
   uint64 disk_free = 2;
   repeated GPUHealth gpu_health = 3;
+  // Host totals and the Node's own reservation (defaults.md), used for
+  // placement.
+  double cpu_cores = 4;
+  uint64 memory_bytes = 5;
+  double reserved_cpu = 6;
+  uint64 reserved_memory = 7;
 }
 
 message GPUHealth {
@@ -78,10 +87,76 @@ message GPU {
   string model = 2;
 }
 
+message SandboxObserved {
+  string sandbox_id = 1;
+  int64 generation = 2;
+  // "running", "gone" or "create_failed".
+  string phase = 3;
+  string cause = 4;
+}
+
+message WorkspaceObserved {
+  string workspace_id = 1;
+  int64 generation = 2;
+  // "ready" or "gone".
+  string phase = 3;
+  string cause = 4;
+}
+
+message CommandResult {
+  string command_id = 1;
+  string error = 2;
+}
+
 message ControlMessage {
   oneof message {
     HelloAck hello_ack = 1;
+    ProvisionWorkspace provision_workspace = 2;
+    DeleteWorkspace delete_workspace = 3;
+    CreateSandbox create_sandbox = 4;
+    StopSandbox stop_sandbox = 5;
   }
+}
+
+message ProvisionWorkspace {
+  string command_id = 1;
+  string workspace_id = 2;
+  int64 generation = 3;
+}
+
+message DeleteWorkspace {
+  string command_id = 1;
+  string workspace_id = 2;
+  int64 generation = 3;
+}
+
+message CreateSandbox {
+  string command_id = 1;
+  string sandbox_id = 2;
+  int64 generation = 3;
+  // name@sha256:... pinned image digest.
+  string image_digest = 4;
+  Limits limits = 5;
+  WorkspaceMount workspace = 6;
+  // GPU, Resource and Secret mounts arrive with later tickets.
+}
+
+message Limits {
+  // Cores, e.g. 0.5.
+  double cpu = 1;
+  int64 memory = 2;
+}
+
+message WorkspaceMount {
+  string workspace_id = 1;
+  // "rw" or "ro".
+  string mode = 2;
+}
+
+message StopSandbox {
+  string command_id = 1;
+  string sandbox_id = 2;
+  int64 generation = 3;
 }
 
 message HelloAck {

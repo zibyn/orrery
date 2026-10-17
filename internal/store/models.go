@@ -11,6 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Allocation struct {
+	SandboxID  uuid.UUID
+	NodeID     uuid.UUID
+	Cpu        float64
+	Memory     int64
+	Disk       int64
+	Generation int64
+	CreatedAt  pgtype.Timestamptz
+}
+
 type ApiToken struct {
 	ID             uuid.UUID
 	UserID         uuid.UUID
@@ -22,6 +32,14 @@ type ApiToken struct {
 	LastUsedAt     pgtype.Timestamptz
 	IdempotencyKey *string
 	CreatedAt      pgtype.Timestamptz
+}
+
+type Attachment struct {
+	SandboxID   uuid.UUID
+	WorkspaceID uuid.UUID
+	Mode        string
+	Generation  int64
+	CreatedAt   pgtype.Timestamptz
 }
 
 type AuditRecord struct {
@@ -52,19 +70,45 @@ type Gpu struct {
 }
 
 type Node struct {
-	ID            uuid.UUID
-	Name          string
-	TokenHash     []byte
-	Paused        bool
-	LostAt        pgtype.Timestamptz
-	AgentVersion  *string
-	ProtoMajor    *int32
-	ProtoMinor    *int32
-	LastSeenAt    pgtype.Timestamptz
-	RuntimeHealth *string
-	Capabilities  json.RawMessage
-	Hardware      json.RawMessage
-	CreatedAt     pgtype.Timestamptz
+	ID             uuid.UUID
+	Name           string
+	TokenHash      []byte
+	Paused         bool
+	LostAt         pgtype.Timestamptz
+	AgentVersion   *string
+	ProtoMajor     *int32
+	ProtoMinor     *int32
+	LastSeenAt     pgtype.Timestamptz
+	RuntimeHealth  *string
+	Capabilities   json.RawMessage
+	Hardware       json.RawMessage
+	CreatedAt      pgtype.Timestamptz
+	ReservedCpu    float64
+	ReservedMemory int64
+}
+
+type Sandbox struct {
+	ID              uuid.UUID
+	OwnerID         uuid.UUID
+	Name            string
+	Labels          json.RawMessage
+	DesiredState    string
+	State           string
+	Cause           *string
+	NodeID          *uuid.UUID
+	SnapshotDigest  string
+	Cpu             float64
+	Memory          int64
+	GpuCount        int32
+	IdleStopSeconds int32
+	LastActivityAt  pgtype.Timestamptz
+	TokenHash       []byte
+	SecretEnvCt     []byte
+	Generation      int64
+	IdempotencyKey  *string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	DeletedAt       pgtype.Timestamptz
 }
 
 type User struct {
@@ -83,4 +127,20 @@ type User struct {
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
 	DeletedAt      pgtype.Timestamptz
+}
+
+type Workspace struct {
+	ID            uuid.UUID
+	OwnerID       uuid.UUID
+	Kind          string
+	SandboxID     *uuid.UUID
+	NodeID        *uuid.UUID
+	State         string
+	Cause         *string
+	StorageHandle *string
+	Conditions    json.RawMessage
+	Generation    int64
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	DeletedAt     pgtype.Timestamptz
 }

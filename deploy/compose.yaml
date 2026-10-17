@@ -21,6 +21,7 @@ services:
       STARS_NODE_ADDR: ":8081"
       STARS_NODE_TLS_CERT: /tls/server.crt
       STARS_NODE_TLS_KEY: /tls/server.key
+      STARS_DEFAULT_SNAPSHOT_DIGEST: "${STARS_DEFAULT_SNAPSHOT_DIGEST:-}"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
     depends_on:

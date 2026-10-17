@@ -132,8 +132,8 @@ func (n *nodeService) Redeem(ctx context.Context, req *nodev1.RedeemRequest) (*n
 
 var errInvalidPacket = status.Error(codes.Unauthenticated, "invalid, used, or expired Enrollment Packet")
 
-// Control is one stream per Agent: Hello, Heartbeat and Capabilities for now
-// (docs/spec/node-protocol.md). Commands and status arrive with later tickets.
+// Control is one stream per Agent: Hello and HelloAck first, then observations
+// up and commands down (docs/spec/node-protocol.md).
 func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 	ctx := stream.Context()
 	node, err := n.s.authenticateNode(ctx)
@@ -171,6 +171,24 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 		return err
 	}
 
+	// Commands are sent from this one goroutine; the handler below only
+	// receives. A send error ends the goroutine and the stream soon after.
+	conn := &agentConn{nodeID: node.ID, send: make(chan *nodev1.ControlMessage, 64)}
+	n.s.reconcile.hub.register(conn)
+	defer n.s.reconcile.hub.unregister(conn)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg := <-conn.send:
+				if err := stream.Send(msg); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
 	for {
 		msg, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -188,6 +206,18 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 			if err := n.recordCapabilities(ctx, node.ID, m.Capabilities); err != nil {
 				return status.Error(codes.Internal, "record Capabilities")
 			}
+		case *nodev1.AgentMessage_SandboxObserved:
+			n.recordSandboxObserved(ctx, node.ID, m.SandboxObserved)
+		case *nodev1.AgentMessage_WorkspaceObserved:
+			n.recordWorkspaceObserved(ctx, node.ID, m.WorkspaceObserved)
+		case *nodev1.AgentMessage_CommandResult:
+			if m.CommandResult.Error != "" {
+				n.s.log.Warn("command failed on Agent",
+					"node_id", node.ID, "command_id", m.CommandResult.CommandId, "error", m.CommandResult.Error)
+				// A failed command is not lost: the next sweep derives it again.
+				n.s.reconcile.hub.failed(node.ID, m.CommandResult.CommandId)
+				n.s.reconcile.notify()
+			}
 		default:
 			return status.Error(codes.InvalidArgument, "unsupported AgentMessage")
 		}
@@ -200,16 +230,20 @@ func (n *nodeService) recordHeartbeat(ctx context.Context, id uuid.UUID, heartbe
 		health = &heartbeat.RuntimeHealth
 	}
 	hardware, err := json.Marshal(map[string]any{
-		"disk_free":  heartbeat.DiskFree,
-		"gpu_health": heartbeat.GpuHealth,
+		"disk_free":    heartbeat.DiskFree,
+		"gpu_health":   heartbeat.GpuHealth,
+		"cpu_cores":    heartbeat.CpuCores,
+		"memory_bytes": heartbeat.MemoryBytes,
 	})
 	if err != nil {
 		return err
 	}
 	err = n.s.q.NodeHeartbeat(ctx, store.NodeHeartbeatParams{
-		ID:            id,
-		RuntimeHealth: health,
-		Hardware:      hardware,
+		ID:             id,
+		RuntimeHealth:  health,
+		Hardware:       hardware,
+		ReservedCpu:    heartbeat.ReservedCpu,
+		ReservedMemory: int64(heartbeat.ReservedMemory),
 	})
 	if err != nil {
 		n.s.log.Error("record heartbeat", "node_id", id, "error", err)
@@ -313,3 +347,151 @@ func incompatibleError(detail string) error {
 	}
 	return withDetails.Err()
 }
+
+// recordSandboxObserved applies what the Agent saw with the generation fence:
+// an observation from an older generation is dropped (ADR-0015).
+func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUID, obs *nodev1.SandboxObserved) {
+	id, err := uuid.Parse(obs.SandboxId)
+	if err != nil {
+		return
+	}
+	// Only the Node the Sandbox is bound to may report on it (ADR-0010).
+	sb, err := n.s.q.GetSandbox(ctx, id)
+	if err != nil || sb.NodeID == nil || *sb.NodeID != nodeID {
+		return
+	}
+	switch obs.Phase {
+	case "running":
+		rows, err := n.s.q.MarkSandboxReady(ctx, store.MarkSandboxReadyParams{
+			ID: id, Generation: obs.Generation,
+		})
+		if err != nil {
+			n.s.log.Warn("record SandboxObserved running", "sandbox_id", id, "error", err)
+		}
+		if rows > 0 {
+			n.s.reconcile.notify()
+		}
+	case "create_failed":
+		cause := obs.Cause
+		if cause == "" {
+			cause = "runtime_create_failed"
+		}
+		rows, err := n.s.q.MarkSandboxFailed(ctx, store.MarkSandboxFailedParams{
+			ID: id, Generation: obs.Generation, Cause: &cause,
+		})
+		if err != nil {
+			n.s.log.Warn("record SandboxObserved create_failed", "sandbox_id", id, "error", err)
+			return
+		}
+		if rows > 0 {
+			n.releaseCompute(ctx, id)
+			n.s.reconcile.notify()
+		}
+	case "gone":
+		n.recordSandboxGone(ctx, id, obs.Generation)
+	}
+}
+
+func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, generation int64) {
+	stopped, err := n.s.q.MarkSandboxStopped(ctx, store.MarkSandboxStoppedParams{
+		ID: id, Generation: generation,
+	})
+	if err != nil {
+		n.s.log.Warn("record SandboxObserved gone", "sandbox_id", id, "error", err)
+		return
+	}
+	lost, err := n.s.q.MarkSandboxRuntimeLost(ctx, store.MarkSandboxRuntimeLostParams{
+		ID: id, Generation: generation, Cause: strPtr("runtime_lost"),
+	})
+	if err != nil {
+		n.s.log.Warn("record runtime lost", "sandbox_id", id, "error", err)
+		return
+	}
+	if stopped > 0 || lost > 0 {
+		n.releaseCompute(ctx, id)
+		n.s.reconcile.notify()
+		return
+	}
+	// A deleted Sandbox waits for its runtime to be gone before the Workspace
+	// can be removed.
+	sb, err := n.s.q.GetSandbox(ctx, id)
+	if err != nil || sb.DesiredState != "deleted" {
+		return
+	}
+	tx, err := n.s.pool.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	q := n.s.q.WithTx(tx)
+	if err := q.DeleteAllocation(ctx, id); err != nil {
+		n.s.log.Warn("release allocation", "sandbox_id", id, "error", err)
+		return
+	}
+	if err := q.DeleteAttachment(ctx, id); err != nil {
+		n.s.log.Warn("release attachment", "sandbox_id", id, "error", err)
+		return
+	}
+	if ws, err := q.GetSandboxWorkspace(ctx, &id); err == nil {
+		if _, err := q.SetWorkspaceDeleting(ctx, ws.ID); err != nil {
+			n.s.log.Warn("mark workspace deleting", "workspace_id", ws.ID, "error", err)
+			return
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		n.s.log.Warn("commit Sandbox teardown", "sandbox_id", id, "error", err)
+		return
+	}
+	n.s.reconcile.notify()
+}
+
+func (n *nodeService) releaseCompute(ctx context.Context, id uuid.UUID) {
+	if err := n.s.q.DeleteAllocation(ctx, id); err != nil {
+		n.s.log.Warn("release allocation", "sandbox_id", id, "error", err)
+	}
+	if err := n.s.q.DeleteAttachment(ctx, id); err != nil {
+		n.s.log.Warn("release attachment", "sandbox_id", id, "error", err)
+	}
+}
+
+func (n *nodeService) recordWorkspaceObserved(ctx context.Context, nodeID uuid.UUID, obs *nodev1.WorkspaceObserved) {
+	id, err := uuid.Parse(obs.WorkspaceId)
+	if err != nil {
+		return
+	}
+	ws, err := n.s.q.GetWorkspace(ctx, id)
+	if err != nil || ws.NodeID == nil || *ws.NodeID != nodeID {
+		return
+	}
+	switch obs.Phase {
+	case "ready":
+		rows, err := n.s.q.MarkWorkspaceReady(ctx, store.MarkWorkspaceReadyParams{
+			ID: id, Generation: obs.Generation,
+		})
+		if err != nil {
+			n.s.log.Warn("record WorkspaceObserved ready", "workspace_id", id, "error", err)
+			return
+		}
+		if rows > 0 {
+			n.s.reconcile.notify()
+		}
+	case "gone":
+		rows, err := n.s.q.MarkWorkspaceDeleted(ctx, store.MarkWorkspaceDeletedParams{
+			ID: id, Generation: obs.Generation,
+		})
+		if err != nil {
+			n.s.log.Warn("record WorkspaceObserved gone", "workspace_id", id, "error", err)
+			return
+		}
+		if rows > 0 {
+			if ws, err := n.s.q.GetWorkspace(ctx, id); err == nil && ws.SandboxID != nil {
+				if _, err := n.s.q.MarkSandboxDeleted(ctx, *ws.SandboxID); err != nil {
+					n.s.log.Warn("mark sandbox deleted", "sandbox_id", *ws.SandboxID, "error", err)
+				}
+			}
+			n.s.reconcile.notify()
+		}
+	}
+}
+
+func strPtr(s string) *string { return &s }

@@ -144,6 +144,10 @@ WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 UPDATE api_tokens SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 
+-- name: PurgeSandboxIdempotencyKeys :exec
+UPDATE sandboxes SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
 -- Enrollment packets and nodes
 
 -- name: CreateEnrollmentPacket :one
@@ -192,7 +196,9 @@ WHERE id = $1;
 UPDATE nodes
 SET last_seen_at = now(),
     runtime_health = $2,
-    hardware = $3
+    hardware = $3,
+    reserved_cpu = $4,
+    reserved_memory = $5
 WHERE id = $1;
 
 -- name: SetNodeCapabilities :exec
@@ -211,3 +217,185 @@ SELECT * FROM gpus WHERE node_id = $1 ORDER BY uuid;
 -- name: PurgeEnrollmentPackets :exec
 DELETE FROM enrollment_packets
 WHERE used_at IS NOT NULL OR expires_at < now();
+
+-- Sandboxes
+
+-- name: CreateSandbox :one
+INSERT INTO sandboxes (
+    id, owner_id, name, labels, desired_state, state, snapshot_digest,
+    cpu, memory, gpu_count, idle_stop_seconds, generation, idempotency_key
+) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, 1, $10)
+RETURNING *;
+
+-- name: GetSandbox :one
+SELECT * FROM sandboxes WHERE id = $1 AND state <> 'deleted';
+
+-- name: GetSandboxByIdempotencyKey :one
+SELECT * FROM sandboxes
+WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
+
+-- name: ListSandboxes :many
+SELECT * FROM sandboxes
+WHERE owner_id = sqlc.arg('owner_id')
+  AND state <> 'deleted'
+  AND (sqlc.narg('state')::text IS NULL OR state = sqlc.narg('state'))
+  AND (sqlc.narg('node_id')::uuid IS NULL OR node_id = sqlc.narg('node_id'))
+  AND (sqlc.narg('label_key')::text IS NULL
+       OR (jsonb_exists(labels, sqlc.narg('label_key')::text)
+           AND labels ->> sqlc.narg('label_key')::text = sqlc.narg('label_value')::text))
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- name: CountActiveSandboxes :one
+SELECT count(*) FROM sandboxes
+WHERE owner_id = $1 AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+
+-- name: StartSandbox :one
+UPDATE sandboxes
+SET desired_state = 'running', state = 'pending', cause = NULL,
+    generation = generation + 1, updated_at = now()
+WHERE id = $1 AND state = 'stopped'
+RETURNING *;
+
+-- name: StopSandbox :one
+UPDATE sandboxes
+SET desired_state = 'stopped', state = 'stopping',
+    generation = generation + 1, updated_at = now()
+WHERE id = $1 AND state IN ('pending', 'provisioning', 'ready')
+RETURNING *;
+
+-- name: DeleteSandbox :one
+UPDATE sandboxes
+SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
+    generation = generation + 1, updated_at = now()
+WHERE id = $1 AND state <> 'deleted'
+RETURNING *;
+
+-- Reconciler: these transitions are one-process writes and only guard the
+-- state they expect, not the generation.
+
+-- name: ListReconcilableSandboxes :many
+SELECT * FROM sandboxes
+WHERE state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+ORDER BY id;
+
+-- name: SetSandboxNode :execrows
+UPDATE sandboxes
+SET node_id = $2, updated_at = now()
+WHERE id = $1 AND node_id IS NULL AND state = 'pending' AND desired_state = 'running';
+
+-- name: SetSandboxProvisioning :execrows
+UPDATE sandboxes
+SET state = 'provisioning', updated_at = now()
+WHERE id = $1 AND state = 'pending' AND desired_state = 'running';
+
+-- name: SetSandboxStopping :execrows
+UPDATE sandboxes
+SET state = 'stopping', updated_at = now()
+WHERE id = $1 AND desired_state = 'stopped'
+  AND state IN ('pending', 'provisioning', 'ready');
+
+-- name: SetSandboxStopped :execrows
+UPDATE sandboxes
+SET state = 'stopped', updated_at = now()
+WHERE id = $1 AND desired_state = 'stopped'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+
+-- name: MarkSandboxDeleted :execrows
+UPDATE sandboxes
+SET state = 'deleted', updated_at = now()
+WHERE id = $1 AND desired_state = 'deleted';
+
+-- Observed transitions are fenced by the generation the Agent reports.
+
+-- name: MarkSandboxReady :execrows
+UPDATE sandboxes
+SET state = 'ready', cause = NULL, updated_at = now()
+WHERE id = $1 AND generation = $2 AND desired_state = 'running'
+  AND state IN ('pending', 'provisioning');
+
+-- name: MarkSandboxFailed :execrows
+UPDATE sandboxes
+SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted';
+
+-- name: MarkSandboxRuntimeLost :execrows
+UPDATE sandboxes
+SET state = 'stopped', cause = $3, desired_state = 'stopped', updated_at = now()
+WHERE id = $1 AND generation = $2 AND desired_state = 'running'
+  AND state IN ('pending', 'provisioning', 'ready');
+
+-- name: MarkSandboxStopped :execrows
+UPDATE sandboxes
+SET state = 'stopped', updated_at = now()
+WHERE id = $1 AND generation = $2 AND desired_state = 'stopped'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+
+-- Workspaces
+
+-- name: CreateWorkspace :one
+INSERT INTO workspaces (id, owner_id, kind, sandbox_id, state, storage_handle, generation)
+VALUES ($1, $2, $3, $4, 'provisioning', $5, 1)
+RETURNING *;
+
+-- name: GetWorkspace :one
+SELECT * FROM workspaces WHERE id = $1;
+
+-- name: GetSandboxWorkspace :one
+SELECT * FROM workspaces
+WHERE sandbox_id = $1 AND state <> 'deleted';
+
+-- name: ListDeletingWorkspaces :many
+SELECT * FROM workspaces WHERE state = 'deleting' ORDER BY id;
+
+-- name: SetWorkspaceNode :execrows
+UPDATE workspaces
+SET node_id = $2, state = 'provisioning', generation = generation + 1, updated_at = now()
+WHERE id = $1 AND node_id IS NULL;
+
+-- name: MarkWorkspaceReady :execrows
+UPDATE workspaces
+SET state = 'ready', updated_at = now()
+WHERE id = $1 AND generation = $2 AND state = 'provisioning';
+
+-- name: SetWorkspaceDeleting :execrows
+UPDATE workspaces
+SET state = 'deleting', generation = generation + 1, updated_at = now()
+WHERE id = $1 AND state <> 'deleted';
+
+-- name: MarkWorkspaceDeleted :execrows
+UPDATE workspaces
+SET state = 'deleted', deleted_at = now(), updated_at = now()
+WHERE id = $1 AND generation = $2;
+
+-- Attachments
+
+-- name: CreateAttachment :one
+INSERT INTO attachments (sandbox_id, workspace_id, mode, generation)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: GetAttachment :one
+SELECT * FROM attachments WHERE sandbox_id = $1;
+
+-- name: DeleteAttachment :exec
+DELETE FROM attachments WHERE sandbox_id = $1;
+
+-- Allocations
+
+-- name: CreateAllocation :exec
+INSERT INTO allocations (sandbox_id, node_id, cpu, memory, disk, generation)
+VALUES ($1, $2, $3, $4, 0, $5)
+ON CONFLICT (sandbox_id) DO NOTHING;
+
+-- name: DeleteAllocation :exec
+DELETE FROM allocations WHERE sandbox_id = $1;
+
+-- name: NodeAllocated :one
+SELECT COALESCE(SUM(cpu), 0)::double precision AS cpu,
+       COALESCE(SUM(memory), 0)::bigint AS memory
+FROM allocations WHERE node_id = $1;
+
+-- name: ListAllNodes :many
+SELECT * FROM nodes ORDER BY id;

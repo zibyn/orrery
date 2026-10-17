@@ -24,10 +24,13 @@ type Server struct {
 	log         *slog.Logger
 	logins      *loginLimiter
 	crossOrigin http.CrossOriginProtection
+	reconcile   *reconciler
 }
 
 func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter()}
+	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter()}
+	s.reconcile = newReconciler(s)
+	return s
 }
 
 type principal struct {
@@ -78,6 +81,12 @@ func (s *Server) routes() []route {
 		{http.MethodPost, "/enrollment-packets", "admin", "createEnrollmentPacket", "Issue an Enrollment Packet", "", "EnrollmentPacket", nil, http.StatusCreated, s.handleCreateEnrollmentPacket},
 		{http.MethodGet, "/nodes", "admin", "listNodes", "List Nodes", "", "NodeList", []string{"limit", "cursor"}, http.StatusOK, s.handleListNodes},
 		{http.MethodGet, "/nodes/{id}", "admin", "getNode", "Get a Node", "", "Node", nil, http.StatusOK, s.handleGetNode},
+		{http.MethodPost, "/sandboxes", "user", "createSandbox", "Create a Sandbox", "CreateSandboxRequest", "Sandbox", nil, http.StatusCreated, s.handleCreateSandbox},
+		{http.MethodGet, "/sandboxes", "user", "listSandboxes", "List Sandboxes", "", "SandboxList", []string{"state", "label", "node", "limit", "cursor"}, http.StatusOK, s.handleListSandboxes},
+		{http.MethodGet, "/sandboxes/{id}", "user", "getSandbox", "Get a Sandbox", "", "Sandbox", []string{"wait_for"}, http.StatusOK, s.handleGetSandbox},
+		{http.MethodDelete, "/sandboxes/{id}", "user", "deleteSandbox", "Delete a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleDeleteSandbox},
+		{http.MethodPost, "/sandboxes/{id}/start", "user", "startSandbox", "Start a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleStartSandbox},
+		{http.MethodPost, "/sandboxes/{id}/stop", "user", "stopSandbox", "Stop a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleStopSandbox},
 	}
 }
 
@@ -218,6 +227,7 @@ func (s *Server) internal(w http.ResponseWriter, what string, err error) {
 
 func (s *Server) Serve(ctx context.Context) error {
 	go s.purgeExpired(ctx)
+	go s.reconcile.run(ctx)
 	httpServer := &http.Server{
 		Addr:              s.cfg.Addr,
 		Handler:           s.Handler(),
@@ -259,6 +269,9 @@ func (s *Server) purgeExpired(ctx context.Context) {
 		}
 		if err := s.q.PurgeTokenIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
 			s.log.Warn("purge token idempotency keys", "error", err)
+		}
+		if err := s.q.PurgeSandboxIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
+			s.log.Warn("purge Sandbox idempotency keys", "error", err)
 		}
 		if err := s.q.PurgeEnrollmentPackets(ctx); err != nil && ctx.Err() == nil {
 			s.log.Warn("purge Enrollment Packets", "error", err)

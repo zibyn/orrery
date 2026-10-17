@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -30,9 +31,12 @@ import (
 
 const (
 	// HeartbeatInterval is a constant in defaults.md.
-	HeartbeatInterval = 15 * time.Second
-	DefaultStatePath  = "/var/lib/stars-sandbox-agent/identity.json"
-	DefaultDockerSock = "/var/run/docker.sock"
+	HeartbeatInterval   = 15 * time.Second
+	DefaultStatePath    = "/var/lib/stars-sandbox-agent/identity.json"
+	DefaultDockerSock   = "/var/run/docker.sock"
+	DefaultDataRoot     = "/var/lib/stars-sandbox"
+	DefaultReserveCPU   = 1.0
+	DefaultReserveBytes = 2 << 30 // 2 GiB
 
 	maxBackoff = time.Minute
 )
@@ -134,10 +138,13 @@ func SaveIdentity(path string, id Identity) error {
 }
 
 type RunOptions struct {
-	CAPath string
-	Server string // overrides the address stored at enroll time
-	State  string
-	Docker string
+	CAPath        string
+	Server        string // overrides the address stored at enroll time
+	State         string
+	Docker        string
+	DataRoot      string
+	ReserveCPU    float64
+	ReserveMemory int64
 }
 
 // Run keeps one Control stream alive, probing capabilities once per
@@ -157,6 +164,15 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	if opts.Docker == "" {
 		opts.Docker = DefaultDockerSock
+	}
+	if opts.DataRoot == "" {
+		opts.DataRoot = DefaultDataRoot
+	}
+	if opts.ReserveMemory == 0 {
+		opts.ReserveMemory = DefaultReserveBytes
+	}
+	if err := PrepareDataRoot(opts.DataRoot); err != nil {
+		return err
 	}
 	version := buildVersion()
 
@@ -218,6 +234,7 @@ func isIncompatible(err error) bool {
 }
 
 func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
+	rt := NewRuntime(opts.Docker, opts.DataRoot)
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
 		return false, err
@@ -255,31 +272,79 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	}
 	slog.Info("control stream connected", "node_id", id.NodeID)
 
-	report, probeErr := dockerProbe(ctx, opts.Docker)
+	// One goroutine owns Send; the receive loop and command goroutines only
+	// queue messages, so the stream is never written concurrently.
+	out := make(chan *nodev1.AgentMessage, 128)
+	sendErr := make(chan error, 1)
+	send := func(msg *nodev1.AgentMessage) {
+		select {
+		case out <- msg:
+		case <-streamCtx.Done():
+		}
+	}
+	go func() {
+		for {
+			select {
+			case <-streamCtx.Done():
+				return
+			case msg := <-out:
+				if err := stream.Send(msg); err != nil {
+					select {
+					case sendErr <- err:
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	reportSandbox := func(sandboxID string, generation int64, phase, cause string) {
+		send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{
+			SandboxObserved: &nodev1.SandboxObserved{
+				SandboxId: sandboxID, Generation: generation, Phase: phase, Cause: cause,
+			},
+		}})
+	}
+
+	report, probeErr := dockerProbe(streamCtx, opts.Docker)
 	health := "healthy"
 	if probeErr != nil {
 		health = "unhealthy"
 		report = nodeproto.CapabilityReport{Runtime: "docker"}
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
-	if err := stream.Send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
+	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
 		Capabilities: capabilitiesMessage(report),
-	}}); err != nil {
-		return false, err
+	}})
+	host := hostHardware()
+	heartbeat := func() *nodev1.AgentMessage {
+		return heartbeatMessage(health, host, opts.ReserveCPU, opts.ReserveMemory)
 	}
-	if err := stream.Send(heartbeatMessage(health)); err != nil {
-		return false, err
-	}
+	send(heartbeat())
 
+	runner := newCommandRunner(streamCtx, rt, send)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {
-			if _, err := stream.Recv(); err != nil {
+			msg, err := stream.Recv()
+			if err != nil {
 				recvErr <- err
 				return
 			}
+			runner.handle(msg)
 		}
 	}()
+
+	// An Agent restart must not look like a dead runtime: pick up containers
+	// this Node still runs.
+	go rt.adopt(streamCtx, func(sandboxID string, generation int64) {
+		reportSandbox(sandboxID, generation, "running", "")
+	})
+	go rt.watchEvents(streamCtx, func(sandboxID string, generation int64) {
+		reportSandbox(sandboxID, generation, "gone", "")
+	})
+
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
 	for {
@@ -288,28 +353,50 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 			return true, nil
 		case err := <-recvErr:
 			return true, err
+		case err := <-sendErr:
+			return true, err
 		case <-ticker.C:
 			// Runtime health is live: a daemon that dies mid-stream must stop
 			// receiving placements, not keep its startup verdict.
-			hctx, hcancel := context.WithTimeout(ctx, 5*time.Second)
+			hctx, hcancel := context.WithTimeout(streamCtx, 5*time.Second)
 			if dockerHealthy(hctx, opts.Docker) {
 				health = "healthy"
 			} else {
 				health = "unhealthy"
 			}
 			hcancel()
-			if err := stream.Send(heartbeatMessage(health)); err != nil {
-				return true, err
-			}
+			send(heartbeat())
+			// A container that died on a live Node is reported once.
+			go rt.scan(streamCtx, func(sandboxID string, generation int64) {
+				reportSandbox(sandboxID, generation, "gone", "")
+			})
 		}
 	}
 }
 
-func heartbeatMessage(health string) *nodev1.AgentMessage {
+type hardware struct {
+	CPUCores    float64
+	MemoryBytes int64
+}
+
+func hostHardware() hardware {
+	var info syscall.Sysinfo_t
+	var memory int64
+	if err := syscall.Sysinfo(&info); err == nil {
+		memory = int64(info.Totalram) * int64(info.Unit)
+	}
+	return hardware{CPUCores: float64(runtime.NumCPU()), MemoryBytes: memory}
+}
+
+func heartbeatMessage(health string, host hardware, reserveCPU float64, reserveMemory int64) *nodev1.AgentMessage {
 	return &nodev1.AgentMessage{Message: &nodev1.AgentMessage_Heartbeat{
 		Heartbeat: &nodev1.Heartbeat{
-			RuntimeHealth: health,
-			DiskFree:      diskFree("/"),
+			RuntimeHealth:  health,
+			DiskFree:       diskFree("/"),
+			CpuCores:       host.CPUCores,
+			MemoryBytes:    uint64(host.MemoryBytes),
+			ReservedCpu:    reserveCPU,
+			ReservedMemory: uint64(reserveMemory),
 		},
 	}}
 }

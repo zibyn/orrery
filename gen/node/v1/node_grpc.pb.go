@@ -27,8 +27,8 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Node is the Agent-facing service on the `node` listener. Sandbox commands,
-// Tunnel and ExecOutput arrive with later tickets (docs/spec/node-protocol.md).
+// Node is the Agent-facing service on the `node` listener. ExecOutput and
+// Tunnel arrive with later tickets (docs/spec/node-protocol.md).
 type NodeClient interface {
 	// Redeem is the only unauthenticated entry point: an Enrollment Packet buys
 	// one Node Token. Both travel over TLS.
@@ -72,8 +72,8 @@ type Node_ControlClient = grpc.BidiStreamingClient[AgentMessage, ControlMessage]
 // All implementations must embed UnimplementedNodeServer
 // for forward compatibility.
 //
-// Node is the Agent-facing service on the `node` listener. Sandbox commands,
-// Tunnel and ExecOutput arrive with later tickets (docs/spec/node-protocol.md).
+// Node is the Agent-facing service on the `node` listener. ExecOutput and
+// Tunnel arrive with later tickets (docs/spec/node-protocol.md).
 type NodeServer interface {
 	// Redeem is the only unauthenticated entry point: an Enrollment Packet buys
 	// one Node Token. Both travel over TLS.

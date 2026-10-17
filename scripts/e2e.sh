@@ -50,6 +50,19 @@ CGO_ENABLED=0 "$GO" build -o .e2e/stars-sandbox-agent ./cmd/stars-sandbox-agent
 # Warm the cache; the Agent pulls the image itself if this misses.
 docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null
 
+# Every Sandbox is created from the deployment default Snapshot digest
+# (api.md §3). Prefer the pinned RepoDigest; a locally built image may not have
+# one, in which case the tag is the honest fallback.
+STARS_DEFAULT_SNAPSHOT_DIGEST="${STARS_DEFAULT_SNAPSHOT_DIGEST:-}"
+if [ -z "$STARS_DEFAULT_SNAPSHOT_DIGEST" ]; then
+  STARS_DEFAULT_SNAPSHOT_DIGEST="$(docker image inspect alpine:3.22 --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+fi
+if [ -z "$STARS_DEFAULT_SNAPSHOT_DIGEST" ]; then
+  STARS_DEFAULT_SNAPSHOT_DIGEST="alpine:3.22"
+fi
+export STARS_DEFAULT_SNAPSHOT_DIGEST
+echo "default Snapshot: $STARS_DEFAULT_SNAPSHOT_DIGEST"
+
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 }

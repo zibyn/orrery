@@ -348,5 +348,52 @@ func schemas() map[string]any {
 				"next_cursor": nullableString,
 			},
 		},
+		"SandboxWorkspace": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "mode"},
+			"properties": map[string]any{
+				"id":   map[string]any{"type": "string", "format": "uuid"},
+				"mode": map[string]any{"type": "string", "enum": []string{"rw", "ro"}},
+			},
+		},
+		"CreateSandboxRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"cpu", "memory"},
+			"properties": map[string]any{
+				"name":      map[string]any{"type": "string", "description": "Unique per User; defaults to the Sandbox id."},
+				"labels":    map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"snapshot":  map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name; omit for the deployment default digest."},
+				"cpu":       map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "CPU cores."},
+				"memory":    map[string]any{"type": "integer", "minimum": 1, "description": "Bytes of memory."},
+				"idle_stop": map[string]any{"type": "integer", "minimum": 0, "default": 900, "description": "Seconds; 0 disables idle stop."},
+			},
+		},
+		"Sandbox": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "name", "labels", "state", "snapshot", "cpu", "memory", "idle_stop", "created_at"},
+			"properties": map[string]any{
+				"id":             map[string]any{"type": "string", "format": "uuid"},
+				"name":           map[string]any{"type": "string"},
+				"labels":         map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"state":          map[string]any{"type": "string", "enum": []string{"pending", "provisioning", "ready", "stopping", "stopped", "deleting", "deleted", "failed"}},
+				"cause":          nullableString,
+				"node_id":        nullableString,
+				"snapshot":       map[string]any{"type": "string"},
+				"cpu":            map[string]any{"type": "number"},
+				"memory":         map[string]any{"type": "integer"},
+				"idle_stop":      map[string]any{"type": "integer"},
+				"workspace":      schemaRef("SandboxWorkspace"),
+				"blocked_reason": nullableString,
+				"created_at":     map[string]any{"type": "string", "format": "date-time"},
+			},
+		},
+		"SandboxList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("Sandbox")},
+				"next_cursor": nullableString,
+			},
+		},
 	}
 }

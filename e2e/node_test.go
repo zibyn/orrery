@@ -163,12 +163,22 @@ func agentCommand(t *testing.T, args ...string) *exec.Cmd {
 }
 
 // runAgentCommand includes the Docker socket when the caller's DOCKER_HOST
-// points at a unix socket.
+// points at a unix socket, and a writable data root because the Agent runs as
+// the test user, not root.
 func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
 	args = append([]string{"run"}, args...)
 	if socket := os.Getenv("STARS_E2E_DOCKER_SOCKET"); socket != "" {
 		args = append(args, "--docker", socket)
+	}
+	hasRoot := false
+	for _, arg := range args {
+		if arg == "--data-root" {
+			hasRoot = true
+		}
+	}
+	if !hasRoot {
+		args = append(args, "--data-root", t.TempDir())
 	}
 	return exec.Command(agentPath(t), args...)
 }

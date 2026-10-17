@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,32 +159,7 @@ func (d *dockerClient) negotiate(ctx context.Context) error {
 func (d *dockerClient) api(path string) string { return "/v" + d.version + path }
 
 func (d *dockerClient) ensureImage(ctx context.Context) error {
-	resp, err := d.request(ctx, http.MethodGet, d.api("/images/"+probeImage+"/json"), nil)
-	if err == nil {
-		io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			return nil
-		}
-		if resp.StatusCode != http.StatusNotFound {
-			return fmt.Errorf("inspect image: %s", resp.Status)
-		}
-	}
-	image, tag, _ := strings.Cut(probeImage, ":")
-	query := url.Values{"fromImage": {image}, "tag": {tag}}
-	resp, err = d.request(ctx, http.MethodPost, d.api("/images/create")+"?"+query.Encode(), nil)
-	if err != nil {
-		return fmt.Errorf("pull image: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("pull image: %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-	// The pull answer is a JSON progress stream; reading it to EOF waits for
-	// the pull to finish.
-	_, err = io.Copy(io.Discard, resp.Body)
-	return err
+	return d.ensureImageRef(ctx, probeImage)
 }
 
 // probe creates, starts and reads back one container. limitsEnforced is true

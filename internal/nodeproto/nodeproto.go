@@ -9,7 +9,7 @@ import "encoding/json"
 // refused (ADR-0014).
 const (
 	Major uint32 = 1
-	Minor uint32 = 0
+	Minor uint32 = 1
 )
 
 // Capability names are the Runtime Provider facts a Node self-checks

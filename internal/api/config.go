@@ -18,15 +18,18 @@ type Config struct {
 	EnrollmentPacketTTL time.Duration
 	DefaultGPUQuota     int32
 	DefaultSandboxQuota int32
+	// SnapshotDigest is the deployment default when a create omits snapshot.
+	SnapshotDigest string
 }
 
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		DatabaseURL: os.Getenv("STARS_DATABASE_URL"),
-		Addr:        envOr("STARS_API_ADDR", ":8080"),
-		NodeAddr:    envOr("STARS_NODE_ADDR", ":8081"),
-		NodeTLSCert: os.Getenv("STARS_NODE_TLS_CERT"),
-		NodeTLSKey:  os.Getenv("STARS_NODE_TLS_KEY"),
+		DatabaseURL:    os.Getenv("STARS_DATABASE_URL"),
+		Addr:           envOr("STARS_API_ADDR", ":8080"),
+		NodeAddr:       envOr("STARS_NODE_ADDR", ":8081"),
+		NodeTLSCert:    os.Getenv("STARS_NODE_TLS_CERT"),
+		NodeTLSKey:     os.Getenv("STARS_NODE_TLS_KEY"),
+		SnapshotDigest: os.Getenv("STARS_DEFAULT_SNAPSHOT_DIGEST"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("STARS_DATABASE_URL is required")

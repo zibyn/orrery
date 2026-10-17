@@ -1,0 +1,533 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/zibyn/stars-sandbox/internal/store"
+)
+
+// waitForLimit is fixed by api.md §1.
+const waitForLimit = 60 * time.Second
+
+const (
+	defaultIdleStop = 900
+	maxMemoryBytes  = 1 << 50 // 1 PiB, a sanity bound only
+)
+
+var sandboxStates = map[string]bool{
+	"pending": true, "provisioning": true, "ready": true, "stopping": true,
+	"stopped": true, "deleting": true, "deleted": true, "failed": true,
+}
+
+type createSandboxRequest struct {
+	Name     *string           `json:"name"`
+	Labels   map[string]string `json:"labels"`
+	Snapshot *string           `json:"snapshot"`
+	CPU      *float64          `json:"cpu"`
+	Memory   *int64            `json:"memory"`
+	IdleStop *int32            `json:"idle_stop"`
+}
+
+type sandboxWorkspaceDTO struct {
+	ID   string `json:"id"`
+	Mode string `json:"mode"`
+}
+
+type sandboxDTO struct {
+	ID            string               `json:"id"`
+	Name          string               `json:"name"`
+	Labels        map[string]string    `json:"labels"`
+	State         string               `json:"state"`
+	Cause         *string              `json:"cause"`
+	NodeID        *string              `json:"node_id"`
+	Snapshot      string               `json:"snapshot"`
+	CPU           float64              `json:"cpu"`
+	Memory        int64                `json:"memory"`
+	IdleStop      int32                `json:"idle_stop"`
+	Workspace     *sandboxWorkspaceDTO `json:"workspace,omitempty"`
+	BlockedReason *string              `json:"blocked_reason,omitempty"`
+	CreatedAt     time.Time            `json:"created_at"`
+}
+
+type sandboxList struct {
+	Items      []sandboxDTO `json:"items"`
+	NextCursor *string      `json:"next_cursor"`
+}
+
+func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
+	key, ok := idempotencyKey(r)
+	if !ok {
+		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
+		return
+	}
+	ctx := r.Context()
+	if key != nil {
+		if existing, err := s.q.GetSandboxByIdempotencyKey(ctx, store.GetSandboxByIdempotencyKeyParams{
+			OwnerID: p.user.ID, IdempotencyKey: key,
+		}); err == nil {
+			writeJSON(w, http.StatusOK, s.sandboxToDTO(existing))
+			return
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			s.internal(w, "look up idempotent Sandbox", err)
+			return
+		}
+	}
+
+	var req createSandboxRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.CPU == nil || *req.CPU <= 0 {
+		writeProblem(w, "invalid_request", "cpu must be a positive number of cores")
+		return
+	}
+	if req.Memory == nil || *req.Memory <= 0 || *req.Memory > maxMemoryBytes {
+		writeProblem(w, "invalid_request", "memory must be a positive number of bytes")
+		return
+	}
+	if !validLabels(req.Labels) {
+		writeProblem(w, "invalid_request", "label keys must be non-empty; keys and values at most 255 characters")
+		return
+	}
+	idleStop := int32(defaultIdleStop)
+	if req.IdleStop != nil {
+		if *req.IdleStop < 0 {
+			writeProblem(w, "invalid_request", "idle_stop must be zero or a positive number of seconds")
+			return
+		}
+		idleStop = *req.IdleStop
+	}
+	snapshot := s.cfg.SnapshotDigest
+	if req.Snapshot != nil && *req.Snapshot != "" {
+		snapshot = *req.Snapshot
+	} else if snapshot == "" {
+		writeProblem(w, "internal", "no default Snapshot is configured; set STARS_DEFAULT_SNAPSHOT_DIGEST or pass snapshot")
+		return
+	}
+
+	used, err := s.q.CountActiveSandboxes(ctx, p.user.ID)
+	if err != nil {
+		s.internal(w, "count active Sandboxes", err)
+		return
+	}
+	if used >= int64(p.user.SandboxQuota) {
+		writeProblem(w, "quota_exceeded", fmt.Sprintf("sandbox quota is %d", p.user.SandboxQuota))
+		return
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		s.internal(w, "generate Sandbox id", err)
+		return
+	}
+	name := id.String()
+	if req.Name != nil {
+		if !validDisplayName(*req.Name) {
+			writeProblem(w, "invalid_request", "name must be non-empty, trimmed, and at most 255 characters")
+			return
+		}
+		name = *req.Name
+	}
+	labels, err := json.Marshal(req.Labels)
+	if err != nil {
+		s.internal(w, "encode labels", err)
+		return
+	}
+	if req.Labels == nil {
+		labels = []byte("{}")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.internal(w, "begin transaction", err)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	sandbox, err := q.CreateSandbox(ctx, store.CreateSandboxParams{
+		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels,
+		SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
+		GpuCount: 0, IdleStopSeconds: idleStop, IdempotencyKey: key,
+	})
+	if err != nil {
+		if index := uniqueViolation(err); index != "" {
+			switch index {
+			case "sandboxes_owner_idempotency":
+				if key != nil {
+					if existing, lookupErr := s.q.GetSandboxByIdempotencyKey(ctx, store.GetSandboxByIdempotencyKeyParams{
+						OwnerID: p.user.ID, IdempotencyKey: key,
+					}); lookupErr == nil {
+						writeJSON(w, http.StatusOK, s.sandboxToDTO(existing))
+						return
+					}
+				}
+			case "sandboxes_owner_name":
+				writeProblem(w, "conflict", "a Sandbox with that name already exists")
+				return
+			}
+		}
+		s.internal(w, "create Sandbox", err)
+		return
+	}
+	// Persistent Workspaces are a later ticket; every Sandbox gets an implicit
+	// ephemeral one (ADR-0018).
+	workspaceID, err := uuid.NewV7()
+	if err != nil {
+		s.internal(w, "generate Workspace id", err)
+		return
+	}
+	if _, err := q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
+		ID: workspaceID, OwnerID: p.user.ID, Kind: "ephemeral", SandboxID: &sandbox.ID,
+	}); err != nil {
+		s.internal(w, "create Workspace", err)
+		return
+	}
+	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
+		SandboxID: sandbox.ID, WorkspaceID: workspaceID, Mode: "rw",
+		Generation: sandbox.Generation,
+	}); err != nil {
+		if uniqueViolation(err) == "attachments_workspace_rw" {
+			writeProblem(w, "conflict", "the Workspace already has a read-write Attachment")
+			return
+		}
+		s.internal(w, "create Attachment", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.internal(w, "commit Sandbox", err)
+		return
+	}
+	s.audit(ctx, p, "sandbox.create", "sandbox", sandbox.ID.String(), map[string]any{
+		"name": name, "cpu": *req.CPU, "memory": *req.Memory, "snapshot": snapshot,
+	})
+	s.changed(ctx)
+	dto := s.sandboxToDTO(sandbox)
+	dto.Workspace = &sandboxWorkspaceDTO{ID: workspaceID.String(), Mode: "rw"}
+	writeJSON(w, http.StatusCreated, dto)
+}
+
+func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request, p *principal) {
+	limit, ok := parseLimit(r)
+	if !ok {
+		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
+		return
+	}
+	after, ok := parseCursor(r)
+	if !ok {
+		writeProblem(w, "invalid_request", "invalid cursor")
+		return
+	}
+	params := store.ListSandboxesParams{OwnerID: p.user.ID, After: after, Limit: limit + 1}
+	if state := r.URL.Query().Get("state"); state != "" {
+		if !sandboxStates[state] {
+			writeProblem(w, "invalid_request", "unknown Sandbox state")
+			return
+		}
+		params.State = &state
+	}
+	if raw := r.URL.Query().Get("node"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			writeProblem(w, "invalid_request", "node must be a UUID")
+			return
+		}
+		params.NodeID = &id
+	}
+	if raw := r.URL.Query().Get("label"); raw != "" {
+		key, value, found := strings.Cut(raw, "=")
+		if !found || !validLabel(key) || !validLabel(value) {
+			writeProblem(w, "invalid_request", "label must be key=value")
+			return
+		}
+		params.LabelKey, params.LabelValue = &key, &value
+	}
+	rows, err := s.q.ListSandboxes(r.Context(), params)
+	if err != nil {
+		s.internal(w, "list Sandboxes", err)
+		return
+	}
+	list := sandboxList{Items: make([]sandboxDTO, 0, len(rows))}
+	for i, row := range rows {
+		if int32(i) == limit {
+			cursor := EncodeCursor(rows[i-1].ID)
+			list.NextCursor = &cursor
+			break
+		}
+		list.Items = append(list.Items, s.sandboxToDTO(row))
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "invalid_request", "id must be a UUID")
+		return
+	}
+	sb, ok := s.getOwnedSandbox(w, r.Context(), p, id)
+	if !ok {
+		return
+	}
+	if want := r.URL.Query().Get("wait_for"); want != "" {
+		if !sandboxStates[want] {
+			writeProblem(w, "invalid_request", "unknown Sandbox state")
+			return
+		}
+		sb = s.waitForSandbox(r.Context(), sb, want)
+	}
+	writeJSON(w, http.StatusOK, s.sandboxToDTO(sb))
+}
+
+func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "invalid_request", "id must be a UUID")
+		return
+	}
+	ctx := r.Context()
+	sb, ok := s.getOwnedSandbox(w, ctx, p, id)
+	if !ok {
+		return
+	}
+	if sb.State == "failed" {
+		writeProblem(w, "conflict", "a failed Sandbox cannot be started; delete it")
+		return
+	}
+	if sb.State != "stopped" {
+		writeProblem(w, "conflict", "the Sandbox is not stopped")
+		return
+	}
+	used, err := s.q.CountActiveSandboxes(ctx, p.user.ID)
+	if err != nil {
+		s.internal(w, "count active Sandboxes", err)
+		return
+	}
+
+	// One transaction: the Reconciler must never see a pending Sandbox without
+	// its Attachment or its allocation.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.internal(w, "begin transaction", err)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	started, err := q.StartSandbox(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "conflict", "the Sandbox state changed; retry")
+		return
+	}
+	if err != nil {
+		s.internal(w, "start Sandbox", err)
+		return
+	}
+	if used >= int64(p.user.SandboxQuota) {
+		cause := "quota_exceeded"
+		if _, err := q.MarkSandboxFailed(ctx, store.MarkSandboxFailedParams{
+			ID: id, Generation: started.Generation, Cause: &cause,
+		}); err != nil {
+			s.internal(w, "fail Sandbox on quota", err)
+			return
+		}
+		failed, err := q.GetSandbox(ctx, id)
+		if err != nil {
+			s.internal(w, "read failed Sandbox", err)
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			s.internal(w, "commit quota failure", err)
+			return
+		}
+		s.changed(ctx)
+		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(failed))
+		return
+	}
+	ws, err := q.GetSandboxWorkspace(ctx, &id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "conflict", "the Sandbox has no Workspace")
+		return
+	}
+	if err != nil {
+		s.internal(w, "look up Workspace", err)
+		return
+	}
+	// Stopping released the Attachment and the Allocation; start re-acquires
+	// both. The implicit Workspace is always read-write (ADR-0018).
+	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
+		SandboxID: id, WorkspaceID: ws.ID, Mode: "rw", Generation: started.Generation,
+	}); err != nil {
+		if uniqueViolation(err) == "attachments_workspace_rw" {
+			writeProblem(w, "conflict", "the Workspace already has a read-write Attachment")
+			return
+		}
+		s.internal(w, "re-create Attachment", err)
+		return
+	}
+	if started.NodeID != nil {
+		if err := q.CreateAllocation(ctx, store.CreateAllocationParams{
+			SandboxID: id, NodeID: *started.NodeID, Cpu: started.Cpu,
+			Memory: started.Memory, Generation: started.Generation,
+		}); err != nil {
+			s.internal(w, "re-create Allocation", err)
+			return
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.internal(w, "commit start", err)
+		return
+	}
+	s.audit(ctx, p, "sandbox.start", "sandbox", id.String(), nil)
+	s.changed(ctx)
+	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(started))
+}
+
+func (s *Server) handleStopSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "invalid_request", "id must be a UUID")
+		return
+	}
+	ctx := r.Context()
+	sb, ok := s.getOwnedSandbox(w, ctx, p, id)
+	if !ok {
+		return
+	}
+	switch sb.State {
+	case "stopped":
+		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(sb))
+		return
+	case "deleting", "deleted":
+		writeProblem(w, "conflict", "the Sandbox is being deleted")
+		return
+	}
+	stopped, err := s.q.StopSandbox(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Already stopping: the action is idempotent.
+		if current, getErr := s.q.GetSandbox(ctx, id); getErr == nil {
+			writeJSON(w, http.StatusAccepted, s.sandboxToDTO(current))
+			return
+		}
+		writeProblem(w, "conflict", "the Sandbox state changed; retry")
+		return
+	}
+	if err != nil {
+		s.internal(w, "stop Sandbox", err)
+		return
+	}
+	s.audit(ctx, p, "sandbox.stop", "sandbox", id.String(), nil)
+	s.changed(ctx)
+	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(stopped))
+}
+
+func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "invalid_request", "id must be a UUID")
+		return
+	}
+	ctx := r.Context()
+	sb, ok := s.getOwnedSandbox(w, ctx, p, id)
+	if !ok {
+		return
+	}
+	if sb.State == "deleting" {
+		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(sb))
+		return
+	}
+	deleted, err := s.q.DeleteSandbox(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "conflict", "the Sandbox state changed; retry")
+		return
+	}
+	if err != nil {
+		s.internal(w, "delete Sandbox", err)
+		return
+	}
+	s.audit(ctx, p, "sandbox.delete", "sandbox", id.String(), nil)
+	s.changed(ctx)
+	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(deleted))
+}
+
+func (s *Server) getOwnedSandbox(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Sandbox, bool) {
+	sb, err := s.q.GetSandbox(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, sb.OwnerID)) {
+		writeProblem(w, "not_found", "no such Sandbox")
+		return store.Sandbox{}, false
+	}
+	if err != nil {
+		s.internal(w, "get Sandbox", err)
+		return store.Sandbox{}, false
+	}
+	return sb, true
+}
+
+func (s *Server) ownerOrAdmin(p *principal, owner uuid.UUID) bool {
+	return p.isAdmin() || p.user.ID == owner
+}
+
+// waitForSandbox polls until the wanted state, a terminal state, or the
+// 60-second cap. Expiry returns the current state, not an error (api.md §1).
+func (s *Server) waitForSandbox(ctx context.Context, sb store.Sandbox, want string) store.Sandbox {
+	deadline := time.Now().Add(waitForLimit)
+	for sb.State != want && sb.State != "failed" && sb.State != "deleted" && time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return sb
+		case <-time.After(250 * time.Millisecond):
+		}
+		current, err := s.q.GetSandbox(ctx, sb.ID)
+		if err != nil {
+			return sb
+		}
+		sb = current
+	}
+	return sb
+}
+
+func (s *Server) sandboxToDTO(sb store.Sandbox) sandboxDTO {
+	labels := map[string]string{}
+	if len(sb.Labels) > 0 {
+		_ = json.Unmarshal(sb.Labels, &labels)
+	}
+	dto := sandboxDTO{
+		ID: sb.ID.String(), Name: sb.Name, Labels: labels,
+		State: sb.State, Cause: sb.Cause, NodeID: uuidPtr(sb.NodeID),
+		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
+		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
+	}
+	if sb.State == "pending" && sb.NodeID == nil {
+		reason := "waiting for Node capacity"
+		dto.BlockedReason = &reason
+	}
+	return dto
+}
+
+func validLabel(s string) bool {
+	return s != "" && len(s) <= maxNameLen
+}
+
+func validLabels(labels map[string]string) bool {
+	for key, value := range labels {
+		if !validLabel(key) || len(value) > maxNameLen {
+			return false
+		}
+	}
+	return true
+}
+
+// changed wakes the Reconciler after the caller committed a desired-state
+// write. NOTIFY never fails the request; the periodic tick is the fallback.
+func (s *Server) changed(ctx context.Context) {
+	if _, err := s.pool.Exec(ctx, "SELECT pg_notify($1, '')", reconcileChannel); err != nil && ctx.Err() == nil {
+		s.log.Warn("notify reconciler", "error", err)
+	}
+	s.reconcile.notify()
+}
