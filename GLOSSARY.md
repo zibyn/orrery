@@ -29,7 +29,7 @@ An immutable content-addressed version of a Resource. Its address identifies the
 _Avoid_: mutable file, Workspace snapshot
 
 **Artifact**:
-A caller-declared output of an Exec that is collected as a ResourceVersion; Workspace changes are not Artifacts unless explicitly collected.
+A caller-declared output of an Exec that is collected as a ResourceVersion once the Exec has finished; Workspace changes are not Artifacts unless explicitly collected.
 _Avoid_: automatic Workspace backup
 
 **Snapshot**:
@@ -37,8 +37,12 @@ An immutable, reusable software-environment template. It excludes Workspace stat
 _Avoid_: Workspace checkpoint, process checkpoint
 
 **SnapshotVersion**:
-An immutable build result of a Snapshot, produced from an allowed base environment and declared build inputs.
+An immutable build result of a Snapshot, produced from a Platform Base Image and declared build inputs. Its inputs are traceable; rebuilding them is not promised to yield the same result.
 _Avoid_: Workspace snapshot, running Sandbox
+
+**Platform Base Image**:
+A software environment the platform has approved as the starting point of a Snapshot. Only the platform adds or removes one.
+_Avoid_: base layer, user image
 
 **Content Address**:
 A stable identifier derived from immutable content, used to refer to that content independently of a Resource name or provenance record.
