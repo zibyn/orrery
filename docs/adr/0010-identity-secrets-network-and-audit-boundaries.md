@@ -1,6 +1,6 @@
 # ADR-0010: Identity, secrets, network, and audit boundaries
 
-- Status: accepted
+- Status: accepted; Capability Channel, Egress and Audit superseded by ADR-0016; Node identity, Ingress, Deletion and caller tokens amended by ADR-0017
 - Date: 2026-10-17
 
 ## Context
@@ -9,13 +9,13 @@ The platform has to answer who a caller is, how a Node becomes trusted, where th
 
 ## Decision
 
-**Caller identity.** Per-User static API tokens over TLS, stored hashed in PostgreSQL, scoped `user` or `admin`. No OIDC in Phase 1. There is no role model beyond ownership plus `admin`; `admin` must not be the credential an Agent holds, because enrolling a Node mints a new Node identity.
+**Caller identity.** Per-User static API tokens over TLS, stored hashed in PostgreSQL, scoped `user` or `admin`. No OIDC. There is no role model beyond ownership plus `admin`; `admin` must not be the credential an Agent holds, because enrolling a Node mints a new Node identity.
 
 **Node identity.** Private-CA-issued client certificates. The Node generates its own keypair (the Control Plane never sees a private key) and redeems a single-use, short-lived Enrollment Packet for one CSR-signed certificate; renewal happens at 50% of remaining life through an RPC separate from enrollment. Revocation is `delete the Node row and refuse renewal`, with no CRL or OCSP. The failure semantics are asymmetric on purpose: `not_found`/`unauthenticated` clears local identity, while a transport failure preserves it and backs off, so a Control Plane restart cannot make a fleet clear its own identity.
 
 **Platform secrets.** Object-store keys, Git provider minting credentials, the CA private key and database credentials are deployment-time file path references. They do not live in PostgreSQL and are not reachable through the API, so they stay out of backups, the query surface, and the question of who may read a table.
 
-**Caller secrets.** A caller's secrets and Git account tokens may enter a Sandbox, as Coder and Daytona allow; how is ADR-0013. The platform never writes them inside the Workspace. Egress-proxy placeholder substitution is the documented upgrade path, not the Phase 1 mechanism.
+**Caller secrets.** A caller's secrets and Git account tokens may enter a Sandbox, as Coder and Daytona allow; how is ADR-0013. The platform never writes them inside the Workspace. Egress-proxy placeholder substitution is the documented upgrade path, not the mechanism.
 
 **Capability Channel.** The Sandbox reaches platform capabilities through a platform-managed channel, which is a named exception to the Runtime Provider contract's "no arbitrary host mounts". It carries declared verbs and targets and is never a general command executor; its only credential-carrying verb is ADR-0013's `git.credential`. Source-address authentication is not a mechanism: nothing inside a Sandbox can be authenticated by where it connects from.
 
@@ -36,7 +36,7 @@ The platform has to answer who a caller is, how a Node becomes trusted, where th
 
 ## Rejected alternatives
 
-- OIDC or an external IdP in Phase 1: an issuer and a token-exchange flow for zero benefit at one team, with no user model to federate.
+- OIDC or an external IdP: an issuer and a token-exchange flow for zero benefit at one team, with no user model to federate.
 - Shared registration tokens for Nodes: GitLab's own architecture blueprint calls a shared token untraceable ("no possibility of knowing the source of a leaked token").
 - Source-address authentication for the Capability Channel or the Gateway.
 - Egress-proxy placeholder substitution with a per-Sandbox CA in v1: TLS interception, a CA delivered into every Sandbox, and response scrubbing, for the benefit of vendors who must serve arbitrary tooling.

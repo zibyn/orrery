@@ -1,6 +1,6 @@
 # ADR-0011: The Sandbox Capability Channel
 
-- Status: accepted
+- Status: superseded by ADR-0016
 - Date: 2026-10-17
 
 ## Context
@@ -9,7 +9,7 @@ ADR-0010 settled that a Sandbox reaches platform capabilities through a credenti
 
 ## Decision
 
-**Verbs.** The channel accepts a closed enumeration of verbs. Each verb's semantics belong to the decision that defines it; this ADR defines only transport, identity and the authorization frame. Phase 1's list is exactly `git.credential`, defined by ADR-0013; this ADR adds none. Adding a verb is a new decision. File operations stay on the Data Plane, Artifacts are declared on the Exec and collected by the Node Agent, and Resources are attached at creation, so none of them is a channel verb.
+**Verbs.** The channel accepts a closed enumeration of verbs. Each verb's semantics belong to the decision that defines it; this ADR defines only transport, identity and the authorization frame. The list is exactly `git.credential`, defined by ADR-0013; this ADR adds none. Adding a verb is a new decision. File operations stay on the Data Plane, Artifacts are declared on the Exec and collected by the Node Agent, and Resources are attached at creation, so none of them is a channel verb.
 
 **Host side.** The owning Node Agent listens and forwards over its existing outbound mTLS connection to the Control Plane. A socket on the Node's local filesystem is not a connection into the Node.
 

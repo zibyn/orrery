@@ -1,6 +1,6 @@
 # ADR-0012: Resource, Artifact, and Snapshot persistence
 
-- Status: accepted
+- Status: accepted; Artifact, Snapshot base, retention and object store amended by ADR-0017
 - Date: 2026-10-17
 
 ## Context
@@ -17,22 +17,21 @@
 
 **Attachment to a Sandbox.** A Resource reference is resolved to a concrete ResourceVersion when the Sandbox is created. The Node Agent fetches it into a Node-local cache keyed by content address and mounts it read-only. A Sandbox never sees a version published after it was created; copying into the Workspace is the caller's choice.
 
-**Artifact.** An Artifact is an explicit, caller-declared Exec output, collected by the Node Agent after the Exec reaches a terminal state and published as a ResourceVersion. Paths must stay within `/workspace`; traversal, device and special files, and external mounts are rejected; symlinks are recorded, never followed. There is no freeze barrier: the manifest is what was read. If another Exec writes the same Workspace during collection, consistency is not guaranteed, and the capability documentation says so.
+**Publishing from a Workspace.** There is no Artifact concept (ADR-0017). `publish(path → Resource)` on a Workspace creates a ResourceVersion and moves the Resource's current pointer. Paths must stay within `/workspace`; traversal, device and special files, and external mounts are rejected; symlinks are recorded, never followed. There is no freeze barrier: the manifest is what was read. If an Exec writes the same path while it is published, consistency is not guaranteed, and the capability documentation says so.
 
-**Snapshot and SnapshotVersion.** Separate from Resource. A SnapshotVersion is an OCI image digest in a platform-operated registry backed by the same object store; Nodes pull by digest. It is built as a `system`-priority job on a Node (`docker build`, then push), with lifecycle `building → ready | failed | cancelled`; only `ready` is runnable. The base must be on a platform-maintained list of base image digests, changed only by the platform and audited, like an Egress Opening. Inputs are declared: the base digest, build inputs, and explicitly referenced ResourceVersions; the Workspace is never a build context. Builder version and base digest are recorded as provenance, not as part of the address, and reproducibility is not promised. Build Secrets never enter the output, manifest or logs.
+**Snapshot and SnapshotVersion.** Separate from Resource. A SnapshotVersion is an OCI image digest in a platform-operated registry backed by the same object store; Nodes pull by digest. It is built as a `system`-priority job on a Node (`docker build`, then push), with lifecycle `building → ready | failed | cancelled`; only `ready` is runnable. Any digest may be imported and any base built from; platform images are recommended defaults. Inputs are declared: the base digest, build inputs, and explicitly referenced ResourceVersions; the Workspace is never a build context. Builder version and base digest are recorded as provenance, not as part of the address, and reproducibility is not promised. Build Secrets never enter the output, manifest or logs.
 
-**Retention.** A current version never expires. A non-current ResourceVersion or SnapshotVersion that nothing references expires after a deployment-configured TTL. There is no keep-last-N and no idle deactivation. Artifacts follow the same rule.
+**Retention.** A current version never expires. A non-current ResourceVersion that nothing references expires after a deployment-configured TTL. A SnapshotVersion is deleted only explicitly; a stopped Sandbox counts as a reference. There is no keep-last-N and no idle deactivation.
 
-**Deletion and GC.** Deleting a Resource writes a tombstone; a current version cannot be deleted directly; active references block physical cleanup. PostgreSQL metadata and references are authoritative. CAS objects, registry blobs and unpublished uploads are removed only after database visibility checks, a configurable grace period, and an idempotent, retryable sweep. A published version whose blob temporarily cannot be read becomes unavailable and is repaired, not deleted.
+**Deletion and GC.** Deleting a Resource writes a tombstone; a current version cannot be deleted directly; active references block physical cleanup. PostgreSQL metadata and references are authoritative. CAS objects and unpublished uploads are removed only after database visibility checks, a configurable grace period, and an idempotent, retryable sweep. A published version whose blob temporarily cannot be read becomes unavailable and is repaired, not deleted.
 
-**Quota.** No storage quota in Phase 1; retention TTL and capacity monitoring bound growth.
+**Quota.** No storage quota; retention TTL and capacity monitoring bound growth.
 
 ## Consequences
 
-- Phase 1 needs an OCI registry deployment on top of MinIO; its deployment, authentication and listening surface are ADR-0014, which also makes registry blob GC an offline maintenance operation rather than part of the online sweep.
-- Whether MinIO verifies `x-amz-checksum-sha256` on presigned PUTs must be tested before implementation; if not, the Upload paragraph needs a server-side hashing step.
-- Agents running parallel Execs against one Workspace must not expect Artifact snapshots to be point-in-time consistent.
-- Which phase ships Resource and Snapshot is `#39`'s call; this ADR fixes only their semantics.
+- The platform needs an OCI registry on the S3-compatible object store (ADR-0014); registry blob GC is an operations procedure.
+- Whether the chosen object store verifies `x-amz-checksum-sha256` on presigned PUTs must be tested before implementation; if not, the Upload paragraph needs a server-side hashing step.
+- Agents running parallel Execs against one Workspace must not expect a publish to be point-in-time consistent.
 
 ## Rejected alternatives
 
@@ -42,4 +41,4 @@
 - Policy version as a build input and a reproducibility promise: no vendor offers either, and nothing in the platform consumes them.
 - Keep-last-N retention and idle Snapshot deactivation (Vercel, Daytona): unneeded at single-team scale.
 - Following the Resource pointer live inside a running Sandbox: the Sandbox's inputs would change under it.
-- A storage quota in Phase 1: added when one User fills the store.
+- A storage quota: added when one User fills the store.

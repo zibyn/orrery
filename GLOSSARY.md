@@ -18,27 +18,23 @@ _Avoid_: Workspace lease
 
 **Resource**:
 A stable named collection of persisted content whose current version may be mounted, copied, or referenced by execution.
-_Avoid_: Workspace, Artifact
+_Avoid_: Workspace, build output
 
 **ResourceVersion**:
 An immutable content-addressed version of a Resource. Its address identifies the content; provenance and metadata explain how that content entered the platform.
 _Avoid_: mutable file, Workspace snapshot
-
-**Artifact**:
-A caller-declared output of an Exec that is collected as a ResourceVersion once the Exec has finished; Workspace changes are not Artifacts unless explicitly collected.
-_Avoid_: automatic Workspace backup
 
 **Snapshot**:
 An immutable, reusable software-environment template. It excludes Workspace state, Resources, Secrets, and running processes.
 _Avoid_: Workspace checkpoint, process checkpoint
 
 **SnapshotVersion**:
-An immutable build result of a Snapshot, produced from a Platform Base Image and declared build inputs. Its inputs are traceable; rebuilding them is not promised to yield the same result.
+An immutable image of a Snapshot, built from a base and declared build inputs or imported by digest. Its inputs are traceable; rebuilding them is not promised to yield the same result.
 _Avoid_: Workspace snapshot, running Sandbox
 
 **Platform Base Image**:
-A software environment the platform has approved as the starting point of a Snapshot. Only the platform adds or removes one.
-_Avoid_: base layer, user image
+A software environment the platform recommends as the starting point of a Snapshot. It is a default, not a restriction.
+_Avoid_: base layer, approved image
 
 **Content Address**:
 A stable identifier derived from immutable content, used to refer to that content independently of a Resource name or provenance record.
@@ -49,10 +45,6 @@ _Avoid_: mutable Resource name
 **Exec**:
 A durable execution intent representing one requested command or interactive operation.
 _Avoid_: terminal session, process
-
-**ExecAttempt**:
-One concrete attempt to realize an Exec on a Node through a Runtime Provider. An attempt may become `lost` when execution may have started but its result cannot be confirmed.
-_Avoid_: Exec (when referring to the user intent)
 
 **Idempotency Key**:
 A caller-supplied identity for one requested operation, used to prevent duplicate durable execution intents.
@@ -67,24 +59,20 @@ A platform-enforced execution deadline that produces a timed-out terminal result
 _Avoid_: cancellation (when the cause matters)
 
 **Execution Log**:
-The ordered, durable output record of an Exec, resumable by sequence and distinct from a live stream attachment.
+The ordered, durable output record of a non-interactive Exec, resumable by sequence and distinct from a live stream attachment. A PTY's output is not an Execution Log.
 _Avoid_: terminal session
 
 **PTY Attachment**:
-A live input/output connection to an Exec running in PTY mode. Reattaching observes the same execution and does not start another one. At most one attachment controls input at a time; other attachments are observers.
-_Avoid_: ExecAttempt
-
-**Execution Retry**:
-A new ExecAttempt for the same Exec, allowed only for a confirmed pre-start transient failure and bounded by the platform retry policy.
-_Avoid_: duplicate Exec
+A live input/output connection to an Exec running in PTY mode. Reattaching observes the same execution and does not start another one. Any number of attachments may send input; a PTY left with no attachment for its idle period is terminated.
+_Avoid_: terminal session
 
 **Log Spool**:
-A bounded temporary record of Exec output held while durable log storage is unavailable; it preserves ordering but does not permit silent loss when capacity is exhausted.
+The Node-local record of Exec output kept until the Control Plane has stored it. It survives a Node Agent restart, preserves ordering, and ends in an explicit truncation marker rather than silent loss when capacity is exhausted.
 _Avoid_: best-effort logs
 
-**Attempt Identity**:
-The stable identity of one ExecAttempt across command delivery, Node Agent restarts, reconciliation, and late status reports.
-_Avoid_: delivery attempt
+**Exec Supervisor**:
+The platform process inside a Sandbox's Runtime that starts an Exec's command and records its output and exit status on the Node, so the Exec outlives a Node Agent restart.
+_Avoid_: init process, sidecar, daemon
 
 **Execution Result**:
 The durable outcome of an Exec, including its platform cause and, when available, process exit code or terminating signal.
@@ -110,16 +98,16 @@ _Avoid_: log deletion event
 One ordered piece of Exec output tagged with its source stream, such as stdout, stderr, or PTY output.
 _Avoid_: WebSocket message
 
-**Exec Result Aggregation**:
-The rule that derives one Exec outcome from its ordered ExecAttempts; a successful Attempt wins while prior failures remain history.
-_Avoid_: last-attempt result
-
 **Termination Confirmation**:
 An observation that an Exec process is no longer running, distinct from sending a cancellation or kill request.
 _Avoid_: cancellation request
 
+**Idle Stop**:
+The automatic stopping of a Sandbox that has had no running Exec and no live connection for its idle period.
+_Avoid_: hibernation, eviction
+
 **Sandbox State**:
-The lifecycle condition of a Sandbox independently of its Runtime instance: provisioning, ready, stopping, stopped, deleting, or deleted; temporary Runtime or Node failure is represented as an unavailable condition.
+The lifecycle condition of a Sandbox independently of its Runtime instance: pending, provisioning, ready, stopping, stopped, deleting, deleted, or failed with a cause. A stopped Sandbox can be started again; an unreachable Node is an unavailable condition, not a state.
 _Avoid_: Runtime state
 
 **Node**:
@@ -127,7 +115,7 @@ A registered compute host whose Node Agent reports available Runtime Providers, 
 _Avoid_: worker container, Sandbox
 
 **Paused Node**:
-A Node that receives no new allocations while its running Sandboxes continue undisturbed. A paused Node with no running Sandbox is drained; drained is a fact, not a separate state.
+A Node that receives no new Workspaces, while Workspaces already bound to it can still run Sandboxes and running Sandboxes continue undisturbed. A paused Node with no running Sandbox is drained; drained is a fact, not a separate state.
 _Avoid_: cordoned, draining state, evicting
 
 **Node Agent**:
@@ -163,8 +151,8 @@ The facts a Node Agent self-checks and reports about what a Runtime Provider can
 _Avoid_: provider promise, static feature list
 
 **Lease**:
-A time-bounded, fenced claim over a mutable Workspace or schedulable compute resource.
-_Avoid_: permanent lock
+A fenced claim over a mutable Workspace or schedulable compute resource. It ends by an explicit act, never by expiry; its fencing token rejects work from a holder that has been superseded.
+_Avoid_: timed lock, TTL
 
 **User**:
 A human or automation principal that owns resources and acts through scoped credentials.
@@ -173,12 +161,20 @@ _Avoid_: Tenant, global administrator
 ## Access and reachability
 
 **API Token**:
-A credential a User presents to the Control Plane or the Gateway. It is scoped to one User and to a level of authority.
+A named credential a User presents to the Control Plane or the Gateway. A User may hold several; each is scoped to that User and to a level of authority, and is revoked on its own.
 _Avoid_: session, login, key pair
 
 **Enrollment Packet**:
-A single-use, short-lived credential by which an unregistered Node obtains its first Node Identity. Redeeming it is the platform's only unauthenticated entry point.
+A single-use, short-lived credential by which an unregistered Node obtains its Node Token. Redeeming it is the platform's only unauthenticated entry point.
 _Avoid_: join token, registration token, bootstrap secret
+
+**Node Token**:
+The credential by which an enrolled Node Agent authenticates to the Control Plane. Deleting the Node revokes it.
+_Avoid_: certificate, runner key
+
+**Port Forward**:
+An owner-only connection from outside to a port a process listens on inside a Sandbox, made through the Gateway without exposing the Sandbox on a network address.
+_Avoid_: preview URL, public link, ingress
 
 **Secret**:
 Caller-originated credential material that the platform holds for a User and may deliver into the User's Sandboxes. Its value can be written but never read back.
@@ -192,20 +188,12 @@ _Avoid_: Repository, remote
 A User's authorization of the platform to act for that User's account on one Git Provider. Git inside the User's Sandboxes authenticates through it.
 _Avoid_: Repository, deploy key, PAT
 
-**Capability Channel**:
-The platform-managed path by which a Sandbox asks the platform to perform a capability it cannot perform itself. It carries declared platform verbs and their targets, never arbitrary commands. Each Sandbox has its own, a request on it speaks for that Sandbox, and it is independent of the Sandbox's Egress Policy.
-_Avoid_: agent socket, proxy, sidecar
-
-**Egress Policy**:
-The declared reachability of a Sandbox's network egress, expressed as a tier plus the destinations the caller requests beyond it.
-_Avoid_: firewall rules, allowlist, network config
-
-**Egress Opening**:
-A platform-recorded permission for a normally denied destination to become reachable. A caller may request one but never grant it.
-_Avoid_: exception, whitelist entry, firewall hole
+**Sandbox Token**:
+A credential given to one Sandbox at creation by which code inside it asks the platform for its owner's Git access, and nothing else. It ends with the Sandbox.
+_Avoid_: agent token, API Token
 
 **Audit Record**:
-An append-only statement that a platform decision or mutation happened, kept alongside the state it describes.
+An append-only statement that a platform mutation happened, recorded after the change and kept for a configured period.
 _Avoid_: log line, telemetry event, metric
 
 **Deletion**:
@@ -231,5 +219,5 @@ The stable platform-visible identity of one physical GPU on a Node.
 _Avoid_: GPU index, device ordinal
 
 **User Quota**:
-A User-specific upper bound on the resources and capacity they may have accepted or allocated.
+A User-specific upper bound on the GPUs and concurrent Sandboxes they may have accepted or allocated.
 _Avoid_: priority, billing limit

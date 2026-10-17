@@ -1,6 +1,6 @@
 # ADR-0013: Git accounts and caller Secrets
 
-- Status: accepted
+- Status: accepted; the in-Sandbox transport amended by ADR-0016
 - Date: 2026-10-17
 
 ## Context
@@ -13,17 +13,17 @@ This is a coding sandbox: an Agent must be able to clone and push with plain `gi
 
 **Git Account Links.** A User links an account by running the provider's OAuth authorization-code flow with PKCE against `/external-auth/<id>/callback`. The access and refresh tokens are stored encrypted in PostgreSQL, one link per User and provider. Unlinking deletes them and calls the provider's revoke endpoint where one exists. There is no personal-access-token path for Git; a PAT is an ordinary Secret.
 
-**In the Sandbox.** The Node Agent sets `credential.helper` (after resetting the image's helper list) to a platform helper mounted next to the Capability Channel socket. On `get`, the helper calls the channel verb `git.credential {host}`; the Control Plane matches the host against the provider patterns, refreshes the owner's token if it has expired, writes an Audit Record and returns it. `store` and `erase` do nothing, so git never persists the token. With no linked account the request fails with the authorization URL, which the Agent can pass to its User; with more than one matching provider it fails rather than guessing. The same verb backs `stars-sandbox token <provider>`, so `GH_TOKEN=$(stars-sandbox token github) gh pr create` works. Git itself runs in the Sandbox and reaches the remote under the Sandbox's Egress Policy; a self-hosted instance on a private address needs an Egress Opening.
+**In the Sandbox.** The Node Agent sets `credential.helper` (after resetting the image's helper list) to a platform helper. On `get`, the helper calls `api` with the Sandbox Token (ADR-0016) for the host; the Control Plane matches the host against the provider patterns, refreshes the owner's token if it has expired, writes an Audit Record and returns it. `store` and `erase` do nothing, so git never persists the token. With no linked account the request fails with the authorization URL, which the Agent can pass to its User; with more than one matching provider it fails rather than guessing. The same call backs `stars-sandbox token <provider>`, so `GH_TOKEN=$(stars-sandbox token github) gh pr create` works. Git itself runs in the Sandbox and reaches the remote over the Node's network.
 
-**Caller Secrets.** A Secret is a User-owned Control Plane resource with a name and a write-only value, stored encrypted in PostgreSQL. At Sandbox creation the caller maps environment variable names to Secret names and the values are injected then; later changes to a Secret reach only new Sandboxes. Phase 1 has no file delivery and no in-place refresh. The platform never writes a Secret into the Workspace.
+**Caller Secrets.** A Secret is a User-owned Control Plane resource with a name and a write-only value, stored encrypted in PostgreSQL. At Sandbox creation the caller maps environment variable names to Secret names and the values are injected then; later changes to a Secret reach only new Sandboxes. There is no file delivery and no in-place refresh. The platform never writes a Secret into the Workspace.
 
-**Audit.** Secret create, update and delete; the Secret names a Sandbox was created with; every `git.credential` issue, with host and Sandbox. Never a value.
+**Audit.** Secret create, update and delete; the Secret names a Sandbox was created with; every Git token issue, with host and Sandbox. Never a value.
 
 ## Consequences
 
-- Credentials do enter the Sandbox: any process in it can call the helper and read the owner's token, which reaches every repository the token reaches. What bounds this is the provider's own scoping (a GitHub App installation, OAuth scopes), the Egress Policy, and the audit trail, not the Sandbox boundary.
+- Credentials do enter the Sandbox: any process in it can call the helper and read the owner's token, which reaches every repository the token reaches. What bounds this is the provider's own scoping (a GitHub App installation, OAuth scopes), and the audit trail, not the Sandbox boundary.
 - Revoking a link stops future issues; a token already read in a running Sandbox lives until it expires upstream.
-- The Capability Channel's Phase 1 verb list is exactly `git.credential`, and it is the channel's one credential-carrying verb.
+- The Sandbox Token's only capability is fetching a Git token (ADR-0016).
 - There is no platform Repository resource, no platform clone and no platform push; cloning, pushing and pull requests are the Agent's own `git`/`gh` commands.
 - Git over SSH is not supported; HTTPS only.
 
