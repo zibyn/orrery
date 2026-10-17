@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/nodeproto"
 )
 
 // noGenerationFence skips the stale-generation check. CancelExec uses it: the
@@ -50,7 +51,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			if err := c.rt.provisionWorkspace(wsID); err != nil {
 				return err
 			}
-			c.observeWorkspace(cmd.WorkspaceId, cmd.Generation, "ready", "")
+			c.observeWorkspace(cmd.WorkspaceId, cmd.Generation, nodeproto.WorkspacePhaseReady, "")
 			return nil
 		})
 	case *nodev1.ControlMessage_DeleteWorkspace:
@@ -64,7 +65,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			if err := c.rt.deleteWorkspace(wsID); err != nil {
 				return err
 			}
-			c.observeWorkspace(cmd.WorkspaceId, cmd.Generation, "gone", "")
+			c.observeWorkspace(cmd.WorkspaceId, cmd.Generation, nodeproto.WorkspacePhaseGone, "")
 			return nil
 		})
 	case *nodev1.ControlMessage_CreateSandbox:
@@ -86,10 +87,10 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				gpuUUIDs:      cmd.GpuUuids,
 			})
 			if err != nil {
-				c.observeSandbox(cmd.SandboxId, cmd.Generation, "create_failed", cause)
+				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)
 				return err
 			}
-			c.observeSandbox(cmd.SandboxId, cmd.Generation, "running", "")
+			c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseRunning, "")
 			return nil
 		})
 	case *nodev1.ControlMessage_StopSandbox:
@@ -103,7 +104,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			if err := c.rt.stopSandbox(c.ctx, sbID); err != nil {
 				return err
 			}
-			c.observeSandbox(cmd.SandboxId, cmd.Generation, "gone", "")
+			c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseGone, "")
 			return nil
 		})
 	case *nodev1.ControlMessage_StartExec:
@@ -189,18 +190,18 @@ func commandFailed(commandID string, err error) {
 	}
 }
 
-func (c *commandRunner) observeSandbox(id string, generation int64, phase, cause string) {
+func (c *commandRunner) observeSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string) {
 	c.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{
 		SandboxObserved: &nodev1.SandboxObserved{
-			SandboxId: id, Generation: generation, Phase: phase, Cause: cause,
+			SandboxId: id, Generation: generation, Phase: string(phase), Cause: cause,
 		},
 	}})
 }
 
-func (c *commandRunner) observeWorkspace(id string, generation int64, phase, cause string) {
+func (c *commandRunner) observeWorkspace(id string, generation int64, phase nodeproto.WorkspacePhase, cause string) {
 	c.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_WorkspaceObserved{
 		WorkspaceObserved: &nodev1.WorkspaceObserved{
-			WorkspaceId: id, Generation: generation, Phase: phase, Cause: cause,
+			WorkspaceId: id, Generation: generation, Phase: string(phase), Cause: cause,
 		},
 	}})
 }

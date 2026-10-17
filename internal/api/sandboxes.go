@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,11 +20,6 @@ import (
 const waitForLimit = 60 * time.Second
 
 const maxMemoryBytes = 1 << 50 // 1 PiB, a sanity bound only
-
-var sandboxStates = map[string]bool{
-	string(SandboxPending): true, string(SandboxProvisioning): true, string(SandboxReady): true, string(SandboxStopping): true,
-	string(SandboxStopped): true, string(SandboxDeleting): true, string(SandboxDeleted): true, string(SandboxFailed): true,
-}
 
 type createSandboxRequest struct {
 	Name      *string                  `json:"name"`
@@ -360,7 +356,7 @@ func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request, p *
 	}
 	params := store.ListSandboxesParams{OwnerID: owner, After: after, Limit: limit + 1}
 	if state := r.URL.Query().Get("state"); state != "" {
-		if !sandboxStates[state] {
+		if !slices.Contains(sandboxStateNames, state) {
 			writeProblem(w, "invalid_request", "unknown Sandbox state")
 			return
 		}
@@ -414,7 +410,7 @@ func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request, p *pri
 		return
 	}
 	if want := r.URL.Query().Get("wait_for"); want != "" {
-		if !sandboxStates[want] {
+		if !slices.Contains(sandboxStateNames, want) {
 			writeProblem(w, "invalid_request", "unknown Sandbox state")
 			return
 		}

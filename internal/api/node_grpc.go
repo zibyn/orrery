@@ -394,8 +394,8 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 	if err != nil || sb.NodeID == nil || *sb.NodeID != nodeID {
 		return
 	}
-	switch obs.Phase {
-	case "running":
+	switch nodeproto.SandboxPhase(obs.Phase) {
+	case nodeproto.SandboxPhaseRunning:
 		rows, err := n.s.q.MarkSandboxReady(ctx, store.MarkSandboxReadyParams{
 			ID: id, Generation: obs.Generation,
 		})
@@ -405,7 +405,7 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 		if rows > 0 {
 			n.s.reconcile.notify()
 		}
-	case "create_failed":
+	case nodeproto.SandboxPhaseCreateFailed:
 		cause := obs.Cause
 		if cause == "" {
 			cause = "runtime_create_failed"
@@ -421,7 +421,7 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 			n.releaseCompute(ctx, id)
 			n.s.reconcile.notify()
 		}
-	case "gone":
+	case nodeproto.SandboxPhaseGone:
 		n.recordSandboxGone(ctx, id, obs.Generation)
 	}
 }
@@ -657,8 +657,8 @@ func (n *nodeService) recordWorkspaceObserved(ctx context.Context, nodeID uuid.U
 	if err != nil || ws.NodeID == nil || *ws.NodeID != nodeID {
 		return
 	}
-	switch obs.Phase {
-	case string(WorkspaceReady):
+	switch nodeproto.WorkspacePhase(obs.Phase) {
+	case nodeproto.WorkspacePhaseReady:
 		rows, err := n.s.q.MarkWorkspaceReady(ctx, store.MarkWorkspaceReadyParams{
 			ID: id, Generation: obs.Generation,
 		})
@@ -672,7 +672,7 @@ func (n *nodeService) recordWorkspaceObserved(ctx context.Context, nodeID uuid.U
 			}
 			n.s.reconcile.notify()
 		}
-	case "gone":
+	case nodeproto.WorkspacePhaseGone:
 		rows, err := n.s.q.MarkWorkspaceDeleted(ctx, store.MarkWorkspaceDeletedParams{
 			ID: id, Generation: obs.Generation,
 		})

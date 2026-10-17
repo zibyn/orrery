@@ -1,5 +1,6 @@
-// Package nodeproto holds the version and capability vocabulary shared by the
-// Control Plane and the Node Agent (docs/spec/node-protocol.md).
+// Package nodeproto holds the version, capability, and observation-phase
+// vocabulary shared by the Control Plane and the Node Agent
+// (docs/spec/node-protocol.md).
 package nodeproto
 
 import "encoding/json"
@@ -37,6 +38,24 @@ var Required = []string{
 	CapWorkspaceRWMount,
 	CapExecSupervisor,
 }
+
+// SandboxPhase is what a Node observes about a Sandbox's Runtime. Phases are
+// not SandboxState values: a running Runtime maps to a ready Sandbox.
+type SandboxPhase string
+
+const (
+	SandboxPhaseRunning      SandboxPhase = "running"
+	SandboxPhaseGone         SandboxPhase = "gone"
+	SandboxPhaseCreateFailed SandboxPhase = "create_failed"
+)
+
+// WorkspacePhase is what a Node observes about a Workspace's storage.
+type WorkspacePhase string
+
+const (
+	WorkspacePhaseReady WorkspacePhase = "ready"
+	WorkspacePhaseGone  WorkspacePhase = "gone"
+)
 
 // Compatible applies the protocol version rule: a different major or a newer
 // minor is refused; an older minor is accepted and the Node is `outdated`.

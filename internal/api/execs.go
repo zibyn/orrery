@@ -467,9 +467,6 @@ func parseAfter(r *http.Request) (int64, bool) {
 	return n, true
 }
 
-// idempotentExec returns the Exec a repeated Idempotency-Key already created,
-// or nil when the key is unused. The key is scoped to this Sandbox through the
-// request path (api.md §1).
 func execToDTO(e store.Exec) execDTO {
 	state := ""
 	if e.State != nil {

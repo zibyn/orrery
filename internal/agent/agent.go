@@ -306,10 +306,10 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		}
 	}()
 
-	reportSandbox := func(sandboxID string, generation int64, phase, cause string) {
+	reportSandbox := func(sandboxID string, generation int64, phase nodeproto.SandboxPhase, cause string) {
 		send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{
 			SandboxObserved: &nodev1.SandboxObserved{
-				SandboxId: sandboxID, Generation: generation, Phase: phase, Cause: cause,
+				SandboxId: sandboxID, Generation: generation, Phase: string(phase), Cause: cause,
 			},
 		}})
 	}
@@ -350,13 +350,13 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// An Agent restart must not look like a dead runtime: pick up containers
 	// this Node still runs.
 	go rt.adopt(streamCtx, func(sandboxID string, generation int64) {
-		reportSandbox(sandboxID, generation, "running", "")
+		reportSandbox(sandboxID, generation, nodeproto.SandboxPhaseRunning, "")
 	})
 	// A Runtime that died takes its Specs with it: end the local records first
 	// so their deliveries end with an exit frame.
 	reportGone := func(sandboxID string, generation int64) {
 		rt.finalizeLost(sandboxID)
-		reportSandbox(sandboxID, generation, "gone", "")
+		reportSandbox(sandboxID, generation, nodeproto.SandboxPhaseGone, "")
 	}
 	go rt.watchEvents(streamCtx, reportGone)
 	// Repair what a previous Agent process, or an earlier connection, left
