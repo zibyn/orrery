@@ -407,8 +407,8 @@ SELECT * FROM nodes ORDER BY id;
 
 -- name: CreateExec :one
 INSERT INTO execs (
-    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key, pty
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: GetExec :one

@@ -1,0 +1,190 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"golang.org/x/net/websocket"
+	"golang.org/x/term"
+)
+
+// ptyFrame keeps the payload type: binary frames are terminal bytes, text
+// frames are controls (api.md §4).
+type ptyFrame struct {
+	text bool
+	data []byte
+}
+
+var ptyCodec = websocket.Codec{
+	Marshal: func(v interface{}) ([]byte, byte, error) {
+		switch data := v.(type) {
+		case []byte:
+			return data, websocket.BinaryFrame, nil
+		case string:
+			return []byte(data), websocket.TextFrame, nil
+		}
+		return nil, websocket.UnknownFrame, websocket.ErrNotSupported
+	},
+	Unmarshal: func(data []byte, payloadType byte, v interface{}) error {
+		f := v.(*ptyFrame)
+		f.text = payloadType == websocket.TextFrame
+		f.data = data
+		return nil
+	},
+}
+
+func runShell(c *client, args []string, stderr io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: stars-sandbox shell <sandbox-id> [-- argv...]")
+	}
+	sandboxID := args[0]
+	argv := args[1:]
+	if len(argv) > 0 && argv[0] == "--" {
+		argv = argv[1:]
+	}
+	if len(argv) == 0 {
+		argv = []string{"sh"}
+	}
+	rows, cols := terminalSize()
+	body := map[string]any{"argv": argv, "pty": map[string]int{"rows": rows, "cols": cols}}
+	data, err := c.do(http.MethodPost, "/api/v1/sandboxes/"+url.PathEscape(sandboxID)+"/execs", nil, body, "")
+	if err != nil {
+		return err
+	}
+	var created execState
+	if err := json.Unmarshal(data, &created); err != nil {
+		return fmt.Errorf("decode Exec: %w", err)
+	}
+	if err := c.waitExecStarted(created.ID); err != nil {
+		return err
+	}
+	conn, err := c.dialPTY(created.ID)
+	if err != nil {
+		return err
+	}
+	defer conn.Close() //nolint:errcheck // connection lifetime
+
+	// Stdin and SIGWINCH both send; a WebSocket connection has one writer.
+	var sendMu sync.Mutex
+	send := func(v any) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return ptyCodec.Send(conn, v)
+	}
+
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		state, err := term.MakeRaw(fd)
+		if err == nil {
+			defer term.Restore(fd, state) //nolint:errcheck // best effort
+		}
+		wins := make(chan os.Signal, 1)
+		signal.Notify(wins, syscall.SIGWINCH)
+		defer signal.Stop(wins)
+		go func() {
+			for range wins {
+				rows, cols := terminalSize()
+				raw, _ := json.Marshal(map[string]any{"type": "resize", "rows": rows, "cols": cols})
+				if send(string(raw)) != nil {
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 && send(append([]byte(nil), buf[:n]...)) != nil {
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		var frame ptyFrame
+		if err := ptyCodec.Receive(conn, &frame); err != nil {
+			return fmt.Errorf("terminal connection closed")
+		}
+		if !frame.text {
+			if _, err := c.out.Write(frame.data); err != nil {
+				return err
+			}
+			continue
+		}
+		var control struct {
+			Type     string `json:"type"`
+			Cause    string `json:"cause"`
+			ExitCode *int32 `json:"exit_code"`
+		}
+		if json.Unmarshal(frame.data, &control) != nil || control.Type != "exit" {
+			continue
+		}
+		if control.ExitCode != nil && *control.ExitCode != 0 {
+			return fmt.Errorf("terminal exited with status %d", *control.ExitCode)
+		}
+		if control.Cause != "" && control.Cause != "exited" {
+			return fmt.Errorf("terminal ended: %s", control.Cause)
+		}
+		return nil
+	}
+}
+
+// waitExecStarted returns once the Exec is no longer pending. The Agent's
+// tunnel reaches a Supervisor record that does not exist yet only after
+// start-up, so dialling earlier gets a 404 (api.md §4).
+func (c *client) waitExecStarted(id string) error {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		data, err := c.do(http.MethodGet, "/api/v1/execs/"+url.PathEscape(id), nil, nil, "")
+		if err != nil {
+			return err
+		}
+		var e execState
+		if err := json.Unmarshal(data, &e); err != nil {
+			return fmt.Errorf("decode Exec: %w", err)
+		}
+		if e.State != "pending" {
+			return nil
+		}
+	}
+	return fmt.Errorf("exec %s did not start", id)
+}
+
+func (c *client) dialPTY(id string) (*websocket.Conn, error) {
+	u, err := url.Parse(c.base)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+	u.Path = "/api/v1/execs/" + url.PathEscape(id) + "/pty"
+	config, err := websocket.NewConfig(u.String(), c.base)
+	if err != nil {
+		return nil, err
+	}
+	config.Protocol = []string{"sandbox.v1"}
+	config.Header.Set("Authorization", "Bearer "+c.token)
+	return websocket.DialConfig(config)
+}
+
+func terminalSize() (rows, cols int) {
+	width, height, err := term.GetSize(int(os.Stdin.Fd()))
+	if err != nil || width <= 0 || height <= 0 {
+		return 24, 80
+	}
+	return height, width
+}

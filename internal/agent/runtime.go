@@ -42,10 +42,12 @@ type Runtime struct {
 
 	// Execs are launched from the Control stream; the output stream is opened
 	// per Exec against the same connection.
-	execStream func(context.Context) (nodev1.Node_ExecOutputClient, error)
-	send       func(*nodev1.AgentMessage)
-	execMu     sync.Mutex
-	execs      map[string]struct{} // exec id -> output delivery in flight
+	execStream     func(context.Context) (nodev1.Node_ExecOutputClient, error)
+	tunnelStream   func(context.Context) (nodev1.Node_TunnelClient, error)
+	send           func(*nodev1.AgentMessage)
+	execMu         sync.Mutex
+	execs          map[string]struct{} // exec id -> output delivery in flight
+	ptyAttachments map[string]int      // exec id -> live tunnel attachments
 
 	mu      sync.Mutex
 	managed map[string]int64 // sandbox id -> generation known to run
@@ -53,10 +55,11 @@ type Runtime struct {
 
 func NewRuntime(socket, dataRoot string) *Runtime {
 	return &Runtime{
-		d:        &dockerClient{http: unixHTTPClient(socket)},
-		dataRoot: dataRoot,
-		execs:    make(map[string]struct{}),
-		managed:  make(map[string]int64),
+		d:              &dockerClient{http: unixHTTPClient(socket)},
+		dataRoot:       dataRoot,
+		execs:          make(map[string]struct{}),
+		ptyAttachments: make(map[string]int),
+		managed:        make(map[string]int64),
 	}
 }
 
@@ -66,6 +69,9 @@ func (r *Runtime) connect(client nodev1.NodeClient, send func(*nodev1.AgentMessa
 	r.send = send
 	r.execStream = func(ctx context.Context) (nodev1.Node_ExecOutputClient, error) {
 		return client.ExecOutput(ctx)
+	}
+	r.tunnelStream = func(ctx context.Context) (nodev1.Node_TunnelClient, error) {
+		return client.Tunnel(ctx)
 	}
 }
 

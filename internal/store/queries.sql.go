@@ -287,8 +287,8 @@ func (q *Queries) CreateEnrollmentPacket(ctx context.Context, arg CreateEnrollme
 const createExec = `-- name: CreateExec :one
 
 INSERT INTO execs (
-    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key, pty
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state
 `
 
@@ -302,6 +302,7 @@ type CreateExecParams struct {
 	TimeoutSeconds *int32
 	Generation     int64
 	IdempotencyKey *string
+	Pty            json.RawMessage
 }
 
 // Execs
@@ -316,6 +317,7 @@ func (q *Queries) CreateExec(ctx context.Context, arg CreateExecParams) (Exec, e
 		arg.TimeoutSeconds,
 		arg.Generation,
 		arg.IdempotencyKey,
+		arg.Pty,
 	)
 	var i Exec
 	err := row.Scan(

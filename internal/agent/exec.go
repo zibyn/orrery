@@ -92,6 +92,13 @@ func (r *Runtime) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 		Stdin:          cmd.Stdin,
 		TimeoutSeconds: timeoutPtr(cmd.TimeoutSeconds),
 	}
+	if cmd.Pty != nil {
+		// The Supervisor allocates the pty itself; stdin is ignored in PTY mode
+		// (api.md §4).
+		spec.Pty = &supervisor.PTY{Rows: uint16(cmd.Pty.Rows), Cols: uint16(cmd.Pty.Cols)}
+		spec.PtyIdleSeconds = cmd.PtyIdleSeconds
+		spec.Stdin = nil
+	}
 	raw, err := json.Marshal(spec)
 	if err != nil {
 		conn.Close() //nolint:errcheck // nothing to flush
@@ -283,6 +290,9 @@ func (r *Runtime) streamExec(ctx context.Context, sandboxID, execID uuid.UUID, d
 			if _, err := stream.Recv(); err != nil {
 				return
 			}
+			// A live attachment still reads `exit` to report the result on its
+			// WebSocket (api.md §4).
+			r.waitPTYDetached(ctx, execID.String())
 			_ = os.RemoveAll(dir)
 			return
 		}

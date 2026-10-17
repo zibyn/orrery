@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -50,6 +51,14 @@ type Spec struct {
 	GraceSeconds   int64             `json:"grace,omitempty"`
 	LogCap         int64             `json:"log_cap,omitempty"`
 	Stdin          []byte            `json:"stdin,omitempty"`
+	Pty            *PTY              `json:"pty,omitempty"`
+	PtyIdleSeconds int64             `json:"pty_idle,omitempty"`
+}
+
+// PTY is the initial terminal size.
+type PTY struct {
+	Rows uint16 `json:"rows"`
+	Cols uint16 `json:"cols"`
 }
 
 // Exit is the `exit` record (runtime.md §3).
@@ -97,20 +106,30 @@ func runIn(dir string) error {
 		_ = os.Remove(socket)
 	}()
 
-	specs := make(chan Spec, 1)
-	cancels := make(chan struct{}, 1)
-	go serveControl(listener, specs, cancels)
+	ctl := newControlServer(listener)
+	go ctl.serve()
 
 	var spec Spec
 	select {
-	case spec = <-specs:
+	case spec = <-ctl.specs:
 	case <-time.After(SpecWait):
 		return failStart(dir)
 	}
 	if len(spec.Argv) == 0 {
 		return failStart(dir)
 	}
+	if spec.Pty != nil {
+		return runPTY(dir, spec, ctl)
+	}
+	// Announce that no attachment surface exists: an `attach` line then gets an
+	// immediate answer instead of waiting for a PTY that never comes.
+	ctl.setAttach(nil)
+	return runPipe(dir, spec, ctl)
+}
 
+// runPipe is the non-PTY command: stdout and stderr are stored as frames
+// (runtime.md §3).
+func runPipe(dir string, spec Spec, ctl *controlServer) error {
 	frames, err := newFrameWriter(filepath.Join(dir, "output"), spec.LogCap)
 	if err != nil {
 		return failStart(dir)
@@ -139,24 +158,24 @@ func runIn(dir string) error {
 	// The command is already running; a lost `started` record does not stop it.
 	_ = writeStarted(dir, time.Now().UTC())
 
-	ctl := newController(cmd.Process.Pid, spec.GraceSeconds)
+	ctlProc := newController(cmd.Process.Pid, spec.GraceSeconds)
 	done := make(chan struct{})
 	defer close(done)
 	if spec.TimeoutSeconds != nil && *spec.TimeoutSeconds > 0 {
 		time.AfterFunc(time.Duration(*spec.TimeoutSeconds)*time.Second, func() {
-			ctl.terminate("timed_out")
+			ctlProc.terminate("timed_out")
 		})
 	}
 	go func() {
 		select {
-		case <-cancels:
-			ctl.terminate("canceled")
+		case <-ctl.cancels:
+			ctlProc.terminate("canceled")
 		case <-done:
 		}
 	}()
 	select {
-	case <-cancels: // cancel arrived while the spec was still being applied
-		ctl.terminate("canceled")
+	case <-ctl.cancels: // cancel arrived while the spec was still being applied
+		ctlProc.terminate("canceled")
 	default:
 	}
 
@@ -168,7 +187,7 @@ func runIn(dir string) error {
 	go func() { pumps.Wait(); close(pumped) }()
 
 	_ = cmd.Wait() // the exit status is read from ProcessState
-	ctl.exited()
+	ctlProc.exited()
 
 	// Read what the main process already wrote, then close the read ends: a
 	// background child may hold the pipe open forever (runtime.md §4).
@@ -180,7 +199,7 @@ func runIn(dir string) error {
 		<-pumped
 	}
 
-	exit := resultOf(cmd.ProcessState, ctl.cause(), oomBefore)
+	exit := resultOf(cmd.ProcessState, ctlProc.cause(), oomBefore)
 	return WriteExit(dir, exit)
 }
 
@@ -396,38 +415,132 @@ func WriteExit(dir string, exit Exit) error {
 	return os.Rename(tmp, filepath.Join(dir, "exit"))
 }
 
-// serveControl accepts `spec` and `cancel` lines from any Agent connection.
-func serveControl(listener net.Listener, specs chan<- Spec, cancels chan<- struct{}) {
+// controlServer accepts the line protocol on ctl.sock (runtime.md §5): one
+// `spec`, then `cancel`, `attach`, `input <n>` plus n raw bytes, and
+// `resize <rows> <cols>`.
+type controlServer struct {
+	listener net.Listener
+	specs    chan Spec
+	cancels  chan struct{}
+	inputs   chan []byte
+	resizes  chan winsize
+
+	mu          sync.Mutex
+	attach      func(net.Conn) func()
+	attachReady chan struct{} // closed once the attach decision is made
+}
+
+type winsize struct {
+	rows uint16
+	cols uint16
+}
+
+func newControlServer(listener net.Listener) *controlServer {
+	return &controlServer{
+		listener:    listener,
+		specs:       make(chan Spec, 1),
+		cancels:     make(chan struct{}, 1),
+		inputs:      make(chan []byte, 32),
+		resizes:     make(chan winsize, 32),
+		attachReady: make(chan struct{}),
+	}
+}
+
+func (c *controlServer) setAttach(fn func(net.Conn) func()) {
+	c.mu.Lock()
+	c.attach = fn
+	c.mu.Unlock()
+	close(c.attachReady)
+}
+
+func (c *controlServer) attachFunc() func(net.Conn) func() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.attach
+}
+
+func (c *controlServer) serve() {
 	for {
-		conn, err := listener.Accept()
+		conn, err := c.listener.Accept()
 		if err != nil {
 			return
 		}
-		go func() {
-			defer conn.Close() //nolint:errcheck // connection lifetime
-			scanner := bufio.NewScanner(conn)
-			scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				switch {
-				case line == "cancel":
-					select {
-					case cancels <- struct{}{}:
-					default:
-					}
-				case line == "":
+		go c.handle(conn)
+	}
+}
+
+func (c *controlServer) handle(conn net.Conn) {
+	defer conn.Close() //nolint:errcheck // connection lifetime
+	var detach func()
+	defer func() {
+		if detach != nil {
+			detach()
+		}
+	}()
+	r := bufio.NewReader(conn)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+		case line == "cancel":
+			select {
+			case c.cancels <- struct{}{}:
+			default:
+			}
+		case line == "attach":
+			if detach != nil {
+				continue
+			}
+			// The spec and the attach can arrive on two connections in either
+			// order; wait for the PTY decision before answering.
+			select {
+			case <-c.attachReady:
+			case <-time.After(5 * time.Second):
+				return
+			}
+			if fn := c.attachFunc(); fn != nil {
+				detach = fn(conn)
+			}
+		case strings.HasPrefix(line, "input "):
+			n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "input ")))
+			if err != nil || n < 0 || n > 1<<20 {
+				return
+			}
+			data := make([]byte, n)
+			if _, err := io.ReadFull(r, data); err != nil {
+				return
+			}
+			select {
+			case c.inputs <- data:
+			case <-time.After(time.Second):
+			}
+		case strings.HasPrefix(line, "resize "):
+			fields := strings.Fields(line)
+			if len(fields) != 3 {
+				continue
+			}
+			rows, errRows := strconv.ParseUint(fields[1], 10, 16)
+			cols, errCols := strconv.ParseUint(fields[2], 10, 16)
+			if errRows != nil || errCols != nil || rows == 0 || cols == 0 {
+				continue
+			}
+			select {
+			case c.resizes <- winsize{rows: uint16(rows), cols: uint16(cols)}:
+			default:
+			}
+		default:
+			var spec Spec
+			if json.Unmarshal([]byte(line), &spec) == nil && len(spec.Argv) > 0 {
+				select {
+				case c.specs <- spec:
 				default:
-					// input/resize and any other line are for the PTY ticket.
-					var spec Spec
-					if json.Unmarshal([]byte(line), &spec) == nil && len(spec.Argv) > 0 {
-						select {
-						case specs <- spec:
-						default:
-						}
-					}
 				}
 			}
-		}()
+		}
 	}
 }
 

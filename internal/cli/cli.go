@@ -83,6 +83,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runAudit(c, rest[1:], stderr)
 	case "exec":
 		err = runExec(c, rest[1:], stderr)
+	case "shell":
+		err = runShell(c, rest[1:], stderr)
 	default:
 		err = fmt.Errorf("unknown command %q", rest[0])
 	}
@@ -102,6 +104,7 @@ commands:
   token list|create|revoke
   audit list
   exec run|cancel
+  shell <sandbox-id> [-- argv...]   open an interactive terminal
 
 global flags:
   --config PATH    config file (default $STARS_SANDBOX_CONFIG or $XDG_CONFIG_HOME/stars-sandbox/config.json)
@@ -116,6 +119,7 @@ examples:
   stars-sandbox audit list --action token.create --limit 20
   stars-sandbox exec run <sandbox-id> -- uname -a
   stars-sandbox exec cancel <exec-id>
+  stars-sandbox shell <sandbox-id> -- /bin/bash
 `)
 }
 

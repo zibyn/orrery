@@ -130,6 +130,16 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		go c.run("exec:"+cmd.ExecId, cmd.CommandId, noGenerationFence, func() error {
 			return c.rt.cancelExec(c.ctx, execID)
 		})
+	case *nodev1.ControlMessage_OpenTunnel:
+		cmd := m.OpenTunnel
+		if cmd.GetAgentHttp() == nil {
+			// sandbox_port arrives with port forwarding (#55).
+			c.result(cmd.CommandId, "unsupported tunnel target")
+			return
+		}
+		go c.run("tunnel:"+cmd.TunnelId, cmd.CommandId, noGenerationFence, func() error {
+			return c.rt.openTunnel(c.ctx, cmd.TunnelId)
+		})
 	}
 }
 

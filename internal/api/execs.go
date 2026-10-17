@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -93,8 +94,26 @@ func hasPTY(raw json.RawMessage) bool {
 	return len(raw) > 0 && string(raw) != "null"
 }
 
-// rejectPTY writes the unsupported problem for the PTY surface this ticket does
-// not implement, and reports whether it wrote one.
+// ptySize is the requested terminal size. Zero means "not known yet": the
+// Supervisor then leaves the pty at its default and waits for `resize`.
+type ptySize struct {
+	Rows uint16 `json:"rows"`
+	Cols uint16 `json:"cols"`
+}
+
+func parsePTY(w http.ResponseWriter, raw json.RawMessage) (ptySize, bool) {
+	var size ptySize
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&size); err != nil {
+		writeProblem(w, "invalid_request", "pty must be {rows, cols} with values at most 65535")
+		return ptySize{}, false
+	}
+	return size, true
+}
+
+// rejectPTY writes the unsupported problem for Exec surfaces that do not exist
+// in PTY mode, and reports whether it wrote one.
 func rejectPTY(w http.ResponseWriter, raw json.RawMessage, detail string) bool {
 	if !hasPTY(raw) {
 		return false
@@ -135,8 +154,13 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if rejectPTY(w, req.Pty, "PTY Execs are not supported yet") {
-		return
+	var pty json.RawMessage
+	if hasPTY(req.Pty) {
+		size, ok := parsePTY(w, req.Pty)
+		if !ok {
+			return
+		}
+		pty, _ = json.Marshal(size) // validated: marshal cannot fail
 	}
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
 		writeProblem(w, "invalid_request", "argv must be a non-empty array whose first element is a program")
@@ -189,13 +213,13 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 		}
 	}
 	var stdin []byte
-	if req.Stdin != nil {
+	if req.Stdin != nil && pty == nil { // PTY mode ignores stdin (api.md §4)
 		stdin = []byte(*req.Stdin)
 	}
 	exec, err := s.q.CreateExec(ctx, store.CreateExecParams{
 		ID: id, SandboxID: sandboxID, Argv: argv, Env: env, Cwd: req.Cwd,
 		Stdin: stdin, TimeoutSeconds: timeout, Generation: sb.Generation,
-		IdempotencyKey: key,
+		IdempotencyKey: key, Pty: pty,
 	})
 	if err != nil {
 		if uniqueViolation(err) == "execs_sandbox_idempotency" && key != nil {

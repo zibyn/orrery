@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"strconv"
 	"strings"
 )
@@ -89,6 +90,13 @@ func responsesFor(rt route) map[string]any {
 		success["content"] = map[string]any{"application/json": map[string]any{"schema": schemaRef(rt.Response)}}
 	}
 	responses := map[string]any{strconv.Itoa(rt.SuccessStatus): success}
+	if rt.SuccessStatus == http.StatusSwitchingProtocols {
+		success["description"] = "Switching Protocols. The WebSocket subprotocol is sandbox.v1; binary frames carry terminal bytes and text frames carry controls."
+		responses["503"] = map[string]any{
+			"description": problemTitle["unavailable"],
+			"content":     map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
+		}
+	}
 	for _, status := range []string{"400", "401", "403", "404", "409", "500"} {
 		responses[status] = map[string]any{
 			"description": problemTitle[problemCodeFor(status)],
@@ -404,7 +412,14 @@ func schemas() map[string]any {
 				"cwd":     map[string]any{"type": "string", "description": "Relative to /workspace."},
 				"timeout": map[string]any{"type": "integer", "minimum": 1, "description": "Seconds; omit for no timeout."},
 				"stdin":   map[string]any{"type": "string", "description": "Written once, then closed."},
-				"pty":     map[string]any{"type": "object", "description": "PTY mode is not supported yet."},
+				"pty": map[string]any{
+					"type":        "object",
+					"description": "Present requests a PTY. The output is not stored; attach at GET /execs/{id}/pty. stdin is ignored.",
+					"properties": map[string]any{
+						"rows": map[string]any{"type": "integer", "minimum": 0, "maximum": 65535},
+						"cols": map[string]any{"type": "integer", "minimum": 0, "maximum": 65535},
+					},
+				},
 			},
 		},
 		"ExecResult": map[string]any{

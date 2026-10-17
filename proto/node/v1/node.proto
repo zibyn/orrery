@@ -4,8 +4,8 @@ package stars.node.v1;
 
 option go_package = "github.com/zibyn/stars-sandbox/gen/node/v1;nodev1";
 
-// Node is the Agent-facing service on the `node` listener. Tunnel arrives with
-// a later ticket (docs/spec/node-protocol.md).
+// Node is the Agent-facing service on the `node` listener
+// (docs/spec/node-protocol.md).
 service Node {
   // Redeem is the only unauthenticated entry point: an Enrollment Packet buys
   // one Node Token. Both travel over TLS.
@@ -14,6 +14,9 @@ service Node {
   rpc Control(stream AgentMessage) returns (stream ControlMessage);
   // ExecOutput is one stream per Exec: frames up, acknowledgements down.
   rpc ExecOutput(stream OutputBatch) returns (stream OutputAck);
+  // Tunnel is a reverse-dialled raw byte stream, opened when Control sends
+  // OpenTunnel (ADR-0018).
+  rpc Tunnel(stream TunnelFrame) returns (stream TunnelFrame);
 }
 
 message RedeemRequest {
@@ -126,7 +129,37 @@ message ControlMessage {
     StopSandbox stop_sandbox = 5;
     StartExec start_exec = 6;
     CancelExec cancel_exec = 7;
+    OpenTunnel open_tunnel = 8;
   }
+}
+
+message OpenTunnel {
+  string command_id = 1;
+  string tunnel_id = 2;
+  oneof target {
+    AgentHTTP agent_http = 3;
+    SandboxPort sandbox_port = 4;
+  }
+}
+
+// AgentHTTP targets the Agent's internal HTTP surface: the Gateway
+// reverse-proxies to it verbatim.
+message AgentHTTP {}
+
+// SandboxPort targets a port inside a Sandbox's network namespace.
+message SandboxPort {
+  string sandbox_id = 1;
+  int32 port = 2;
+}
+
+message TunnelFrame {
+  string tunnel_id = 1;
+  bytes data = 2;
+}
+
+message PtySpec {
+  int32 rows = 1;
+  int32 cols = 2;
 }
 
 message ProvisionWorkspace {
@@ -182,6 +215,10 @@ message StartExec {
   int64 timeout_seconds = 9;
   int64 log_cap = 10;
   bytes stdin = 11;
+  // Set for a PTY Exec; its output travels only over the tunnel (ADR-0017).
+  PtySpec pty = 12;
+  // PTY idle reap after the last Attachment detaches (defaults.md, 300 s).
+  int64 pty_idle_seconds = 13;
 }
 
 message CancelExec {

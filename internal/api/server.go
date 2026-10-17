@@ -27,10 +27,12 @@ type Server struct {
 	logins      *loginLimiter
 	crossOrigin http.CrossOriginProtection
 	reconcile   *reconciler
+	tunnels     *tunnelRegistry
 }
 
 func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter()}
+	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter(),
+		tunnels: newTunnelRegistry()}
 	s.reconcile = newReconciler(s)
 	return s
 }
@@ -94,6 +96,7 @@ func (s *Server) routes() []route {
 		{http.MethodGet, "/execs/{id}", "user", "getExec", "Get an Exec", "", "Exec", nil, http.StatusOK, s.handleGetExec},
 		{http.MethodPost, "/execs/{id}/cancel", "user", "cancelExec", "Cancel an Exec", "", "Exec", nil, http.StatusAccepted, s.handleCancelExec},
 		{http.MethodGet, "/execs/{id}/output", "user", "getExecOutput", "Read an Exec's output", "", "ExecOutput", []string{"after", "follow"}, http.StatusOK, s.handleExecOutput},
+		{http.MethodGet, "/execs/{id}/pty", "user", "attachExecPTY", "Attach to an Exec's PTY", "", "", nil, http.StatusSwitchingProtocols, s.handleExecPTY},
 	}
 }
 

@@ -195,12 +195,22 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	if e.TimeoutSeconds != nil {
 		timeout = int64(*e.TimeoutSeconds)
 	}
+	var pty *nodev1.PtySpec
+	if hasPTY(e.Pty) {
+		var size ptySize
+		if err := json.Unmarshal(e.Pty, &size); err != nil {
+			r.finishExec(ctx, e.ID, "start_failed")
+			return
+		}
+		pty = &nodev1.PtySpec{Rows: int32(size.Rows), Cols: int32(size.Cols)}
+	}
 	id := execCommandId("start-exec", e)
 	r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
 		Message: &nodev1.ControlMessage_StartExec{StartExec: &nodev1.StartExec{
 			CommandId: id, ExecId: e.ID.String(), SandboxId: e.SandboxID.String(),
 			Generation: e.Generation, Argv: argv, Env: env, Cwd: e.Cwd,
 			TimeoutSeconds: timeout, LogCap: r.s.cfg.ExecLogCap, Stdin: e.Stdin,
+			Pty: pty, PtyIdleSeconds: r.s.cfg.PtyIdleSeconds,
 		}},
 	})
 }
@@ -586,6 +596,23 @@ func (h *nodeHub) send(nodeID uuid.UUID, commandID string, msg *nodev1.ControlMe
 	case conn.send <- msg:
 		h.sent[nodeID][commandID] = true
 	default: // retried on the next tick
+	}
+}
+
+// direct delivers a command without the dedupe map. OpenTunnel is per-attach
+// and carries a unique tunnel id, so a repeated delivery cannot apply twice.
+func (h *nodeHub) direct(nodeID uuid.UUID, msg *nodev1.ControlMessage) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	conn := h.conns[nodeID]
+	if conn == nil {
+		return false
+	}
+	select {
+	case conn.send <- msg:
+		return true
+	default: // the Agent is not reading; the attach fails and is retried by the client
+		return false
 	}
 }
 

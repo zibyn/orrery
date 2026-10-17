@@ -22,6 +22,8 @@ type Config struct {
 	SnapshotDigest string
 	// ExecLogCap bounds an Execution Log (defaults.md, 16 MiB).
 	ExecLogCap int64
+	// PtyIdleSeconds is the deployment PTY idle reap (defaults.md, 300 s).
+	PtyIdleSeconds int64
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -47,6 +49,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ExecLogCap, err = envInt64("STARS_EXEC_LOG_CAP", 16<<20); err != nil {
+		return Config{}, err
+	}
+	if cfg.PtyIdleSeconds, err = envInt64("STARS_PTY_IDLE_SECONDS", 300); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

@@ -47,8 +47,10 @@ mkdir -p .e2e
 CGO_ENABLED=0 "$GO" build -o .e2e/stars-sandbox-agent ./cmd/stars-sandbox-agent
 "$GO" build -o .e2e/stars-sandbox ./cmd/stars-sandbox
 
-# A small Exec log cap keeps the truncation scenario fast.
+# A small Exec log cap keeps the truncation scenario fast, and a short PTY
+# idle window keeps the pty-idle scenario fast.
 export STARS_EXEC_LOG_CAP="${STARS_EXEC_LOG_CAP:-1048576}"
+export STARS_PTY_IDLE_SECONDS="${STARS_PTY_IDLE_SECONDS:-10}"
 
 # Warm the cache; the Agent pulls the image itself if this misses.
 docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null
@@ -99,4 +101,5 @@ STARS_E2E_DOCKER_SOCKET="$DOCKER_SOCKET" \
 STARS_E2E_COMPOSE_FILE="$COMPOSE_FILE" \
 STARS_E2E_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
 STARS_E2E_EXEC_LOG_CAP="$STARS_EXEC_LOG_CAP" \
+STARS_E2E_PTY_IDLE_SECONDS="$STARS_PTY_IDLE_SECONDS" \
 "$GO" test -tags e2e -count=1 "$@" ./e2e/...
