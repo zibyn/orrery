@@ -181,7 +181,7 @@ The credential by which an enrolled Node Agent authenticates to the Control Plan
 _Avoid_: certificate, runner key
 
 **Port Forward**:
-An owner-only connection from outside to a port a process listens on inside a Sandbox, made through the Gateway without exposing the Sandbox on a network address.
+An owner-or-admin connection from outside to a port a process listens on inside a Sandbox, made through the Gateway without exposing the Sandbox on a network address.
 _Avoid_: preview URL, public link, ingress
 
 **Secret**:

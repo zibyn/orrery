@@ -109,7 +109,8 @@ func TestPortForward(t *testing.T) {
 		t.Fatalf("non-owner tunnel = %d, want 404", tunnelResp.StatusCode)
 	}
 
-	// Admin does not widen port forwarding: only the owner reaches the port.
+	// An admin may use the port too: the check is owner-or-admin, as for every
+	// other Sandbox endpoint.
 	adminName := "port-admin-" + time.Now().Format("150405.000000000")
 	adminCLI.run(t, "port-password-123\n", "user", "create",
 		"--name", adminName, "--login-type", "password", "--password-stdin", "--is-admin")
@@ -118,19 +119,10 @@ func TestPortForward(t *testing.T) {
 		t.Fatalf("login as %s: %d %s", adminName, status, data)
 	}
 	status, data = call(t, http.MethodPost, "/api/v1/sandboxes/"+sandboxID+"/ports/8000/ticket", otherAdmin, nil)
-	if status != http.StatusNotFound {
-		t.Fatalf("admin non-owner ticket = %d %s, want 404", status, data)
+	if status != http.StatusOK {
+		t.Fatalf("admin ticket = %d %s, want 200", status, data)
 	}
-	adminReq, _ := http.NewRequest(http.MethodGet, apiURL()+"/api/v1/sandboxes/"+sandboxID+"/ports/8000/tunnel", nil)
-	adminReq.Header.Set("Authorization", "Bearer "+otherAdmin)
-	tunnelResp, err = http.DefaultClient.Do(adminReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tunnelResp.Body.Close()
-	if tunnelResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("admin non-owner tunnel = %d, want 404", tunnelResp.StatusCode)
-	}
+	cliForward(t, otherAdmin, sandboxID, "hello-app")
 
 	// The Sandbox itself publishes nothing on the host.
 	out, err := exec.Command("docker", "inspect", "--format", "{{json .HostConfig.PortBindings}}",

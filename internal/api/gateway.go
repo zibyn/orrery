@@ -33,8 +33,8 @@ const (
 )
 
 // portTicket is the signed grant behind a port URL and its cookie. The ticket
-// is a bearer credential; the signature keeps it unforgeable and the owner
-// check at exchange keeps it from being minted for someone else's Sandbox.
+// is a bearer credential: minting has already authorized the caller (owner or
+// admin), and the signature keeps it unforgeable afterwards.
 type portTicket struct {
 	SandboxID uuid.UUID `json:"sandbox_id"`
 	UserID    uuid.UUID `json:"user_id"`
@@ -109,7 +109,7 @@ func (s *Server) verifyPortTicket(raw string) (portTicket, bool) {
 }
 
 // handlePortTicket issues the signed URL a browser opens for a Sandbox port
-// (api.md §6). Only the owner can ask for one; everyone else sees 404.
+// (api.md §6). The owner or an admin can ask for one; everyone else sees 404.
 func (s *Server) handlePortTicket(w http.ResponseWriter, r *http.Request, p *principal) {
 	id, ok := pathUUID(r, "id")
 	if !ok {
@@ -120,7 +120,7 @@ func (s *Server) handlePortTicket(w http.ResponseWriter, r *http.Request, p *pri
 	if !ok {
 		return
 	}
-	sb, ok := s.getOwnerSandbox(w, r.Context(), p, id)
+	sb, ok := s.getOwnedSandbox(w, r.Context(), p, id)
 	if !ok {
 		return
 	}
@@ -163,7 +163,7 @@ func (s *Server) servePortGateway(w http.ResponseWriter, r *http.Request, sandbo
 			writeProblem(w, "not_found", "no such Sandbox")
 			return
 		}
-		if _, ok := s.gatewaySandbox(w, r, sandboxID, ticket); !ok {
+		if _, ok := s.gatewaySandbox(w, r, sandboxID); !ok {
 			return
 		}
 		ticket.ExpiresAt = time.Now().Add(portGrantTTL).Unix()
@@ -196,7 +196,7 @@ func (s *Server) servePortGateway(w http.ResponseWriter, r *http.Request, sandbo
 		writeProblem(w, "not_found", "no such Sandbox")
 		return
 	}
-	sb, ok := s.gatewaySandbox(w, r, sandboxID, ticket)
+	sb, ok := s.gatewaySandbox(w, r, sandboxID)
 	if !ok {
 		return
 	}
@@ -216,11 +216,11 @@ func (s *Server) servePortGateway(w http.ResponseWriter, r *http.Request, sandbo
 	proxyPort(w, r, conn)
 }
 
-// gatewaySandbox resolves the ticket's Sandbox and checks that the ticket was
-// issued to its owner.
-func (s *Server) gatewaySandbox(w http.ResponseWriter, r *http.Request, id uuid.UUID, ticket portTicket) (store.Sandbox, bool) {
+// gatewaySandbox resolves the ticket's Sandbox. The ticket was only minted
+// after the caller passed the ownership check, so the signature is enough.
+func (s *Server) gatewaySandbox(w http.ResponseWriter, r *http.Request, id uuid.UUID) (store.Sandbox, bool) {
 	sb, err := s.q.GetSandbox(r.Context(), id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && sb.OwnerID != ticket.UserID) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeProblem(w, "not_found", "no such Sandbox")
 		return store.Sandbox{}, false
 	}

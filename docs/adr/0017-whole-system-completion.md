@@ -37,7 +37,7 @@ PTY output is not an Execution Log: it lives only in the Node's ring buffer, and
 
 ### Ports
 
-The Gateway forwards to a Sandbox's ports for its owner only: a per-port subdomain, through which the Node Agent enters the Sandbox's network namespace and dials `127.0.0.1:PORT`, plus a TCP tunnel in the CLI (`stars-sandbox port-forward`). Nothing in a Sandbox is exposed on a network address, and there is no public sharing. SSH and IDE access is not a platform feature; a User runs `sshd` in the Sandbox and tunnels to it.
+The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port subdomain, through which the Node Agent enters the Sandbox's network namespace and dials `127.0.0.1:PORT`, plus a TCP tunnel in the CLI (`stars-sandbox port-forward`). Nothing in a Sandbox is exposed on a network address, and there is no public sharing. SSH and IDE access is not a platform feature; a User runs `sshd` in the Sandbox and tunnels to it.
 
 ### Users, tokens and audit
 

@@ -138,7 +138,7 @@ func (s *Server) handlePortTunnel(w http.ResponseWriter, r *http.Request, p *pri
 	if !ok {
 		return
 	}
-	sb, ok := s.getOwnerSandbox(w, r.Context(), p, id)
+	sb, ok := s.getOwnedSandbox(w, r.Context(), p, id)
 	if !ok {
 		return
 	}

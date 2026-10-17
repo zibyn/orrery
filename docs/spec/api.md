@@ -185,12 +185,12 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 ## 6. 端口转发
 
-只有 owner 能访问，子域名格式为 `<port>--<sandbox_id>.<apps_domain>`。泛域名和证书由部署配置。
+只有 owner 或 admin 能访问，子域名格式为 `<port>--<sandbox_id>.<apps_domain>`。泛域名和证书由部署配置。
 
 - 浏览器：`POST /sandboxes/{id}/ports/{port}/ticket` 返回一个带签名票据的 URL，票据有效期不超过 1 分钟。Gateway 收到票据后，把它换成该子域名上的 cookie。转发前去掉 API Token 和 cookie。
 - CLI：`stars-sandbox port-forward` 带 API Token 打开 `GET /sandboxes/{id}/ports/{port}/tunnel` WebSocket，承载原始 TCP 字节。
 
-非 owner 访问一律返回 `404`。
+非 owner 且非 admin 访问一律返回 `404`。
 
 ## 7. MCP Tool API
 
