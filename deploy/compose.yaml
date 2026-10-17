@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: stars
+      POSTGRES_PASSWORD: stars
+      POSTGRES_DB: stars
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stars -d stars"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      STARS_DATABASE_URL: postgres://stars:stars@postgres:5432/stars?sslmode=disable
+      STARS_API_ADDR: ":8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "18080:8080"
