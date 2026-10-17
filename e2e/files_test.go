@@ -20,6 +20,7 @@ import (
 // round-trips through the Tunnel, and escaping paths and symlinks are rejected.
 func TestFilesAPI(t *testing.T) {
 	admin := adminToken(t)
+	raiseSandboxQuota(t, admin, 10)
 	sandboxID := readyExecSandbox(t, admin, 128<<20)
 	files := "/api/v1/sandboxes/" + sandboxID + "/files"
 
