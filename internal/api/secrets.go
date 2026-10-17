@@ -186,17 +186,25 @@ func secretUploadProblem(name, value string) (code, detail string) {
 	if !validDisplayName(name) {
 		return "invalid_request", "name must be non-empty, trimmed, and at most 255 characters"
 	}
-	reserved := name == "PATH" || name == "HOME"
-	for _, prefix := range reservedSecretPrefixes {
-		reserved = reserved || strings.HasPrefix(name, prefix)
-	}
-	if reserved {
+	if reservedSecretName(name) {
 		return "invalid_request", "name is reserved: GIT_*, LD_*, STARS_*, PATH and HOME are not allowed"
 	}
 	if len(value) > maxSecretBytes {
 		return "payload_too_large", "a Secret value is at most 24 KiB"
 	}
 	return "", ""
+}
+
+func reservedSecretName(name string) bool {
+	if name == "PATH" || name == "HOME" {
+		return true
+	}
+	for _, prefix := range reservedSecretPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func secretQuotaExceeded(count int64) bool {

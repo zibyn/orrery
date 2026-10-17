@@ -477,8 +477,13 @@ func schemas() map[string]any {
 					},
 				},
 				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name; omit for the deployment default digest."},
-				"cpu":      map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "CPU cores."},
-				"memory":   map[string]any{"type": "integer", "minimum": 1, "description": "Bytes of memory."},
+				"secrets": map[string]any{
+					"type":                 "object",
+					"description":          "Environment variable name to Secret name; injected into every Exec.",
+					"additionalProperties": map[string]any{"type": "string"},
+				},
+				"cpu":    map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "CPU cores."},
+				"memory": map[string]any{"type": "integer", "minimum": 1, "description": "Bytes of memory."},
 				"gpu": map[string]any{
 					"type": "object",
 					"properties": map[string]any{

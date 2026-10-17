@@ -205,6 +205,14 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 			return
 		}
 	}
+	// The Secret snapshot is decrypted per StartExec, so an Agent restart or a
+	// repeated command still gets the values (schema.md, node-protocol.md).
+	secretEnv, err := decryptSecretEnv(r.s.cfg.EncryptionKeys, row.SandboxOwnerID, row.SandboxSecretEnvCt)
+	if err != nil {
+		r.s.log.Warn("reconcile: decrypt Secrets", "exec_id", e.ID, "error", err)
+		r.finishExec(ctx, e.ID, "start_failed")
+		return
+	}
 	var timeout int64
 	if e.TimeoutSeconds != nil {
 		timeout = int64(*e.TimeoutSeconds)
@@ -222,7 +230,7 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
 		Message: &nodev1.ControlMessage_StartExec{StartExec: &nodev1.StartExec{
 			CommandId: id, ExecId: e.ID.String(), SandboxId: e.SandboxID.String(),
-			Generation: e.Generation, Argv: argv, Env: env, Cwd: e.Cwd,
+			Generation: e.Generation, Argv: argv, Env: env, SecretEnv: secretEnv, Cwd: e.Cwd,
 			TimeoutSeconds: timeout, LogCap: r.s.cfg.ExecLogCap, Stdin: e.Stdin,
 			Pty: pty, PtyIdleSeconds: r.s.cfg.PtyIdleSeconds,
 		}},

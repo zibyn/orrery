@@ -107,6 +107,67 @@ func TestSecretQuota(t *testing.T) {
 	}
 }
 
+// The keys of a Sandbox's secrets mapping follow the Secret name rules
+// (ADR-0017): reserved prefixes and malformed environment names are refused.
+func TestSecretEnvNameValidation(t *testing.T) {
+	for _, name := range []string{"TOKEN", "GITHUB_TOKEN", "MY_PATH", "API_KEY"} {
+		if code, _ := secretEnvNameProblem(name); code != "" {
+			t.Errorf("secretEnvNameProblem(%q) = %q, want allowed", name, code)
+		}
+	}
+	for _, name := range []string{"", " padded", "A=B", "A\x00B", "GIT_", "LD_", "STARS_", "PATH", "HOME"} {
+		if code, _ := secretEnvNameProblem(name); code == "" {
+			t.Errorf("secretEnvNameProblem(%q) allowed a reserved or malformed name", name)
+		}
+	}
+}
+
+// The snapshot keeps the Secret names and owner-bound ciphertexts; only the
+// Control Plane decrypts them, and only for the owning User.
+func TestSecretEnvSnapshot(t *testing.T) {
+	keys := testKeyring(t)
+	owner := uuid.New()
+	ciphertext, keyID, err := keys.Encrypt([]byte("hunter2"), []byte(owner.String()))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	snapshot := secretEnvSnapshot{
+		"TOKEN": {Name: "my-secret", KeyID: keyID, Ciphertext: ciphertext},
+	}
+	raw, err := encodeSecretEnv(snapshot)
+	if err != nil {
+		t.Fatalf("encodeSecretEnv: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"name":"my-secret"`)) {
+		t.Fatalf("snapshot lost the Secret name: %s", raw)
+	}
+	env, err := decryptSecretEnv(keys, owner, raw)
+	if err != nil {
+		t.Fatalf("decryptSecretEnv: %v", err)
+	}
+	if env["TOKEN"] != "hunter2" {
+		t.Fatalf("decrypted TOKEN = %q, want hunter2", env["TOKEN"])
+	}
+	// The ciphertext is bound to its owner.
+	if _, err := decryptSecretEnv(keys, uuid.New(), raw); err == nil {
+		t.Fatal("decryptSecretEnv opened another User's ciphertext")
+	}
+	if _, err := decryptSecretEnv(keys, owner, []byte("not json")); err == nil {
+		t.Fatal("decryptSecretEnv accepted a malformed snapshot")
+	}
+	if names := referencedSecretNames(snapshot); len(names) != 1 || names[0] != "my-secret" {
+		t.Fatalf("referencedSecretNames = %v, want [my-secret]", names)
+	}
+	if raw, err := encodeSecretEnv(nil); err != nil || raw != nil {
+		t.Fatalf("encodeSecretEnv(nil) = (%v, %v), want (nil, nil)", raw, err)
+	}
+	// Two environment names may reference one Secret; audit names are distinct.
+	snapshot["TOKEN2"] = snapshot["TOKEN"]
+	if names := referencedSecretNames(snapshot); len(names) != 1 {
+		t.Fatalf("referencedSecretNames with a duplicate Secret = %v, want one name", names)
+	}
+}
+
 func assertProblem(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	if rec.Code != status {

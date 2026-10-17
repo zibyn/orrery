@@ -503,8 +503,9 @@ const createSandbox = `-- name: CreateSandbox :one
 
 INSERT INTO sandboxes (
     id, owner_id, name, labels, desired_state, state, snapshot_digest,
-    cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation, idempotency_key
-) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11)
+    cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation,
+    idempotency_key, secret_env_ct
+) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11, $12)
 RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode
 `
 
@@ -520,6 +521,7 @@ type CreateSandboxParams struct {
 	GpuModel        *string
 	IdleStopSeconds int32
 	IdempotencyKey  *string
+	SecretEnvCt     []byte
 }
 
 // Sandboxes
@@ -536,6 +538,7 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		arg.GpuModel,
 		arg.IdleStopSeconds,
 		arg.IdempotencyKey,
+		arg.SecretEnvCt,
 	)
 	var i Sandbox
 	err := row.Scan(
@@ -1596,7 +1599,8 @@ func (q *Queries) InsertNodeGPU(ctx context.Context, arg InsertNodeGPUParams) er
 }
 
 const listActiveExecs = `-- name: ListActiveExecs :many
-SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, s.node_id AS sandbox_node_id,
+SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, s.node_id AS sandbox_node_id, s.owner_id AS sandbox_owner_id,
+       s.secret_env_ct AS sandbox_secret_env_ct,
        s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
 FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id
@@ -1607,6 +1611,8 @@ ORDER BY e.id
 type ListActiveExecsRow struct {
 	Exec                Exec
 	SandboxNodeID       *uuid.UUID
+	SandboxOwnerID      uuid.UUID
+	SandboxSecretEnvCt  []byte
 	SandboxState        string
 	SandboxDesiredState string
 }
@@ -1643,6 +1649,8 @@ func (q *Queries) ListActiveExecs(ctx context.Context) ([]ListActiveExecsRow, er
 			&i.Exec.IdempotencyKey,
 			&i.Exec.State,
 			&i.SandboxNodeID,
+			&i.SandboxOwnerID,
+			&i.SandboxSecretEnvCt,
 			&i.SandboxState,
 			&i.SandboxDesiredState,
 		); err != nil {
@@ -3040,6 +3048,21 @@ func (q *Queries) SetSandboxProvisioning(ctx context.Context, id uuid.UUID) (int
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setSandboxSecretEnv = `-- name: SetSandboxSecretEnv :exec
+UPDATE sandboxes SET secret_env_ct = $2 WHERE id = $1
+`
+
+type SetSandboxSecretEnvParams struct {
+	ID          uuid.UUID
+	SecretEnvCt []byte
+}
+
+// SetSandboxSecretEnv replaces the start-time Secret snapshot (schema.md).
+func (q *Queries) SetSandboxSecretEnv(ctx context.Context, arg SetSandboxSecretEnvParams) error {
+	_, err := q.db.Exec(ctx, setSandboxSecretEnv, arg.ID, arg.SecretEnvCt)
+	return err
 }
 
 const setSandboxStopped = `-- name: SetSandboxStopped :execrows

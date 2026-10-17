@@ -26,6 +26,7 @@ type createSandboxRequest struct {
 	Labels    map[string]string        `json:"labels"`
 	Workspace *sandboxWorkspaceRequest `json:"workspace"`
 	Snapshot  *string                  `json:"snapshot"`
+	Secrets   map[string]string        `json:"secrets"`
 	CPU       *float64                 `json:"cpu"`
 	Memory    *int64                   `json:"memory"`
 	GPU       *sandboxGPURequest       `json:"gpu"`
@@ -112,6 +113,23 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !validLabels(req.Labels) {
 		writeProblem(w, "invalid_request", "label keys must be non-empty; keys and values at most 255 characters")
 		return
+	}
+	secretMapping := secretEnvRefs(req.Secrets)
+	if len(secretMapping) > 0 {
+		envNames := make([]string, 0, len(secretMapping))
+		for env := range secretMapping {
+			envNames = append(envNames, env)
+		}
+		slices.Sort(envNames)
+		for _, env := range envNames {
+			if code, detail := secretEnvNameProblem(env); code != "" {
+				writeProblem(w, code, detail)
+				return
+			}
+		}
+		if !s.requireSecrets(w) {
+			return
+		}
 	}
 	idleStop := s.cfg.IdleStopSeconds
 	if req.IdleStop != nil {
@@ -226,11 +244,18 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			attachMode = req.Workspace.Mode
 		}
 	}
+	// The first start's Secret snapshot is written with the row: creation is a
+	// start, so the ciphertexts are copied now and on every later start
+	// (schema.md).
+	secretEnvCt, secretEnv, ok := s.writeSecretSnapshot(w, ctx, q, p.user.ID, secretMapping, "invalid_request")
+	if !ok {
+		return
+	}
 	sandbox, err := q.CreateSandbox(ctx, store.CreateSandboxParams{
 		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels,
 		SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
 		GpuCount: gpuCount, GpuModel: gpuModel,
-		IdleStopSeconds: idleStop, IdempotencyKey: key,
+		IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
 	})
 	if err != nil {
 		if existing, replayed := replayConflict(key, err, "sandboxes_owner_idempotency", lookup); replayed {
@@ -288,9 +313,14 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		s.internal(w, "commit Sandbox", err)
 		return
 	}
-	s.audit(ctx, p, "sandbox.create", "sandbox", sandbox.ID.String(), map[string]any{
+	detail := map[string]any{
 		"name": name, "cpu": *req.CPU, "memory": *req.Memory, "gpu": gpuCount, "snapshot": snapshot,
-	})
+	}
+	// The names a Sandbox was created with; never a value (ADR-0013).
+	if names := referencedSecretNames(secretEnv); len(names) > 0 {
+		detail["secrets"] = names
+	}
+	s.audit(ctx, p, "sandbox.create", "sandbox", sandbox.ID.String(), detail)
 	s.changed(ctx)
 	writeJSON(w, http.StatusCreated, s.sandboxToDTO(ctx, sandbox))
 }
@@ -512,6 +542,28 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 			return
 		}
 		s.internal(w, "re-create Attachment", err)
+		return
+	}
+	// Every start re-resolves the Secret snapshot by name, so a Secret changed
+	// or deleted while stopped is visible only from this start on
+	// (schema.md). A deleted Secret fails the start instead of silently
+	// dropping a variable.
+	previous, err := decodeSecretEnv(started.SecretEnvCt)
+	if err != nil {
+		s.internal(w, "decode Secret snapshot", err)
+		return
+	}
+	if len(previous) > 0 && !s.requireSecrets(w) {
+		return
+	}
+	secretEnvCt, _, ok := s.writeSecretSnapshot(w, ctx, q, sb.OwnerID, previous, "conflict")
+	if !ok {
+		return
+	}
+	if err := q.SetSandboxSecretEnv(ctx, store.SetSandboxSecretEnvParams{
+		ID: id, SecretEnvCt: secretEnvCt,
+	}); err != nil {
+		s.internal(w, "write Secret snapshot", err)
 		return
 	}
 	if err := s.enqueueAdmission(ctx, q, id); err != nil {
