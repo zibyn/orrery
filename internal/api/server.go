@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -87,6 +89,11 @@ func (s *Server) routes() []route {
 		{http.MethodDelete, "/sandboxes/{id}", "user", "deleteSandbox", "Delete a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleDeleteSandbox},
 		{http.MethodPost, "/sandboxes/{id}/start", "user", "startSandbox", "Start a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleStartSandbox},
 		{http.MethodPost, "/sandboxes/{id}/stop", "user", "stopSandbox", "Stop a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleStopSandbox},
+		{http.MethodPost, "/sandboxes/{id}/execs", "user", "createExec", "Run a command in a Sandbox", "CreateExecRequest", "Exec", nil, http.StatusCreated, s.handleCreateExec},
+		{http.MethodGet, "/sandboxes/{id}/execs", "user", "listExecs", "List a Sandbox's Execs", "", "ExecList", []string{"limit", "cursor"}, http.StatusOK, s.handleListExecs},
+		{http.MethodGet, "/execs/{id}", "user", "getExec", "Get an Exec", "", "Exec", nil, http.StatusOK, s.handleGetExec},
+		{http.MethodPost, "/execs/{id}/cancel", "user", "cancelExec", "Cancel an Exec", "", "Exec", nil, http.StatusAccepted, s.handleCancelExec},
+		{http.MethodGet, "/execs/{id}/output", "user", "getExecOutput", "Read an Exec's output", "", "ExecOutput", []string{"after", "follow"}, http.StatusOK, s.handleExecOutput},
 	}
 }
 
@@ -316,6 +323,11 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 }
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Hijack lets x/net/websocket take over the connection through the log wrapper.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
 
 func (s *Server) withRequestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

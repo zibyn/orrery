@@ -230,6 +230,9 @@ RETURNING *;
 -- name: GetSandbox :one
 SELECT * FROM sandboxes WHERE id = $1 AND state <> 'deleted';
 
+-- name: GetSandboxIncludingDeleted :one
+SELECT * FROM sandboxes WHERE id = $1;
+
 -- name: GetSandboxByIdempotencyKey :one
 SELECT * FROM sandboxes
 WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
@@ -399,3 +402,90 @@ FROM allocations WHERE node_id = $1;
 
 -- name: ListAllNodes :many
 SELECT * FROM nodes ORDER BY id;
+
+-- Execs
+
+-- name: CreateExec :one
+INSERT INTO execs (
+    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING *;
+
+-- name: GetExec :one
+SELECT * FROM execs WHERE id = $1;
+
+-- name: GetExecByIdempotencyKey :one
+SELECT * FROM execs WHERE sandbox_id = $1 AND idempotency_key = $2;
+
+-- name: GetExecWithNode :one
+SELECT sqlc.embed(e), s.node_id AS sandbox_node_id
+FROM execs e
+JOIN sandboxes s ON s.id = e.sandbox_id
+WHERE e.id = $1;
+
+-- name: ListExecs :many
+SELECT * FROM execs
+WHERE sandbox_id = $1
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- name: CancelExec :one
+UPDATE execs
+SET cancel_requested_at = COALESCE(cancel_requested_at, now())
+WHERE id = $1 AND finished_at IS NULL
+RETURNING *;
+
+-- DeleteSandbox and stop both cancel first; the Reconciler waits for the
+-- resulting exit before removing the Runtime (api.md §3).
+-- name: CancelSandboxExecs :execrows
+UPDATE execs
+SET cancel_requested_at = now()
+WHERE sandbox_id = $1 AND finished_at IS NULL AND cancel_requested_at IS NULL;
+
+-- name: CountActiveExecs :one
+SELECT count(*) FROM execs WHERE sandbox_id = $1 AND finished_at IS NULL;
+
+-- name: SetExecStarted :exec
+UPDATE execs
+SET started_at = COALESCE(started_at, $2),
+    deadline_at = CASE
+        WHEN timeout_seconds IS NULL THEN NULL
+        ELSE COALESCE(started_at, $2) + make_interval(secs => timeout_seconds)
+    END
+WHERE id = $1;
+
+-- name: AppendExecChunk :exec
+INSERT INTO exec_log_chunks (exec_id, first_seq, last_seq, frames)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (exec_id, first_seq) DO NOTHING;
+
+-- name: AdvanceExecStoredSeq :exec
+UPDATE execs
+SET stored_seq = GREATEST(stored_seq, $2),
+    log_truncated = log_truncated OR $3
+WHERE id = $1;
+
+-- name: FinishExec :execrows
+UPDATE execs
+SET finished_at = now(), cause = $2, exit_code = $3, signal = $4
+WHERE id = $1 AND finished_at IS NULL;
+
+-- name: FinishSandboxExecs :execrows
+UPDATE execs
+SET finished_at = now(), cause = $2
+WHERE sandbox_id = $1 AND finished_at IS NULL AND generation <= $3;
+
+-- name: ListExecOutputChunks :many
+SELECT * FROM exec_log_chunks
+WHERE exec_id = $1 AND last_seq > sqlc.arg('after')
+ORDER BY first_seq
+LIMIT 32;
+
+-- name: ListActiveExecs :many
+SELECT sqlc.embed(e), s.node_id AS sandbox_node_id,
+       s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
+FROM execs e
+JOIN sandboxes s ON s.id = e.sandbox_id
+WHERE e.finished_at IS NULL
+ORDER BY e.id;

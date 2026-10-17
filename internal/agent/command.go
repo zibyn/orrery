@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
@@ -99,6 +100,33 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			c.observeSandbox(cmd.SandboxId, cmd.Generation, "gone", "")
 			return nil
 		})
+	case *nodev1.ControlMessage_StartExec:
+		cmd := m.StartExec
+		if _, err := uuid.Parse(cmd.SandboxId); err != nil {
+			c.result(cmd.CommandId, "invalid sandbox id")
+			return
+		}
+		if _, err := uuid.Parse(cmd.ExecId); err != nil {
+			c.result(cmd.CommandId, "invalid exec id")
+			return
+		}
+		// StartExec shares the Sandbox key: it must not overtake a Stop or run
+		// against a newer generation.
+		go c.run("sandbox:"+cmd.SandboxId, cmd.CommandId, cmd.Generation, func() error {
+			return c.rt.startExec(c.ctx, cmd)
+		})
+	case *nodev1.ControlMessage_CancelExec:
+		cmd := m.CancelExec
+		execID, err := uuid.Parse(cmd.ExecId)
+		if err != nil {
+			c.result(cmd.CommandId, "invalid exec id")
+			return
+		}
+		// Generation 0 skips the check: the persistent cancel intent outlives
+		// the Sandbox generation it was created under.
+		go c.run("exec:"+cmd.ExecId, cmd.CommandId, 0, func() error {
+			return c.rt.cancelExec(c.ctx, execID)
+		})
 	}
 }
 
@@ -126,7 +154,17 @@ func (c *commandRunner) run(key, commandID string, generation int64, fn func() e
 		c.result(commandID, "superseded by a newer generation")
 		return
 	}
-	c.result(commandID, errString(fn()))
+	err := fn()
+	commandFailed(commandID, err)
+	c.result(commandID, errString(err))
+}
+
+// commandFailed logs the error a command reports to the Control Plane; without
+// it the Agent's log says nothing about a command that never applied.
+func commandFailed(commandID string, err error) {
+	if err != nil {
+		slog.Warn("command failed", "command_id", commandID, "error", err)
+	}
 }
 
 func (c *commandRunner) observeSandbox(id string, generation int64, phase, cause string) {

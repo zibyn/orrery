@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/zibyn/stars-sandbox/internal/agent"
@@ -29,19 +30,25 @@ func main() {
 	}()
 
 	var err error
-	switch os.Args[1] {
-	case "enroll":
-		err = enroll(ctx, os.Args[2:])
-	case "run":
-		err = run(ctx, os.Args[2:])
-	case "supervisor":
-		err = supervise(os.Args[2:])
-	case "init", "probe":
-		// runtime.md names the mounted binary `/.stars/bin/supervisor` and calls
-		// it as `supervisor init|probe`, so accept the mode on its own too.
+	// Inside a Sandbox the binary is mounted as `supervisor`, so argv[0] picks
+	// the mode set; otherwise `stars-sandbox-agent supervisor <mode>` does.
+	if filepath.Base(os.Args[0]) == "supervisor" {
 		err = supervise(os.Args[1:])
-	default:
-		usage()
+	} else {
+		switch os.Args[1] {
+		case "enroll":
+			err = enroll(ctx, os.Args[2:])
+		case "run":
+			err = run(ctx, os.Args[2:])
+		case "supervisor":
+			err = supervise(os.Args[2:])
+		case "init", "probe":
+			// runtime.md names the mounted binary `/.stars/bin/supervisor` and calls
+			// it as `supervisor init|probe`, so accept the mode on its own too.
+			err = supervise(os.Args[1:])
+		default:
+			usage()
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "stars-sandbox-agent:", err)
@@ -54,7 +61,8 @@ func usage() {
   stars-sandbox-agent enroll --server HOST:PORT --packet sse_... [--ca FILE] [--name NAME] [--state FILE]
   stars-sandbox-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--docker SOCKET] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
   stars-sandbox-agent supervisor init
-  stars-sandbox-agent supervisor probe [WORKSPACE]`)
+  stars-sandbox-agent supervisor probe [WORKSPACE]
+  stars-sandbox-agent supervisor run EXEC_ID`)
 	os.Exit(2)
 }
 
@@ -102,6 +110,11 @@ func supervise(args []string) error {
 			workspace = args[1]
 		}
 		return supervisor.WriteProbeJSON(workspace)
+	case "run":
+		if len(args) != 2 {
+			usage()
+		}
+		return supervisor.Run(args[1])
 	default:
 		usage()
 		return nil

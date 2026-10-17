@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
 	"github.com/zibyn/stars-sandbox/internal/supervisor"
 )
 
@@ -34,6 +35,13 @@ type Runtime struct {
 	d        *dockerClient
 	dataRoot string
 
+	// Execs are launched from the Control stream; the output stream is opened
+	// per Exec against the same connection.
+	execStream func(context.Context) (nodev1.Node_ExecOutputClient, error)
+	send       func(*nodev1.AgentMessage)
+	execMu     sync.Mutex
+	execs      map[string]struct{} // exec id -> output delivery in flight
+
 	mu      sync.Mutex
 	managed map[string]int64 // sandbox id -> generation known to run
 }
@@ -42,6 +50,7 @@ func NewRuntime(socket, dataRoot string) *Runtime {
 	return &Runtime{
 		d:        &dockerClient{http: unixHTTPClient(socket)},
 		dataRoot: dataRoot,
+		execs:    make(map[string]struct{}),
 		managed:  make(map[string]int64),
 	}
 }

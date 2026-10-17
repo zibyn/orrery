@@ -19,22 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Node_Redeem_FullMethodName  = "/stars.node.v1.Node/Redeem"
-	Node_Control_FullMethodName = "/stars.node.v1.Node/Control"
+	Node_Redeem_FullMethodName     = "/stars.node.v1.Node/Redeem"
+	Node_Control_FullMethodName    = "/stars.node.v1.Node/Control"
+	Node_ExecOutput_FullMethodName = "/stars.node.v1.Node/ExecOutput"
 )
 
 // NodeClient is the client API for Node service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Node is the Agent-facing service on the `node` listener. ExecOutput and
-// Tunnel arrive with later tickets (docs/spec/node-protocol.md).
+// Node is the Agent-facing service on the `node` listener. Tunnel arrives with
+// a later ticket (docs/spec/node-protocol.md).
 type NodeClient interface {
 	// Redeem is the only unauthenticated entry point: an Enrollment Packet buys
 	// one Node Token. Both travel over TLS.
 	Redeem(ctx context.Context, in *RedeemRequest, opts ...grpc.CallOption) (*RedeemResponse, error)
 	// Control is one long-lived stream per Agent.
 	Control(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AgentMessage, ControlMessage], error)
+	// ExecOutput is one stream per Exec: frames up, acknowledgements down.
+	ExecOutput(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OutputBatch, OutputAck], error)
 }
 
 type nodeClient struct {
@@ -68,18 +71,33 @@ func (c *nodeClient) Control(ctx context.Context, opts ...grpc.CallOption) (grpc
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Node_ControlClient = grpc.BidiStreamingClient[AgentMessage, ControlMessage]
 
+func (c *nodeClient) ExecOutput(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OutputBatch, OutputAck], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Node_ServiceDesc.Streams[1], Node_ExecOutput_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[OutputBatch, OutputAck]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_ExecOutputClient = grpc.BidiStreamingClient[OutputBatch, OutputAck]
+
 // NodeServer is the server API for Node service.
 // All implementations must embed UnimplementedNodeServer
 // for forward compatibility.
 //
-// Node is the Agent-facing service on the `node` listener. ExecOutput and
-// Tunnel arrive with later tickets (docs/spec/node-protocol.md).
+// Node is the Agent-facing service on the `node` listener. Tunnel arrives with
+// a later ticket (docs/spec/node-protocol.md).
 type NodeServer interface {
 	// Redeem is the only unauthenticated entry point: an Enrollment Packet buys
 	// one Node Token. Both travel over TLS.
 	Redeem(context.Context, *RedeemRequest) (*RedeemResponse, error)
 	// Control is one long-lived stream per Agent.
 	Control(grpc.BidiStreamingServer[AgentMessage, ControlMessage]) error
+	// ExecOutput is one stream per Exec: frames up, acknowledgements down.
+	ExecOutput(grpc.BidiStreamingServer[OutputBatch, OutputAck]) error
 	mustEmbedUnimplementedNodeServer()
 }
 
@@ -95,6 +113,9 @@ func (UnimplementedNodeServer) Redeem(context.Context, *RedeemRequest) (*RedeemR
 }
 func (UnimplementedNodeServer) Control(grpc.BidiStreamingServer[AgentMessage, ControlMessage]) error {
 	return status.Errorf(codes.Unimplemented, "method Control not implemented")
+}
+func (UnimplementedNodeServer) ExecOutput(grpc.BidiStreamingServer[OutputBatch, OutputAck]) error {
+	return status.Errorf(codes.Unimplemented, "method ExecOutput not implemented")
 }
 func (UnimplementedNodeServer) mustEmbedUnimplementedNodeServer() {}
 func (UnimplementedNodeServer) testEmbeddedByValue()              {}
@@ -142,6 +163,13 @@ func _Node_Control_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Node_ControlServer = grpc.BidiStreamingServer[AgentMessage, ControlMessage]
 
+func _Node_ExecOutput_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(NodeServer).ExecOutput(&grpc.GenericServerStream[OutputBatch, OutputAck]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_ExecOutputServer = grpc.BidiStreamingServer[OutputBatch, OutputAck]
+
 // Node_ServiceDesc is the grpc.ServiceDesc for Node service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -158,6 +186,12 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Control",
 			Handler:       _Node_Control_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "ExecOutput",
+			Handler:       _Node_ExecOutput_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

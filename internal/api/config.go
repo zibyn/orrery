@@ -20,6 +20,8 @@ type Config struct {
 	DefaultSandboxQuota int32
 	// SnapshotDigest is the deployment default when a create omits snapshot.
 	SnapshotDigest string
+	// ExecLogCap bounds an Execution Log (defaults.md, 16 MiB).
+	ExecLogCap int64
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -42,6 +44,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DefaultSandboxQuota, err = envInt32("STARS_DEFAULT_SANDBOX_QUOTA", 0); err != nil {
+		return Config{}, err
+	}
+	if cfg.ExecLogCap, err = envInt64("STARS_EXEC_LOG_CAP", 16<<20); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -76,4 +81,16 @@ func envInt32(key string, fallback int32) (int32, error) {
 		return 0, fmt.Errorf("%s must be a non-negative integer", key)
 	}
 	return int32(n), nil
+}
+
+func envInt64(key string, fallback int64) (int64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return n, nil
 }

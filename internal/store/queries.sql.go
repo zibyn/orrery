@@ -13,6 +13,47 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceExecStoredSeq = `-- name: AdvanceExecStoredSeq :exec
+UPDATE execs
+SET stored_seq = GREATEST(stored_seq, $2),
+    log_truncated = log_truncated OR $3
+WHERE id = $1
+`
+
+type AdvanceExecStoredSeqParams struct {
+	ID           uuid.UUID
+	StoredSeq    int64
+	LogTruncated bool
+}
+
+func (q *Queries) AdvanceExecStoredSeq(ctx context.Context, arg AdvanceExecStoredSeqParams) error {
+	_, err := q.db.Exec(ctx, advanceExecStoredSeq, arg.ID, arg.StoredSeq, arg.LogTruncated)
+	return err
+}
+
+const appendExecChunk = `-- name: AppendExecChunk :exec
+INSERT INTO exec_log_chunks (exec_id, first_seq, last_seq, frames)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (exec_id, first_seq) DO NOTHING
+`
+
+type AppendExecChunkParams struct {
+	ExecID   uuid.UUID
+	FirstSeq int64
+	LastSeq  int64
+	Frames   json.RawMessage
+}
+
+func (q *Queries) AppendExecChunk(ctx context.Context, arg AppendExecChunkParams) error {
+	_, err := q.db.Exec(ctx, appendExecChunk,
+		arg.ExecID,
+		arg.FirstSeq,
+		arg.LastSeq,
+		arg.Frames,
+	)
+	return err
+}
+
 const bootstrapAdmin = `-- name: BootstrapAdmin :one
 INSERT INTO users (
     id, name, email, is_admin, login_type, password_hash,
@@ -61,6 +102,69 @@ func (q *Queries) BootstrapAdmin(ctx context.Context, arg BootstrapAdminParams) 
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const cancelExec = `-- name: CancelExec :one
+UPDATE execs
+SET cancel_requested_at = COALESCE(cancel_requested_at, now())
+WHERE id = $1 AND finished_at IS NULL
+RETURNING id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state
+`
+
+func (q *Queries) CancelExec(ctx context.Context, id uuid.UUID) (Exec, error) {
+	row := q.db.QueryRow(ctx, cancelExec, id)
+	var i Exec
+	err := row.Scan(
+		&i.ID,
+		&i.SandboxID,
+		&i.Argv,
+		&i.Env,
+		&i.Cwd,
+		&i.Stdin,
+		&i.Pty,
+		&i.TimeoutSeconds,
+		&i.AcceptedAt,
+		&i.StartedAt,
+		&i.CancelRequestedAt,
+		&i.DeadlineAt,
+		&i.FinishedAt,
+		&i.Cause,
+		&i.ExitCode,
+		&i.Signal,
+		&i.LogTruncated,
+		&i.StoredSeq,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.State,
+	)
+	return i, err
+}
+
+const cancelSandboxExecs = `-- name: CancelSandboxExecs :execrows
+UPDATE execs
+SET cancel_requested_at = now()
+WHERE sandbox_id = $1 AND finished_at IS NULL AND cancel_requested_at IS NULL
+`
+
+// DeleteSandbox and stop both cancel first; the Reconciler waits for the
+// resulting exit before removing the Runtime (api.md §3).
+func (q *Queries) CancelSandboxExecs(ctx context.Context, sandboxID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelSandboxExecs, sandboxID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const countActiveExecs = `-- name: CountActiveExecs :one
+SELECT count(*) FROM execs WHERE sandbox_id = $1 AND finished_at IS NULL
+`
+
+func (q *Queries) CountActiveExecs(ctx context.Context, sandboxID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveExecs, sandboxID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countActiveSandboxes = `-- name: CountActiveSandboxes :one
@@ -176,6 +280,66 @@ func (q *Queries) CreateEnrollmentPacket(ctx context.Context, arg CreateEnrollme
 		&i.UsedAt,
 		&i.CreatedBy,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createExec = `-- name: CreateExec :one
+
+INSERT INTO execs (
+    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state
+`
+
+type CreateExecParams struct {
+	ID             uuid.UUID
+	SandboxID      uuid.UUID
+	Argv           json.RawMessage
+	Env            json.RawMessage
+	Cwd            string
+	Stdin          []byte
+	TimeoutSeconds *int32
+	Generation     int64
+	IdempotencyKey *string
+}
+
+// Execs
+func (q *Queries) CreateExec(ctx context.Context, arg CreateExecParams) (Exec, error) {
+	row := q.db.QueryRow(ctx, createExec,
+		arg.ID,
+		arg.SandboxID,
+		arg.Argv,
+		arg.Env,
+		arg.Cwd,
+		arg.Stdin,
+		arg.TimeoutSeconds,
+		arg.Generation,
+		arg.IdempotencyKey,
+	)
+	var i Exec
+	err := row.Scan(
+		&i.ID,
+		&i.SandboxID,
+		&i.Argv,
+		&i.Env,
+		&i.Cwd,
+		&i.Stdin,
+		&i.Pty,
+		&i.TimeoutSeconds,
+		&i.AcceptedAt,
+		&i.StartedAt,
+		&i.CancelRequestedAt,
+		&i.DeadlineAt,
+		&i.FinishedAt,
+		&i.Cause,
+		&i.ExitCode,
+		&i.Signal,
+		&i.LogTruncated,
+		&i.StoredSeq,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.State,
 	)
 	return i, err
 }
@@ -529,6 +693,52 @@ func (q *Queries) DeleteUserSessions(ctx context.Context, userID uuid.UUID) (int
 	return result.RowsAffected(), nil
 }
 
+const finishExec = `-- name: FinishExec :execrows
+UPDATE execs
+SET finished_at = now(), cause = $2, exit_code = $3, signal = $4
+WHERE id = $1 AND finished_at IS NULL
+`
+
+type FinishExecParams struct {
+	ID       uuid.UUID
+	Cause    *string
+	ExitCode *int32
+	Signal   *int32
+}
+
+func (q *Queries) FinishExec(ctx context.Context, arg FinishExecParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishExec,
+		arg.ID,
+		arg.Cause,
+		arg.ExitCode,
+		arg.Signal,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const finishSandboxExecs = `-- name: FinishSandboxExecs :execrows
+UPDATE execs
+SET finished_at = now(), cause = $2
+WHERE sandbox_id = $1 AND finished_at IS NULL AND generation <= $3
+`
+
+type FinishSandboxExecsParams struct {
+	SandboxID  uuid.UUID
+	Cause      *string
+	Generation int64
+}
+
+func (q *Queries) FinishSandboxExecs(ctx context.Context, arg FinishSandboxExecsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishSandboxExecs, arg.SandboxID, arg.Cause, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAttachment = `-- name: GetAttachment :one
 SELECT sandbox_id, workspace_id, mode, generation, created_at FROM attachments WHERE sandbox_id = $1
 `
@@ -560,6 +770,119 @@ func (q *Queries) GetEnrollmentPacket(ctx context.Context, id uuid.UUID) (Enroll
 		&i.UsedAt,
 		&i.CreatedBy,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getExec = `-- name: GetExec :one
+SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state FROM execs WHERE id = $1
+`
+
+func (q *Queries) GetExec(ctx context.Context, id uuid.UUID) (Exec, error) {
+	row := q.db.QueryRow(ctx, getExec, id)
+	var i Exec
+	err := row.Scan(
+		&i.ID,
+		&i.SandboxID,
+		&i.Argv,
+		&i.Env,
+		&i.Cwd,
+		&i.Stdin,
+		&i.Pty,
+		&i.TimeoutSeconds,
+		&i.AcceptedAt,
+		&i.StartedAt,
+		&i.CancelRequestedAt,
+		&i.DeadlineAt,
+		&i.FinishedAt,
+		&i.Cause,
+		&i.ExitCode,
+		&i.Signal,
+		&i.LogTruncated,
+		&i.StoredSeq,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.State,
+	)
+	return i, err
+}
+
+const getExecByIdempotencyKey = `-- name: GetExecByIdempotencyKey :one
+SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state FROM execs WHERE sandbox_id = $1 AND idempotency_key = $2
+`
+
+type GetExecByIdempotencyKeyParams struct {
+	SandboxID      uuid.UUID
+	IdempotencyKey *string
+}
+
+func (q *Queries) GetExecByIdempotencyKey(ctx context.Context, arg GetExecByIdempotencyKeyParams) (Exec, error) {
+	row := q.db.QueryRow(ctx, getExecByIdempotencyKey, arg.SandboxID, arg.IdempotencyKey)
+	var i Exec
+	err := row.Scan(
+		&i.ID,
+		&i.SandboxID,
+		&i.Argv,
+		&i.Env,
+		&i.Cwd,
+		&i.Stdin,
+		&i.Pty,
+		&i.TimeoutSeconds,
+		&i.AcceptedAt,
+		&i.StartedAt,
+		&i.CancelRequestedAt,
+		&i.DeadlineAt,
+		&i.FinishedAt,
+		&i.Cause,
+		&i.ExitCode,
+		&i.Signal,
+		&i.LogTruncated,
+		&i.StoredSeq,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.State,
+	)
+	return i, err
+}
+
+const getExecWithNode = `-- name: GetExecWithNode :one
+SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, s.node_id AS sandbox_node_id
+FROM execs e
+JOIN sandboxes s ON s.id = e.sandbox_id
+WHERE e.id = $1
+`
+
+type GetExecWithNodeRow struct {
+	Exec          Exec
+	SandboxNodeID *uuid.UUID
+}
+
+func (q *Queries) GetExecWithNode(ctx context.Context, id uuid.UUID) (GetExecWithNodeRow, error) {
+	row := q.db.QueryRow(ctx, getExecWithNode, id)
+	var i GetExecWithNodeRow
+	err := row.Scan(
+		&i.Exec.ID,
+		&i.Exec.SandboxID,
+		&i.Exec.Argv,
+		&i.Exec.Env,
+		&i.Exec.Cwd,
+		&i.Exec.Stdin,
+		&i.Exec.Pty,
+		&i.Exec.TimeoutSeconds,
+		&i.Exec.AcceptedAt,
+		&i.Exec.StartedAt,
+		&i.Exec.CancelRequestedAt,
+		&i.Exec.DeadlineAt,
+		&i.Exec.FinishedAt,
+		&i.Exec.Cause,
+		&i.Exec.ExitCode,
+		&i.Exec.Signal,
+		&i.Exec.LogTruncated,
+		&i.Exec.StoredSeq,
+		&i.Exec.Generation,
+		&i.Exec.IdempotencyKey,
+		&i.Exec.State,
+		&i.SandboxNodeID,
 	)
 	return i, err
 }
@@ -663,6 +986,39 @@ type GetSandboxByIdempotencyKeyParams struct {
 
 func (q *Queries) GetSandboxByIdempotencyKey(ctx context.Context, arg GetSandboxByIdempotencyKeyParams) (Sandbox, error) {
 	row := q.db.QueryRow(ctx, getSandboxByIdempotencyKey, arg.OwnerID, arg.IdempotencyKey)
+	var i Sandbox
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Labels,
+		&i.DesiredState,
+		&i.State,
+		&i.Cause,
+		&i.NodeID,
+		&i.SnapshotDigest,
+		&i.Cpu,
+		&i.Memory,
+		&i.GpuCount,
+		&i.IdleStopSeconds,
+		&i.LastActivityAt,
+		&i.TokenHash,
+		&i.SecretEnvCt,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getSandboxIncludingDeleted = `-- name: GetSandboxIncludingDeleted :one
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at FROM sandboxes WHERE id = $1
+`
+
+func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) (Sandbox, error) {
+	row := q.db.QueryRow(ctx, getSandboxIncludingDeleted, id)
 	var i Sandbox
 	err := row.Scan(
 		&i.ID,
@@ -966,6 +1322,67 @@ func (q *Queries) InsertNodeGPU(ctx context.Context, arg InsertNodeGPUParams) er
 	return err
 }
 
+const listActiveExecs = `-- name: ListActiveExecs :many
+SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, s.node_id AS sandbox_node_id,
+       s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
+FROM execs e
+JOIN sandboxes s ON s.id = e.sandbox_id
+WHERE e.finished_at IS NULL
+ORDER BY e.id
+`
+
+type ListActiveExecsRow struct {
+	Exec                Exec
+	SandboxNodeID       *uuid.UUID
+	SandboxState        string
+	SandboxDesiredState string
+}
+
+func (q *Queries) ListActiveExecs(ctx context.Context) ([]ListActiveExecsRow, error) {
+	rows, err := q.db.Query(ctx, listActiveExecs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListActiveExecsRow{}
+	for rows.Next() {
+		var i ListActiveExecsRow
+		if err := rows.Scan(
+			&i.Exec.ID,
+			&i.Exec.SandboxID,
+			&i.Exec.Argv,
+			&i.Exec.Env,
+			&i.Exec.Cwd,
+			&i.Exec.Stdin,
+			&i.Exec.Pty,
+			&i.Exec.TimeoutSeconds,
+			&i.Exec.AcceptedAt,
+			&i.Exec.StartedAt,
+			&i.Exec.CancelRequestedAt,
+			&i.Exec.DeadlineAt,
+			&i.Exec.FinishedAt,
+			&i.Exec.Cause,
+			&i.Exec.ExitCode,
+			&i.Exec.Signal,
+			&i.Exec.LogTruncated,
+			&i.Exec.StoredSeq,
+			&i.Exec.Generation,
+			&i.Exec.IdempotencyKey,
+			&i.Exec.State,
+			&i.SandboxNodeID,
+			&i.SandboxState,
+			&i.SandboxDesiredState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllNodes = `-- name: ListAllNodes :many
 SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory FROM nodes ORDER BY id
 `
@@ -1112,6 +1529,100 @@ func (q *Queries) ListDeletingWorkspaces(ctx context.Context) ([]Workspace, erro
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecOutputChunks = `-- name: ListExecOutputChunks :many
+SELECT exec_id, first_seq, last_seq, frames, created_at FROM exec_log_chunks
+WHERE exec_id = $1 AND last_seq > $2
+ORDER BY first_seq
+LIMIT 32
+`
+
+type ListExecOutputChunksParams struct {
+	ExecID uuid.UUID
+	After  int64
+}
+
+func (q *Queries) ListExecOutputChunks(ctx context.Context, arg ListExecOutputChunksParams) ([]ExecLogChunk, error) {
+	rows, err := q.db.Query(ctx, listExecOutputChunks, arg.ExecID, arg.After)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecLogChunk{}
+	for rows.Next() {
+		var i ExecLogChunk
+		if err := rows.Scan(
+			&i.ExecID,
+			&i.FirstSeq,
+			&i.LastSeq,
+			&i.Frames,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecs = `-- name: ListExecs :many
+SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state FROM execs
+WHERE sandbox_id = $1
+  AND ($2::uuid IS NULL OR id > $2)
+ORDER BY id
+LIMIT $3
+`
+
+type ListExecsParams struct {
+	SandboxID uuid.UUID
+	After     *uuid.UUID
+	Limit     int32
+}
+
+func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, error) {
+	rows, err := q.db.Query(ctx, listExecs, arg.SandboxID, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Exec{}
+	for rows.Next() {
+		var i Exec
+		if err := rows.Scan(
+			&i.ID,
+			&i.SandboxID,
+			&i.Argv,
+			&i.Env,
+			&i.Cwd,
+			&i.Stdin,
+			&i.Pty,
+			&i.TimeoutSeconds,
+			&i.AcceptedAt,
+			&i.StartedAt,
+			&i.CancelRequestedAt,
+			&i.DeadlineAt,
+			&i.FinishedAt,
+			&i.Cause,
+			&i.ExitCode,
+			&i.Signal,
+			&i.LogTruncated,
+			&i.StoredSeq,
+			&i.Generation,
+			&i.IdempotencyKey,
+			&i.State,
 		); err != nil {
 			return nil, err
 		}
@@ -1683,6 +2194,26 @@ func (q *Queries) RedeemEnrollmentPacket(ctx context.Context, id uuid.UUID) (Enr
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const setExecStarted = `-- name: SetExecStarted :exec
+UPDATE execs
+SET started_at = COALESCE(started_at, $2),
+    deadline_at = CASE
+        WHEN timeout_seconds IS NULL THEN NULL
+        ELSE COALESCE(started_at, $2) + make_interval(secs => timeout_seconds)
+    END
+WHERE id = $1
+`
+
+type SetExecStartedParams struct {
+	ID        uuid.UUID
+	StartedAt pgtype.Timestamptz
+}
+
+func (q *Queries) SetExecStarted(ctx context.Context, arg SetExecStartedParams) error {
+	_, err := q.db.Exec(ctx, setExecStarted, arg.ID, arg.StartedAt)
+	return err
 }
 
 const setNodeCapabilities = `-- name: SetNodeCapabilities :exec

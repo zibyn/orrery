@@ -22,6 +22,7 @@ services:
       STARS_NODE_TLS_CERT: /tls/server.crt
       STARS_NODE_TLS_KEY: /tls/server.key
       STARS_DEFAULT_SNAPSHOT_DIGEST: "${STARS_DEFAULT_SNAPSHOT_DIGEST:-}"
+      STARS_EXEC_LOG_CAP: "${STARS_EXEC_LOG_CAP:-}"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
     depends_on:

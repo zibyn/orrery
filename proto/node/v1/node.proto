@@ -4,14 +4,16 @@ package stars.node.v1;
 
 option go_package = "github.com/zibyn/stars-sandbox/gen/node/v1;nodev1";
 
-// Node is the Agent-facing service on the `node` listener. ExecOutput and
-// Tunnel arrive with later tickets (docs/spec/node-protocol.md).
+// Node is the Agent-facing service on the `node` listener. Tunnel arrives with
+// a later ticket (docs/spec/node-protocol.md).
 service Node {
   // Redeem is the only unauthenticated entry point: an Enrollment Packet buys
   // one Node Token. Both travel over TLS.
   rpc Redeem(RedeemRequest) returns (RedeemResponse);
   // Control is one long-lived stream per Agent.
   rpc Control(stream AgentMessage) returns (stream ControlMessage);
+  // ExecOutput is one stream per Exec: frames up, acknowledgements down.
+  rpc ExecOutput(stream OutputBatch) returns (stream OutputAck);
 }
 
 message RedeemRequest {
@@ -36,6 +38,7 @@ message AgentMessage {
     SandboxObserved sandbox_observed = 4;
     WorkspaceObserved workspace_observed = 5;
     CommandResult command_result = 6;
+    ExecObserved exec_observed = 7;
   }
 }
 
@@ -108,6 +111,12 @@ message CommandResult {
   string error = 2;
 }
 
+message ExecObserved {
+  string exec_id = 1;
+  // RFC 3339, read from the Supervisor's `started` file.
+  string started_at = 2;
+}
+
 message ControlMessage {
   oneof message {
     HelloAck hello_ack = 1;
@@ -115,6 +124,8 @@ message ControlMessage {
     DeleteWorkspace delete_workspace = 3;
     CreateSandbox create_sandbox = 4;
     StopSandbox stop_sandbox = 5;
+    StartExec start_exec = 6;
+    CancelExec cancel_exec = 7;
   }
 }
 
@@ -157,6 +168,47 @@ message StopSandbox {
   string command_id = 1;
   string sandbox_id = 2;
   int64 generation = 3;
+}
+
+message StartExec {
+  string command_id = 1;
+  string exec_id = 2;
+  string sandbox_id = 3;
+  int64 generation = 4;
+  repeated string argv = 5;
+  map<string, string> env = 6;
+  map<string, string> secret_env = 7;
+  string cwd = 8;
+  int64 timeout_seconds = 9;
+  int64 log_cap = 10;
+  bytes stdin = 11;
+}
+
+message CancelExec {
+  string command_id = 1;
+  string exec_id = 2;
+}
+
+message OutputFrame {
+  // Byte offset of this frame in the Node's `output` record.
+  int64 seq = 1;
+  // "stdout", "stderr", "truncated" or "exit".
+  string stream = 2;
+  bytes data = 3;
+  // Set only on the exit frame.
+  string cause = 4;
+  optional int32 exit_code = 5;
+  optional int32 signal = 6;
+}
+
+message OutputBatch {
+  string exec_id = 1;
+  repeated OutputFrame frames = 2;
+}
+
+message OutputAck {
+  string exec_id = 1;
+  int64 stored_seq = 2;
 }
 
 message HelloAck {

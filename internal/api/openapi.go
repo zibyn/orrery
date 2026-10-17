@@ -395,5 +395,70 @@ func schemas() map[string]any {
 				"next_cursor": nullableString,
 			},
 		},
+		"CreateExecRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"argv"},
+			"properties": map[string]any{
+				"argv":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "description": "The program and its arguments; no shell."},
+				"env":     map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"cwd":     map[string]any{"type": "string", "description": "Relative to /workspace."},
+				"timeout": map[string]any{"type": "integer", "minimum": 1, "description": "Seconds; omit for no timeout."},
+				"stdin":   map[string]any{"type": "string", "description": "Written once, then closed."},
+				"pty":     map[string]any{"type": "object", "description": "PTY mode is not supported yet."},
+			},
+		},
+		"ExecResult": map[string]any{
+			"type":     "object",
+			"required": []string{"cause"},
+			"properties": map[string]any{
+				"cause": map[string]any{"type": "string", "enum": []string{
+					"exited", "canceled", "timed_out", "oom_killed", "runtime_lost",
+					"node_lost", "pty_idle", "start_failed",
+				}},
+				"exit_code": map[string]any{"type": "integer"},
+				"signal":    map[string]any{"type": "integer"},
+			},
+		},
+		"Exec": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "sandbox_id", "argv", "state", "log_truncated", "accepted_at"},
+			"properties": map[string]any{
+				"id":            map[string]any{"type": "string", "format": "uuid"},
+				"sandbox_id":    map[string]any{"type": "string", "format": "uuid"},
+				"argv":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"cwd":           map[string]any{"type": "string"},
+				"timeout":       map[string]any{"type": []string{"integer", "null"}},
+				"state":         map[string]any{"type": "string", "enum": []string{"pending", "running", "canceling", "finished"}},
+				"result":        map[string]any{"anyOf": []any{schemaRef("ExecResult"), map[string]any{"type": "null"}}},
+				"log_truncated": map[string]any{"type": "boolean"},
+				"accepted_at":   map[string]any{"type": "string", "format": "date-time"},
+				"started_at":    nullableTime,
+				"finished_at":   nullableTime,
+				"deadline_at":   nullableTime,
+			},
+		},
+		"ExecList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("Exec")},
+				"next_cursor": nullableString,
+			},
+		},
+		"ExecOutputFrame": map[string]any{
+			"type":     "object",
+			"required": []string{"seq", "stream", "data"},
+			"properties": map[string]any{
+				"seq":      map[string]any{"type": "integer", "description": "The frame's byte offset in the Node record; pass the end of the last frame as after."},
+				"stream":   map[string]any{"type": "string", "enum": []string{"stdout", "stderr", "truncated"}},
+				"data":     map[string]any{"type": "string"},
+				"encoding": map[string]any{"type": "string", "enum": []string{"base64"}, "description": "Present when data is not valid UTF-8."},
+			},
+		},
+		"ExecOutput": map[string]any{
+			"type":        "array",
+			"items":       schemaRef("ExecOutputFrame"),
+			"description": "A page of frames. With follow=true the same frames arrive as WebSocket text messages, ending with a {type: \"result\"} frame.",
+		},
 	}
 }

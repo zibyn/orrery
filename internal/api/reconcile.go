@@ -123,6 +123,92 @@ func (r *reconciler) once(ctx context.Context) {
 		}
 	}
 	r.deleteWorkspaces(ctx)
+	r.execs(ctx)
+}
+
+// execs derives StartExec and CancelExec from the unavoidable truth of the
+// execs table: Active rows are the queue (ADR-0014).
+func (r *reconciler) execs(ctx context.Context) {
+	rows, err := r.s.q.ListActiveExecs(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			r.s.log.Warn("reconcile: list execs", "error", err)
+		}
+		return
+	}
+	for _, row := range rows {
+		e := row.Exec
+		connected := row.SandboxNodeID != nil && r.hub.connected(*row.SandboxNodeID)
+		switch {
+		case row.SandboxState == "stopped" || row.SandboxState == "deleted" || row.SandboxState == "failed":
+			// The Runtime is gone, so every remaining Exec failed with it.
+			r.finishExec(ctx, e.ID, "runtime_lost")
+		case e.CancelRequestedAt.Valid:
+			if !connected {
+				// Cancellation is a persistent intent: with the Agent away there
+				// is nobody to relay it to, so wait (runtime.md §5).
+				continue
+			}
+			delivered := row.SandboxNodeID != nil &&
+				r.hub.wasSent(*row.SandboxNodeID, execCommandId("start-exec", e))
+			if !e.StartedAt.Valid && !delivered {
+				// The command never reached the Supervisor; there is nothing
+				// to signal.
+				r.finishExec(ctx, e.ID, "canceled")
+				continue
+			}
+			id := execCommandId("cancel-exec", e)
+			r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
+				Message: &nodev1.ControlMessage_CancelExec{CancelExec: &nodev1.CancelExec{
+					CommandId: id, ExecId: e.ID.String(),
+				}},
+			})
+		case row.SandboxDesiredState != "running":
+			// Stop and delete wait for the runtime to be gone; turn the active
+			// Execs into cancel intents first (api.md §3).
+			if _, err := r.s.q.CancelSandboxExecs(ctx, e.SandboxID); err != nil {
+				r.s.log.Warn("reconcile: cancel execs", "sandbox_id", e.SandboxID, "error", err)
+			}
+		case row.SandboxState != "ready":
+			// The Sandbox is still provisioning; the Exec waits.
+		default:
+			r.startExec(ctx, row)
+		}
+	}
+}
+
+func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow) {
+	e := row.Exec
+	var argv []string
+	if err := json.Unmarshal(e.Argv, &argv); err != nil || len(argv) == 0 {
+		r.finishExec(ctx, e.ID, "start_failed")
+		return
+	}
+	env := map[string]string{}
+	if len(e.Env) > 0 {
+		if err := json.Unmarshal(e.Env, &env); err != nil {
+			r.finishExec(ctx, e.ID, "start_failed")
+			return
+		}
+	}
+	var timeout int64
+	if e.TimeoutSeconds != nil {
+		timeout = int64(*e.TimeoutSeconds)
+	}
+	id := execCommandId("start-exec", e)
+	r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
+		Message: &nodev1.ControlMessage_StartExec{StartExec: &nodev1.StartExec{
+			CommandId: id, ExecId: e.ID.String(), SandboxId: e.SandboxID.String(),
+			Generation: e.Generation, Argv: argv, Env: env, Cwd: e.Cwd,
+			TimeoutSeconds: timeout, LogCap: r.s.cfg.ExecLogCap, Stdin: e.Stdin,
+		}},
+	})
+}
+
+func (r *reconciler) finishExec(ctx context.Context, id uuid.UUID, cause string) {
+	if _, err := r.s.q.FinishExec(ctx, store.FinishExecParams{ID: id, Cause: &cause}); err != nil {
+		r.s.log.Warn("reconcile: finish Exec", "exec_id", id, "error", err)
+	}
 }
 
 // pending places a Sandbox on a Node, provisions its Workspace there, and then
@@ -236,6 +322,11 @@ func (r *reconciler) stop(ctx context.Context, sb store.Sandbox) {
 		r.finalizeStopped(ctx, sb.ID)
 		return
 	}
+	// Execs must finish before the runtime goes away, or their output is lost.
+	// The exec sweep delivers the cancels; the next tick sends the stop.
+	if !r.execsDrained(ctx, sb.ID) {
+		return
+	}
 	id := sandboxCommandId("stop-sandbox", sb)
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_StopSandbox{
 		StopSandbox: &nodev1.StopSandbox{
@@ -284,12 +375,31 @@ func (r *reconciler) delete(ctx context.Context, sb store.Sandbox) {
 		}
 		return
 	}
+	if !r.execsDrained(ctx, sb.ID) {
+		return
+	}
 	id := sandboxCommandId("stop-sandbox", sb)
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_StopSandbox{
 		StopSandbox: &nodev1.StopSandbox{
 			CommandId: id, SandboxId: sb.ID.String(), Generation: sb.Generation,
 		},
 	}})
+}
+
+// execsDrained marks a Sandbox's active Execs for cancellation and reports
+// whether every one has finished. Commands run on a Sandbox being deleted are
+// canceled, not killed with their logs (api.md §3, delete-cascade).
+func (r *reconciler) execsDrained(ctx context.Context, sandboxID uuid.UUID) bool {
+	if _, err := r.s.q.CancelSandboxExecs(ctx, sandboxID); err != nil {
+		r.s.log.Warn("reconcile: cancel execs", "sandbox_id", sandboxID, "error", err)
+		return false
+	}
+	active, err := r.s.q.CountActiveExecs(ctx, sandboxID)
+	if err != nil {
+		r.s.log.Warn("reconcile: count execs", "sandbox_id", sandboxID, "error", err)
+		return false
+	}
+	return active == 0
 }
 
 func (r *reconciler) deleteWorkspaces(ctx context.Context) {
@@ -409,6 +519,10 @@ func workspaceCommandId(prefix string, ws store.Workspace) string {
 	return fmt.Sprintf("%s:%s:%d", prefix, ws.ID, ws.Generation)
 }
 
+func execCommandId(prefix string, e store.Exec) string {
+	return fmt.Sprintf("%s:%s:%d", prefix, e.ID, e.Generation)
+}
+
 // nodeHub fans commands out to the Agent's Control stream. A command id that
 // was already queued is not queued twice; a reconnect clears that memory so
 // every command is derived and delivered again.
@@ -473,6 +587,13 @@ func (h *nodeHub) send(nodeID uuid.UUID, commandID string, msg *nodev1.ControlMe
 		h.sent[nodeID][commandID] = true
 	default: // retried on the next tick
 	}
+}
+
+// wasSent reports whether a command id was delivered on the current connection.
+func (h *nodeHub) wasSent(nodeID uuid.UUID, commandID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.sent[nodeID][commandID]
 }
 
 // failed forgets a delivered command so the next sweep sends it again.

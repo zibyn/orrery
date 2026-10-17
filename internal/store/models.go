@@ -63,6 +63,38 @@ type EnrollmentPacket struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type Exec struct {
+	ID                uuid.UUID
+	SandboxID         uuid.UUID
+	Argv              json.RawMessage
+	Env               json.RawMessage
+	Cwd               string
+	Stdin             []byte
+	Pty               json.RawMessage
+	TimeoutSeconds    *int32
+	AcceptedAt        pgtype.Timestamptz
+	StartedAt         pgtype.Timestamptz
+	CancelRequestedAt pgtype.Timestamptz
+	DeadlineAt        pgtype.Timestamptz
+	FinishedAt        pgtype.Timestamptz
+	Cause             *string
+	ExitCode          *int32
+	Signal            *int32
+	LogTruncated      bool
+	StoredSeq         int64
+	Generation        int64
+	IdempotencyKey    *string
+	State             *string
+}
+
+type ExecLogChunk struct {
+	ExecID    uuid.UUID
+	FirstSeq  int64
+	LastSeq   int64
+	Frames    json.RawMessage
+	CreatedAt pgtype.Timestamptz
+}
+
 type Gpu struct {
 	Uuid   string
 	NodeID uuid.UUID
