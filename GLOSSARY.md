@@ -181,7 +181,7 @@ Caller-originated credential material that the platform holds for a User and may
 _Avoid_: environment variable, config value, password
 
 **Capability Channel**:
-The platform-managed path by which a Sandbox asks the platform to perform a capability it cannot perform itself. It carries declared platform verbs and their targets, never credentials and never arbitrary commands.
+The platform-managed path by which a Sandbox asks the platform to perform a capability it cannot perform itself. It carries declared platform verbs and their targets, never credentials and never arbitrary commands. Each Sandbox has its own, a request on it speaks for that Sandbox, and it is independent of the Sandbox's Egress Policy.
 _Avoid_: agent socket, proxy, sidecar
 
 **Egress Policy**:

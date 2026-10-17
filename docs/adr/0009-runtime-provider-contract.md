@@ -46,6 +46,7 @@ The initial posture is:
 | disk capacity quota | unsupported | unsupported | unsupported |
 | egress policy | enforced | enforced | best_effort |
 | arbitrary extra mounts / privileged mode | unsupported | unsupported | unsupported |
+| `capability_channel` (the named mount exception, ADR-0011) | enforced | enforced | best_effort |
 
 ## Consequences
 
