@@ -8,8 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,7 +86,7 @@ func (r *Runtime) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 	}
 	spec := supervisor.Spec{
 		Argv:           cmd.Argv,
-		Env:            cmd.Env,
+		Env:            r.commandEnv(ctx, sandboxID, cmd.Env),
 		SecretEnv:      cmd.SecretEnv,
 		Cwd:            cmd.Cwd,
 		GraceSeconds:   execGrace,
@@ -118,6 +120,61 @@ func timeoutPtr(seconds int64) *int64 {
 		return nil
 	}
 	return &seconds
+}
+
+// execEnv merges the platform's values last: the caller's variables first,
+// then PATH with /.stars/bin appended, then the Git config that clears the
+// image's helpers and installs ours (node-protocol.md).
+func execEnv(caller map[string]string, imagePath string) map[string]string {
+	env := make(map[string]string, len(caller)+7)
+	for key, value := range caller {
+		env[key] = value
+	}
+	path := env["PATH"]
+	if path == "" {
+		path = imagePath
+	}
+	if path == "" {
+		env["PATH"] = binaryDir
+	} else {
+		env["PATH"] = path + ":" + binaryDir
+	}
+	env["GIT_CONFIG_COUNT"] = "2"
+	env["GIT_CONFIG_KEY_0"] = "credential.helper"
+	env["GIT_CONFIG_VALUE_0"] = ""
+	env["GIT_CONFIG_KEY_1"] = "credential.helper"
+	env["GIT_CONFIG_VALUE_1"] = binaryDir + "/stars-sandbox git-credential"
+	return env
+}
+
+// commandEnv chooses the PATH base: the caller's env wins, then the image
+// config, then the Agent's own PATH for a Runtime without an image.
+func (r *Runtime) commandEnv(ctx context.Context, sandboxID uuid.UUID, caller map[string]string) map[string]string {
+	imagePath := ""
+	if caller["PATH"] == "" {
+		imagePath = r.imagePath(ctx, sandboxID)
+	}
+	return execEnv(caller, imagePath)
+}
+
+// imagePath reads the container's PATH, which the Runtime filled from the
+// image config. A failed read falls back to the Agent's own PATH.
+func (r *Runtime) imagePath(ctx context.Context, sandboxID uuid.UUID) string {
+	var info struct {
+		Config struct {
+			Env []string `json:"Env"`
+		} `json:"Config"`
+	}
+	if err := r.d.do(ctx, http.MethodGet, r.d.api("/containers/"+containerName(sandboxID)+"/json"), nil, &info); err != nil {
+		slog.Warn("inspect container PATH", "sandbox_id", sandboxID, "error", err)
+		return os.Getenv("PATH")
+	}
+	for _, entry := range info.Config.Env {
+		if path, ok := strings.CutPrefix(entry, "PATH="); ok {
+			return path
+		}
+	}
+	return os.Getenv("PATH")
 }
 
 // cancelExec relays the persistent cancel intent. It waits for the Supervisor's

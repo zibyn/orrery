@@ -46,6 +46,9 @@ type Config struct {
 	// EncryptionKeys encrypts Secrets, Git tokens and Sandbox Tokens. Nil
 	// means those features answer with an explicit error (defaults.md).
 	EncryptionKeys *keyring.Keyring
+	// AccessURL is the externally reachable `api` address. It becomes
+	// STARS_URL in every Exec; empty leaves STARS_URL out (defaults.md).
+	AccessURL string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -58,6 +61,7 @@ func ConfigFromEnv() (Config, error) {
 		SnapshotDigest: os.Getenv("STARS_DEFAULT_SNAPSHOT_DIGEST"),
 		AppsDomain:     os.Getenv("STARS_APPS_DOMAIN"),
 		PortTicketKey:  []byte(os.Getenv("STARS_PORT_TICKET_KEY")),
+		AccessURL:      os.Getenv("STARS_ACCESS_URL"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("STARS_DATABASE_URL is required")

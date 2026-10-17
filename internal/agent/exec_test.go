@@ -266,3 +266,47 @@ func TestFinalizeLostEndsUnfinishedExecs(t *testing.T) {
 		t.Fatalf("an existing exit was overwritten: %+v", exit)
 	}
 }
+
+// execEnv merges the platform's values last: PATH gets /.stars/bin appended
+// without hiding the image's commands, and the helper config clears any
+// inherited helpers first (node-protocol.md).
+func TestExecEnv(t *testing.T) {
+	caller := map[string]string{
+		"PATH":             "/usr/local/bin:/usr/bin",
+		"GIT_CONFIG_COUNT": "1",
+		"GIT_CONFIG_KEY_0": "credential.helper",
+		"KEEP":             "kept",
+	}
+	env := execEnv(caller, "/image/bin")
+
+	if got := env["PATH"]; got != "/usr/local/bin:/usr/bin:/.stars/bin" {
+		t.Fatalf("PATH = %q, want the caller PATH plus /.stars/bin", got)
+	}
+	if env["KEEP"] != "kept" {
+		t.Fatalf("caller variable dropped: %v", env)
+	}
+	wantConfig := map[string]string{
+		"GIT_CONFIG_COUNT":   "2",
+		"GIT_CONFIG_KEY_0":   "credential.helper",
+		"GIT_CONFIG_VALUE_0": "",
+		"GIT_CONFIG_KEY_1":   "credential.helper",
+		"GIT_CONFIG_VALUE_1": "/.stars/bin/stars-sandbox git-credential",
+	}
+	for key, want := range wantConfig {
+		if got := env[key]; got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	if caller["PATH"] != "/usr/local/bin:/usr/bin" {
+		t.Fatalf("execEnv mutated the caller's map: %v", caller)
+	}
+
+	// Without a caller PATH the image's PATH is the base.
+	if got := execEnv(map[string]string{}, "/image/bin")["PATH"]; got != "/image/bin:/.stars/bin" {
+		t.Fatalf("image PATH base = %q", got)
+	}
+	// No base at all still exposes the platform binaries.
+	if got := execEnv(nil, "")["PATH"]; got != "/.stars/bin" {
+		t.Fatalf("empty PATH base = %q", got)
+	}
+}

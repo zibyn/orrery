@@ -26,7 +26,8 @@ const (
 	// sandboxPidsLimit is the fixed PID ceiling for every Sandbox (runtime.md
 	// §9; defaults.md does not name a value).
 	sandboxPidsLimit = int64(2048)
-	supervisorBin    = "/.stars/bin/supervisor"
+	binaryDir        = "/.stars/bin"
+	supervisorBin    = binaryDir + "/supervisor"
 	workspaceMount   = "/workspace"
 	runMount         = "/.stars/run"
 	// recordSettle is how long a startup reconciliation waits for a
@@ -76,7 +77,7 @@ func (r *Runtime) connect(client nodev1.NodeClient, send func(*nodev1.AgentMessa
 }
 
 // PrepareDataRoot creates the directories the mount table needs and stages the
-// Supervisor binary at <dataRoot>/bin/supervisor (runtime.md §2).
+// Supervisor binary and the external CLI at <dataRoot>/bin (runtime.md §2).
 func PrepareDataRoot(root string) error {
 	for _, dir := range []string{
 		filepath.Join(root, "bin"),
@@ -91,12 +92,25 @@ func PrepareDataRoot(root string) error {
 	if err != nil {
 		return err
 	}
-	bin := filepath.Join(root, "bin", "supervisor")
-	tmp := bin + ".tmp"
-	if err := copyFile(self, tmp); err != nil {
+	if err := stageBinary(self, filepath.Join(root, "bin", "supervisor")); err != nil {
 		return fmt.Errorf("stage Supervisor binary: %w", err)
 	}
-	return os.Rename(tmp, bin)
+	// The Node deployment package places the external CLI next to the Agent.
+	if err := stageBinary(filepath.Join(filepath.Dir(self), "stars-sandbox"),
+		filepath.Join(root, "bin", "stars-sandbox")); err != nil {
+		return fmt.Errorf("stage external CLI: %w", err)
+	}
+	return nil
+}
+
+// stageBinary installs src at dst atomically, so an interrupted copy never
+// leaves a half-written binary in the read-only mount.
+func stageBinary(src, dst string) error {
+	tmp := dst + ".tmp"
+	if err := copyFile(src, tmp); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 func workspacePath(root string, id uuid.UUID) string {

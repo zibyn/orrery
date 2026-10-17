@@ -152,7 +152,7 @@ type Sandbox struct {
 	GpuCount        int32
 	IdleStopSeconds int32
 	LastActivityAt  pgtype.Timestamptz
-	TokenHash       []byte
+	TokenCt         []byte
 	SecretEnvCt     []byte
 	Generation      int64
 	IdempotencyKey  *string
@@ -162,6 +162,7 @@ type Sandbox struct {
 	GpuModel        *string
 	WorkspaceID     *uuid.UUID
 	WorkspaceMode   string
+	TokenKeyID      *string
 }
 
 type Secret struct {

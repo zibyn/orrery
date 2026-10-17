@@ -141,6 +141,9 @@ func startGPUHost(t *testing.T, name string) *gpuHost {
 
 	sshRun(t, h, "mkdir -p "+h.dir)
 	scpRun(t, h, agentPath(t), h.dir+"/agent")
+	// The Agent stages the external CLI into every Sandbox from its own
+	// directory (runtime.md §2).
+	scpRun(t, h, cliPath(t), h.dir+"/stars-sandbox")
 	scpRun(t, h, nodeCA(), h.dir+"/ca.crt")
 
 	// The reverse tunnel gives the host a 127.0.0.1 that reaches this machine,

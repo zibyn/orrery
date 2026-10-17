@@ -9,7 +9,7 @@ type handlerFunc func(http.ResponseWriter, *http.Request, *principal)
 type route struct {
 	Method        string
 	Path          string // without the /api/v1 prefix
-	Auth          string // "", "user", or "admin"
+	Auth          string // "", "user", "admin", or "sandbox"
 	OperationID   string
 	Summary       string
 	Request       string // schema name, or empty
@@ -37,6 +37,7 @@ func (s *Server) routes() []route {
 		{http.MethodPut, "/secrets/{name}", "user", "putSecret", "Create or overwrite a Secret", "PutSecretRequest", "Secret", nil, http.StatusOK, s.handlePutSecret},
 		{http.MethodGet, "/secrets", "user", "listSecrets", "List Secrets", "", "SecretList", []string{"limit", "cursor"}, http.StatusOK, s.handleListSecrets},
 		{http.MethodDelete, "/secrets/{name}", "user", "deleteSecret", "Delete a Secret", "", "Secret", nil, http.StatusAccepted, s.handleDeleteSecret},
+		{http.MethodPost, "/git/credential", "sandbox", "getGitCredential", "Fetch a Git credential", "", "", nil, http.StatusOK, s.handleGitCredential},
 		{http.MethodPost, "/sessions", "", "createSession", "Log in with a password", "SessionRequest", "LoginResponse", nil, http.StatusCreated, s.handleCreateSession},
 		{http.MethodDelete, "/sessions/current", "user", "deleteCurrentSession", "Log out the current Session", "", "Token", nil, http.StatusAccepted, s.handleDeleteCurrentSession},
 		{http.MethodGet, "/audit", "admin", "listAudit", "List Audit Records", "", "AuditList", []string{"actor", "action", "target", "target_type", "from", "to", "limit", "cursor"}, http.StatusOK, s.handleListAudit},
@@ -80,7 +81,7 @@ func (s *Server) Handler() http.Handler {
 		h := rt.Handler
 		var handler http.HandlerFunc
 		switch rt.Auth {
-		case "admin", "user":
+		case "admin", "user", "sandbox":
 			handler = s.wrapAuth(rt.Auth, h)
 		default:
 			handler = func(w http.ResponseWriter, r *http.Request) { h(w, r, nil) }

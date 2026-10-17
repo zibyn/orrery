@@ -31,6 +31,7 @@ services:
       STARS_APPS_DOMAIN: "${STARS_APPS_DOMAIN:-}"
       STARS_PORT_TICKET_KEY: "${STARS_PORT_TICKET_KEY:-}"
       STARS_ENCRYPTION_KEYS_FILE: "${STARS_ENCRYPTION_KEYS_FILE:-}"
+      STARS_ACCESS_URL: "${STARS_ACCESS_URL:-}"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
       - "${STARS_ENCRYPTION_KEYS_DIR:-./keys}:/keys:ro"

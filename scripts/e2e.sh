@@ -52,10 +52,11 @@ export STARS_ENCRYPTION_KEYS_DIR="$PWD/.e2e/keys"
 export STARS_ENCRYPTION_KEYS_FILE=/keys/encryption
 
 # The probe container runs the Agent binary as the Supervisor, so it has to be
-# static.
+# static. The external CLI is copied into Sandboxes, so it has to be static too
+# (alpine and distroless images do not have this host's libc).
 mkdir -p .e2e
 CGO_ENABLED=0 "$GO" build -o .e2e/stars-sandbox-agent ./cmd/stars-sandbox-agent
-"$GO" build -o .e2e/stars-sandbox ./cmd/stars-sandbox
+CGO_ENABLED=0 "$GO" build -o .e2e/stars-sandbox ./cmd/stars-sandbox
 
 # A small Exec log cap keeps the truncation scenario fast, and a short PTY
 # idle window keeps the pty-idle scenario fast. A short admission deadline
@@ -71,6 +72,13 @@ export STARS_APPS_DOMAIN="${STARS_APPS_DOMAIN:-apps.test}"
 # The test deploys the Agent there and tunnels back to this machine's node
 # listener. STARS_E2E_GPU_REMOTE_PORT overrides the remote tunnel port
 # (default 18081).
+
+# STARS_URL inside a Sandbox must reach the Control Plane. Published ports bind
+# on the host, so the Docker bridge gateway is the address a Sandbox can use.
+if [ -z "${STARS_ACCESS_URL:-}" ]; then
+  HOST_GATEWAY="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+  export STARS_ACCESS_URL="http://${HOST_GATEWAY:-172.17.0.1}:18080"
+fi
 
 # Warm the cache; the Agent pulls the image itself if this misses.
 docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null

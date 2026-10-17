@@ -274,8 +274,8 @@ WHERE used_at IS NOT NULL OR expires_at < now();
 INSERT INTO sandboxes (
     id, owner_id, name, labels, desired_state, state, snapshot_digest,
     cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation,
-    idempotency_key, secret_env_ct
-) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11, $12)
+    idempotency_key, secret_env_ct, token_ct, token_key_id
+) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11, $12, $13, $14)
 RETURNING *;
 
 -- name: GetSandbox :one
@@ -669,6 +669,7 @@ LIMIT 32;
 -- name: ListActiveExecs :many
 SELECT sqlc.embed(e), s.node_id AS sandbox_node_id, s.owner_id AS sandbox_owner_id,
        s.secret_env_ct AS sandbox_secret_env_ct,
+       s.token_ct AS sandbox_token_ct, s.token_key_id AS sandbox_token_key_id,
        s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
 FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id

@@ -59,7 +59,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	base := firstNonEmpty(*apiURL, os.Getenv("STARS_SANDBOX_API_URL"), fc.APIURL, "http://localhost:8080")
+	base := firstNonEmpty(*apiURL, os.Getenv("STARS_SANDBOX_API_URL"), os.Getenv("STARS_URL"), fc.APIURL, "http://localhost:8080")
 	if rest[0] == "login" {
 		if err := runLogin(base, path, rest[1:], stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
@@ -91,6 +91,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runFiles(c, rest[1:], stderr)
 	case "port-forward":
 		err = runPortForward(c, rest[1:])
+	case "git-credential":
+		err = runGitCredential(c, rest[1:], stdout, stderr)
 	default:
 		err = fmt.Errorf("unknown command %q", rest[0])
 	}
@@ -108,6 +110,8 @@ commands:
   login            log in with a password and store a named API Token
   user list|get|create|update|delete|quota
   token list|create|revoke
+  token <provider>                  fetch a Git credential by provider id
+  git-credential get|store|erase    git credential helper (Sandbox only)
   secret set [--file PATH] <name>   write a value from stdin or a file
   secret list
   secret rm <name>
@@ -267,6 +271,19 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (c *client) do(method, path string, query url.Values, body any, idempotencyKey string) ([]byte, error) {
+	status, data, err := c.send(method, path, query, body, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, problemError(status, data)
+	}
+	return data, nil
+}
+
+// send performs a request and returns its status and body even on failure, so
+// callers that read problem extensions (the credential helper) can inspect it.
+func (c *client) send(method, path string, query url.Values, body any, idempotencyKey string) (int, []byte, error) {
 	endpoint := strings.TrimRight(c.base, "/") + path
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
@@ -275,13 +292,13 @@ func (c *client) do(method, path string, query url.Values, body any, idempotency
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequest(method, endpoint, payload)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -295,27 +312,30 @@ func (c *client) do(method, path string, query url.Values, body any, idempotency
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var p struct {
-			Code   string `json:"code"`
-			Detail string `json:"detail"`
-		}
-		if json.Unmarshal(data, &p) == nil && p.Code != "" {
-			if p.Detail == "" {
-				return nil, fmt.Errorf("%s", p.Code)
-			}
-			return nil, fmt.Errorf("%s: %s", p.Code, p.Detail)
-		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	return resp.StatusCode, data, nil
+}
+
+// problemError turns a problem+json body into an error, falling back to the
+// status line for a body that is not one.
+func problemError(status int, data []byte) error {
+	var p struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
 	}
-	return data, nil
+	if json.Unmarshal(data, &p) == nil && p.Code != "" {
+		if p.Detail == "" {
+			return fmt.Errorf("%s", p.Code)
+		}
+		return fmt.Errorf("%s: %s", p.Code, p.Detail)
+	}
+	return fmt.Errorf("HTTP %d: %s", status, strings.TrimSpace(string(data)))
 }
 
 func (c *client) print(data []byte) error {
@@ -464,7 +484,7 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 
 func runToken(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox token list|create|revoke")
+		return fmt.Errorf("usage: stars-sandbox token list|create|revoke|<provider>")
 	}
 	switch args[0] {
 	case "list":
@@ -516,6 +536,12 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 		}
 		return c.sendAndPrint(http.MethodDelete, "/api/v1/users/me/tokens/"+url.PathEscape(fs.Arg(0)), nil, "")
 	default:
+		// `token <provider>` fetches a Git credential for the Sandbox's owner.
+		// The API Token verbs above keep their names.
+		if len(args) == 1 && !strings.HasPrefix(args[0], "-") {
+			return c.sendAndPrint(http.MethodPost, "/api/v1/git/credential",
+				map[string]string{"provider": args[0]}, "")
+		}
 		return fmt.Errorf("unknown token command %q", args[0])
 	}
 }
