@@ -13,7 +13,7 @@
 
 **Reverse tunnels.** The Node protocol has three RPCs besides enrollment: one `Control` stream, one `ExecOutput` stream per Exec, and `Tunnel`, a raw byte stream the Agent dials back when `Control` asks it to. Through a tunnel the Gateway either reverse-proxies to the Agent's internal HTTP surface (file API, PTY WebSocket) or reaches a Sandbox port. Coder and Daytona alike run an HTTP surface in their agent or daemon and proxy to it.
 
-**Files go through a ready Sandbox.** The file API lives under `/sandboxes/{id}/files`, touches only the Workspace, needs the Sandbox `ready`, and writes only through a read-write Attachment, as in both vendors. `#32`'s rule that every file mutation goes through the write Lease stands.
+**Files go through a ready Sandbox.** The file API lives under `/sandboxes/{id}/files`, touches only the Workspace, needs the Sandbox `ready`, and writes only through a read-write Attachment, as in both vendors. `#32`'s rule that every file mutation goes through the read-write Attachment stands.
 
 ## Consequences
 
