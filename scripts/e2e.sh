@@ -31,9 +31,11 @@ COMPOSE_PROJECT="stars-sandbox-e2e"
 COMPOSE=(docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
 
 # The node listener always uses TLS (ADR-0014); a throwaway self-signed cert is
-# enough for the black-box tests.
+# enough for the black-box tests. Backdate it: a remote Node whose clock is a
+# few seconds behind would otherwise reject it as "not yet valid".
 mkdir -p .e2e/tls
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -not_before 20200101000000Z \
   -subj "/CN=localhost" \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
   -keyout .e2e/tls/server.key -out .e2e/tls/server.crt >/dev/null 2>&1
