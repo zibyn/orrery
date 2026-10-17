@@ -1,6 +1,6 @@
 # ADR-0017: The whole system, completed against Coder and Daytona
 
-- Status: accepted
+- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021)
 - Date: 2026-10-17
 
 ## Context
@@ -11,7 +11,7 @@ After the per-ticket rechecks (ADR-0015, ADR-0016), the whole system was audited
 
 ### Lifecycle
 
-**Sandbox.** States are `pending` (queued for admission) → `provisioning` → `ready` → `stopping` → `stopped`, plus `deleting` → `deleted`, plus terminal `failed` with a cause: `admission_timeout`, `unsatisfiable`, `quota_exceeded`, `runtime_create_failed`, `image_pull_failed`, `node_lost`. `start` on a `stopped` Sandbox re-enters admission at `pending`. Stopping or deleting releases the Sandbox's compute and its read-write Attachment; a start that finds another holder of the read-write Attachment fails with `conflict`. Deleting a Sandbox with running Execs cancels them and then deletes, as both vendors force-delete; ADR-0010's `conflict` on unfinished Execs is withdrawn.
+**Sandbox.** States are `pending` (queued for admission) → `provisioning` → `ready` → `stopping` → `stopped`, plus `deleting` → `deleted`, plus terminal `failed` with a cause: `admission_timeout`, `unsatisfiable`, `quota_exceeded`, `runtime_create_failed`, `image_pull_failed`, `resource_fetch_failed` (added in place by #82), `node_lost`. `start` on a `stopped` Sandbox re-enters admission at `pending`. Stopping or deleting releases the Sandbox's compute and its read-write Attachment; a start that finds another holder of the read-write Attachment fails with `conflict`. Deleting a Sandbox with running Execs cancels them and then deletes, as both vendors force-delete; ADR-0010's `conflict` on unfinished Execs is withdrawn.
 
 **Runtime death on a live Node.** When the Node Agent reports that a Runtime is gone (OOM-killed container, daemon restart, host reboot), its running Execs end with `runtime_lost`, and the Sandbox becomes `stopped` with that cause and releases its resources. An unreachable Node releases nothing and is only marked unavailable; once `admin` declares it lost, its Sandboxes become `failed` with `node_lost`.
 
@@ -49,13 +49,13 @@ The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port 
 
 **Uploads** are limited to 5 GiB per file and larger files fail explicitly, because S3 verifies a full-object SHA-256 only on single PUTs.
 
-**The Node's Resource cache** counts toward its disk budget, and unreferenced entries are evicted LRU below the disk watermark. Provisioning completes only after inputs are fetched, with a visible condition meanwhile.
+**The Node's Resource cache** counts toward its disk budget, and unreferenced entries are evicted LRU below the disk watermark. Provisioning completes only after inputs are fetched, with a visible condition meanwhile. (Amended in place by #82:) Objects are cached by SHA-256 and executable bit as read-only files; a version tree is assembled from hard links and bind-mounted read-only at `/resources/<mount>`. Eviction is by version tree, and an object goes once no tree links it. Docker images no Sandbox on the Node references, stopped ones included, and the BuildKit cache count toward the same budget and are evicted with it. Fetching retries with the Workspace provisioning backoff; when it is exhausted the Sandbox ends `failed` with `resource_fetch_failed`. Local Runtime reports `resource_mount` as `unsupported`.
 
-**Snapshot.** Any digest may be imported, and a build may start from any base; platform images are recommended defaults, not a whitelist. A SnapshotVersion is deleted only explicitly, never by TTL, and a stopped Sandbox counts as a reference. Registry blob GC is an operations procedure, not part of the design. A build is a platform-internal `system`-priority Sandbox; its Execution Log is the build log and a failed build ends the SnapshotVersion `failed`. Build-time secrets are the caller's Secrets. A Sandbox without a Snapshot uses the deployment's default digest.
+**Snapshot.** Any `ref@sha256:` may be imported into the platform registry (amended in place by #82), and a build may start from any base; platform images are recommended defaults, not a whitelist. A SnapshotVersion is deleted only explicitly, never by TTL, and a stopped Sandbox counts as a reference. Registry blob GC is an operations procedure, not part of the design. A build is a `system`-priority job on a Node: the Node Agent calls the Docker or Podman build API, as ADR-0012's "`docker build`, then push" says. It still passes Scheduler admission and holds an Allocation; an internal Sandbox row with no Runtime container carries the Allocation and an Exec whose Execution Log is the build log, and a failed build ends the SnapshotVersion `failed`. (Amended in place by #82: a build was a platform-internal `system`-priority Sandbox, but BuildKit-rootless and buildah cannot start in an unprivileged container under the default seccomp profile; ADR-0021.) Build-time secrets are the caller's Secrets, and a build that uses any runs without the build cache. Local Nodes report `snapshot_build` as `unsupported`. A Sandbox without a Snapshot uses the deployment's default platform Snapshot.
 
 **On restart** Secrets are re-resolved by name; ResourceVersions and the Snapshot digest stay as pinned at creation.
 
-**Object store.** Nodes read and write it only through presigned URLs issued by the Control Plane. The specification requires an S3-compatible object store, not MinIO, which is archived.
+**Object store.** Nodes read and write it only through presigned URLs issued by the Control Plane, which they request with the `Presign` RPC (added in place by #82). The specification requires an S3-compatible object store, not MinIO, which is archived.
 
 ### Git and Secrets
 

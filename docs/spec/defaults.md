@@ -10,7 +10,7 @@
 | 判定 Unreachable | 30 秒 | 常量 | 心跳间隔的 2 倍（ADR-0014） |
 | Enrollment Packet 有效期 | 1 小时 | 部署 | 对应 GitHub runner 注册令牌的有效期；Coder 和 Daytona 只有长期 key，相当于我们的 Node Token |
 | purge 周期 | 10 分钟 | 常量 | ADR-0014 |
-| 磁盘水位 | 剩余低于 10% | Node | 低于水位就不接新分配，Resource 缓存开始按 LRU 淘汰；对应 kubelet 的 `nodefs.available<10%` |
+| 磁盘水位 | 剩余低于 10% | Node | 低于水位就不接新分配，开始按 LRU 淘汰 Resource 缓存、未被本 Node 上任何 Sandbox（含 stopped）引用的 Docker 本地镜像和 BuildKit 缓存（`runtime.md` §11）；对应 kubelet 的 `nodefs.available<10%` |
 | 宿主预留 | 1 CPU + 2 GiB | Node | 从总量里扣掉，不参与分配 |
 | 每 GPU 份额 | 可分配量 × 3/4 ÷ 卡数 | Node | CPU 和内存各算一份；剩下的 1/4 给无 GPU 的 Sandbox（ADR-0015） |
 
@@ -21,6 +21,9 @@
 | 准入期限 | 1 小时 | 部署 | 到期后以 `failed/admission_timeout` 结束 |
 | Idle Stop | 900 秒 | 部署给默认值，请求可覆盖 | `idle_stop`，`0` 表示关闭；与 Daytona 一致 |
 | Workspace provisioning 重试 | 5 次，间隔 1、2、4、8、16 秒 | 常量 | 第 3 次失败起挂上 `provisioning_stalled`，用尽后 `failed` |
+| Resource 拉取重试 | 5 次，间隔 1、2、4、8、16 秒 | 常量 | 与 Workspace provisioning 同一组退避；用尽后 Sandbox 以 `failed/resource_fetch_failed` 结束 |
+| 构建资源上限 | 4 CPU + 8 GiB | 部署 | 构建不计入 User Quota（ADR-0021） |
+| 构建超时 | 1 小时 | 部署 | 超时以 `failed/timed_out` 结束 |
 
 ## Exec
 
@@ -43,6 +46,8 @@
 | CAS 对象与未完成上传的 GC 宽限 | 24 小时 | 部署 | 必须长于预签名 URL 的有效期 |
 | 预签名 URL 有效期 | 1 小时 | 常量 | 上传和 Node 拉取都用它 |
 | 单文件上传上限 | 5 GiB | 常量 | ADR-0017 |
+| manifest 条目上限 | 1,000,000 | 常量 | ADR-0012 |
+| upload 会话有效期 | 24 小时 | 常量 | 期内带同一份 manifest 重复提交即续传 |
 
 ## API 与 Gateway
 
@@ -75,6 +80,8 @@
 | `STARS_ACCESS_URL` | Git 关联关闭 | 外部可达的 `api` 地址，对应 Coder 的 `CODER_ACCESS_URL`。OAuth `redirect_uri`、problem 里的 `authorize_url`、沙箱内的 `STARS_URL` 都由它拼出。沙箱内的 CLI 只信任镜像自带的 CA，部署指南要写明：用私有 CA 时，镜像里得装上它 |
 | `STARS_ENCRYPTION_KEYS_FILE` | Secret、Git、Sandbox Token 相关功能返回明确错误 | 每行 `<key_id> <base64 编码的 32 字节>`。第一行用于加密，所有行都可用于解密。AES-256-GCM，AAD 为 owner 的 user id（`schema.md`）。不提供 rewrap 命令 |
 | `STARS_GIT_PROVIDERS_FILE` | 没有 Git Provider | JSON 数组，见下 |
+| `STARS_PLATFORM_SNAPSHOTS` | 没有平台 Snapshot | `name=ref@sha256:…,…`。Control Plane 启动时导入其中还没导入的条目，存到 registry 的 `platform/<name>`；导入失败不影响启动，只让用到它的 Sandbox 创建失败。平台 Snapshot 所有 User 可读，API 不能增删（ADR-0021） |
+| `STARS_DEFAULT_SNAPSHOT` | 不带 `snapshot` 的创建请求返回错误 | `STARS_PLATFORM_SNAPSHOTS` 里的一个 `name` |
 
 `STARS_GIT_PROVIDERS_FILE` 的每一项：
 
@@ -90,3 +97,5 @@
 | `scopes` | 授权时请求的 scope |
 
 校验路径按类型内置，接在 API 基址后：`github` 为 `/user`，`gitlab` 为 `/api/v4/user`，`gitea` 为 `/api/v1/user`。
+
+**对象存储布局**。只用一个 bucket：CAS 对象在 `cas/<owner_id>/sha256/<hex>`，manifest 在 `manifests/<owner_id>/<address>`，registry 的 s3 driver 用 `rootdirectory: /registry`。registry 里用户 Snapshot 在 `snapshots/<snapshot_id>`，平台 Snapshot 在 `platform/<name>`，一律按 digest 引用，不打 tag。e2e 和参考部署用 RustFS 1.0.2，compose 里用一个一次性容器建 bucket。

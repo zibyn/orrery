@@ -19,7 +19,7 @@ Supervisor 是同一个平台二进制，有三种模式：
 | `/workspace` | Workspace | 按 Attachment 的模式，读写或只读 |
 | `/.stars/bin` | Supervisor 二进制和外部 CLI `stars-sandbox` | 只读 |
 | `/.stars/run` | 宿主 `/var/lib/stars-sandbox/sandboxes/<sandbox_id>/run` | 读写 |
-| `CreateSandbox.resources[].mount` | Node 的 Resource 缓存 | 只读 |
+| `/resources/<mount>` | Node 的 Resource 缓存（§11） | 只读 |
 
 Node 的部署包同时带外部 CLI。Agent 在自身可执行文件旁边找到 `stars-sandbox`，和 Supervisor 一起放进 `/.stars/bin`。沙箱内的 Git credential helper 和 `stars-sandbox token <provider>` 就是它；CA 的信任见 `defaults.md` 的 `STARS_ACCESS_URL`。每个 Exec 的 `PATH` 末尾追加 `/.stars/bin`，环境变量的拼装见 `node-protocol.md`。Supervisor 把 spec 里的 `env` 和 `secret_env` 原样合进命令的环境，不再改动。
 
@@ -106,3 +106,21 @@ Agent 对它掌握的每个 Sandbox 扫描 `run/*`，对每个目录做如下判
 - **Inspect**：看占位 unit 是否 active。
 - **Stop**：`systemctl stop stars-sb-<id>.slice`，停掉 slice 里的所有单元。
 - **GPU**：只靠 `CUDA_VISIBLE_DEVICES`，属于 `best_effort`（ADR-0009）。
+- **Resource 与构建**：`resource_mount` 和 `snapshot_build` 都报 `unsupported`。
+
+## 11. Node 的 Resource 缓存
+
+- **布局**：对象按 (sha256, 可执行位) 缓存为只读文件（0444/0555）。版本树用硬链接从对象拼出，再只读 bind mount 到容器的 `/resources/<mount>`。`<mount>` 是单段名字，默认取 Resource 名。
+- **拉取**：`CreateSandbox` 只带 `{address, mount}`。Agent 先读 manifest，对缓存里没有的对象调 `Presign` 取 GET（`node-protocol.md`），下载后核对 sha256。拉取期间上报 `fetching_resources`，Sandbox 挂上同名 condition。
+- **失败**：重试沿用 Workspace provisioning 那组退避（`defaults.md`）；用尽后以 `create_failed/resource_fetch_failed` 上报，Sandbox 以 `failed` 结束。对象在对象存储上 404 时，Control Plane 把引用它的版本标为 `unavailable`（ADR-0012）。
+- **淘汰**：剩余空间低于磁盘水位时，按 LRU 淘汰没有 Sandbox 引用的版本树；版本树都淘汰后，没有链接的对象一并回收。未被本 Node 上任何 Sandbox（含 stopped）引用的 Docker 本地镜像和 BuildKit 缓存（`builder prune`）计入同一预算，一起按 LRU 淘汰。
+
+## 12. 构建
+
+构建不起容器，由 Agent 调用宿主 Docker/Podman 的构建 API（buildx）完成（ADR-0021）。
+
+- **资源限制**：Agent 仿照 Local Runtime 建一个带 CPU/内存上限的 slice（`stars-build-<version_id>.slice`，上限见 `defaults.md`），构建以 `--cgroup-parent` 指向它。实现时要验证 RUN 进程确实落在这个 slice 里；如果没有，改用 Node 级的构建上限。
+- **输入**：没有默认构建上下文。`contexts` 的每一项经 §11 的缓存拼出版本树，以 `--build-context <name>=<dir>` 传入；`base` 以命名上下文 `base` 注入（`docker-image://<registry>/…@<digest>`）。Dockerfile 的 `FROM` 也可以写外部 `ref@digest`。
+- **Secret**：经 `--secret id=<id>` 传入，Dockerfile 用 `RUN --mount=type=secret` 读取。带 Secret 的构建一律 `--no-cache`：secret mount 不进缓存键，否则别的 User 用同一份 Dockerfile 就能命中缓存，拿到用 Secret 生成的层。
+- **输出**：构建输出按帧写进构建 Exec 的 `run/<exec_id>/output`，和普通 Exec 一样上送。成功后推到 `push_repository`，上报 digest 和 BuildKit 实际解析出的 FROM digest。
+- **结束**：超时以 `failed/timed_out` 结束；`CancelExec` 中止构建会话，以 `cancelled` 结束；Agent 重启时进行中的构建以 `failed/build_interrupted` 结束，不自动重试。Node 不可达时构建保持 `building`，Node 被宣告 lost 后为 `failed/node_lost`。

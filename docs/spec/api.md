@@ -24,20 +24,20 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 |---|---|---|
 | `invalid_request` | 400 | 请求不合法（含保留的 Secret 名、路径穿越） |
 | `unauthenticated` | 401 | 没有 token、token 无效、过期或已吊销 |
-| `permission_denied` | 403 | token 的 scope 不够 |
+| `permission_denied` | 403 | token 的 scope 不够；修改平台 Snapshot |
 | `not_found` | 404 | 不存在，或不属于调用方 |
-| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足 |
+| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、删除 current 版本、删除被引用的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
 | `precondition_failed` | 412 | `If-Match` 不匹配 |
 | `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力 |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `rate_limited` | 429 | 登录失败次数超限；带 `Retry-After` |
 | `internal` | 500 | 平台缺陷 |
-| `unavailable` | 503 | Sandbox 所在 Node 不可达；可以重试 |
+| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达；可以重试 |
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
-生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`runtime_lost`、`node_lost`；Exec 见 §4）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
+生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
 
 ## 3. 资源与路径
 
@@ -68,7 +68,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | 方法与路径 | 说明 |
 |---|---|
 | `POST /workspaces` · `GET /workspaces` · `GET /workspaces/{id}` · `DELETE /workspaces/{id}` | 只创建持久 Workspace；临时 Workspace 随 Sandbox 隐式创建（ADR-0018） |
-| `POST /workspaces/{id}/publish` | `{path, resource}` → 新 ResourceVersion 并移动 current 指针（ADR-0012） |
+| `POST /workspaces/{id}/publish` | `{path, resource}` → `202` 和一个 `pending` 的 ResourceVersion；变成 `ready` 时移动 current 指针，失败时不动（ADR-0012、`node-protocol.md`）。接受 `Idempotency-Key`；不要求有运行中的 Sandbox；Node 不可达返回 `503` |
 | `POST /workspaces/{id}/declare-lost` · `POST /workspaces/{id}/abandon` | **admin**。存活 Node 上的单个 Workspace 宣告 lost；放弃卡在 `deleting` 的清理 |
 
 字段：`kind`（`ephemeral`/`persistent`）、`node_id`、`state`（`provisioning`、`ready`、`deleting`、`deleted`、`failed`、`lost`）、`unavailable`（由 Node 可达性派生）、`conditions`（如 `provisioning_stalled`）。
@@ -91,14 +91,14 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 ```
 name?, labels?
 workspace?: {id, mode: rw|ro}     # 不写就隐式创建临时 Workspace，rw
-snapshot?: SnapshotVersion id 或 Snapshot 名   # 不写就用部署的默认 digest
-resources?: [{resource, version?, mount}]   # 创建时解析成具体版本，只读挂载
+snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；不写就用 STARS_DEFAULT_SNAPSHOT
+resources?: [{resource, version?, mount?}]   # 创建时解析成具体版本，只读挂载到 /resources/<mount>；mount 是单段名字，默认取 Resource 名
 secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}
 idle_stop?: 秒数，默认 900，0 表示关闭
 ```
 
-每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009）。响应字段另有 `state`、`cause`、`node_id`，`pending` 时还有 `queue_position` 和 `blocked_reason`。
+每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009）。响应字段另有 `state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。Local Runtime 不支持 Resource 挂载，带 `resources` 时返回 `422 unsupported`。
 
 **Exec**：`GET /execs/{id}` · `POST /execs/{id}/cancel` · `GET /execs/{id}/output` · `GET /execs/{id}/pty`，见 §4。
 
@@ -116,19 +116,37 @@ idle_stop?: 秒数，默认 900，0 表示关闭
 | 方法与路径 | 说明 |
 |---|---|
 | `POST /resources` · `GET /resources` · `GET /resources/{id}` · `DELETE /resources/{id}` | |
-| `POST /resources/{id}/uploads` | 请求体是 manifest；返回缺失对象的预签名 PUT（带 `x-amz-checksum-sha256`） |
-| `POST /resources/{id}/versions` | `{upload_id}`：校验对象都在后发布 ResourceVersion |
-| `GET /resources/{id}/versions` · `GET /resources/{id}/versions/{v}/archive` | archive 是派生的 tar 流 |
+| `POST /resources/{id}/uploads` | 请求体是 manifest，每个文件带 sha256；返回 upload 会话和缺失对象的预签名 PUT（带 `x-amz-checksum-sha256`）。24 小时内带同一份 manifest 重复提交即续传：只为仍然缺失的对象重新签发 PUT |
+| `POST /resources/{id}/versions` | `{upload_id}`：对每个对象做 `HeadObject`（`ChecksumMode`），全部存在且 sha256 一致就发布 `ready` 的 ResourceVersion 并移动 current 指针，否则 `409` 并列出问题对象 |
+| `GET /resources/{id}/versions` · `GET /resources/{id}/versions/{v}` | |
+| `GET /resources/{id}/versions/{v}/manifest` | 返回规范化的 manifest |
+| `POST /resources/{id}/versions/{v}/downloads` | `{sha256[]}` → 预签名 GET；tar 由 CLI 在本地拼装，Control Plane 不读内容（ADR-0012） |
 | `PUT /resources/{id}/current` | `{version}`，可带 `If-Match` |
+
+manifest 的条目是 `{path, type: file|dir|symlink, size?, sha256?, executable?, target?}`：权限只记可执行位，空目录保留，最多 1,000,000 条。服务端规范化后，规范化 manifest 的 sha256 就是地址。publish 单个文件，得到只含这一个条目的树。
+
+ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable`（对象在对象存储上 404）。对象缺失时上传会再次为它签发 PUT，重新上传同样的内容即修复：之后任何一次发布校验通过该对象，引用它的 `unavailable` 版本复查后回到 `ready`。
 
 **Snapshot**
 
 | 方法与路径 | 说明 |
 |---|---|
 | `POST /snapshots` · `GET /snapshots` · `GET /snapshots/{id}` · `DELETE /snapshots/{id}` | |
-| `POST /snapshots/{id}/versions` | `{import: digest}` 或 `{build: {base, dockerfile, resources?, secrets?}}` |
-| `GET /snapshots/{id}/versions` · `GET /snapshots/{id}/versions/{v}` · `DELETE /snapshots/{id}/versions/{v}` | 有 Sandbox（含 stopped）引用时删除返回 `409` |
-| `POST /snapshots/{id}/versions/{v}/cancel` | |
+| `POST /snapshots/{id}/versions` | `{import: {ref, auth_secret?}}` 或 `{build: {dockerfile, base?, contexts?, secrets?}}`，见下；接受 `Idempotency-Key` |
+| `GET /snapshots/{id}/versions` · `GET /snapshots/{id}/versions/{v}` · `DELETE /snapshots/{id}/versions/{v}` | current 版本或有 Sandbox（含 stopped）引用时删除返回 `409` |
+| `PUT /snapshots/{id}/current` | `{version}`，用于回滚；版本变成 `ready` 时指针自动移过去 |
+| `POST /snapshots/{id}/versions/{v}/cancel` | 取消构建或导入 |
+
+- **状态**：`building → ready | failed | cancelled`，导入和构建共用。
+- **删除 Snapshot**：写墓碑；被引用的版本保留到最后一个引用消失，然后删掉 registry 里的 manifest。名字只在未删除的 Snapshot 间唯一。
+- **平台 Snapshot**：来自部署配置 `STARS_PLATFORM_SNAPSHOTS`（`defaults.md`），出现在每个 User 的 `GET /snapshots` 里；对它增删改返回 `403`。
+- **import**：`ref` 必须是 `ref@sha256:…`，`auth_secret` 是调用方一个 Secret 的名字，值为 docker `config.json`。Control Plane 用 go-containerregistry 把整个 index 流式复制到平台 registry，保留原 digest。Node 只从平台 registry 拉镜像（ADR-0021）。
+- **build**：
+  - `dockerfile` 是文本；没有默认构建上下文。
+  - `contexts?: {name: resource[@version]}`，创建时解析为具体版本，作为命名上下文传入。
+  - `base?` 是平台内的 Snapshot 引用（同 Sandbox 的 `snapshot`），以命名上下文 `base` 注入；`FROM` 也可以写外部 `ref@digest`。
+  - `secrets?: {id: secret_name}`，Dockerfile 用 `RUN --mount=type=secret,id=<id>` 读取；带 `secrets` 的构建不用缓存。
+  - 构建以 `system` 优先级准入，资源上限和超时见 `defaults.md`，不计入 User Quota；Local Node 不能构建。provenance 记录 BuildKit 实际解析出的 FROM digest 和各 context 的版本地址。执行细节见 `runtime.md` §12。
 
 构建中的 SnapshotVersion 带 `build_exec_id`，构建日志用 `GET /execs/{id}/output` 读。
 

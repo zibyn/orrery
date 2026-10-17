@@ -33,7 +33,7 @@ An immutable image of a Snapshot, built from a base and declared build inputs or
 _Avoid_: Workspace snapshot, running Sandbox
 
 **Platform Base Image**:
-A software environment the platform recommends as the starting point of a Snapshot. It is a default, not a restriction.
+A software environment the platform recommends as the starting point of a Snapshot. It is given by deployment configuration and readable by every User. It is a default, not a restriction.
 _Avoid_: base layer, approved image
 
 **Content Address**:

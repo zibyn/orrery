@@ -8,10 +8,12 @@ Protobuf 是内部 gRPC 契约，只在 `node` 监听面上使用，并且全部
 service Node {
   // 唯一不需认证的入口：凭 Enrollment Packet 换取 Node Token
   rpc Redeem(RedeemRequest) returns (RedeemResponse);
-  // 以下三个都带 Node Token
+  // 以下都带 Node Token
   rpc Control(stream AgentMessage) returns (stream ControlMessage);
   rpc ExecOutput(stream OutputBatch) returns (stream OutputAck);
   rpc Tunnel(stream TunnelFrame) returns (stream TunnelFrame);
+  rpc Presign(PresignRequest) returns (PresignResponse);
+  rpc SubmitManifest(stream ManifestChunk) returns (ManifestAck);
 }
 ```
 
@@ -22,21 +24,22 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 `AgentMessage`（oneof）：
 - `Hello{node_id, agent_version, proto_major, proto_minor}`
 - `Heartbeat{runtime_health, disk_free, gpu_health[]}`
-- `Capabilities{runtime, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`
-- `SandboxObserved{sandbox_id, generation, phase: running|gone|create_failed, cause?}`
+- `Capabilities{runtime, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`entries` 含 `resource_mount` 和 `snapshot_build`，Local Runtime 两项都报 `unsupported`
+- `SandboxObserved{sandbox_id, generation, phase: fetching_resources|running|gone|create_failed, cause?}`；`fetching_resources` 让 Sandbox 挂上同名 condition，`create_failed` 的 cause 可以是 `resource_fetch_failed`（`runtime.md` §11）
 - `WorkspaceObserved{workspace_id, phase, cause?}`
 - `ExecObserved{exec_id, started_at}`（结果不走这里，见 ExecOutput）
+- `BuildObserved{version_id, digest?, from_digests[], cause?}`：构建结束时上报，见下文「构建」
 - `CommandResult{command_id, error?}`
 
 `ControlMessage`（oneof）：
 - `HelloAck{accepted, registry_credential}`
 - `ProvisionWorkspace` · `DeleteWorkspace`
-- `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, presigned_url, mount}]}`
+- `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, mount}]}`；对象经 `Presign` 拉取
 - `StopSandbox{sandbox_id, generation}`
 - `StartExec{exec_id, sandbox_id, generation, argv, env, secret_env, cwd, timeout, log_cap, stdin?, pty?}`
 - `CancelExec{exec_id}`
-- `PublishWorkspace{workspace_id, path, upload_targets}`
-- `BuildSnapshot{…}`
+- `PublishWorkspace{version_id, workspace_id, path}`
+- `BuildSnapshot{version_id, sandbox_id, exec_id, dockerfile, base_digest?, contexts[{name, address}], secrets[{id, value}], limits, timeout, push_repository}`
 - `OpenTunnel{tunnel_id, target: agent_http | sandbox_port{sandbox_id, port}}`
 
 每条命令都带 `command_id`，并且是幂等的。`generation` 就是 fencing token：对于比当前代数旧的命令，Agent 一律拒绝（ADR-0015）。命令由 Reconciler 根据期望状态反复下发，所以单条命令丢了也没关系。
@@ -50,6 +53,26 @@ Sandbox Token 不在 `CreateSandbox` 里，而是随每个 `StartExec` 下发，
   - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`，先写一条 `credential.helper=` 清空镜像的 helper 列表，再写 `credential.helper=/.stars/bin/stars-sandbox git-credential`；
   - `PATH`：取调用方 `env` 里的 `PATH`，没有就取镜像配置里的 `PATH`（Local Runtime 取 Agent 自身的 `PATH`），在末尾追加 `/.stars/bin`，不遮挡镜像里的同名命令。
 - **合并顺序**：调用方的 Exec `env` 在前，平台写入的值最后合并，同名时覆盖调用方；唯一例外是 `PATH`，按上面的规则追加而不覆盖。Exec `env` 不做保留名校验，保留名只约束 Secret（ADR-0017）。PTY Exec 走同一条路径。
+
+## Presign：Node 取放对象
+
+`Presign{sha256[], manifests: address[], method: GET|PUT} → urls[]` 是一元 RPC，用 Node Token 认证。`manifests` 只签 GET，指向 `manifests/<owner_id>/<address>`。Control Plane 只为两类对象签名，其余整批返回 `INVALID_ARGUMENT`（不用 `NOT_FOUND`，它会让 Agent 清掉身份）：
+
+- 分配给本 Node 的 Sandbox（含构建行）在 `sandbox_resources` 里引用的版本，及其中的对象，只签 GET；
+- 本 Node 进行中的 publish 缺失的对象，只签 PUT，带 `x-amz-checksum-sha256`。
+
+URL 有效期见 `defaults.md`。Node 读写对象存储只走这条路（ADR-0017）。
+
+## Workspace publish
+
+1. `POST /workspaces/{id}/publish` 建一个 `pending` 的 ResourceVersion，Reconciler 向 Workspace 所在 Node 下发 `PublishWorkspace`。不要求有运行中的 Sandbox，Agent 直接读宿主上的 Workspace 目录，路径规则同 ADR-0012。
+2. Agent 遍历目录、计算哈希，经 `SubmitManifest` 分块上送 manifest 条目（首块带 `version_id`）。Control Plane 规范化后写入 `address`、`resource_version_objects`，在 `ManifestAck{missing sha256[]}` 里返回缺失的对象。`version_id` 不是本 Node 进行中的 publish 时返回 `INVALID_ARGUMENT`。
+3. Agent 用 `Presign` 取 PUT，上传缺失对象，然后对这条命令回 `CommandResult`。
+4. Control Plane 对每个对象做 `HeadObject`（`ChecksumMode`），全部存在且 sha256 一致就把版本置为 `ready` 并移动 current 指针；否则或 `CommandResult` 带错误就置为 `failed`，指针不动。
+
+## 构建
+
+`BuildSnapshot` 由 Reconciler 在构建准入、拿到 Allocation 之后下发。`sandbox_id` 是承载 Allocation 的 `kind=build` 行，`exec_id` 是构建 Exec，构建输出按普通 Exec 写进 Log Spool，经 `ExecOutput` 上送。`contexts` 的对象经 Node 缓存拉取；`base_digest` 和 `push_repository` 都指向平台 registry，拉取和推送用 `HelloAck` 的 registry 凭据。`secrets` 的值与 `StartExec.secret_env` 一样，由 Control Plane 解密后下发。Agent 推送成功后发 `BuildObserved{digest, from_digests}`，失败发 `cause`。`CancelExec{exec_id}` 中止构建会话。执行细节见 `runtime.md` §12。
 
 ## ExecOutput：每个 Exec 一条
 

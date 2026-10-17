@@ -22,9 +22,9 @@ PostgreSQL 是权威状态。本文列出表、关键列和约束；迁移 SQL �
 | `nodes` | `id`, `name`, `token_hash`, `paused`, `lost_at`, `agent_version`, `proto_major`, `proto_minor`, `last_seen_at`, `runtime_health`, `capabilities`, `hardware`, `reserved_cpu`, `reserved_memory`, `cpu_per_gpu`, `memory_per_gpu` | Unreachable 在读取时由 `last_seen_at` 派生，不落库 |
 | `gpus` | `uuid` PK, `node_id`, `model` | |
 | `workspaces` | `id`, `owner_id`, `kind`, `node_id`, `state`, `cause`, `storage_handle`, `conditions`, `idempotency_key`, `deleted_at` | 临时 Workspace 带 `sandbox_id`，删除时随它一起删 |
-| `sandboxes` | `id`, `owner_id`, `name`, `labels`, `desired_state`, `state`, `cause`, `node_id`, `snapshot_digest`, `cpu`, `memory`, `gpu_count`, `gpu_model`, `idle_stop_seconds`, `last_activity_at`, `workspace_id`, `workspace_mode`, `token_ct`, `token_key_id`, `secret_env_ct`, `generation`, `deleted_at` | 未删除行按 (`owner_id`, `name`) 唯一；`token_ct` 是 Sandbox Token 的密文，创建时生成，整个生命周期不变，Sandbox 删除即失效；认证时按 id 取行、解密，再做常数时间比较；`secret_env_ct` 是 start 时拷贝的 Secret 密文（见下）；`gpu_model` 是创建时请求的型号，重启后仍作为准入约束；`workspace_id`/`workspace_mode` 是挂载关系，Attachment 行只在运行时存在 |
+| `sandboxes` | `id`, `owner_id`, `kind`, `name`, `labels`, `desired_state`, `state`, `cause`, `node_id`, `snapshot_digest`, `conditions`, `cpu`, `memory`, `gpu_count`, `gpu_model`, `idle_stop_seconds`, `last_activity_at`, `workspace_id`, `workspace_mode`, `token_ct`, `token_key_id`, `secret_env_ct`, `generation`, `deleted_at` | 未删除行按 (`owner_id`, `name`) 唯一；`kind` 取 `user`/`build`，`build` 行是 Snapshot 构建的内部行，没有 Runtime 容器，只承载 Allocation 和构建 Exec，不出现在 API 里，不计入 User Quota（ADR-0021）；`conditions` 如 `fetching_resources`；`token_ct` 是 Sandbox Token 的密文，创建时生成，整个生命周期不变，Sandbox 删除即失效；认证时按 id 取行、解密，再做常数时间比较；`secret_env_ct` 是 start 时拷贝的 Secret 密文（见下）；`gpu_model` 是创建时请求的型号，重启后仍作为准入约束；`workspace_id`/`workspace_mode` 是挂载关系，Attachment 行只在运行时存在 |
 | `attachments` | `sandbox_id` PK, `workspace_id`, `mode`, `generation` | 部分唯一索引 (`workspace_id`) `WHERE mode = 'rw'`，即单写者规则；Sandbox 停止或删除时删掉这一行，就是释放挂载 |
-| `sandbox_resources` | `sandbox_id`, `resource_version_id`, `mount` | 引用即保留 |
+| `sandbox_resources` | `sandbox_id`, `resource_version_id`, `mount` | 引用即保留；(`sandbox_id`, `mount`) 唯一；构建行的 `contexts` 也记在这里，`mount` 取 context 名 |
 | `admission_requests` | `id`, `sandbox_id`, `priority`, `enqueued_at`, `deadline_at`, `ended_at`, `outcome` | FIFO 按 (`priority`, `enqueued_at`) 排序 |
 | `allocations` | `sandbox_id` PK, `node_id`, `cpu`, `memory`, `disk`, `generation` | |
 | `gpu_allocations` | `gpu_uuid` PK, `sandbox_id`, `created_at` | 主键本身保证整卡独占；随 `allocations` 一起释放 |
@@ -32,12 +32,13 @@ PostgreSQL 是权威状态。本文列出表、关键列和约束；迁移 SQL �
 | `exec_log_chunks` | `exec_id`, `first_seq`, `last_seq`, `frames` | PK (`exec_id`, `first_seq`) |
 | `secrets` | `id`, `owner_id`, `name`, `ciphertext`, `key_id`, `size` | (`owner_id`, `name`) 唯一；每个 User 最多 50 个 |
 | `git_links` | `user_id`, `provider_id`, `access_token_ct`, `refresh_token_ct`, `key_id`, `expires_at` | PK (`user_id`, `provider_id`)；刷新时对该行加 `FOR UPDATE`，以此串行化 |
-| `resources` | `id`, `owner_id`, `name`, `current_version_id`, `deleted_at` | (`owner_id`, `name`) 唯一 |
-| `resource_versions` | `id`, `resource_id`, `address`, `manifest_key`, `size`, `provenance`, `state`, `expires_at` | |
-| `cas_objects` | `sha256` PK, `size`, `created_at` | |
-| `uploads` | `id`, `resource_id`, `manifest`, `expires_at` | |
-| `snapshots` | `id`, `owner_id`, `name`, `deleted_at` | (`owner_id`, `name`) 唯一 |
-| `snapshot_versions` | `id`, `snapshot_id`, `digest`, `state`, `source`, `build_exec_id`, `provenance` | 被 Sandbox（含 stopped）引用时不能删除 |
+| `resources` | `id`, `owner_id`, `name`, `current_version_id`, `deleted_at` | (`owner_id`, `name`) 在未删除行上部分唯一 |
+| `resource_versions` | `id`, `resource_id`, `address`, `manifest_key`, `size`, `provenance`, `state`, `cause`, `idempotency_key`, `expires_at` | `state` 取 `pending`/`ready`/`failed`/`unavailable`；`address` 在 manifest 提交前为空；`manifest_key` 为 `manifests/<owner_id>/<address>`；`provenance.source` 取 `upload` 或 `workspace{id, path}`；变成 `ready` 时移动 Resource 的 current 指针 |
+| `resource_version_objects` | `version_id`, `sha256` | PK (`version_id`, `sha256`)；CAS 清扫用 `NOT EXISTS` 判断对象是否还被同一 owner 的版本或未过期的 upload 会话引用 |
+| `cas_objects` | `owner_id`, `sha256`, `size`, `created_at` | PK (`owner_id`, `sha256`)，对应对象 `cas/<owner_id>/sha256/<hex>`（ADR-0021）；版本标为 `unavailable` 时删掉缺失对象的行，下一次上传就会重新签发 PUT |
+| `uploads` | `id`, `resource_id`, `address`, `manifest`, `expires_at` | 同一 Resource 下未过期、`address` 相同的会话被复用，即续传 |
+| `snapshots` | `id`, `owner_id`, `name`, `current_version_id`, `deleted_at` | `owner_id` 为空即平台 Snapshot；(`owner_id`, `name`) 在未删除行上部分唯一，`NULLS NOT DISTINCT`；版本变成 `ready` 时移动 current 指针 |
+| `snapshot_versions` | `id`, `snapshot_id`, `digest`, `state`, `cause`, `source`, `build_sandbox_id`, `build_exec_id`, `provenance`, `idempotency_key` | `state` 取 `building`/`ready`/`failed`/`cancelled`；`source` 取 `import`/`build`；`build_sandbox_id` 指向 `kind=build` 的 Sandbox 行；被 Sandbox（含 stopped）引用或是 current 时不能删除；Snapshot 删除后，被引用的版本保留到最后一个引用消失，再删 registry 里的 manifest |
 | `audit_records` | `id` bigserial, `at`, `actor_user_id`, `actor_token_id`, `action`, `target_type`, `target_id`, `correlation_id`, `detail` | 在提交后插入（ADR-0016） |
 
 **Secret 快照**。Sandbox 每次 start 时，按名字把 Secret 的密文拷进 `sandboxes.secret_env_ct`。每个 Exec 的 `StartExec` 都由 Control Plane 解密后下发，这样一来：
