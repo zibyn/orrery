@@ -221,6 +221,17 @@ func (q *Queries) CountRunningExecs(ctx context.Context, sandboxID uuid.UUID) (i
 	return count, err
 }
 
+const countSecrets = `-- name: CountSecrets :one
+SELECT count(*)::bigint FROM secrets WHERE owner_id = $1
+`
+
+func (q *Queries) CountSecrets(ctx context.Context, ownerID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSecrets, ownerID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT count(*) FROM users
 `
@@ -782,6 +793,31 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 	return i, err
 }
 
+const deleteSecret = `-- name: DeleteSecret :one
+DELETE FROM secrets WHERE owner_id = $1 AND name = $2 RETURNING id, owner_id, name, ciphertext, key_id, size, created_at, updated_at
+`
+
+type DeleteSecretParams struct {
+	OwnerID uuid.UUID
+	Name    string
+}
+
+func (q *Queries) DeleteSecret(ctx context.Context, arg DeleteSecretParams) (Secret, error) {
+	row := q.db.QueryRow(ctx, deleteSecret, arg.OwnerID, arg.Name)
+	var i Secret
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Ciphertext,
+		&i.KeyID,
+		&i.Size,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const deleteToken = `-- name: DeleteToken :execrows
 DELETE FROM api_tokens WHERE id = $1 AND user_id = $2
 `
@@ -1245,6 +1281,33 @@ func (q *Queries) GetSandboxWorkspace(ctx context.Context, id uuid.UUID) (Worksp
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.IdempotencyKey,
+	)
+	return i, err
+}
+
+const getSecretByName = `-- name: GetSecretByName :one
+
+SELECT id, owner_id, name, ciphertext, key_id, size, created_at, updated_at FROM secrets WHERE owner_id = $1 AND name = $2
+`
+
+type GetSecretByNameParams struct {
+	OwnerID uuid.UUID
+	Name    string
+}
+
+// Secrets
+func (q *Queries) GetSecretByName(ctx context.Context, arg GetSecretByNameParams) (Secret, error) {
+	row := q.db.QueryRow(ctx, getSecretByName, arg.OwnerID, arg.Name)
+	var i Secret
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Ciphertext,
+		&i.KeyID,
+		&i.Size,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -2306,6 +2369,49 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 	return items, nil
 }
 
+const listSecrets = `-- name: ListSecrets :many
+SELECT id, owner_id, name, ciphertext, key_id, size, created_at, updated_at FROM secrets
+WHERE owner_id = $1
+  AND ($2::text IS NULL OR name > $2)
+ORDER BY name
+LIMIT $3
+`
+
+type ListSecretsParams struct {
+	OwnerID uuid.UUID
+	After   *string
+	Limit   int32
+}
+
+func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Secret, error) {
+	rows, err := q.db.Query(ctx, listSecrets, arg.OwnerID, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Secret{}
+	for rows.Next() {
+		var i Secret
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.Ciphertext,
+			&i.KeyID,
+			&i.Size,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTokens = `-- name: ListTokens :many
 SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at FROM api_tokens
 WHERE user_id = $1
@@ -3317,6 +3423,51 @@ func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPassword
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const upsertSecret = `-- name: UpsertSecret :one
+INSERT INTO secrets (id, owner_id, name, ciphertext, key_id, size)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (owner_id, name) DO UPDATE
+SET ciphertext = EXCLUDED.ciphertext,
+    key_id = EXCLUDED.key_id,
+    size = EXCLUDED.size,
+    updated_at = now()
+RETURNING id, owner_id, name, ciphertext, key_id, size, created_at, updated_at
+`
+
+type UpsertSecretParams struct {
+	ID         uuid.UUID
+	OwnerID    uuid.UUID
+	Name       string
+	Ciphertext []byte
+	KeyID      string
+	Size       int32
+}
+
+// UpsertSecret overwrites by (owner_id, name) while keeping the row's id
+// (api.md §3, "创建或覆盖").
+func (q *Queries) UpsertSecret(ctx context.Context, arg UpsertSecretParams) (Secret, error) {
+	row := q.db.QueryRow(ctx, upsertSecret,
+		arg.ID,
+		arg.OwnerID,
+		arg.Name,
+		arg.Ciphertext,
+		arg.KeyID,
+		arg.Size,
+	)
+	var i Secret
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Ciphertext,
+		&i.KeyID,
+		&i.Size,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

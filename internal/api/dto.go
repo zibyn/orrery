@@ -92,6 +92,21 @@ type auditList struct {
 	NextCursor *string    `json:"next_cursor"`
 }
 
+// secretDTO is the write-only Secret's readable face: a name and a timestamp.
+type secretDTO struct {
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type secretList struct {
+	Items      []secretDTO `json:"items"`
+	NextCursor *string     `json:"next_cursor"`
+}
+
+type putSecretRequest struct {
+	Value string `json:"value"`
+}
+
 type createUserRequest struct {
 	Name      string  `json:"name"`
 	Email     *string `json:"email"`
@@ -157,6 +172,10 @@ func tokenToDTO(t store.ApiToken) tokenDTO {
 		LastUsedAt: timePtr(t.LastUsedAt),
 		CreatedAt:  t.CreatedAt.Time.UTC(),
 	}
+}
+
+func secretToDTO(s store.Secret) secretDTO {
+	return secretDTO{Name: s.Name, UpdatedAt: s.UpdatedAt.Time.UTC()}
 }
 
 func timePtr(ts pgtype.Timestamptz) *time.Time {

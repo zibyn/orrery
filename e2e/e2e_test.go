@@ -400,9 +400,10 @@ func apiOrigin() string {
 
 type auditList struct {
 	Items []struct {
-		Action    string  `json:"action"`
-		TargetID  string  `json:"target_id"`
-		ActorName *string `json:"actor_name"`
+		Action    string          `json:"action"`
+		TargetID  string          `json:"target_id"`
+		ActorName *string         `json:"actor_name"`
+		Detail    json.RawMessage `json:"detail"`
 	} `json:"items"`
 }
 

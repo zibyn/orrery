@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/zibyn/stars-sandbox/internal/keyring"
 )
 
 // Config is the deployment configuration. Values that defaults.md marks as
@@ -41,6 +43,9 @@ type Config struct {
 	// PortTicketKey signs port-forward tickets and Gateway cookies. Empty
 	// means a per-process random key, which only invalidates live cookies.
 	PortTicketKey []byte
+	// EncryptionKeys encrypts Secrets, Git tokens and Sandbox Tokens. Nil
+	// means those features answer with an explicit error (defaults.md).
+	EncryptionKeys *keyring.Keyring
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -84,6 +89,11 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if cfg.AdmissionTimeout, err = envDuration("STARS_ADMISSION_TIMEOUT", time.Hour); err != nil {
 		return Config{}, err
+	}
+	if path := os.Getenv("STARS_ENCRYPTION_KEYS_FILE"); path != "" {
+		if cfg.EncryptionKeys, err = keyring.LoadFile(path); err != nil {
+			return Config{}, err
+		}
 	}
 	return cfg, nil
 }

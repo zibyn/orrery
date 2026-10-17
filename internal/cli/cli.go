@@ -79,6 +79,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runUser(c, rest[1:], stderr)
 	case "token":
 		err = runToken(c, rest[1:], stderr)
+	case "secret":
+		err = runSecret(c, rest[1:], stderr)
 	case "audit":
 		err = runAudit(c, rest[1:], stderr)
 	case "exec":
@@ -106,6 +108,9 @@ commands:
   login            log in with a password and store a named API Token
   user list|get|create|update|delete|quota
   token list|create|revoke
+  secret set [--file PATH] <name>   write a value from stdin or a file
+  secret list
+  secret rm <name>
   audit list
   exec run|cancel
   shell <sandbox-id> [-- argv...]   open an interactive terminal
@@ -124,6 +129,9 @@ examples:
   stars-sandbox user list
   stars-sandbox user create --name alice --login-type password --password-stdin
   stars-sandbox token create --name ci --scope read_only
+  stars-sandbox secret set --file npm-token.txt NPM_TOKEN
+  stars-sandbox secret list
+  stars-sandbox secret rm NPM_TOKEN
   stars-sandbox audit list --action token.create --limit 20
   stars-sandbox exec run <sandbox-id> -- uname -a
   stars-sandbox exec cancel <exec-id>
@@ -510,6 +518,70 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown token command %q", args[0])
 	}
+}
+
+func runSecret(c *client, args []string, stderr io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: stars-sandbox secret set|list|rm")
+	}
+	switch args[0] {
+	case "set":
+		fs := flag.NewFlagSet("secret set", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		file := fs.String("file", "", "read the value from this file instead of stdin")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: stars-sandbox secret set [--file PATH] <name>")
+		}
+		value, err := readSecretValue(*file)
+		if err != nil {
+			return err
+		}
+		return c.sendAndPrint(http.MethodPut, "/api/v1/secrets/"+url.PathEscape(fs.Arg(0)),
+			map[string]string{"value": value}, "")
+	case "list":
+		fs := flag.NewFlagSet("secret list", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return c.getAndPrint("/api/v1/secrets", nil)
+	case "rm":
+		fs := flag.NewFlagSet("secret rm", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: stars-sandbox secret rm <name>")
+		}
+		return c.sendAndPrint(http.MethodDelete, "/api/v1/secrets/"+url.PathEscape(fs.Arg(0)), nil, "")
+	default:
+		return fmt.Errorf("unknown secret command %q", args[0])
+	}
+}
+
+// readSecretValue reads the value from a file or stdin. One trailing line
+// ending is dropped, as with a value piped from echo; the value never comes
+// from argv (#74).
+func readSecretValue(path string) (string, error) {
+	var (
+		data []byte
+		err  error
+	)
+	if path == "" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSuffix(string(data), "\n")
+	value = strings.TrimSuffix(value, "\r")
+	return value, nil
 }
 
 func runAudit(c *client, args []string, stderr io.Writer) error {

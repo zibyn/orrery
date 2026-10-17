@@ -31,6 +31,9 @@ func (s *Server) OpenAPIDocument() map[string]any {
 			if name == "port" {
 				schema = map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}
 			}
+			if name == "name" {
+				schema = map[string]any{"type": "string"}
+			}
 			params = append(params, map[string]any{
 				"name": name, "in": "path", "required": true,
 				"schema": schema,
@@ -101,16 +104,10 @@ func responsesFor(rt route) map[string]any {
 		if rt.OperationID == "attachExecPTY" {
 			success["description"] = "Switching Protocols. The WebSocket subprotocol is sandbox.v1; binary frames carry terminal bytes and text frames carry controls."
 		}
-		responses["503"] = map[string]any{
-			"description": httpjson.Title("unavailable"),
-			"content":     map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
-		}
+		responses["503"] = problemResponse("unavailable")
 	}
 	for _, status := range []string{"400", "401", "403", "404", "409", "500"} {
-		responses[status] = map[string]any{
-			"description": httpjson.Title(problemCodeFor(status)),
-			"content":     map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
-		}
+		responses[status] = problemResponse(problemCodeFor(status))
 	}
 	if rt.OperationID == "createSession" {
 		responses["429"] = map[string]any{
@@ -121,7 +118,27 @@ func responsesFor(rt route) map[string]any {
 			"content": map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
 		}
 	}
+	switch rt.OperationID {
+	case "putSecret":
+		// PUT upserts: 201 when the Secret is new, 200 when it is overwritten.
+		responses["201"] = map[string]any{
+			"description": "Created",
+			"content":     map[string]any{"application/json": map[string]any{"schema": schemaRef(rt.Response)}},
+		}
+		responses["413"] = problemResponse("payload_too_large")
+		responses["429"] = problemResponse("quota_exceeded")
+		responses["503"] = problemResponse("unavailable")
+	case "listSecrets", "deleteSecret":
+		responses["503"] = problemResponse("unavailable")
+	}
 	return responses
+}
+
+func problemResponse(code string) map[string]any {
+	return map[string]any{
+		"description": httpjson.Title(code),
+		"content":     map[string]any{"application/problem+json": map[string]any{"schema": schemaRef("Problem")}},
+	}
 }
 
 func problemCodeFor(status string) string {
@@ -270,6 +287,30 @@ func schemas() map[string]any {
 				"username": map[string]any{"type": "string"},
 				"password": map[string]any{"type": "string"},
 				"token":    schemaRef("CreateTokenRequest"),
+			},
+		},
+		"Secret": map[string]any{
+			"type":     "object",
+			"required": []string{"name", "updated_at"},
+			"properties": map[string]any{
+				"name":       map[string]any{"type": "string", "description": "The value is never returned."},
+				"updated_at": map[string]any{"type": "string", "format": "date-time"},
+			},
+		},
+		"SecretList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("Secret")},
+				"next_cursor": nullableString,
+			},
+		},
+		"PutSecretRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"value"},
+			"properties": map[string]any{
+				"value": map[string]any{"type": "string", "maxLength": maxSecretBytes,
+					"description": "At most 24 KiB of UTF-8 bytes."},
 			},
 		},
 		"ChangePasswordRequest": map[string]any{

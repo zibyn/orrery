@@ -43,6 +43,14 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
 chmod 644 .e2e/tls/server.key .e2e/tls/server.crt
 export STARS_NODE_TLS_DIR="$PWD/.e2e/tls"
 
+# Secrets are encrypted at rest (ADR-0013); the e2e deployment gets its own
+# throwaway keyring file.
+mkdir -p .e2e/keys
+printf 'e2e %s\n' "$(head -c 32 /dev/urandom | base64)" > .e2e/keys/encryption
+chmod 644 .e2e/keys/encryption
+export STARS_ENCRYPTION_KEYS_DIR="$PWD/.e2e/keys"
+export STARS_ENCRYPTION_KEYS_FILE=/keys/encryption
+
 # The probe container runs the Agent binary as the Supervisor, so it has to be
 # static.
 mkdir -p .e2e

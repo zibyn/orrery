@@ -164,6 +164,17 @@ type Sandbox struct {
 	WorkspaceMode   string
 }
 
+type Secret struct {
+	ID         uuid.UUID
+	OwnerID    uuid.UUID
+	Name       string
+	Ciphertext []byte
+	KeyID      string
+	Size       int32
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type User struct {
 	ID             uuid.UUID
 	Name           string

@@ -30,8 +30,10 @@ services:
       STARS_ADMISSION_TIMEOUT: "${STARS_ADMISSION_TIMEOUT:-}"
       STARS_APPS_DOMAIN: "${STARS_APPS_DOMAIN:-}"
       STARS_PORT_TICKET_KEY: "${STARS_PORT_TICKET_KEY:-}"
+      STARS_ENCRYPTION_KEYS_FILE: "${STARS_ENCRYPTION_KEYS_FILE:-}"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
+      - "${STARS_ENCRYPTION_KEYS_DIR:-./keys}:/keys:ro"
     depends_on:
       postgres:
         condition: service_healthy

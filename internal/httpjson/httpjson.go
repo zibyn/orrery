@@ -96,6 +96,11 @@ func Decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			Problem(w, "payload_too_large", "request body exceeds 1 MiB")
+			return false
+		}
 		Problem(w, "invalid_request", "invalid JSON body: "+err.Error())
 		return false
 	}

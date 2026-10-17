@@ -681,3 +681,33 @@ WHERE ctid IN (
       AND e.finished_at < now() - sqlc.arg('retention_seconds')::bigint * interval '1 second'
     LIMIT 10000
 );
+
+-- Secrets
+
+-- name: GetSecretByName :one
+SELECT * FROM secrets WHERE owner_id = $1 AND name = $2;
+
+-- name: CountSecrets :one
+SELECT count(*)::bigint FROM secrets WHERE owner_id = $1;
+
+-- UpsertSecret overwrites by (owner_id, name) while keeping the row's id
+-- (api.md §3, "创建或覆盖").
+-- name: UpsertSecret :one
+INSERT INTO secrets (id, owner_id, name, ciphertext, key_id, size)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (owner_id, name) DO UPDATE
+SET ciphertext = EXCLUDED.ciphertext,
+    key_id = EXCLUDED.key_id,
+    size = EXCLUDED.size,
+    updated_at = now()
+RETURNING *;
+
+-- name: ListSecrets :many
+SELECT * FROM secrets
+WHERE owner_id = $1
+  AND (sqlc.narg('after')::text IS NULL OR name > sqlc.narg('after'))
+ORDER BY name
+LIMIT sqlc.arg('limit');
+
+-- name: DeleteSecret :one
+DELETE FROM secrets WHERE owner_id = $1 AND name = $2 RETURNING *;
