@@ -83,7 +83,7 @@ The CLI a caller uses is separate from the server-side commands. `stars-sandbox`
 
 ### Web console
 
-A Web console is part of the system as a separate module, implemented later. It is a client of the public REST API and the Gateway only, with no private endpoints, so it can never be the only way to do something.
+A Web console is part of the system as a separate module, implemented later. It is a client of the public REST API and the Gateway only, with no private endpoints, so it can never be the only way to do something. Its login and serving are ADR-0020.
 
 ## Consequences
 

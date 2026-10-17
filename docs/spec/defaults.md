@@ -54,3 +54,14 @@
 | Gateway 端口票据有效期 | 60 秒 | 常量 | ADR-0017 |
 | 每个 User 的 Secret | 最多 50 个，每个最大 24 KiB | 常量 | ADR-0017 |
 | Git token 刷新提前量 | 10 秒 | 常量 | 即 `oauth2` 的 `Token.Valid()`；Coder 也直接用它 |
+
+## 身份
+
+| 名称 | 默认值 | 谁能改 | 说明 |
+|---|---|---|---|
+| Session 闲置期限 | 24 小时 | 常量 | 每次使用顺延；与 Coder 浏览器 session 一致 |
+| 密码最短长度 | 12 | 常量 | 不设复杂度规则 |
+| 登录失败限速 | 每个（用户名、来源 IP）15 分钟内 10 次 | 常量 | 计数放在进程内存里，Control Plane 重启后清零 |
+| OIDC `allow_signups` | 关 | 部署 | 没有任何 User 时第一个 OIDC 登录者不受它限制（ADR-0020） |
+| OIDC `email_domains` | 空（不限） | 部署 | |
+| 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}` | 部署 | OIDC 自动建号和 `POST /users` 不带 quota 时都用它 |

@@ -162,7 +162,15 @@ _Avoid_: Tenant, global administrator
 
 **API Token**:
 A named credential a User presents to the Control Plane or the Gateway. A User may hold several; each is scoped to that User and to a level of authority, and is revoked on its own.
-_Avoid_: session, login, key pair
+_Avoid_: login, key pair
+
+**Session**:
+A browser's credential, obtained by a User logging in with a password or through the external OIDC issuer. It is a kind of API Token that lapses when left idle.
+_Avoid_: cookie, login token
+
+**Web console**:
+The browser client of the public API and the Gateway. It has no semantics of its own, so nothing is possible only through it.
+_Avoid_: dashboard, admin UI
 
 **Enrollment Packet**:
 A single-use, short-lived credential by which an unregistered Node obtains its Node Token. Redeeming it is the platform's only unauthenticated entry point.

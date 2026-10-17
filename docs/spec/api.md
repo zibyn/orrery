@@ -4,10 +4,11 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 ## 1. 约定
 
-- **前缀**：`/api/v1`。`api` 监听面上另有 `/metrics`（`admin`）和端口转发子域名（§6）。
+- **前缀**：`/api/v1`。`api` 监听面上另有 `/metrics`（`admin`）、端口转发子域名（§6）和 `/` 下的 Web 控制台（§8）。
 - **ID**：服务端生成的 UUIDv7，不带类型前缀。Sandbox 的 `name` 每个 User 内唯一，只用于过滤，不进路径。
-- **认证**：`Authorization: Bearer <token>`。API Token 形如 `ssk_<id>_<secret>`，Sandbox Token 形如 `sst_<id>_<secret>`；服务端按 id 取行、比较 secret 的哈希。前缀便于 secret scanning。
-- **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Sandbox Token 只能调用 `POST /git/credential`。
+- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `ssk_<id>_<secret>`，Sandbox Token 形如 `sst_<id>_<secret>`；服务端按 id 取行、比较 secret 的哈希。前缀便于 secret scanning。
+- **Session cookie**：`stars_session; HttpOnly; Secure; SameSite=Lax; Path=/`，不带 `Domain`，端口转发子域名收不到。值的格式同 API Token，对应 `api_tokens` 里 `kind=session` 的一行。cookie 与 Bearer 等价；用 cookie 认证时，非安全方法要过 `http.CrossOriginProtection`，WebSocket 升级要求 `Origin` 等于 `api` 自己的源（ADR-0020）。
+- **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
 - **创建**返回 `201` 和初始状态的资源；**动作**（`POST /{资源}/{id}/{动词}`）返回 `202` 和当前资源；删除用 `DELETE`，返回 `202`，资源进入 `deleting`。
 - **幂等**：所有创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一，重复请求返回已有资源，不比较请求体；key 保留 24 小时。
@@ -30,6 +31,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力 |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
+| `rate_limited` | 429 | 登录失败次数超限；带 `Retry-After` |
 | `internal` | 500 | 平台缺陷 |
 | `unavailable` | 503 | Sandbox 所在 Node 不可达；可以重试 |
 
@@ -45,10 +47,21 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /users` · `GET /users` · `GET /users/{id}` · `DELETE /users/{id}` | **admin**。第一个 admin 由 `stars-sandbox-server bootstrap` 创建 |
+| `POST /users` · `GET /users` · `GET /users/{id}` · `PATCH /users/{id}` · `DELETE /users/{id}` | **admin**。`{name, email?, login_type, password?, is_admin}`；`login_type` 取 `password`、`oidc`、`none`。第一个 admin 由 `stars-sandbox-server bootstrap` 交互式设密码创建，或者是没有任何 User 时第一个 OIDC 登录者 |
+| `PUT /users/{id}/password` | **admin**。重置密码 |
 | `PUT /users/{id}/quota` | **admin**。`{gpus, sandboxes}` |
 | `GET /users/me` · `GET /users/me/quota` | quota 返回上限与当前用量 |
-| `POST /users/me/tokens` · `GET /users/me/tokens` · `DELETE /users/me/tokens/{id}` | `{name, scope, expires_at?}`；明文只在创建响应里出现一次；列表带 `last_used_at` |
+| `PUT /users/me/password` | `{old, new}`，仅 `login_type=password`。改密码和重置密码都会吊销该 User 的全部 Session |
+| `POST /users/me/tokens` · `GET /users/me/tokens` · `DELETE /users/me/tokens/{id}` | `{name, scope, expires_at?}`；明文只在创建响应里出现一次；列表带 `kind`（`token`/`session`）和 `last_used_at`，Session 也能单独吊销 |
+
+**登录**（不需要已有凭据）
+
+| 方法与路径 | 说明 |
+|---|---|
+| `POST /sessions` | `{username, password}` → `Set-Cookie` 一个 Session。带 `token: {name, scope, expires_at?}` 时改为返回一枚具名 API Token，不设 cookie（`stars-sandbox login` 用）。用户名不存在和密码错误都返回同一个 `401`；失败超限返回 `429 rate_limited` |
+| `DELETE /sessions/current` | 退出登录，删掉当前 Session |
+| `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
+| `GET /oidc/callback` | 先按 (`issuer`, `sub`) 匹配 User，再按已验证的 email 匹配；匹配不到时，`allow_signups` 打开或还没有任何 User 才建号，否则 `403`。`email_domains` 之外和 `email_verified=false` 一律 `403`。成功后设 Session cookie 并 302 回 `return` |
 
 **Workspace**
 
@@ -126,10 +139,10 @@ idle_stop?: 秒数，默认 900，0 表示关闭
 | 方法与路径 | 说明 |
 |---|---|
 | `GET /git-providers` | 部署配置的 Git Provider |
-| `GET /git-providers/{id}/authorize` | 302 到 provider 的授权页（PKCE） |
-| `GET /external-auth/{id}/callback` | OAuth 回调 |
+| `GET /git-providers/{id}/authorize` | **只接受 Session cookie**，没有就 302 到控制台登录页。302 到 provider 的授权页（PKCE），`state` 绑定当前 User |
+| `GET /external-auth/{id}/callback` | OAuth 回调。**只接受 Session cookie**，且 `state` 绑定的 User 必须是 Session 的 User，否则 `403` |
 | `GET /users/me/git-links` · `DELETE /users/me/git-links/{provider_id}` | |
-| `POST /git/credential` | **只接受 Sandbox Token**。`{host}` 或 `{provider}` → `{username, password}`；未关联或校验失败时返回 `404 not_found`，`authorize_url` 写在 problem 扩展字段里 |
+| `POST /git/credential` | **只接受 Sandbox Token**。`{host}` 或 `{provider}` → `{username, password}`；未关联或校验失败时返回 `404 not_found`，`authorize_url` 写在 problem 扩展字段里，指向控制台的 Git 关联页 |
 
 **审计**：`GET /audit`，**admin**，过滤 `actor`、`action`、`target`、时间区间。
 
@@ -183,7 +196,26 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 `stars-sandbox mcp` 通过 stdio 提供服务，使用调用方的 API Token。
 
-- 每个 `user` scope 可调用的非流式 OpenAPI operation 生成一个工具，名字取 operationId 的 snake_case。标 **admin** 的接口和 WebSocket 端点不生成工具。
+- 每个 `user` scope 可调用的非流式 OpenAPI operation 生成一个工具，名字取 operationId 的 snake_case。标 **admin** 的接口、WebSocket 端点和登录类接口（`/sessions`、`/oidc/*`、密码修改、Git 授权与回调）不生成工具。
 - 另有两个组合工具：
   - `exec_run_and_wait`：创建 Exec 并跟随到结束，返回输出尾部、`result` 和 `log_truncated`。
   - `pty_send_and_read`：向 PTY 写入，然后读取到输出静默或超时为止。
+
+## 8. Web 控制台
+
+独立源码，构建成静态文件后嵌进 `stars-sandbox-server`，由 `api` 监听面在 `/` 下提供，与 `/api/v1` 同源，不开 CORS。它只调用本文列出的接口，用 Session cookie 认证（ADR-0020）。范围以下面的页面清单为准，不追求与每个 operation 对等；清单外的操作用 CLI。
+
+| 页面 | 用到的接口 |
+|---|---|
+| 登录 `/login?return=` | `POST /sessions`、`GET /oidc/login` |
+| CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `stars-sandbox login` |
+| Git 关联 `/git` | `GET /git-providers`、`/users/me/git-links`、`authorize`；`authorize_url` 指向这里 |
+| Sandbox 列表与详情 | 创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions` |
+| Exec | 列表、`output?follow=true` 跟随 |
+| 终端 | `GET /execs/{id}/pty` |
+| 文件 | §5 的列目录、上传、下载 |
+| 端口 | `POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
+| Snapshot | 列表、版本、构建日志 |
+| Secret | 名字列表、覆盖写入、删除 |
+| 我的 token 与 Session | `/users/me/tokens`、`PUT /users/me/password`、`DELETE /sessions/current` |
+| admin | User（含重置密码、Quota）、Node、`GET /audit` |

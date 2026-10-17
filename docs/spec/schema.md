@@ -16,8 +16,8 @@ PostgreSQL 是权威状态。本文列出表、关键列和约束；迁移 SQL �
 
 | 表 | 关键列 | 约束与说明 |
 |---|---|---|
-| `users` | `id`, `name`, `is_admin`, `gpu_quota`, `sandbox_quota`, `deleted_at` | `name` 唯一；不是 admin 的 User 签发不了 `admin` scope 的 token |
-| `api_tokens` | `id`, `user_id`, `name`, `secret_hash`, `scope`, `expires_at`, `last_used_at` | (`user_id`, `name`) 唯一 |
+| `users` | `id`, `name`, `email`, `is_admin`, `login_type`, `password_hash`, `oidc_issuer`, `oidc_subject`, `gpu_quota`, `sandbox_quota`, `deleted_at` | `name` 唯一；`email` 可空，非空时唯一；(`oidc_issuer`, `oidc_subject`) 唯一；`login_type` 取 `password`/`oidc`/`none`；`password_hash` 是 argon2id，只在 `password` 时非空；不是 admin 的 User 签发不了 `admin` scope 的 token |
+| `api_tokens` | `id`, `user_id`, `kind`, `name`, `secret_hash`, `scope`, `expires_at`, `last_used_at` | `kind` 取 `token`/`session`；(`user_id`, `name`) 在 `kind=token` 上部分唯一；Session 每次使用把 `expires_at` 顺延到 now + 闲置期限 |
 | `enrollment_packets` | `id`, `secret_hash`, `expires_at`, `used_at`, `created_by` | 兑换就是 `UPDATE … WHERE used_at IS NULL AND expires_at > now()` |
 | `nodes` | `id`, `name`, `token_hash`, `paused`, `lost_at`, `agent_version`, `proto_major`, `proto_minor`, `last_seen_at`, `runtime_health`, `capabilities`, `hardware`, `reserved_cpu`, `reserved_memory`, `cpu_per_gpu`, `memory_per_gpu`, `disk_watermark` | Unreachable 在读取时由 `last_seen_at` 派生，不落库 |
 | `gpus` | `uuid` PK, `node_id`, `model` | |
