@@ -5,7 +5,7 @@
 
 ## Context
 
-`#45` had to say how a browser user authenticates when the platform had only API Tokens, and how the Web console is served while staying a client of the public REST API and the Gateway. A browser's `WebSocket` cannot set an `Authorization` header, so a console holding an API Token in memory cannot open a PTY or follow Exec output. `GET /git-providers/{id}/authorize` had the same gap: a browser following a link carries no Bearer token. Coder logs browsers in with password, GitHub or OIDC inside coderd and stores every login as a row in the same `api_keys` table as CLI tokens. Daytona sends an external IdP's JWT (facts in `docs/research/web-console-auth-vs-coder-daytona.md`, on branch `research/web-console-auth`).
+`#45` had to say how a browser user authenticates when the platform had only API Tokens, and how the Web console is served while staying a client of the public REST API and the Gateway. A browser's `WebSocket` cannot set an `Authorization` header, so a console holding an API Token in memory cannot open a PTY or follow Exec output. `GET /git-providers/{id}/authorize` had the same gap: a browser following a link carries no Bearer token. Coder logs browsers in with password, GitHub or OIDC inside coderd and stores every login as a row in the same `api_keys` table as CLI tokens. Daytona sends an external IdP's JWT (facts in `docs/research/web-console-auth-vs-coder-daytona.md`).
 
 ## Decision
 
