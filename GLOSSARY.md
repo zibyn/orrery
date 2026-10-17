@@ -9,7 +9,7 @@ A short-lived isolated execution instance that runs commands and interactive ses
 _Avoid_: Workspace, container (when referring to the platform resource)
 
 **Workspace**:
-A mutable working directory for an agent. It may contain arbitrary files and zero or more Git repositories, and is permanently bound to one compute Node for its lifetime. It can be ephemeral or persistent, and may become temporarily unavailable or permanently lost with that Node. A Workspace is not owned by a Sandbox; multiple Sandboxes may access it subject to their attachment mode and the single-writer rule.
+A mutable working directory for an agent. It may contain arbitrary files and zero or more Git repositories, and is permanently bound to one compute Node for its lifetime. It is either persistent, deleted only explicitly, or ephemeral, created with one Sandbox and deleted with it. It may become temporarily unavailable or permanently lost with that Node. A Workspace is not owned by a Sandbox; multiple Sandboxes may access it subject to their attachment mode and the single-writer rule.
 _Avoid_: Sandbox filesystem
 
 **Workspace Attachment**:
