@@ -29,6 +29,10 @@ type sandboxView struct {
 	} `json:"gpu"`
 	QueuePosition *int64  `json:"queue_position"`
 	BlockedBy     *string `json:"blocked_reason"`
+	Workspace     *struct {
+		ID   string `json:"id"`
+		Mode string `json:"mode"`
+	} `json:"workspace"`
 }
 
 // TestSandboxLifecycle is the "sandbox-lifecycle" acceptance scenario (#50):

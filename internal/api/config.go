@@ -24,6 +24,9 @@ type Config struct {
 	ExecLogCap int64
 	// PtyIdleSeconds is the deployment PTY idle reap (defaults.md, 300 s).
 	PtyIdleSeconds int64
+	// IdleStopSeconds is the deployment default for a Sandbox's Idle Stop
+	// (defaults.md, 900 s; 0 disables).
+	IdleStopSeconds int32
 	// AdmissionTimeout is how long a queued Sandbox waits before it fails
 	// with admission_timeout (defaults.md, 1 hour).
 	AdmissionTimeout time.Duration
@@ -63,6 +66,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.PtyIdleSeconds, err = envInt64("STARS_PTY_IDLE_SECONDS", 300); err != nil {
+		return Config{}, err
+	}
+	if cfg.IdleStopSeconds, err = envInt32("STARS_IDLE_STOP_SECONDS", 900); err != nil {
 		return Config{}, err
 	}
 	if cfg.AdmissionTimeout, err = envDuration("STARS_ADMISSION_TIMEOUT", time.Hour); err != nil {

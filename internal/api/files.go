@@ -51,6 +51,9 @@ func (s *Server) fileHandler(suffix string, write bool) handlerFunc {
 			writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
 			return
 		}
+		// A file request is data-plane activity: it must postpone Idle Stop.
+		s.activity.begin(sb.ID)
+		defer s.activity.end(sb.ID)
 		conn, ok := s.openTunnel(w, r, *sb.NodeID, agentHTTPTarget())
 		if !ok {
 			return

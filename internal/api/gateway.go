@@ -208,6 +208,8 @@ func (s *Server) servePortGateway(w http.ResponseWriter, r *http.Request, sandbo
 		writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
 		return
 	}
+	s.activity.begin(sandboxID)
+	defer s.activity.end(sandboxID)
 	conn, ok := s.openTunnel(w, r, *sb.NodeID, sandboxPortTarget(sandboxID, port))
 	if !ok {
 		return

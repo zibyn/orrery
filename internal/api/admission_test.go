@@ -94,25 +94,34 @@ func TestAdmissionExhausted(t *testing.T) {
 	request := store.Sandbox{Cpu: 4, Memory: 8 << 30}
 
 	for _, tt := range []struct {
-		name  string
-		nodes []store.Node
-		sb    store.Sandbox
-		want  bool
+		name          string
+		nodes         []store.Node
+		sb            store.Sandbox
+		workspaceNode *uuid.UUID
+		want          bool
 	}{
-		{"no Node has enrolled yet", nil, request, false},
-		{"unknown hardware is not proof", []store.Node{noHardware}, request, false},
-		{"unknown hardware beside a small Node is not proof", []store.Node{small, noHardware}, request, false},
-		{"one Node is large enough", []store.Node{small, big}, request, false},
-		{"every Node is too small", []store.Node{small}, request, true},
+		{"no Node has enrolled yet", nil, request, nil, false},
+		{"unknown hardware is not proof", []store.Node{noHardware}, request, nil, false},
+		{"unknown hardware beside a small Node is not proof", []store.Node{small, noHardware}, request, nil, false},
+		{"one Node is large enough", []store.Node{small, big}, request, nil, false},
+		{"every Node is too small", []store.Node{small}, request, nil, true},
 		{
 			"a bound Sandbox only considers its Node",
 			[]store.Node{small, big},
 			store.Sandbox{Cpu: 4, Memory: 8 << 30, NodeID: &small.ID},
+			nil,
+			true,
+		},
+		{
+			"a bound Workspace only considers its Node",
+			[]store.Node{small, big},
+			store.Sandbox{Cpu: 4, Memory: 8 << 30},
+			&small.ID,
 			true,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := admissionExhausted(tt.nodes, nil, tt.sb); got != tt.want {
+			if got := admissionExhausted(tt.nodes, nil, tt.sb, tt.workspaceNode); got != tt.want {
 				t.Fatalf("admissionExhausted = %v, want %v", got, tt.want)
 			}
 		})
@@ -220,29 +229,29 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 	}}
 	request := store.Sandbox{Cpu: 1.5, Memory: 6 * gib, GpuCount: 1}
 
-	if admissionExhausted([]store.Node{gpuNode}, gpus, request) {
+	if admissionExhausted([]store.Node{gpuNode}, gpus, request, nil) {
 		t.Fatal("a Node with a free card of the model must not be exhausted")
 	}
 	if !admissionExhausted([]store.Node{gpuNode}, gpus, store.Sandbox{
 		Cpu: 1.5, Memory: 6 * gib, GpuCount: 3,
-	}) {
+	}, nil) {
 		t.Fatal("three cards on a two-card Node must be exhausted")
 	}
 	if !admissionExhausted([]store.Node{gpuNode}, gpus, store.Sandbox{
 		Cpu: 1.5, Memory: 6 * gib, GpuCount: 1, GpuModel: strPtr("A100"),
-	}) {
+	}, nil) {
 		t.Fatal("a model no Node reports must be exhausted")
 	}
 
 	// Without the CDI capability the cards exist but cannot be attached.
 	noCDI := gpuNode
 	noCDI.Capabilities = json.RawMessage(`{"runtime":"docker","entries":[{"name":"gpu_device_visibility","value":"unsupported"}]}`)
-	if !admissionExhausted([]store.Node{noCDI}, gpus, request) {
+	if !admissionExhausted([]store.Node{noCDI}, gpus, request, nil) {
 		t.Fatal("a Node without CDI must be exhausted for GPU requests")
 	}
 	noReport := gpuNode
 	noReport.Capabilities = nil
-	if admissionExhausted([]store.Node{noReport}, gpus, request) {
+	if admissionExhausted([]store.Node{noReport}, gpus, request, nil) {
 		t.Fatal("a Node that has not reported capabilities is not proof either way")
 	}
 }

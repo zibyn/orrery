@@ -18,10 +18,7 @@ import (
 // waitForLimit is fixed by api.md §1.
 const waitForLimit = 60 * time.Second
 
-const (
-	defaultIdleStop = 900
-	maxMemoryBytes  = 1 << 50 // 1 PiB, a sanity bound only
-)
+const maxMemoryBytes = 1 << 50 // 1 PiB, a sanity bound only
 
 var sandboxStates = map[string]bool{
 	"pending": true, "provisioning": true, "ready": true, "stopping": true,
@@ -29,13 +26,21 @@ var sandboxStates = map[string]bool{
 }
 
 type createSandboxRequest struct {
-	Name     *string            `json:"name"`
-	Labels   map[string]string  `json:"labels"`
-	Snapshot *string            `json:"snapshot"`
-	CPU      *float64           `json:"cpu"`
-	Memory   *int64             `json:"memory"`
-	GPU      *sandboxGPURequest `json:"gpu"`
-	IdleStop *int32             `json:"idle_stop"`
+	Name      *string                  `json:"name"`
+	Labels    map[string]string        `json:"labels"`
+	Workspace *sandboxWorkspaceRequest `json:"workspace"`
+	Snapshot  *string                  `json:"snapshot"`
+	CPU       *float64                 `json:"cpu"`
+	Memory    *int64                   `json:"memory"`
+	GPU       *sandboxGPURequest       `json:"gpu"`
+	IdleStop  *int32                   `json:"idle_stop"`
+}
+
+// sandboxWorkspaceRequest attaches an existing Workspace; omitting it creates
+// an implicit ephemeral one (ADR-0018).
+type sandboxWorkspaceRequest struct {
+	ID   string `json:"id"`
+	Mode string `json:"mode"`
 }
 
 type sandboxGPURequest struct {
@@ -111,7 +116,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		writeProblem(w, "invalid_request", "label keys must be non-empty; keys and values at most 255 characters")
 		return
 	}
-	idleStop := int32(defaultIdleStop)
+	idleStop := s.cfg.IdleStopSeconds
 	if req.IdleStop != nil {
 		if *req.IdleStop < 0 {
 			writeProblem(w, "invalid_request", "idle_stop must be zero or a positive number of seconds")
@@ -188,6 +193,42 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		writeProblem(w, "quota_exceeded", problem)
 		return
 	}
+	// An explicit Workspace is attached as requested; otherwise the Sandbox
+	// gets an implicit ephemeral one (ADR-0018).
+	var attached *store.Workspace
+	attachMode := "rw"
+	if req.Workspace != nil {
+		workspaceID, err := uuid.Parse(req.Workspace.ID)
+		if err != nil {
+			writeProblem(w, "invalid_request", "workspace.id must be a UUID")
+			return
+		}
+		ws, err := q.GetWorkspace(ctx, workspaceID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeProblem(w, "not_found", "no such Workspace")
+			return
+		}
+		if err != nil {
+			s.internal(w, "get Workspace", err)
+			return
+		}
+		if !s.ownerOrAdmin(p, ws.OwnerID) {
+			writeProblem(w, "not_found", "no such Workspace")
+			return
+		}
+		if !workspaceUsable(ws) {
+			writeProblem(w, "conflict", "the Workspace is not usable")
+			return
+		}
+		attached = &ws
+		if req.Workspace.Mode != "" {
+			if req.Workspace.Mode != "rw" && req.Workspace.Mode != "ro" {
+				writeProblem(w, "invalid_request", "workspace.mode must be rw or ro")
+				return
+			}
+			attachMode = req.Workspace.Mode
+		}
+	}
 	sandbox, err := q.CreateSandbox(ctx, store.CreateSandboxParams{
 		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels,
 		SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
@@ -214,21 +255,25 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		s.internal(w, "create Sandbox", err)
 		return
 	}
-	// Persistent Workspaces are a later ticket; every Sandbox gets an implicit
-	// ephemeral one (ADR-0018).
-	workspaceID, err := uuid.NewV7()
-	if err != nil {
-		s.internal(w, "generate Workspace id", err)
-		return
-	}
-	if _, err := q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
-		ID: workspaceID, OwnerID: p.user.ID, Kind: "ephemeral", SandboxID: &sandbox.ID,
-	}); err != nil {
-		s.internal(w, "create Workspace", err)
-		return
+	workspaceID := uuid.Nil
+	if attached != nil {
+		workspaceID = attached.ID
+	} else {
+		var err error
+		workspaceID, err = uuid.NewV7()
+		if err != nil {
+			s.internal(w, "generate Workspace id", err)
+			return
+		}
+		if _, err := q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
+			ID: workspaceID, OwnerID: p.user.ID, Kind: "ephemeral", SandboxID: &sandbox.ID,
+		}); err != nil {
+			s.internal(w, "create Workspace", err)
+			return
+		}
 	}
 	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
-		SandboxID: sandbox.ID, WorkspaceID: workspaceID, Mode: "rw",
+		SandboxID: sandbox.ID, WorkspaceID: workspaceID, Mode: attachMode,
 		Generation: sandbox.Generation,
 	}); err != nil {
 		if uniqueViolation(err) == "attachments_workspace_rw" {
@@ -238,6 +283,14 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		s.internal(w, "create Attachment", err)
 		return
 	}
+	// The Attachment is released on stop, so the Sandbox remembers the mount.
+	if err := q.SetSandboxWorkspace(ctx, store.SetSandboxWorkspaceParams{
+		ID: sandbox.ID, WorkspaceID: &workspaceID, WorkspaceMode: attachMode,
+	}); err != nil {
+		s.internal(w, "record Sandbox Workspace", err)
+		return
+	}
+	sandbox.WorkspaceID, sandbox.WorkspaceMode = &workspaceID, attachMode
 	if err := s.enqueueAdmission(ctx, q, sandbox.ID); err != nil {
 		s.internal(w, "enqueue admission request", err)
 		return
@@ -250,9 +303,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		"name": name, "cpu": *req.CPU, "memory": *req.Memory, "gpu": gpuCount, "snapshot": snapshot,
 	})
 	s.changed(ctx)
-	dto := s.sandboxToDTO(ctx, sandbox)
-	dto.Workspace = &sandboxWorkspaceDTO{ID: workspaceID.String(), Mode: "rw"}
-	writeJSON(w, http.StatusCreated, dto)
+	writeJSON(w, http.StatusCreated, s.sandboxToDTO(ctx, sandbox))
 }
 
 // quotaProblem returns the 429 detail when a create or start would exceed the
@@ -437,7 +488,7 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(ctx, failed))
 		return
 	}
-	ws, err := q.GetSandboxWorkspace(ctx, &id)
+	ws, err := q.GetSandboxWorkspace(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeProblem(w, "conflict", "the Sandbox has no Workspace")
 		return
@@ -446,11 +497,15 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		s.internal(w, "look up Workspace", err)
 		return
 	}
-	// Stopping released the Attachment; start re-acquires it. The implicit
-	// Workspace is always read-write (ADR-0018). Admission re-acquires the
+	if !workspaceUsable(ws) {
+		writeProblem(w, "conflict", "the Workspace is not usable")
+		return
+	}
+	// Stopping released the Attachment; start re-acquires it with the mode the
+	// Sandbox was created with (ADR-0018). Admission re-acquires the
 	// Allocation.
 	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
-		SandboxID: id, WorkspaceID: ws.ID, Mode: "rw", Generation: started.Generation,
+		SandboxID: id, WorkspaceID: ws.ID, Mode: sb.WorkspaceMode, Generation: started.Generation,
 	}); err != nil {
 		if uniqueViolation(err) == "attachments_workspace_rw" {
 			writeProblem(w, "conflict", "the Workspace already has a read-write Attachment")
@@ -588,6 +643,9 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 	}
 	if sb.GpuCount > 0 {
 		dto.GPU = &sandboxGPUDTO{Count: sb.GpuCount, Model: sb.GpuModel}
+	}
+	if sb.WorkspaceID != nil {
+		dto.Workspace = &sandboxWorkspaceDTO{ID: sb.WorkspaceID.String(), Mode: sb.WorkspaceMode}
 	}
 	// queue_position exists only while the admission request is open. Ignoring
 	// a failed read degrades the display, not the response.

@@ -231,6 +231,7 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "create Exec", err)
 		return
 	}
+	s.activity.touch(sandboxID)
 	s.changed(ctx)
 	writeJSON(w, http.StatusCreated, execToDTO(exec))
 }

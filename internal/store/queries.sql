@@ -153,6 +153,10 @@ WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 UPDATE sandboxes SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 
+-- name: PurgeWorkspaceIdempotencyKeys :exec
+UPDATE workspaces SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
 -- Enrollment packets and nodes
 
 -- name: CreateEnrollmentPacket :one
@@ -300,6 +304,16 @@ SET desired_state = 'stopped', state = 'stopping',
 WHERE id = $1 AND state IN ('pending', 'provisioning', 'ready')
 RETURNING *;
 
+-- name: TouchSandboxActivity :exec
+UPDATE sandboxes SET last_activity_at = now() WHERE id = $1 AND state = 'ready';
+
+-- The Idle Stop sweep's candidates: running Sandboxes with a finite idle
+-- period (defaults.md, ADR-0015).
+-- name: ListIdleSandboxes :many
+SELECT * FROM sandboxes
+WHERE state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
+ORDER BY id;
+
 -- name: DeleteSandbox :one
 UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
@@ -346,7 +360,7 @@ WHERE id = $1 AND desired_state = 'deleted';
 
 -- name: MarkSandboxReady :execrows
 UPDATE sandboxes
-SET state = 'ready', cause = NULL, updated_at = now()
+SET state = 'ready', cause = NULL, last_activity_at = now(), updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning');
 
@@ -417,16 +431,42 @@ HAVING count(*) > 0;
 -- Workspaces
 
 -- name: CreateWorkspace :one
-INSERT INTO workspaces (id, owner_id, kind, sandbox_id, state, storage_handle, generation)
-VALUES ($1, $2, $3, $4, 'provisioning', $5, 1)
+INSERT INTO workspaces (id, owner_id, kind, sandbox_id, state, storage_handle, generation, idempotency_key)
+VALUES ($1, $2, $3, $4, 'provisioning', $5, 1, $6)
 RETURNING *;
 
 -- name: GetWorkspace :one
 SELECT * FROM workspaces WHERE id = $1;
 
--- name: GetSandboxWorkspace :one
+-- name: GetWorkspaceByIdempotencyKey :one
 SELECT * FROM workspaces
-WHERE sandbox_id = $1 AND state <> 'deleted';
+WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
+
+-- GetSandboxWorkspace is the Sandbox's Workspace through the durable
+-- association; the Attachment row exists only while the Sandbox runs.
+-- name: GetSandboxWorkspace :one
+SELECT w.* FROM workspaces w
+JOIN sandboxes s ON s.workspace_id = w.id
+WHERE s.id = $1 AND w.state <> 'deleted';
+
+-- name: ListWorkspaces :many
+SELECT * FROM workspaces
+WHERE owner_id = sqlc.arg('owner_id')
+  AND state <> 'deleted'
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- name: ListProvisioningWorkspaces :many
+SELECT * FROM workspaces WHERE state = 'provisioning' ORDER BY id;
+
+-- name: SetWorkspaceConditions :exec
+UPDATE workspaces SET conditions = $2, updated_at = now() WHERE id = $1;
+
+-- name: MarkWorkspaceFailed :execrows
+UPDATE workspaces
+SET state = 'failed', cause = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state = 'provisioning';
 
 -- name: ListDeletingWorkspaces :many
 SELECT * FROM workspaces WHERE state = 'deleting' ORDER BY id;
@@ -463,6 +503,11 @@ SELECT * FROM attachments WHERE sandbox_id = $1;
 
 -- name: DeleteAttachment :exec
 DELETE FROM attachments WHERE sandbox_id = $1;
+
+-- name: SetSandboxWorkspace :exec
+UPDATE sandboxes
+SET workspace_id = $2, workspace_mode = $3, updated_at = now()
+WHERE id = $1;
 
 -- Allocations
 
@@ -545,6 +590,12 @@ WHERE sandbox_id = $1 AND finished_at IS NULL AND cancel_requested_at IS NULL;
 
 -- name: CountActiveExecs :one
 SELECT count(*) FROM execs WHERE sandbox_id = $1 AND finished_at IS NULL;
+
+-- CountRunningExecs is the Idle Stop view: a pending Exec has not started, so
+-- it is not "a running Exec" (ADR-0015). Creating it already reset the clock.
+-- name: CountRunningExecs :one
+SELECT count(*) FROM execs
+WHERE sandbox_id = $1 AND finished_at IS NULL AND started_at IS NOT NULL;
 
 -- name: SetExecStarted :exec
 UPDATE execs

@@ -160,6 +160,8 @@ type Sandbox struct {
 	UpdatedAt       pgtype.Timestamptz
 	DeletedAt       pgtype.Timestamptz
 	GpuModel        *string
+	WorkspaceID     *uuid.UUID
+	WorkspaceMode   string
 }
 
 type User struct {
@@ -181,17 +183,18 @@ type User struct {
 }
 
 type Workspace struct {
-	ID            uuid.UUID
-	OwnerID       uuid.UUID
-	Kind          string
-	SandboxID     *uuid.UUID
-	NodeID        *uuid.UUID
-	State         string
-	Cause         *string
-	StorageHandle *string
-	Conditions    json.RawMessage
-	Generation    int64
-	CreatedAt     pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
-	DeletedAt     pgtype.Timestamptz
+	ID             uuid.UUID
+	OwnerID        uuid.UUID
+	Kind           string
+	SandboxID      *uuid.UUID
+	NodeID         *uuid.UUID
+	State          string
+	Cause          *string
+	StorageHandle  *string
+	Conditions     json.RawMessage
+	Generation     int64
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	DeletedAt      pgtype.Timestamptz
+	IdempotencyKey *string
 }

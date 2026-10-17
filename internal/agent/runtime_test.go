@@ -19,7 +19,7 @@ func TestLimitsMatch(t *testing.T) {
 		PidsMax:           "2048",
 		WorkspaceWritable: true,
 	}
-	if !limitsMatch(want, 500_000_000, 134217728, 0) {
+	if !limitsMatch(want, 500_000_000, 134217728, 0, "rw") {
 		t.Fatal("matching readback was rejected")
 	}
 	// A daemon that ignored a limit must fail creation instead of running
@@ -47,7 +47,7 @@ func TestLimitsMatch(t *testing.T) {
 	} {
 		got := want
 		tt.mutate(&got)
-		if limitsMatch(got, 500_000_000, 134217728, tt.gpus) {
+		if limitsMatch(got, 500_000_000, 134217728, tt.gpus, "rw") {
 			t.Errorf("%s mismatch was accepted", name)
 		}
 	}
@@ -55,8 +55,18 @@ func TestLimitsMatch(t *testing.T) {
 	// count.
 	withGPU := want
 	withGPU.NvidiaDevices = []string{"/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm"}
-	if !limitsMatch(withGPU, 500_000_000, 134217728, 1) {
+	if !limitsMatch(withGPU, 500_000_000, 134217728, 1, "rw") {
 		t.Fatal("a readback with the requested card was rejected")
+	}
+	// A read-only Attachment must read back as not writable, and a writable
+	// mount must not satisfy a read-only request.
+	readOnly := want
+	readOnly.WorkspaceWritable = false
+	if !limitsMatch(readOnly, 500_000_000, 134217728, 0, "ro") {
+		t.Fatal("a read-only Workspace readback was rejected")
+	}
+	if limitsMatch(readOnly, 500_000_000, 134217728, 0, "rw") {
+		t.Fatal("a read-only Workspace was accepted for rw")
 	}
 }
 

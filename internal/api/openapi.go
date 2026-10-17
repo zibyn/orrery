@@ -398,12 +398,45 @@ func schemas() map[string]any {
 				"mode": map[string]any{"type": "string", "enum": []string{"rw", "ro"}},
 			},
 		},
+		"Workspace": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "kind", "state", "unavailable", "conditions", "created_at"},
+			"properties": map[string]any{
+				"id":          map[string]any{"type": "string", "format": "uuid"},
+				"kind":        map[string]any{"type": "string", "enum": []string{"ephemeral", "persistent"}},
+				"node_id":     nullableString,
+				"state":       map[string]any{"type": "string", "enum": []string{"provisioning", "ready", "deleting", "deleted", "failed", "lost"}},
+				"cause":       nullableString,
+				"unavailable": map[string]any{"type": "boolean", "description": "Derived from Node reachability, never stored."},
+				"conditions":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"sandbox_id":  nullableString,
+				"created_at":  map[string]any{"type": "string", "format": "date-time"},
+				"deleted_at":  nullableTime,
+			},
+		},
+		"WorkspaceList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("Workspace")},
+				"next_cursor": nullableString,
+			},
+		},
 		"CreateSandboxRequest": map[string]any{
 			"type":     "object",
 			"required": []string{"cpu", "memory"},
 			"properties": map[string]any{
-				"name":     map[string]any{"type": "string", "description": "Unique per User; defaults to the Sandbox id."},
-				"labels":   map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"name":   map[string]any{"type": "string", "description": "Unique per User; defaults to the Sandbox id."},
+				"labels": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"workspace": map[string]any{
+					"type":        "object",
+					"description": "Attach an existing Workspace; omit to create an implicit ephemeral one.",
+					"required":    []string{"id"},
+					"properties": map[string]any{
+						"id":   map[string]any{"type": "string", "format": "uuid"},
+						"mode": map[string]any{"type": "string", "enum": []string{"rw", "ro"}, "default": "rw"},
+					},
+				},
 				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name; omit for the deployment default digest."},
 				"cpu":      map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "CPU cores."},
 				"memory":   map[string]any{"type": "integer", "minimum": 1, "description": "Bytes of memory."},

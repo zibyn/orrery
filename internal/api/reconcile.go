@@ -123,7 +123,9 @@ func (r *reconciler) once(ctx context.Context) {
 		}
 	}
 	r.deleteWorkspaces(ctx)
+	r.workspaces(ctx)
 	r.execs(ctx)
+	r.idle(ctx)
 	// Admission is last so its writes commit with the sweep and its own
 	// capacity arithmetic sees everything this tick already released.
 	if err := r.admit(ctx, tx); err != nil {
@@ -239,7 +241,7 @@ func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
 	if sb.NodeID == nil {
 		return
 	}
-	ws, err := r.s.q.GetSandboxWorkspace(ctx, &sb.ID)
+	ws, err := r.s.q.GetSandboxWorkspace(ctx, sb.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		r.fail(ctx, sb, "runtime_create_failed")
 		return
@@ -256,21 +258,16 @@ func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
 		}
 		return
 	}
-	if ws.State == "provisioning" {
-		r.send(ctx, ws.NodeID, workspaceCommandId("provision-workspace", ws),
-			&nodev1.ControlMessage{Message: &nodev1.ControlMessage_ProvisionWorkspace{
-				ProvisionWorkspace: &nodev1.ProvisionWorkspace{
-					CommandId:   workspaceCommandId("provision-workspace", ws),
-					WorkspaceId: ws.ID.String(),
-					Generation:  ws.Generation,
-				},
-			}})
-		return
-	}
-	if ws.State == "ready" {
+	switch ws.State {
+	case "provisioning":
+		// The Workspace sweep sends ProvisionWorkspace with its retry backoff.
+	case "ready":
 		if _, err := r.s.q.SetSandboxProvisioning(ctx, sb.ID); err != nil {
 			r.s.log.Warn("reconcile: mark sandbox provisioning", "sandbox_id", sb.ID, "error", err)
 		}
+	default:
+		// failed, lost, deleting or deleted: nothing to mount.
+		r.fail(ctx, sb, "runtime_create_failed")
 	}
 }
 
@@ -357,14 +354,26 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 
 func (r *reconciler) delete(ctx context.Context, sb store.Sandbox) {
 	if sb.NodeID == nil {
-		// Nothing ever ran. Release the Workspace directly.
-		if ws, err := r.s.q.GetSandboxWorkspace(ctx, &sb.ID); err == nil {
+		// Nothing ever ran. Release the Attachment, then either let the
+		// implicit Workspace's cleanup finish the Sandbox or keep a persistent
+		// Workspace and finish now (ADR-0018).
+		if err := r.s.q.DeleteAttachment(ctx, sb.ID); err != nil {
+			r.s.log.Warn("reconcile: delete attachment", "sandbox_id", sb.ID, "error", err)
+		}
+		ws, err := r.s.q.GetSandboxWorkspace(ctx, sb.ID)
+		switch {
+		case err == nil && ws.Kind == "ephemeral":
 			if _, err := r.s.q.SetWorkspaceDeleting(ctx, ws.ID); err != nil {
 				r.s.log.Warn("reconcile: mark workspace deleting", "workspace_id", ws.ID, "error", err)
 			}
+			return
+		case err != nil && !errors.Is(err, pgx.ErrNoRows):
+			// A transient read error must not orphan an implicit Workspace.
+			r.s.log.Warn("reconcile: look up Workspace for teardown", "sandbox_id", sb.ID, "error", err)
+			return
 		}
-		if err := r.s.q.DeleteAttachment(ctx, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: delete attachment", "sandbox_id", sb.ID, "error", err)
+		if _, err := r.s.q.MarkSandboxDeleted(ctx, sb.ID); err != nil {
+			r.s.log.Warn("reconcile: mark deleted", "sandbox_id", sb.ID, "error", err)
 		}
 		return
 	}
@@ -393,6 +402,123 @@ func (r *reconciler) execsDrained(ctx context.Context, sandboxID uuid.UUID) bool
 		return false
 	}
 	return active == 0
+}
+
+// workspaceProvisionBackoff is the delay after each failed provisioning
+// attempt (defaults.md: 1, 2, 4, 8, 16 seconds; the third failure raises
+// provisioning_stalled).
+var workspaceProvisionBackoff = []time.Duration{
+	time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
+}
+
+const workspaceStalledAfter = 3
+
+// workspaces provisions every Workspace whose Node is known, honoring the
+// retry backoff. A persistent Workspace without a Node is placed first
+// (ADR-0014: a paused Node takes no new Workspaces); an ephemeral one is bound
+// by its Sandbox's admission.
+func (r *reconciler) workspaces(ctx context.Context) {
+	rows, err := r.s.q.ListProvisioningWorkspaces(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			r.s.log.Warn("reconcile: list provisioning Workspaces", "error", err)
+		}
+		return
+	}
+	now := time.Now()
+	for _, ws := range rows {
+		if ws.NodeID == nil {
+			if ws.Kind == "persistent" {
+				r.placeWorkspace(ctx, ws, now)
+			}
+			continue
+		}
+		if !parseWorkspaceConditions(ws.Conditions).provisionDue(now) {
+			continue
+		}
+		id := workspaceCommandId("provision-workspace", ws)
+		r.send(ctx, ws.NodeID, id, &nodev1.ControlMessage{
+			Message: &nodev1.ControlMessage_ProvisionWorkspace{
+				ProvisionWorkspace: &nodev1.ProvisionWorkspace{
+					CommandId:   id,
+					WorkspaceId: ws.ID.String(),
+					Generation:  ws.Generation,
+				},
+			},
+		})
+	}
+}
+
+func (r *reconciler) placeWorkspace(ctx context.Context, ws store.Workspace, now time.Time) {
+	nodes, err := r.s.q.ListAllNodes(ctx)
+	if err != nil {
+		r.s.log.Warn("reconcile: place Workspace", "workspace_id", ws.ID, "error", err)
+		return
+	}
+	for _, node := range nodes {
+		if deriveNodeStatus(node, now) != "ready" || !r.hub.connected(node.ID) {
+			continue
+		}
+		if _, err := r.s.q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{
+			ID: ws.ID, NodeID: &node.ID,
+		}); err != nil {
+			r.s.log.Warn("reconcile: bind Workspace", "workspace_id", ws.ID, "error", err)
+		}
+		return
+	}
+}
+
+// idleExpired reports whether a ready Sandbox has been idle long enough to
+// stop. A running Exec or a live data-plane connection is activity, and a
+// Sandbox without any activity yet starts its idle clock now (ADR-0015).
+func idleExpired(lastActivity time.Time, hasActivity bool, idleSeconds int32, now time.Time, activeExecs, liveConnections int) bool {
+	if idleSeconds <= 0 || !hasActivity || activeExecs > 0 || liveConnections > 0 {
+		return false
+	}
+	return !now.Before(lastActivity.Add(time.Duration(idleSeconds) * time.Second))
+}
+
+// idle stops Sandboxes whose Idle Stop period has elapsed.
+func (r *reconciler) idle(ctx context.Context) {
+	rows, err := r.s.q.ListIdleSandboxes(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			r.s.log.Warn("reconcile: list idle Sandboxes", "error", err)
+		}
+		return
+	}
+	now := time.Now()
+	for _, sb := range rows {
+		running, err := r.s.q.CountRunningExecs(ctx, sb.ID)
+		if err != nil {
+			r.s.log.Warn("reconcile: count Execs", "sandbox_id", sb.ID, "error", err)
+			continue
+		}
+		live := r.s.activity.count(sb.ID)
+		last, hasLast := sb.LastActivityAt.Time, sb.LastActivityAt.Valid
+		// A request or Exec shorter than one sweep never appears as active,
+		// so the tracker's timestamp is authoritative when it is newer.
+		if tracked, ok := r.s.activity.lastActivity(sb.ID); ok && (!hasLast || tracked.After(last)) {
+			last, hasLast = tracked, true
+		}
+		if idleExpired(last, hasLast, sb.IdleStopSeconds, now, int(running), live) {
+			if _, err := r.s.q.StopSandbox(ctx, sb.ID); err != nil {
+				if !errors.Is(err, pgx.ErrNoRows) {
+					r.s.log.Warn("reconcile: idle stop", "sandbox_id", sb.ID, "error", err)
+				}
+			} else {
+				r.s.log.Info("idle stop", "sandbox_id", sb.ID)
+			}
+			continue
+		}
+		// Activity keeps the clock moving; a Sandbox that has never been
+		// active (predating the column) starts it now.
+		if running > 0 || live > 0 || !sb.LastActivityAt.Valid {
+			if err := r.s.q.TouchSandboxActivity(ctx, sb.ID); err != nil {
+				r.s.log.Warn("reconcile: touch activity", "sandbox_id", sb.ID, "error", err)
+			}
+		}
+	}
 }
 
 func (r *reconciler) deleteWorkspaces(ctx context.Context) {

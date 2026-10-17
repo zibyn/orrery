@@ -220,6 +220,7 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 					"node_id", node.ID, "command_id", m.CommandResult.CommandId, "error", m.CommandResult.Error)
 				// A failed command is not lost: the next sweep derives it again.
 				n.s.reconcile.hub.failed(node.ID, m.CommandResult.CommandId)
+				n.recordWorkspaceCommandFailure(ctx, m.CommandResult.CommandId)
 				n.s.reconcile.notify()
 			}
 		default:
@@ -472,9 +473,21 @@ func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, gener
 		n.s.log.Warn("release attachment", "sandbox_id", id, "error", err)
 		return
 	}
-	if ws, err := q.GetSandboxWorkspace(ctx, &id); err == nil {
+	ws, wsErr := q.GetSandboxWorkspace(ctx, id)
+	switch {
+	case wsErr == nil && ws.Kind == "ephemeral":
 		if _, err := q.SetWorkspaceDeleting(ctx, ws.ID); err != nil {
 			n.s.log.Warn("mark workspace deleting", "workspace_id", ws.ID, "error", err)
+			return
+		}
+	case wsErr != nil && !errors.Is(wsErr, pgx.ErrNoRows):
+		// A transient read error must not orphan an implicit Workspace; the
+		// next sweep sends the stop again.
+		n.s.log.Warn("look up Workspace for teardown", "sandbox_id", id, "error", wsErr)
+		return
+	default:
+		if _, err := q.MarkSandboxDeleted(ctx, id); err != nil {
+			n.s.log.Warn("mark Sandbox deleted", "sandbox_id", id, "error", err)
 			return
 		}
 	}
@@ -647,6 +660,9 @@ func (n *nodeService) recordWorkspaceObserved(ctx context.Context, nodeID uuid.U
 			return
 		}
 		if rows > 0 {
+			if err := n.s.q.SetWorkspaceConditions(ctx, store.SetWorkspaceConditionsParams{ID: id}); err != nil {
+				n.s.log.Warn("clear Workspace conditions", "workspace_id", id, "error", err)
+			}
 			n.s.reconcile.notify()
 		}
 	case "gone":
@@ -665,6 +681,52 @@ func (n *nodeService) recordWorkspaceObserved(ctx context.Context, nodeID uuid.U
 			}
 			n.s.reconcile.notify()
 		}
+	}
+}
+
+// recordWorkspaceCommandFailure advances a Workspace's provisioning retry
+// state. Backoff and the stalled condition follow defaults.md; once the
+// retries are used up the Workspace ends failed (ADR-0015).
+// ponytail: only a reported CommandResult counts as a failed attempt. An Agent
+// that accepts the command and never reports leaves the Workspace
+// provisioning; add a per-attempt timeout if a silently hung Agent matters.
+func (n *nodeService) recordWorkspaceCommandFailure(ctx context.Context, commandID string) {
+	const prefix = "provision-workspace:"
+	if !strings.HasPrefix(commandID, prefix) {
+		return
+	}
+	idPart, _, ok := strings.Cut(strings.TrimPrefix(commandID, prefix), ":")
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(idPart)
+	if err != nil {
+		return
+	}
+	ws, err := n.s.q.GetWorkspace(ctx, id)
+	if err != nil || ws.State != "provisioning" {
+		return
+	}
+	conditions := parseWorkspaceConditions(ws.Conditions)
+	conditions.Attempts++
+	if conditions.Attempts > len(workspaceProvisionBackoff) {
+		cause := "provisioning_failed"
+		if _, err := n.s.q.MarkWorkspaceFailed(ctx, store.MarkWorkspaceFailedParams{
+			ID: id, Generation: ws.Generation, Cause: &cause,
+		}); err != nil {
+			n.s.log.Warn("record Workspace failure", "workspace_id", id, "error", err)
+		}
+		return
+	}
+	next := time.Now().Add(workspaceProvisionBackoff[conditions.Attempts-1])
+	conditions.NextAttemptAt = &next
+	if conditions.Attempts >= workspaceStalledAfter {
+		conditions.ProvisioningStalled = true
+	}
+	if err := n.s.q.SetWorkspaceConditions(ctx, store.SetWorkspaceConditionsParams{
+		ID: id, Conditions: encodeWorkspaceConditions(conditions),
+	}); err != nil {
+		n.s.log.Warn("record Workspace retry", "workspace_id", id, "error", err)
 	}
 }
 

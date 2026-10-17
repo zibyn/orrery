@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -144,10 +145,14 @@ func fitFor(node store.Node, used store.NodePlacementRow) (nodeFit, bool) {
 // request, so waiting for capacity cannot help. Unknown hardware (a Node that
 // has not reported yet) is not proof either way. A Sandbox bound to a Node can
 // only ever go there. gpus is each Node's reported inventory.
-func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb store.Sandbox) bool {
+func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb store.Sandbox, workspaceNode *uuid.UUID) bool {
 	known, unknown := false, false
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
+			continue
+		}
+		// A Workspace never moves: its Sandbox can only ever run there.
+		if workspaceNode != nil && node.ID != *workspaceNode {
 			continue
 		}
 		fit, ok := fitFor(node, store.NodePlacementRow{GpuTotal: int64(len(gpus[node.ID]))})
@@ -216,7 +221,20 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 			r.endAdmission(ctx, q, sb.ID, "canceled")
 			continue
 		}
-		placed, err := r.tryAdmit(ctx, q, sb, nodes, now)
+		ws, err := q.GetSandboxWorkspace(ctx, sb.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			r.failAdmission(ctx, q, sb, "runtime_create_failed")
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !workspaceUsable(ws) {
+			// The Workspace is failed, lost or going away; waiting cannot help.
+			r.failAdmission(ctx, q, sb, "runtime_create_failed")
+			continue
+		}
+		placed, err := r.tryAdmit(ctx, q, sb, ws, nodes, now)
 		if err != nil {
 			return err
 		}
@@ -224,7 +242,7 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 			r.endAdmission(ctx, q, sb.ID, "admitted")
 			continue
 		}
-		if admissionExhausted(nodes, inventory, sb) {
+		if admissionExhausted(nodes, inventory, sb, ws.NodeID) {
 			r.failAdmission(ctx, q, sb, "unsatisfiable")
 		}
 	}
@@ -232,12 +250,15 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 }
 
 // tryAdmit places a Sandbox on the first Node that fits. A Sandbox bound to a
-// Node stays there (a Workspace never moves), so only that Node is considered
-// on a restart. A GPU Sandbox claims whole cards; their primary key keeps the
-// cards exclusive (ADR-0015).
-func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sandbox, nodes []store.Node, now time.Time) (bool, error) {
+// Node stays there (a Workspace never moves), and so does one whose Workspace
+// is already bound (ADR-0015 locality). A GPU Sandbox claims whole cards;
+// their primary key keeps the cards exclusive (ADR-0015).
+func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sandbox, ws store.Workspace, nodes []store.Node, now time.Time) (bool, error) {
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
+			continue
+		}
+		if ws.NodeID != nil && node.ID != *ws.NodeID {
 			continue
 		}
 		if deriveNodeStatus(node, now) != "ready" || !r.hub.connected(node.ID) {
@@ -281,10 +302,6 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			}
 			if rows == 0 {
 				return false, nil
-			}
-			ws, err := q.GetSandboxWorkspace(ctx, &sb.ID)
-			if err != nil {
-				return false, nil // the next sweep fails the Sandbox with runtime_create_failed
 			}
 			if ws.NodeID == nil {
 				if _, err := q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{

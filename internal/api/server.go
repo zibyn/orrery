@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,7 @@ type Server struct {
 	crossOrigin http.CrossOriginProtection
 	reconcile   *reconciler
 	tunnels     *tunnelRegistry
+	activity    *activityTracker
 }
 
 func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
@@ -39,9 +41,61 @@ func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
 		}
 	}
 	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter(),
-		tunnels: newTunnelRegistry()}
+		tunnels: newTunnelRegistry(), activity: newActivityTracker()}
 	s.reconcile = newReconciler(s)
 	return s
+}
+
+// activityTracker counts live data-plane connections per Sandbox and remembers
+// the last touch, so an Idle Stop never stops a Sandbox that is being used and
+// a request shorter than one sweep still resets its clock (ADR-0015).
+type activityTracker struct {
+	mu   sync.Mutex
+	live map[uuid.UUID]int
+	last map[uuid.UUID]time.Time
+}
+
+func newActivityTracker() *activityTracker {
+	return &activityTracker{live: make(map[uuid.UUID]int), last: make(map[uuid.UUID]time.Time)}
+}
+
+func (a *activityTracker) begin(id uuid.UUID) {
+	a.mu.Lock()
+	a.live[id]++
+	a.last[id] = time.Now()
+	a.mu.Unlock()
+}
+
+func (a *activityTracker) end(id uuid.UUID) {
+	a.mu.Lock()
+	if a.live[id] <= 1 {
+		delete(a.live, id)
+	} else {
+		a.live[id]--
+	}
+	a.last[id] = time.Now()
+	a.mu.Unlock()
+}
+
+// touch records activity that has no connection lifetime, such as an Exec
+// being created.
+func (a *activityTracker) touch(id uuid.UUID) {
+	a.mu.Lock()
+	a.last[id] = time.Now()
+	a.mu.Unlock()
+}
+
+func (a *activityTracker) count(id uuid.UUID) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.live[id]
+}
+
+func (a *activityTracker) lastActivity(id uuid.UUID) (time.Time, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	last, ok := a.last[id]
+	return last, ok
 }
 
 type principal struct {
@@ -93,6 +147,10 @@ func (s *Server) routes() []route {
 		{http.MethodGet, "/nodes", "admin", "listNodes", "List Nodes", "", "NodeList", []string{"limit", "cursor"}, http.StatusOK, s.handleListNodes},
 		{http.MethodGet, "/nodes/{id}", "admin", "getNode", "Get a Node", "", "Node", nil, http.StatusOK, s.handleGetNode},
 		{http.MethodGet, "/capacity", "user", "getCapacity", "Get Node capacity", "", "CapacityList", nil, http.StatusOK, s.handleGetCapacity},
+		{http.MethodPost, "/workspaces", "user", "createWorkspace", "Create a persistent Workspace", "", "Workspace", nil, http.StatusCreated, s.handleCreateWorkspace},
+		{http.MethodGet, "/workspaces", "user", "listWorkspaces", "List Workspaces", "", "WorkspaceList", []string{"limit", "cursor"}, http.StatusOK, s.handleListWorkspaces},
+		{http.MethodGet, "/workspaces/{id}", "user", "getWorkspace", "Get a Workspace", "", "Workspace", nil, http.StatusOK, s.handleGetWorkspace},
+		{http.MethodDelete, "/workspaces/{id}", "user", "deleteWorkspace", "Delete a Workspace", "", "Workspace", nil, http.StatusAccepted, s.handleDeleteWorkspace},
 		{http.MethodPost, "/sandboxes", "user", "createSandbox", "Create a Sandbox", "CreateSandboxRequest", "Sandbox", nil, http.StatusCreated, s.handleCreateSandbox},
 		{http.MethodGet, "/sandboxes", "user", "listSandboxes", "List Sandboxes", "", "SandboxList", []string{"state", "label", "node", "has_gpu", "limit", "cursor"}, http.StatusOK, s.handleListSandboxes},
 		{http.MethodGet, "/sandboxes/{id}", "user", "getSandbox", "Get a Sandbox", "", "Sandbox", []string{"wait_for"}, http.StatusOK, s.handleGetSandbox},
@@ -308,6 +366,9 @@ func (s *Server) purgeExpired(ctx context.Context) {
 		}
 		if err := s.q.PurgeSandboxIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
 			s.log.Warn("purge Sandbox idempotency keys", "error", err)
+		}
+		if err := s.q.PurgeWorkspaceIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
+			s.log.Warn("purge Workspace idempotency keys", "error", err)
 		}
 		if err := s.q.PurgeEnrollmentPackets(ctx); err != nil && ctx.Err() == nil {
 			s.log.Warn("purge Enrollment Packets", "error", err)

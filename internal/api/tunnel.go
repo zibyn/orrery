@@ -117,6 +117,9 @@ func (s *Server) handleExecPTY(w http.ResponseWriter, r *http.Request, p *princi
 		writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
 		return
 	}
+	// A PTY attachment is data-plane activity (ADR-0015).
+	s.activity.begin(e.SandboxID)
+	defer s.activity.end(e.SandboxID)
 	conn, ok := s.openTunnel(w, r, *row.SandboxNodeID, agentHTTPTarget())
 	if !ok {
 		return
@@ -150,6 +153,8 @@ func (s *Server) handlePortTunnel(w http.ResponseWriter, r *http.Request, p *pri
 		writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
 		return
 	}
+	s.activity.begin(sb.ID)
+	defer s.activity.end(sb.ID)
 	conn, ok := s.openTunnel(w, r, *sb.NodeID, sandboxPortTarget(id, port))
 	if !ok {
 		return

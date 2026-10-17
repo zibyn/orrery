@@ -207,6 +207,20 @@ func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.
 	return i, err
 }
 
+const countRunningExecs = `-- name: CountRunningExecs :one
+SELECT count(*) FROM execs
+WHERE sandbox_id = $1 AND finished_at IS NULL AND started_at IS NOT NULL
+`
+
+// CountRunningExecs is the Idle Stop view: a pending Exec has not started, so
+// it is not "a running Exec" (ADR-0015). Creating it already reset the clock.
+func (q *Queries) CountRunningExecs(ctx context.Context, sandboxID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countRunningExecs, sandboxID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT count(*) FROM users
 `
@@ -480,7 +494,7 @@ INSERT INTO sandboxes (
     id, owner_id, name, labels, desired_state, state, snapshot_digest,
     cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation, idempotency_key
 ) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11)
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode
 `
 
 type CreateSandboxParams struct {
@@ -536,6 +550,8 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
 	)
 	return i, err
 }
@@ -646,17 +662,18 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 
 const createWorkspace = `-- name: CreateWorkspace :one
 
-INSERT INTO workspaces (id, owner_id, kind, sandbox_id, state, storage_handle, generation)
-VALUES ($1, $2, $3, $4, 'provisioning', $5, 1)
-RETURNING id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at
+INSERT INTO workspaces (id, owner_id, kind, sandbox_id, state, storage_handle, generation, idempotency_key)
+VALUES ($1, $2, $3, $4, 'provisioning', $5, 1, $6)
+RETURNING id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key
 `
 
 type CreateWorkspaceParams struct {
-	ID            uuid.UUID
-	OwnerID       uuid.UUID
-	Kind          string
-	SandboxID     *uuid.UUID
-	StorageHandle *string
+	ID             uuid.UUID
+	OwnerID        uuid.UUID
+	Kind           string
+	SandboxID      *uuid.UUID
+	StorageHandle  *string
+	IdempotencyKey *string
 }
 
 // Workspaces
@@ -667,6 +684,7 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 		arg.Kind,
 		arg.SandboxID,
 		arg.StorageHandle,
+		arg.IdempotencyKey,
 	)
 	var i Workspace
 	err := row.Scan(
@@ -683,6 +701,7 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -728,7 +747,7 @@ UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode
 `
 
 func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -757,6 +776,8 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
 	)
 	return i, err
 }
@@ -1085,7 +1106,7 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 }
 
 const getSandbox = `-- name: GetSandbox :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes WHERE id = $1 AND state <> 'deleted'
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode FROM sandboxes WHERE id = $1 AND state <> 'deleted'
 `
 
 func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -1114,12 +1135,14 @@ func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error)
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
 	)
 	return i, err
 }
 
 const getSandboxByIdempotencyKey = `-- name: GetSandboxByIdempotencyKey :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode FROM sandboxes
 WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted'
 `
 
@@ -1154,12 +1177,14 @@ func (q *Queries) GetSandboxByIdempotencyKey(ctx context.Context, arg GetSandbox
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
 	)
 	return i, err
 }
 
 const getSandboxIncludingDeleted = `-- name: GetSandboxIncludingDeleted :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes WHERE id = $1
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode FROM sandboxes WHERE id = $1
 `
 
 func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -1188,17 +1213,22 @@ func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) 
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
 	)
 	return i, err
 }
 
 const getSandboxWorkspace = `-- name: GetSandboxWorkspace :one
-SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at FROM workspaces
-WHERE sandbox_id = $1 AND state <> 'deleted'
+SELECT w.id, w.owner_id, w.kind, w.sandbox_id, w.node_id, w.state, w.cause, w.storage_handle, w.conditions, w.generation, w.created_at, w.updated_at, w.deleted_at, w.idempotency_key FROM workspaces w
+JOIN sandboxes s ON s.workspace_id = w.id
+WHERE s.id = $1 AND w.state <> 'deleted'
 `
 
-func (q *Queries) GetSandboxWorkspace(ctx context.Context, sandboxID *uuid.UUID) (Workspace, error) {
-	row := q.db.QueryRow(ctx, getSandboxWorkspace, sandboxID)
+// GetSandboxWorkspace is the Sandbox's Workspace through the durable
+// association; the Attachment row exists only while the Sandbox runs.
+func (q *Queries) GetSandboxWorkspace(ctx context.Context, id uuid.UUID) (Workspace, error) {
+	row := q.db.QueryRow(ctx, getSandboxWorkspace, id)
 	var i Workspace
 	err := row.Scan(
 		&i.ID,
@@ -1214,6 +1244,7 @@ func (q *Queries) GetSandboxWorkspace(ctx context.Context, sandboxID *uuid.UUID)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -1397,7 +1428,7 @@ func (q *Queries) GetUserByName(ctx context.Context, name string) (User, error) 
 }
 
 const getWorkspace = `-- name: GetWorkspace :one
-SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at FROM workspaces WHERE id = $1
+SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE id = $1
 `
 
 func (q *Queries) GetWorkspace(ctx context.Context, id uuid.UUID) (Workspace, error) {
@@ -1417,6 +1448,39 @@ func (q *Queries) GetWorkspace(ctx context.Context, id uuid.UUID) (Workspace, er
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.IdempotencyKey,
+	)
+	return i, err
+}
+
+const getWorkspaceByIdempotencyKey = `-- name: GetWorkspaceByIdempotencyKey :one
+SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces
+WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted'
+`
+
+type GetWorkspaceByIdempotencyKeyParams struct {
+	OwnerID        uuid.UUID
+	IdempotencyKey *string
+}
+
+func (q *Queries) GetWorkspaceByIdempotencyKey(ctx context.Context, arg GetWorkspaceByIdempotencyKeyParams) (Workspace, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceByIdempotencyKey, arg.OwnerID, arg.IdempotencyKey)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Kind,
+		&i.SandboxID,
+		&i.NodeID,
+		&i.State,
+		&i.Cause,
+		&i.StorageHandle,
+		&i.Conditions,
+		&i.Generation,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -1651,7 +1715,7 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 }
 
 const listDeletingWorkspaces = `-- name: ListDeletingWorkspaces :many
-SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at FROM workspaces WHERE state = 'deleting' ORDER BY id
+SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE state = 'deleting' ORDER BY id
 `
 
 func (q *Queries) ListDeletingWorkspaces(ctx context.Context) ([]Workspace, error) {
@@ -1677,6 +1741,7 @@ func (q *Queries) ListDeletingWorkspaces(ctx context.Context) ([]Workspace, erro
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.IdempotencyKey,
 		); err != nil {
 			return nil, err
 		}
@@ -1771,6 +1836,59 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 			&i.Generation,
 			&i.IdempotencyKey,
 			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIdleSandboxes = `-- name: ListIdleSandboxes :many
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode FROM sandboxes
+WHERE state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
+ORDER BY id
+`
+
+// The Idle Stop sweep's candidates: running Sandboxes with a finite idle
+// period (defaults.md, ADR-0015).
+func (q *Queries) ListIdleSandboxes(ctx context.Context) ([]Sandbox, error) {
+	rows, err := q.db.Query(ctx, listIdleSandboxes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Sandbox{}
+	for rows.Next() {
+		var i Sandbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.Labels,
+			&i.DesiredState,
+			&i.State,
+			&i.Cause,
+			&i.NodeID,
+			&i.SnapshotDigest,
+			&i.Cpu,
+			&i.Memory,
+			&i.GpuCount,
+			&i.IdleStopSeconds,
+			&i.LastActivityAt,
+			&i.TokenHash,
+			&i.SecretEnvCt,
+			&i.Generation,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.GpuModel,
+			&i.WorkspaceID,
+			&i.WorkspaceMode,
 		); err != nil {
 			return nil, err
 		}
@@ -1925,7 +2043,7 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 }
 
 const listOpenAdmissionRequests = `-- name: ListOpenAdmissionRequests :many
-SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_hash, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model
+SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_hash, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode
 FROM admission_requests a
 JOIN sandboxes s ON s.id = a.sandbox_id
 WHERE a.ended_at IS NULL
@@ -1978,6 +2096,47 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 			&i.Sandbox.UpdatedAt,
 			&i.Sandbox.DeletedAt,
 			&i.Sandbox.GpuModel,
+			&i.Sandbox.WorkspaceID,
+			&i.Sandbox.WorkspaceMode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProvisioningWorkspaces = `-- name: ListProvisioningWorkspaces :many
+SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE state = 'provisioning' ORDER BY id
+`
+
+func (q *Queries) ListProvisioningWorkspaces(ctx context.Context) ([]Workspace, error) {
+	rows, err := q.db.Query(ctx, listProvisioningWorkspaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Workspace{}
+	for rows.Next() {
+		var i Workspace
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Kind,
+			&i.SandboxID,
+			&i.NodeID,
+			&i.State,
+			&i.Cause,
+			&i.StorageHandle,
+			&i.Conditions,
+			&i.Generation,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.IdempotencyKey,
 		); err != nil {
 			return nil, err
 		}
@@ -1991,7 +2150,7 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 
 const listReconcilableSandboxes = `-- name: ListReconcilableSandboxes :many
 
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode FROM sandboxes
 WHERE state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
 ORDER BY id
 `
@@ -2030,6 +2189,8 @@ func (q *Queries) ListReconcilableSandboxes(ctx context.Context) ([]Sandbox, err
 			&i.UpdatedAt,
 			&i.DeletedAt,
 			&i.GpuModel,
+			&i.WorkspaceID,
+			&i.WorkspaceMode,
 		); err != nil {
 			return nil, err
 		}
@@ -2066,7 +2227,7 @@ func (q *Queries) ListSandboxGPUs(ctx context.Context, sandboxID uuid.UUID) ([]s
 }
 
 const listSandboxes = `-- name: ListSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode FROM sandboxes
 WHERE owner_id = $1
   AND state <> 'deleted'
   AND ($2::text IS NULL OR state = $2)
@@ -2132,6 +2293,8 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 			&i.UpdatedAt,
 			&i.DeletedAt,
 			&i.GpuModel,
+			&i.WorkspaceID,
+			&i.WorkspaceMode,
 		); err != nil {
 			return nil, err
 		}
@@ -2237,6 +2400,56 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 	return items, nil
 }
 
+const listWorkspaces = `-- name: ListWorkspaces :many
+SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces
+WHERE owner_id = $1
+  AND state <> 'deleted'
+  AND ($2::uuid IS NULL OR id > $2)
+ORDER BY id
+LIMIT $3
+`
+
+type ListWorkspacesParams struct {
+	OwnerID uuid.UUID
+	After   *uuid.UUID
+	Limit   int32
+}
+
+func (q *Queries) ListWorkspaces(ctx context.Context, arg ListWorkspacesParams) ([]Workspace, error) {
+	rows, err := q.db.Query(ctx, listWorkspaces, arg.OwnerID, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Workspace{}
+	for rows.Next() {
+		var i Workspace
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Kind,
+			&i.SandboxID,
+			&i.NodeID,
+			&i.State,
+			&i.Cause,
+			&i.StorageHandle,
+			&i.Conditions,
+			&i.Generation,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.IdempotencyKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockUser = `-- name: LockUser :one
 SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `
@@ -2303,7 +2516,7 @@ func (q *Queries) MarkSandboxFailed(ctx context.Context, arg MarkSandboxFailedPa
 const markSandboxReady = `-- name: MarkSandboxReady :execrows
 
 UPDATE sandboxes
-SET state = 'ready', cause = NULL, updated_at = now()
+SET state = 'ready', cause = NULL, last_activity_at = now(), updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning')
 `
@@ -2376,6 +2589,26 @@ type MarkWorkspaceDeletedParams struct {
 
 func (q *Queries) MarkWorkspaceDeleted(ctx context.Context, arg MarkWorkspaceDeletedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markWorkspaceDeleted, arg.ID, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markWorkspaceFailed = `-- name: MarkWorkspaceFailed :execrows
+UPDATE workspaces
+SET state = 'failed', cause = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state = 'provisioning'
+`
+
+type MarkWorkspaceFailedParams struct {
+	ID         uuid.UUID
+	Generation int64
+	Cause      *string
+}
+
+func (q *Queries) MarkWorkspaceFailed(ctx context.Context, arg MarkWorkspaceFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markWorkspaceFailed, arg.ID, arg.Generation, arg.Cause)
 	if err != nil {
 		return 0, err
 	}
@@ -2538,6 +2771,16 @@ func (q *Queries) PurgeUserIdempotencyKeys(ctx context.Context) error {
 	return err
 }
 
+const purgeWorkspaceIdempotencyKeys = `-- name: PurgeWorkspaceIdempotencyKeys :exec
+UPDATE workspaces SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
+`
+
+func (q *Queries) PurgeWorkspaceIdempotencyKeys(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeWorkspaceIdempotencyKeys)
+	return err
+}
+
 const redeemEnrollmentPacket = `-- name: RedeemEnrollmentPacket :one
 UPDATE enrollment_packets
 SET used_at = now()
@@ -2658,6 +2901,23 @@ func (q *Queries) SetSandboxStopping(ctx context.Context, id uuid.UUID) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const setSandboxWorkspace = `-- name: SetSandboxWorkspace :exec
+UPDATE sandboxes
+SET workspace_id = $2, workspace_mode = $3, updated_at = now()
+WHERE id = $1
+`
+
+type SetSandboxWorkspaceParams struct {
+	ID            uuid.UUID
+	WorkspaceID   *uuid.UUID
+	WorkspaceMode string
+}
+
+func (q *Queries) SetSandboxWorkspace(ctx context.Context, arg SetSandboxWorkspaceParams) error {
+	_, err := q.db.Exec(ctx, setSandboxWorkspace, arg.ID, arg.WorkspaceID, arg.WorkspaceMode)
+	return err
+}
+
 const setUserQuota = `-- name: SetUserQuota :one
 UPDATE users
 SET gpu_quota = $2, sandbox_quota = $3, updated_at = now()
@@ -2692,6 +2952,20 @@ func (q *Queries) SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (Use
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const setWorkspaceConditions = `-- name: SetWorkspaceConditions :exec
+UPDATE workspaces SET conditions = $2, updated_at = now() WHERE id = $1
+`
+
+type SetWorkspaceConditionsParams struct {
+	ID         uuid.UUID
+	Conditions json.RawMessage
+}
+
+func (q *Queries) SetWorkspaceConditions(ctx context.Context, arg SetWorkspaceConditionsParams) error {
+	_, err := q.db.Exec(ctx, setWorkspaceConditions, arg.ID, arg.Conditions)
+	return err
 }
 
 const setWorkspaceDeleting = `-- name: SetWorkspaceDeleting :execrows
@@ -2762,7 +3036,7 @@ UPDATE sandboxes
 SET desired_state = 'running', state = 'pending', cause = NULL,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state = 'stopped'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode
 `
 
 func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -2791,6 +3065,8 @@ func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, erro
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
 	)
 	return i, err
 }
@@ -2800,7 +3076,7 @@ UPDATE sandboxes
 SET desired_state = 'stopped', state = 'stopping',
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state IN ('pending', 'provisioning', 'ready')
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode
 `
 
 func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -2829,6 +3105,8 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
 	)
 	return i, err
 }
@@ -2852,6 +3130,15 @@ func (q *Queries) TouchPendingSandbox(ctx context.Context, arg TouchPendingSandb
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const touchSandboxActivity = `-- name: TouchSandboxActivity :exec
+UPDATE sandboxes SET last_activity_at = now() WHERE id = $1 AND state = 'ready'
+`
+
+func (q *Queries) TouchSandboxActivity(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, touchSandboxActivity, id)
+	return err
 }
 
 const touchToken = `-- name: TouchToken :exec
