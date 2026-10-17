@@ -1,6 +1,6 @@
 # Runtime 适配器与 Exec Supervisor
 
-本文锁定 Docker、Podman 和 Local Runtime 如何实现 ADR-0009 的五个操作，以及 Exec Supervisor 在 Node 上的记录格式和中继方式（ADR-0019）。厂商事实见 `docs/research/runtime-adapter-mechanics.md`。数字默认值以 #44 为准。
+本文锁定 Docker、Podman 和 Local Runtime 如何实现 ADR-0009 的五个操作，以及 Exec Supervisor 在 Node 上的记录格式和中继方式（ADR-0019）。厂商事实见 `docs/research/runtime-adapter-mechanics.md`。数字默认值以 `defaults.md` 为准。
 
 ## 1. 一个二进制，三种模式
 
@@ -34,14 +34,14 @@ Supervisor 和命令都以镜像默认的 USER 运行，平台不另选 uid。`/
 
 - **`seq` 就是这一帧在 `output` 里的字节偏移。** Agent 重启后直接 seek 到 `stored_seq` 接着读。
 - **UTF-8 切分由 Supervisor 负责。** 它按流暂存末尾不完整的字节；遇到非法字节就单独成一帧，Agent 发出这一帧时标 `encoding: base64`。Agent 只逐帧转发，所以 seq 跨 Agent 重启保持稳定。
-- 写到上限后，追加一条 `truncated` 帧，之后的输出丢弃。命令照常运行（ADR-0015）。
+- 写到 `log_cap`（按 `output` 的字节数算）后，追加一条 `truncated` 帧，之后的输出丢弃。命令照常运行（ADR-0015）。
 - PTY 的输出不写进 `output`，而是放在 Supervisor 内存中的环形缓冲里（ADR-0017）。
 
 ## 4. 启动与结束
 
 1. Agent 用 detached exec 启动 `supervisor run <exec_id>`，exec 的 Cmd 和 Env 里不带任何规格。
 2. Supervisor 执行原子的 `mkdir run/<exec_id>`。遇到 `EEXIST` 就立即退出，不跑命令。这样即使 StartExec 被重复下发，命令也不会跑两次。
-3. Supervisor 监听 `ctl.sock`，等待 Agent 发来第一条 `spec` 消息：`{argv, env, secret_env, cwd, timeout, grace, pty?, stdin?, pty_idle}`。规格不放进 exec 的 Env 或 argv，原因有三：Podman 会把 exec 的 Env 持久化到 libpod 状态库；Docker 的 argv 会出现在 inspect 结果和事件流里；`systemd-run -E` 传的环境变量，`systemctl show` 就能看到。走 socket 之后，三种 Runtime 都不会让 Secret 落到任何地方。如果等不到 spec，Supervisor 就写 `exit`，cause 为 `start_failed`。
+3. Supervisor 监听 `ctl.sock`，等待 Agent 发来第一条 `spec` 消息：`{argv, env, secret_env, cwd, timeout, grace, log_cap, pty?, stdin?, pty_idle}`。规格不放进 exec 的 Env 或 argv，原因有三：Podman 会把 exec 的 Env 持久化到 libpod 状态库；Docker 的 argv 会出现在 inspect 结果和事件流里；`systemd-run -E` 传的环境变量，`systemctl show` 就能看到。走 socket 之后，三种 Runtime 都不会让 Secret 落到任何地方。如果等不到 spec，Supervisor 就写 `exit`，cause 为 `start_failed`。
 4. fork 后用一条 CLOEXEC 管道判断 execve 是否成功。管道直接 EOF，说明 execve 成功，写 `started`；读到 errno，说明失败，写 `exit`，cause 为 `start_failed`。命令在新的进程组里运行，PTY 模式下用 `setsid` 并分配 pty。
 5. 一次性的 `stdin` 写完后关闭。PTY 模式下忽略它（api.md §4）。
 6. **主进程退出就算 Exec 结束。** Supervisor 先读完管道里已有的数据，再关掉读端，然后写 `exit`。后台子进程不杀，之后它们再写 stdout 会收到 EPIPE，并被重新挂到 PID 1 下，一直活到 Sandbox 停止。只有超时和取消才杀整个进程组。

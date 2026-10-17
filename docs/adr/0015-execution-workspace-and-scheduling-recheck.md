@@ -1,6 +1,6 @@
 # ADR-0015: Execution, Workspace and scheduling rechecked against Coder and Daytona
 
-- Status: accepted; Runtime death, PTY logging and Paused Node amended by ADR-0017
+- Status: accepted; Runtime death, PTY logging and Paused Node amended by ADR-0017; per-GPU share default amended by `docs/spec/defaults.md`
 - Date: 2026-10-17
 
 ## Context
@@ -31,7 +31,7 @@ Three kinds of gap did not survive the recheck: TTL leases that contradict our o
 - Quota is checked only at admission. Lowering a quota never cancels queued holds or running Sandboxes.
 - Every admission request has a deadline, defaulting to a deployment value; reaching it ends the request `admission_timeout` and releases its hold. `#34`'s "no implicit TTL on queueing" is withdrawn: a request bound to a paused or unreachable Node would otherwise wait and hold quota forever.
 - Every Sandbox has an Idle Stop: no running Exec and no live PTY or Data Plane connection for its idle period stops it. The default is 15 minutes, set per Sandbox at creation, and 0 disables it. Hard reservations without preemption make a forgotten GPU Sandbox block the queue indefinitely otherwise.
-- A GPU Node reserves a CPU and memory share per GPU (Node configuration, default an even split by card count); GPU-less Sandboxes use only the remainder, so they cannot strand idle GPUs.
+- A GPU Node reserves a CPU and memory share per GPU (Node configuration, default three quarters of what is left after a host reservation, split evenly by card count); GPU-less Sandboxes, Snapshot builds among them, use only the remainder, so they cannot strand idle GPUs.
 - Disk is admission accounting, not isolation, except under XFS project quotas (ADR-0009). A Node below its disk watermark accepts no new allocations.
 
 **Workspace.**

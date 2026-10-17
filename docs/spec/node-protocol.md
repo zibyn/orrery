@@ -33,7 +33,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 - `ProvisionWorkspace` · `DeleteWorkspace`
 - `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, presigned_url, mount}], sandbox_token}`
 - `StopSandbox{sandbox_id, generation}`
-- `StartExec{exec_id, sandbox_id, generation, argv, env, secret_env, cwd, timeout, stdin?, pty?}`
+- `StartExec{exec_id, sandbox_id, generation, argv, env, secret_env, cwd, timeout, log_cap, stdin?, pty?}`
 - `CancelExec{exec_id}`
 - `PublishWorkspace{workspace_id, path, upload_targets}`
 - `BuildSnapshot{…}`
