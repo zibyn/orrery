@@ -61,7 +61,13 @@ func TestPortTicket(t *testing.T) {
 	if _, ok := s.verifyPortTicket(payload + "x." + signature); ok {
 		t.Fatal("tampered payload verified")
 	}
-	if _, ok := s.verifyPortTicket(payload + "." + signature[:len(signature)-1] + "A"); ok {
+	// Flip the last character to a different one; replacing it with "A" is a
+	// no-op whenever the signature already ends in "A".
+	replacement := "A"
+	if strings.HasSuffix(signature, replacement) {
+		replacement = "B"
+	}
+	if _, ok := s.verifyPortTicket(payload + "." + signature[:len(signature)-1] + replacement); ok {
 		t.Fatal("tampered signature verified")
 	}
 	if _, ok := s.verifyPortTicket(payload); ok {

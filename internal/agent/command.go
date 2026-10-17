@@ -83,6 +83,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				memory:        cmd.Limits.GetMemory(),
 				workspaceID:   cmd.Workspace.GetWorkspaceId(),
 				workspaceMode: cmd.Workspace.GetMode(),
+				gpuUUIDs:      cmd.GpuUuids,
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, "create_failed", cause)

@@ -197,6 +197,9 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 		"Memory":    cmd.memory,
 		"PidsLimit": sandboxPidsLimit,
 	}
+	if requests := cdiDeviceRequest(cmd.gpuUUIDs); requests != nil {
+		hostConfig["DeviceRequests"] = requests
+	}
 	create := map[string]any{
 		"Image":      cmd.imageDigest,
 		"Entrypoint": []string{supervisorBin},
@@ -224,7 +227,7 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 		r.d.removeContainer(context.WithoutCancel(ctx), created.ID) //nolint:errcheck // best effort
 		return "runtime_create_failed", fmt.Errorf("probe: %w", err)
 	}
-	if !limitsMatch(result, nanoCPUs, cmd.memory) {
+	if !limitsMatch(result, nanoCPUs, cmd.memory, len(cmd.gpuUUIDs)) {
 		r.d.removeContainer(context.WithoutCancel(ctx), created.ID) //nolint:errcheck // best effort
 		return "runtime_create_failed", fmt.Errorf("probe readback does not match the request: %+v", result)
 	}
@@ -232,12 +235,13 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	return "", nil
 }
 
-func limitsMatch(r supervisor.Result, nanoCPUs, memory int64) bool {
+func limitsMatch(r supervisor.Result, nanoCPUs, memory int64, gpus int) bool {
 	// Docker expresses CPU as quota/period in microseconds with a fixed
 	// 100000 us period.
 	return r.CPUMax == fmt.Sprintf("%d 100000", nanoCPUs/10_000) &&
 		r.MemoryMax == strconv.FormatInt(memory, 10) &&
 		r.PidsMax == strconv.FormatInt(sandboxPidsLimit, 10) &&
+		numberedDeviceCount(r.NvidiaDevices) == gpus &&
 		r.WorkspaceWritable
 }
 
@@ -672,4 +676,5 @@ type createSandboxSpec struct {
 	memory        int64
 	workspaceID   string
 	workspaceMode string
+	gpuUUIDs      []string
 }

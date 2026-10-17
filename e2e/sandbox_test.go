@@ -102,6 +102,24 @@ func TestSandboxLifecycle(t *testing.T) {
 		t.Fatalf("filtered list = %+v", list.Items)
 	}
 
+	// has_gpu filters on the request, not on what the Node happens to offer.
+	if status, data = call(t, http.MethodGet,
+		"/api/v1/sandboxes?label=suite="+label+"&has_gpu=true", admin, nil); status != http.StatusOK {
+		t.Fatalf("list has_gpu=true: %d %s", status, data)
+	}
+	mustJSON(t, data, &list)
+	if len(list.Items) != 0 {
+		t.Fatalf("has_gpu=true returned %+v", list.Items)
+	}
+	if status, data = call(t, http.MethodGet,
+		"/api/v1/sandboxes?label=suite="+label+"&has_gpu=false", admin, nil); status != http.StatusOK {
+		t.Fatalf("list has_gpu=false: %d %s", status, data)
+	}
+	mustJSON(t, data, &list)
+	if len(list.Items) != 1 || list.Items[0].ID != created.ID {
+		t.Fatalf("has_gpu=false returned %+v", list.Items)
+	}
+
 	// Container limits are the request, read back from the cgroup (runtime.md
 	// §9: cpu.max is quota/period in microseconds).
 	assertLimit(t, created.ID, "/sys/fs/cgroup/cpu.max", "50000 100000")

@@ -187,7 +187,10 @@ message CreateSandbox {
   string image_digest = 4;
   Limits limits = 5;
   WorkspaceMount workspace = 6;
-  // GPU, Resource and Secret mounts arrive with later tickets.
+  // Whole cards, named by their platform UUID (ADR-0015). The Agent attaches
+  // them with CDI and fails a readback that does not show them (runtime.md §9).
+  repeated string gpu_uuids = 7;
+  // Resource and Secret mounts arrive with later tickets.
 }
 
 message Limits {

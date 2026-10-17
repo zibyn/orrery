@@ -321,12 +321,15 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		report = nodeproto.CapabilityReport{Runtime: "docker"}
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
+	// The inventory is a hardware fact; placement still requires the CDI
+	// capability above, so an old Docker's GPUs are visible but not usable.
+	gpus := enumerateGPUs(streamCtx)
 	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
-		Capabilities: capabilitiesMessage(report),
+		Capabilities: capabilitiesMessage(report, gpus),
 	}})
 	host := hostHardware()
 	heartbeat := func() *nodev1.AgentMessage {
-		return heartbeatMessage(health, host, opts)
+		return heartbeatMessage(health, host, opts, gpuHealth(streamCtx, gpus))
 	}
 	send(heartbeat())
 
@@ -401,7 +404,7 @@ func hostHardware() hardware {
 	return hardware{CPUCores: float64(runtime.NumCPU()), MemoryBytes: memory}
 }
 
-func heartbeatMessage(health string, host hardware, opts RunOptions) *nodev1.AgentMessage {
+func heartbeatMessage(health string, host hardware, opts RunOptions, gpuStates []*nodev1.GPUHealth) *nodev1.AgentMessage {
 	free, total := diskUsage("/")
 	return &nodev1.AgentMessage{Message: &nodev1.AgentMessage_Heartbeat{
 		Heartbeat: &nodev1.Heartbeat{
@@ -413,17 +416,21 @@ func heartbeatMessage(health string, host hardware, opts RunOptions) *nodev1.Age
 			MemoryBytes:    uint64(host.MemoryBytes),
 			ReservedCpu:    opts.ReserveCPU,
 			ReservedMemory: uint64(opts.ReserveMemory),
+			GpuHealth:      gpuStates,
 		},
 	}}
 }
 
-func capabilitiesMessage(snapshot nodeproto.CapabilityReport) *nodev1.Capabilities {
+func capabilitiesMessage(snapshot nodeproto.CapabilityReport, gpus []gpuInfo) *nodev1.Capabilities {
 	caps := &nodev1.Capabilities{Runtime: snapshot.Runtime}
 	for _, entry := range snapshot.Entries {
 		caps.Entries = append(caps.Entries, &nodev1.CapabilityEntry{
 			Name:  entry.Name,
 			Value: capabilityProto(entry.Value),
 		})
+	}
+	for _, gpu := range gpus {
+		caps.Gpus = append(caps.Gpus, &nodev1.GPU{Uuid: gpu.UUID, Model: gpu.Model})
 	}
 	return caps
 }

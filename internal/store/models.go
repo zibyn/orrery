@@ -111,6 +111,12 @@ type Gpu struct {
 	Model  string
 }
 
+type GpuAllocation struct {
+	GpuUuid   string
+	SandboxID uuid.UUID
+	CreatedAt pgtype.Timestamptz
+}
+
 type Node struct {
 	ID             uuid.UUID
 	Name           string
@@ -127,6 +133,8 @@ type Node struct {
 	CreatedAt      pgtype.Timestamptz
 	ReservedCpu    float64
 	ReservedMemory int64
+	CpuPerGpu      float64
+	MemoryPerGpu   int64
 }
 
 type Sandbox struct {
@@ -151,6 +159,7 @@ type Sandbox struct {
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
 	DeletedAt       pgtype.Timestamptz
+	GpuModel        *string
 }
 
 type User struct {

@@ -409,11 +409,28 @@ func (q *Queries) CreateExec(ctx context.Context, arg CreateExecParams) (Exec, e
 	return i, err
 }
 
+const createGPUAllocation = `-- name: CreateGPUAllocation :exec
+INSERT INTO gpu_allocations (gpu_uuid, sandbox_id) VALUES ($1, $2)
+`
+
+type CreateGPUAllocationParams struct {
+	GpuUuid   string
+	SandboxID uuid.UUID
+}
+
+// CreateGPUAllocation claims one card. The primary key is the exclusivity
+// guarantee; a conflicting insert must roll the admission back, not place a
+// Sandbox with fewer cards than it asked for.
+func (q *Queries) CreateGPUAllocation(ctx context.Context, arg CreateGPUAllocationParams) error {
+	_, err := q.db.Exec(ctx, createGPUAllocation, arg.GpuUuid, arg.SandboxID)
+	return err
+}
+
 const createNode = `-- name: CreateNode :one
 INSERT INTO nodes (
     id, name, token_hash, agent_version, proto_major, proto_minor, last_seen_at
 ) VALUES ($1, $2, $3, $4, $5, $6, now())
-RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory
+RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu
 `
 
 type CreateNodeParams struct {
@@ -451,6 +468,8 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 		&i.CreatedAt,
 		&i.ReservedCpu,
 		&i.ReservedMemory,
+		&i.CpuPerGpu,
+		&i.MemoryPerGpu,
 	)
 	return i, err
 }
@@ -459,9 +478,9 @@ const createSandbox = `-- name: CreateSandbox :one
 
 INSERT INTO sandboxes (
     id, owner_id, name, labels, desired_state, state, snapshot_digest,
-    cpu, memory, gpu_count, idle_stop_seconds, generation, idempotency_key
-) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, 1, $10)
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at
+    cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation, idempotency_key
+) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11)
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model
 `
 
 type CreateSandboxParams struct {
@@ -473,6 +492,7 @@ type CreateSandboxParams struct {
 	Cpu             float64
 	Memory          int64
 	GpuCount        int32
+	GpuModel        *string
 	IdleStopSeconds int32
 	IdempotencyKey  *string
 }
@@ -488,6 +508,7 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		arg.Cpu,
 		arg.Memory,
 		arg.GpuCount,
+		arg.GpuModel,
 		arg.IdleStopSeconds,
 		arg.IdempotencyKey,
 	)
@@ -514,6 +535,7 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.GpuModel,
 	)
 	return i, err
 }
@@ -683,6 +705,15 @@ func (q *Queries) DeleteAttachment(ctx context.Context, sandboxID uuid.UUID) err
 	return err
 }
 
+const deleteGPUAllocations = `-- name: DeleteGPUAllocations :exec
+DELETE FROM gpu_allocations WHERE sandbox_id = $1
+`
+
+func (q *Queries) DeleteGPUAllocations(ctx context.Context, sandboxID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteGPUAllocations, sandboxID)
+	return err
+}
+
 const deleteNodeGPUs = `-- name: DeleteNodeGPUs :exec
 DELETE FROM gpus WHERE node_id = $1
 `
@@ -697,7 +728,7 @@ UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model
 `
 
 func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -725,6 +756,7 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.GpuModel,
 	)
 	return i, err
 }
@@ -995,7 +1027,7 @@ func (q *Queries) GetExecWithNode(ctx context.Context, id uuid.UUID) (GetExecWit
 }
 
 const getNode = `-- name: GetNode :one
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory FROM nodes WHERE id = $1
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes WHERE id = $1
 `
 
 func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
@@ -1017,12 +1049,14 @@ func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
 		&i.CreatedAt,
 		&i.ReservedCpu,
 		&i.ReservedMemory,
+		&i.CpuPerGpu,
+		&i.MemoryPerGpu,
 	)
 	return i, err
 }
 
 const getNodeByName = `-- name: GetNodeByName :one
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory FROM nodes WHERE name = $1
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes WHERE name = $1
 `
 
 func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) {
@@ -1044,12 +1078,14 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 		&i.CreatedAt,
 		&i.ReservedCpu,
 		&i.ReservedMemory,
+		&i.CpuPerGpu,
+		&i.MemoryPerGpu,
 	)
 	return i, err
 }
 
 const getSandbox = `-- name: GetSandbox :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at FROM sandboxes WHERE id = $1 AND state <> 'deleted'
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes WHERE id = $1 AND state <> 'deleted'
 `
 
 func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -1077,12 +1113,13 @@ func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.GpuModel,
 	)
 	return i, err
 }
 
 const getSandboxByIdempotencyKey = `-- name: GetSandboxByIdempotencyKey :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes
 WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted'
 `
 
@@ -1116,12 +1153,13 @@ func (q *Queries) GetSandboxByIdempotencyKey(ctx context.Context, arg GetSandbox
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.GpuModel,
 	)
 	return i, err
 }
 
 const getSandboxIncludingDeleted = `-- name: GetSandboxIncludingDeleted :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at FROM sandboxes WHERE id = $1
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes WHERE id = $1
 `
 
 func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -1149,6 +1187,7 @@ func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.GpuModel,
 	)
 	return i, err
 }
@@ -1491,7 +1530,7 @@ func (q *Queries) ListActiveExecs(ctx context.Context) ([]ListActiveExecsRow, er
 }
 
 const listAllNodes = `-- name: ListAllNodes :many
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory FROM nodes ORDER BY id
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes ORDER BY id
 `
 
 func (q *Queries) ListAllNodes(ctx context.Context) ([]Node, error) {
@@ -1519,6 +1558,8 @@ func (q *Queries) ListAllNodes(ctx context.Context) ([]Node, error) {
 			&i.CreatedAt,
 			&i.ReservedCpu,
 			&i.ReservedMemory,
+			&i.CpuPerGpu,
+			&i.MemoryPerGpu,
 		); err != nil {
 			return nil, err
 		}
@@ -1741,6 +1782,74 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 	return items, nil
 }
 
+const listNodeFreeGPUs = `-- name: ListNodeFreeGPUs :many
+SELECT g.uuid, g.node_id, g.model FROM gpus g
+LEFT JOIN gpu_allocations ga ON ga.gpu_uuid = g.uuid
+WHERE g.node_id = $1 AND ga.gpu_uuid IS NULL
+ORDER BY g.uuid
+`
+
+// ListNodeFreeGPUs is the admission sweep's device list, in a stable order so
+// placements are reproducible.
+func (q *Queries) ListNodeFreeGPUs(ctx context.Context, nodeID uuid.UUID) ([]Gpu, error) {
+	rows, err := q.db.Query(ctx, listNodeFreeGPUs, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Gpu{}
+	for rows.Next() {
+		var i Gpu
+		if err := rows.Scan(&i.Uuid, &i.NodeID, &i.Model); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodeGPUUsage = `-- name: ListNodeGPUUsage :many
+SELECT g.model,
+       count(*)::bigint AS total,
+       count(ga.gpu_uuid)::bigint AS allocated
+FROM gpus g
+LEFT JOIN gpu_allocations ga ON ga.gpu_uuid = g.uuid
+WHERE g.node_id = $1
+GROUP BY g.model
+ORDER BY g.model
+`
+
+type ListNodeGPUUsageRow struct {
+	Model     string
+	Total     int64
+	Allocated int64
+}
+
+// ListNodeGPUUsage is the capacity view: per model, how many cards the Node
+// reports and how many carry an Allocation (api.md §3).
+func (q *Queries) ListNodeGPUUsage(ctx context.Context, nodeID uuid.UUID) ([]ListNodeGPUUsageRow, error) {
+	rows, err := q.db.Query(ctx, listNodeGPUUsage, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodeGPUUsageRow{}
+	for rows.Next() {
+		var i ListNodeGPUUsageRow
+		if err := rows.Scan(&i.Model, &i.Total, &i.Allocated); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNodeGPUs = `-- name: ListNodeGPUs :many
 SELECT uuid, node_id, model FROM gpus WHERE node_id = $1 ORDER BY uuid
 `
@@ -1766,7 +1875,7 @@ func (q *Queries) ListNodeGPUs(ctx context.Context, nodeID uuid.UUID) ([]Gpu, er
 }
 
 const listNodes = `-- name: ListNodes :many
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory FROM nodes
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes
 WHERE ($1::uuid IS NULL OR id > $1)
 ORDER BY id
 LIMIT $2
@@ -1802,6 +1911,8 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 			&i.CreatedAt,
 			&i.ReservedCpu,
 			&i.ReservedMemory,
+			&i.CpuPerGpu,
+			&i.MemoryPerGpu,
 		); err != nil {
 			return nil, err
 		}
@@ -1814,7 +1925,7 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 }
 
 const listOpenAdmissionRequests = `-- name: ListOpenAdmissionRequests :many
-SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_hash, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at
+SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_hash, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model
 FROM admission_requests a
 JOIN sandboxes s ON s.id = a.sandbox_id
 WHERE a.ended_at IS NULL
@@ -1866,6 +1977,7 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 			&i.Sandbox.CreatedAt,
 			&i.Sandbox.UpdatedAt,
 			&i.Sandbox.DeletedAt,
+			&i.Sandbox.GpuModel,
 		); err != nil {
 			return nil, err
 		}
@@ -1879,7 +1991,7 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 
 const listReconcilableSandboxes = `-- name: ListReconcilableSandboxes :many
 
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes
 WHERE state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
 ORDER BY id
 `
@@ -1917,6 +2029,7 @@ func (q *Queries) ListReconcilableSandboxes(ctx context.Context) ([]Sandbox, err
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.GpuModel,
 		); err != nil {
 			return nil, err
 		}
@@ -1928,24 +2041,50 @@ func (q *Queries) ListReconcilableSandboxes(ctx context.Context) ([]Sandbox, err
 	return items, nil
 }
 
+const listSandboxGPUs = `-- name: ListSandboxGPUs :many
+SELECT gpu_uuid FROM gpu_allocations WHERE sandbox_id = $1 ORDER BY gpu_uuid
+`
+
+func (q *Queries) ListSandboxGPUs(ctx context.Context, sandboxID uuid.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSandboxGPUs, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var gpu_uuid string
+		if err := rows.Scan(&gpu_uuid); err != nil {
+			return nil, err
+		}
+		items = append(items, gpu_uuid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSandboxes = `-- name: ListSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model FROM sandboxes
 WHERE owner_id = $1
   AND state <> 'deleted'
   AND ($2::text IS NULL OR state = $2)
   AND ($3::uuid IS NULL OR node_id = $3)
-  AND ($4::text IS NULL
-       OR (jsonb_exists(labels, $4::text)
-           AND labels ->> $4::text = $5::text))
-  AND ($6::uuid IS NULL OR id > $6)
+  AND ($4::boolean IS NULL OR (gpu_count > 0) = $4)
+  AND ($5::text IS NULL
+       OR (jsonb_exists(labels, $5::text)
+           AND labels ->> $5::text = $6::text))
+  AND ($7::uuid IS NULL OR id > $7)
 ORDER BY id
-LIMIT $7
+LIMIT $8
 `
 
 type ListSandboxesParams struct {
 	OwnerID    uuid.UUID
 	State      *string
 	NodeID     *uuid.UUID
+	HasGpu     *bool
 	LabelKey   *string
 	LabelValue *string
 	After      *uuid.UUID
@@ -1957,6 +2096,7 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 		arg.OwnerID,
 		arg.State,
 		arg.NodeID,
+		arg.HasGpu,
 		arg.LabelKey,
 		arg.LabelValue,
 		arg.After,
@@ -1991,6 +2131,7 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.GpuModel,
 		); err != nil {
 			return nil, err
 		}
@@ -2260,31 +2401,15 @@ func (q *Queries) MarkWorkspaceReady(ctx context.Context, arg MarkWorkspaceReady
 	return result.RowsAffected(), nil
 }
 
-const nodeAllocated = `-- name: NodeAllocated :one
-SELECT COALESCE(SUM(cpu), 0)::double precision AS cpu,
-       COALESCE(SUM(memory), 0)::bigint AS memory
-FROM allocations WHERE node_id = $1
-`
-
-type NodeAllocatedRow struct {
-	Cpu    float64
-	Memory int64
-}
-
-func (q *Queries) NodeAllocated(ctx context.Context, nodeID uuid.UUID) (NodeAllocatedRow, error) {
-	row := q.db.QueryRow(ctx, nodeAllocated, nodeID)
-	var i NodeAllocatedRow
-	err := row.Scan(&i.Cpu, &i.Memory)
-	return i, err
-}
-
 const nodeHeartbeat = `-- name: NodeHeartbeat :exec
 UPDATE nodes
 SET last_seen_at = now(),
     runtime_health = $2,
     hardware = $3,
     reserved_cpu = $4,
-    reserved_memory = $5
+    reserved_memory = $5,
+    cpu_per_gpu = $6,
+    memory_per_gpu = $7
 WHERE id = $1
 `
 
@@ -2294,6 +2419,8 @@ type NodeHeartbeatParams struct {
 	Hardware       json.RawMessage
 	ReservedCpu    float64
 	ReservedMemory int64
+	CpuPerGpu      float64
+	MemoryPerGpu   int64
 }
 
 func (q *Queries) NodeHeartbeat(ctx context.Context, arg NodeHeartbeatParams) error {
@@ -2303,6 +2430,8 @@ func (q *Queries) NodeHeartbeat(ctx context.Context, arg NodeHeartbeatParams) er
 		arg.Hardware,
 		arg.ReservedCpu,
 		arg.ReservedMemory,
+		arg.CpuPerGpu,
+		arg.MemoryPerGpu,
 	)
 	return err
 }
@@ -2331,6 +2460,42 @@ func (q *Queries) NodeHello(ctx context.Context, arg NodeHelloParams) error {
 		arg.ProtoMinor,
 	)
 	return err
+}
+
+const nodePlacement = `-- name: NodePlacement :one
+SELECT
+    COALESCE(SUM(a.cpu), 0)::double precision AS used_cpu,
+    COALESCE(SUM(a.memory), 0)::bigint AS used_memory,
+    COALESCE(SUM(a.cpu) FILTER (WHERE s.gpu_count = 0), 0)::double precision AS used_cpu_no_gpu,
+    COALESCE(SUM(a.memory) FILTER (WHERE s.gpu_count = 0), 0)::bigint AS used_memory_no_gpu,
+    (SELECT count(*)::bigint FROM gpus g WHERE g.node_id = $1) AS gpu_total
+FROM allocations a
+JOIN sandboxes s ON s.id = a.sandbox_id
+WHERE a.node_id = $1
+`
+
+type NodePlacementRow struct {
+	UsedCpu         float64
+	UsedMemory      int64
+	UsedCpuNoGpu    float64
+	UsedMemoryNoGpu int64
+	GpuTotal        int64
+}
+
+// NodePlacement is everything admission needs from one Node in a single round
+// trip: total usage, the GPU-less usage that shares the remainder, and the
+// reported card count that sizes the per-GPU share (ADR-0015).
+func (q *Queries) NodePlacement(ctx context.Context, nodeID uuid.UUID) (NodePlacementRow, error) {
+	row := q.db.QueryRow(ctx, nodePlacement, nodeID)
+	var i NodePlacementRow
+	err := row.Scan(
+		&i.UsedCpu,
+		&i.UsedMemory,
+		&i.UsedCpuNoGpu,
+		&i.UsedMemoryNoGpu,
+		&i.GpuTotal,
+	)
+	return i, err
 }
 
 const purgeEnrollmentPackets = `-- name: PurgeEnrollmentPackets :exec
@@ -2597,7 +2762,7 @@ UPDATE sandboxes
 SET desired_state = 'running', state = 'pending', cause = NULL,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state = 'stopped'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model
 `
 
 func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -2625,6 +2790,7 @@ func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, erro
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.GpuModel,
 	)
 	return i, err
 }
@@ -2634,7 +2800,7 @@ UPDATE sandboxes
 SET desired_state = 'stopped', state = 'stopping',
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state IN ('pending', 'provisioning', 'ready')
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model
 `
 
 func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -2662,6 +2828,7 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.GpuModel,
 	)
 	return i, err
 }

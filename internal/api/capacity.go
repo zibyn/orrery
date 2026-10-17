@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"sort"
 	"time"
 )
 
@@ -36,28 +35,19 @@ func (s *Server) handleGetCapacity(w http.ResponseWriter, r *http.Request, p *pr
 	now := time.Now()
 	out := capacityList{Items: make([]capacityNode, 0, len(nodes))}
 	for _, node := range nodes {
-		gpus, err := s.q.ListNodeGPUs(ctx, node.ID)
+		usage, err := s.q.ListNodeGPUUsage(ctx, node.ID)
 		if err != nil {
 			s.internal(w, "read node GPUs", err)
 			return
 		}
-		counts := map[string]int{}
-		for _, gpu := range gpus {
-			counts[gpu.Model]++
-		}
-		models := make([]string, 0, len(counts))
-		for model := range counts {
-			models = append(models, model)
-		}
-		sort.Strings(models)
 		entry := capacityNode{
 			NodeID: node.ID.String(), Name: node.Name,
-			Status: deriveNodeStatus(node, now), GPUs: make([]capacityGPU, 0, len(models)),
+			Status: deriveNodeStatus(node, now), GPUs: make([]capacityGPU, 0, len(usage)),
 		}
-		for _, model := range models {
-			// ponytail: GPUs are not allocated until the GPU ticket; quota is
-			// enforced now, device allocation is not.
-			entry.GPUs = append(entry.GPUs, capacityGPU{Model: model, Total: counts[model], Allocated: 0})
+		for _, row := range usage {
+			entry.GPUs = append(entry.GPUs, capacityGPU{
+				Model: row.Model, Total: int(row.Total), Allocated: int(row.Allocated),
+			})
 		}
 		out.Items = append(out.Items, entry)
 	}

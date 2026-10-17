@@ -31,21 +31,28 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 		PidsMax:           "64",
 		PIDNamespace:      "pid:[different]",
 		MountNamespace:    "mnt:[different]",
+		NvidiaDevices:     []string{"/dev/nvidia0", "/dev/nvidiactl"},
 		WorkspaceWritable: true,
-	}, true)
+	}, true, true)
 	values := map[string]string{}
 	for _, entry := range caps.Entries {
 		values[entry.Name] = entry.Value
 	}
-	for _, name := range []string{"process_mount_namespace", "cpu_memory_pid_limits", "workspace_rw_mount", "exec_supervisor"} {
+	for _, name := range []string{
+		"process_mount_namespace", "cpu_memory_pid_limits", "workspace_rw_mount",
+		"exec_supervisor", "gpu_device_visibility",
+	} {
 		if values[name] != nodeproto.ValueEnforced {
 			t.Errorf("%s = %q, want enforced", name, values[name])
 		}
 	}
+	if values["gpu_memory_limit"] != nodeproto.ValueUnsupported {
+		t.Errorf("gpu_memory_limit = %q, want unsupported", values["gpu_memory_limit"])
+	}
 
-	// A daemon that refused the limits must not claim them, and the GPU
-	// capabilities stay unsupported until their own ticket.
-	weak := capabilities(supervisor.Result{WorkspaceWritable: false}, false)
+	// A daemon that refused the limits must not claim them, and a probe that
+	// could not see the requested cards must not claim GPU visibility.
+	weak := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false)
 	for _, entry := range weak.Entries {
 		if entry.Name == "exec_supervisor" {
 			continue // the probe ran, so the Supervisor works
@@ -53,6 +60,16 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 		if entry.Value != nodeproto.ValueUnsupported {
 			t.Errorf("%s = %q, want unsupported", entry.Name, entry.Value)
 		}
+	}
+}
+
+func TestNumberedDeviceCount(t *testing.T) {
+	devices := []string{
+		"/dev/nvidia0", "/dev/nvidia1", "/dev/nvidiactl",
+		"/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-caps-imex-channels",
+	}
+	if got := numberedDeviceCount(devices); got != 2 {
+		t.Fatalf("numberedDeviceCount = %d, want 2", got)
 	}
 }
 

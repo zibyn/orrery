@@ -203,7 +203,9 @@ SET last_seen_at = now(),
     runtime_health = $2,
     hardware = $3,
     reserved_cpu = $4,
-    reserved_memory = $5
+    reserved_memory = $5,
+    cpu_per_gpu = $6,
+    memory_per_gpu = $7
 WHERE id = $1;
 
 -- name: SetNodeCapabilities :exec
@@ -219,6 +221,26 @@ ON CONFLICT (uuid) DO UPDATE SET node_id = EXCLUDED.node_id, model = EXCLUDED.mo
 -- name: ListNodeGPUs :many
 SELECT * FROM gpus WHERE node_id = $1 ORDER BY uuid;
 
+-- ListNodeGPUUsage is the capacity view: per model, how many cards the Node
+-- reports and how many carry an Allocation (api.md §3).
+-- name: ListNodeGPUUsage :many
+SELECT g.model,
+       count(*)::bigint AS total,
+       count(ga.gpu_uuid)::bigint AS allocated
+FROM gpus g
+LEFT JOIN gpu_allocations ga ON ga.gpu_uuid = g.uuid
+WHERE g.node_id = $1
+GROUP BY g.model
+ORDER BY g.model;
+
+-- ListNodeFreeGPUs is the admission sweep's device list, in a stable order so
+-- placements are reproducible.
+-- name: ListNodeFreeGPUs :many
+SELECT g.* FROM gpus g
+LEFT JOIN gpu_allocations ga ON ga.gpu_uuid = g.uuid
+WHERE g.node_id = $1 AND ga.gpu_uuid IS NULL
+ORDER BY g.uuid;
+
 -- name: PurgeEnrollmentPackets :exec
 DELETE FROM enrollment_packets
 WHERE used_at IS NOT NULL OR expires_at < now();
@@ -228,8 +250,8 @@ WHERE used_at IS NOT NULL OR expires_at < now();
 -- name: CreateSandbox :one
 INSERT INTO sandboxes (
     id, owner_id, name, labels, desired_state, state, snapshot_digest,
-    cpu, memory, gpu_count, idle_stop_seconds, generation, idempotency_key
-) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, 1, $10)
+    cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation, idempotency_key
+) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11)
 RETURNING *;
 
 -- name: GetSandbox :one
@@ -248,6 +270,7 @@ WHERE owner_id = sqlc.arg('owner_id')
   AND state <> 'deleted'
   AND (sqlc.narg('state')::text IS NULL OR state = sqlc.narg('state'))
   AND (sqlc.narg('node_id')::uuid IS NULL OR node_id = sqlc.narg('node_id'))
+  AND (sqlc.narg('has_gpu')::boolean IS NULL OR (gpu_count > 0) = sqlc.narg('has_gpu'))
   AND (sqlc.narg('label_key')::text IS NULL
        OR (jsonb_exists(labels, sqlc.narg('label_key')::text)
            AND labels ->> sqlc.narg('label_key')::text = sqlc.narg('label_value')::text))
@@ -451,10 +474,31 @@ ON CONFLICT (sandbox_id) DO NOTHING;
 -- name: DeleteAllocation :exec
 DELETE FROM allocations WHERE sandbox_id = $1;
 
--- name: NodeAllocated :one
-SELECT COALESCE(SUM(cpu), 0)::double precision AS cpu,
-       COALESCE(SUM(memory), 0)::bigint AS memory
-FROM allocations WHERE node_id = $1;
+-- name: DeleteGPUAllocations :exec
+DELETE FROM gpu_allocations WHERE sandbox_id = $1;
+
+-- NodePlacement is everything admission needs from one Node in a single round
+-- trip: total usage, the GPU-less usage that shares the remainder, and the
+-- reported card count that sizes the per-GPU share (ADR-0015).
+-- name: NodePlacement :one
+SELECT
+    COALESCE(SUM(a.cpu), 0)::double precision AS used_cpu,
+    COALESCE(SUM(a.memory), 0)::bigint AS used_memory,
+    COALESCE(SUM(a.cpu) FILTER (WHERE s.gpu_count = 0), 0)::double precision AS used_cpu_no_gpu,
+    COALESCE(SUM(a.memory) FILTER (WHERE s.gpu_count = 0), 0)::bigint AS used_memory_no_gpu,
+    (SELECT count(*)::bigint FROM gpus g WHERE g.node_id = $1) AS gpu_total
+FROM allocations a
+JOIN sandboxes s ON s.id = a.sandbox_id
+WHERE a.node_id = $1;
+
+-- CreateGPUAllocation claims one card. The primary key is the exclusivity
+-- guarantee; a conflicting insert must roll the admission back, not place a
+-- Sandbox with fewer cards than it asked for.
+-- name: CreateGPUAllocation :exec
+INSERT INTO gpu_allocations (gpu_uuid, sandbox_id) VALUES ($1, $2);
+
+-- name: ListSandboxGPUs :many
+SELECT gpu_uuid FROM gpu_allocations WHERE sandbox_id = $1 ORDER BY gpu_uuid;
 
 -- name: ListAllNodes :many
 SELECT * FROM nodes ORDER BY id;

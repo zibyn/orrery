@@ -244,17 +244,44 @@ func (n *nodeService) recordHeartbeat(ctx context.Context, id uuid.UUID, heartbe
 	if err != nil {
 		return err
 	}
+	// A failed inventory read must not cost the Node its heartbeat: the share
+	// would be zero only until the next one.
+	cards := 0
+	if gpus, err := n.s.q.ListNodeGPUs(ctx, id); err == nil {
+		cards = len(gpus)
+	}
+	cpuPerGPU, memoryPerGPU := perGPUShare(heartbeat, cards)
 	err = n.s.q.NodeHeartbeat(ctx, store.NodeHeartbeatParams{
 		ID:             id,
 		RuntimeHealth:  health,
 		Hardware:       hardware,
 		ReservedCpu:    heartbeat.ReservedCpu,
 		ReservedMemory: int64(heartbeat.ReservedMemory),
+		CpuPerGpu:      cpuPerGPU,
+		MemoryPerGpu:   memoryPerGPU,
 	})
 	if err != nil {
 		n.s.log.Error("record heartbeat", "node_id", id, "error", err)
 	}
 	return err
+}
+
+// perGPUShare splits three quarters of the allocatable CPU and memory evenly
+// across the Node's cards (defaults.md, ADR-0015). The remaining quarter is
+// what GPU-less Sandboxes may use.
+func perGPUShare(heartbeat *nodev1.Heartbeat, cards int) (cpu float64, memory int64) {
+	if cards <= 0 {
+		return 0, 0
+	}
+	allocCPU := heartbeat.CpuCores - heartbeat.ReservedCpu
+	allocMemory := float64(heartbeat.MemoryBytes) - float64(heartbeat.ReservedMemory)
+	if allocCPU < 0 {
+		allocCPU = 0
+	}
+	if allocMemory < 0 {
+		allocMemory = 0
+	}
+	return allocCPU * 0.75 / float64(cards), int64(allocMemory * 0.75 / float64(cards))
 }
 
 func (n *nodeService) recordCapabilities(ctx context.Context, id uuid.UUID, caps *nodev1.Capabilities) error {
@@ -437,7 +464,7 @@ func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, gener
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := n.s.q.WithTx(tx)
-	if err := q.DeleteAllocation(ctx, id); err != nil {
+	if err := q.ReleaseCompute(ctx, id); err != nil {
 		n.s.log.Warn("release allocation", "sandbox_id", id, "error", err)
 		return
 	}
@@ -593,7 +620,7 @@ func (n *nodeService) ExecOutput(stream nodev1.Node_ExecOutputServer) error {
 }
 
 func (n *nodeService) releaseCompute(ctx context.Context, id uuid.UUID) {
-	if err := n.s.q.DeleteAllocation(ctx, id); err != nil {
+	if err := n.s.q.ReleaseCompute(ctx, id); err != nil {
 		n.s.log.Warn("release allocation", "sandbox_id", id, "error", err)
 	}
 	if err := n.s.q.DeleteAttachment(ctx, id); err != nil {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
 	"github.com/zibyn/stars-sandbox/internal/nodeproto"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
@@ -71,4 +72,29 @@ func TestDeriveNodeStatus(t *testing.T) {
 func mutate(node store.Node, change func(*store.Node)) store.Node {
 	change(&node)
 	return node
+}
+
+// The per-GPU share is three quarters of the allocatable amount, split evenly
+// across the cards (defaults.md, ADR-0015).
+func TestPerGPUShare(t *testing.T) {
+	heartbeat := &nodev1.Heartbeat{
+		CpuCores: 16, ReservedCpu: 1,
+		MemoryBytes: 34 << 30, ReservedMemory: 2 << 30,
+	}
+	cpu, memory := perGPUShare(heartbeat, 4)
+	if cpu != 15.0*0.75/4 {
+		t.Fatalf("cpu per GPU = %v, want %v", cpu, 15.0*0.75/4)
+	}
+	if want := int64(32 << 30 * 0.75 / 4); memory != want {
+		t.Fatalf("memory per GPU = %d, want %d", memory, want)
+	}
+
+	if cpu, memory := perGPUShare(heartbeat, 0); cpu != 0 || memory != 0 {
+		t.Fatalf("a Node without cards has a share: %v, %d", cpu, memory)
+	}
+	// A reservation larger than the host must not produce a negative share.
+	over := &nodev1.Heartbeat{CpuCores: 1, ReservedCpu: 2, MemoryBytes: 1 << 30, ReservedMemory: 2 << 30}
+	if cpu, memory := perGPUShare(over, 2); cpu != 0 || memory != 0 {
+		t.Fatalf("an over-reserved Node has a share: %v, %d", cpu, memory)
+	}
 }

@@ -94,7 +94,7 @@ func (s *Server) routes() []route {
 		{http.MethodGet, "/nodes/{id}", "admin", "getNode", "Get a Node", "", "Node", nil, http.StatusOK, s.handleGetNode},
 		{http.MethodGet, "/capacity", "user", "getCapacity", "Get Node capacity", "", "CapacityList", nil, http.StatusOK, s.handleGetCapacity},
 		{http.MethodPost, "/sandboxes", "user", "createSandbox", "Create a Sandbox", "CreateSandboxRequest", "Sandbox", nil, http.StatusCreated, s.handleCreateSandbox},
-		{http.MethodGet, "/sandboxes", "user", "listSandboxes", "List Sandboxes", "", "SandboxList", []string{"state", "label", "node", "limit", "cursor"}, http.StatusOK, s.handleListSandboxes},
+		{http.MethodGet, "/sandboxes", "user", "listSandboxes", "List Sandboxes", "", "SandboxList", []string{"state", "label", "node", "has_gpu", "limit", "cursor"}, http.StatusOK, s.handleListSandboxes},
 		{http.MethodGet, "/sandboxes/{id}", "user", "getSandbox", "Get a Sandbox", "", "Sandbox", []string{"wait_for"}, http.StatusOK, s.handleGetSandbox},
 		{http.MethodDelete, "/sandboxes/{id}", "user", "deleteSandbox", "Delete a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleDeleteSandbox},
 		{http.MethodPost, "/sandboxes/{id}/start", "user", "startSandbox", "Start a Sandbox", "", "Sandbox", nil, http.StatusAccepted, s.handleStartSandbox},

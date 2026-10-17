@@ -432,9 +432,12 @@ func schemas() map[string]any {
 				"cpu":      map[string]any{"type": "number"},
 				"memory":   map[string]any{"type": "integer"},
 				"gpu": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{"count": map[string]any{"type": "integer"}},
-					"required":   []string{"count"},
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{"type": "integer"},
+						"model": map[string]any{"type": "string"},
+					},
+					"required": []string{"count"},
 				},
 				"idle_stop":      map[string]any{"type": "integer"},
 				"workspace":      schemaRef("SandboxWorkspace"),

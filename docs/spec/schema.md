@@ -22,12 +22,12 @@ PostgreSQL 是权威状态。本文列出表、关键列和约束；迁移 SQL �
 | `nodes` | `id`, `name`, `token_hash`, `paused`, `lost_at`, `agent_version`, `proto_major`, `proto_minor`, `last_seen_at`, `runtime_health`, `capabilities`, `hardware`, `reserved_cpu`, `reserved_memory`, `cpu_per_gpu`, `memory_per_gpu`, `disk_watermark` | Unreachable 在读取时由 `last_seen_at` 派生，不落库 |
 | `gpus` | `uuid` PK, `node_id`, `model` | |
 | `workspaces` | `id`, `owner_id`, `kind`, `node_id`, `state`, `cause`, `storage_handle`, `conditions`, `deleted_at` | 临时 Workspace 带 `sandbox_id`，删除时随它一起删 |
-| `sandboxes` | `id`, `owner_id`, `name`, `labels`, `desired_state`, `state`, `cause`, `node_id`, `snapshot_digest`, `cpu`, `memory`, `gpu_count`, `idle_stop_seconds`, `last_activity_at`, `token_hash`, `secret_env_ct`, `generation`, `deleted_at` | 未删除行按 (`owner_id`, `name`) 唯一；`secret_env_ct` 是 start 时拷贝的 Secret 密文（见下） |
+| `sandboxes` | `id`, `owner_id`, `name`, `labels`, `desired_state`, `state`, `cause`, `node_id`, `snapshot_digest`, `cpu`, `memory`, `gpu_count`, `gpu_model`, `idle_stop_seconds`, `last_activity_at`, `token_hash`, `secret_env_ct`, `generation`, `deleted_at` | 未删除行按 (`owner_id`, `name`) 唯一；`secret_env_ct` 是 start 时拷贝的 Secret 密文（见下）；`gpu_model` 是创建时请求的型号，重启后仍作为准入约束 |
 | `attachments` | `sandbox_id` PK, `workspace_id`, `mode`, `generation` | 部分唯一索引 (`workspace_id`) `WHERE mode = 'rw'`，即单写者规则；Sandbox 停止或删除时删掉这一行，就是释放挂载 |
 | `sandbox_resources` | `sandbox_id`, `resource_version_id`, `mount` | 引用即保留 |
 | `admission_requests` | `id`, `sandbox_id`, `priority`, `enqueued_at`, `deadline_at`, `ended_at`, `outcome` | FIFO 按 (`priority`, `enqueued_at`) 排序 |
 | `allocations` | `sandbox_id` PK, `node_id`, `cpu`, `memory`, `disk`, `generation` | |
-| `gpu_allocations` | `gpu_uuid` PK, `sandbox_id` | 主键本身保证整卡独占 |
+| `gpu_allocations` | `gpu_uuid` PK, `sandbox_id`, `created_at` | 主键本身保证整卡独占；随 `allocations` 一起释放 |
 | `execs` | `id`, `sandbox_id`, `argv`, `env`, `cwd`, `pty`, `timeout_seconds`, `accepted_at`, `started_at`, `cancel_requested_at`, `deadline_at`, `finished_at`, `cause`, `exit_code`, `signal`, `log_truncated`, `stored_seq`, `state` generated | `env` 里不放 Secret |
 | `exec_log_chunks` | `exec_id`, `first_seq`, `last_seq`, `frames` | PK (`exec_id`, `first_seq`) |
 | `secrets` | `id`, `owner_id`, `name`, `ciphertext`, `key_id`, `size` | (`owner_id`, `name`) 唯一；每个 User 最多 50 个 |

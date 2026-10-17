@@ -287,6 +287,11 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 	if sb.NodeID == nil {
 		return
 	}
+	gpus, err := r.s.q.ListSandboxGPUs(ctx, sb.ID)
+	if err != nil {
+		r.s.log.Warn("reconcile: list sandbox GPUs", "sandbox_id", sb.ID, "error", err)
+		return
+	}
 	id := sandboxCommandId("create-sandbox", sb)
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{
 		CreateSandbox: &nodev1.CreateSandbox{
@@ -296,6 +301,7 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 			ImageDigest: sb.SnapshotDigest,
 			Limits:      &nodev1.Limits{Cpu: sb.Cpu, Memory: sb.Memory},
 			Workspace:   &nodev1.WorkspaceMount{WorkspaceId: att.WorkspaceID.String(), Mode: att.Mode},
+			GpuUuids:    gpus,
 		},
 	}})
 }
@@ -336,7 +342,7 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 		r.s.log.Warn("reconcile: mark stopped", "sandbox_id", sandboxID, "error", err)
 		return
 	}
-	if err := q.DeleteAllocation(ctx, sandboxID); err != nil {
+	if err := q.ReleaseCompute(ctx, sandboxID); err != nil {
 		r.s.log.Warn("reconcile: delete allocation", "sandbox_id", sandboxID, "error", err)
 		return
 	}
@@ -440,7 +446,7 @@ func (r *reconciler) fail(ctx context.Context, sb store.Sandbox, cause string) {
 		return
 	}
 	if rows > 0 {
-		if err := q.DeleteAllocation(ctx, sb.ID); err != nil {
+		if err := q.ReleaseCompute(ctx, sb.ID); err != nil {
 			r.s.log.Warn("reconcile: release allocation", "sandbox_id", sb.ID, "error", err)
 			return
 		}

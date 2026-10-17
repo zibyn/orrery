@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +49,8 @@ type sandboxWorkspaceDTO struct {
 }
 
 type sandboxGPUDTO struct {
-	Count int32 `json:"count"`
+	Count int32   `json:"count"`
+	Model *string `json:"model,omitempty"`
 }
 
 type sandboxDTO struct {
@@ -118,12 +120,20 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		idleStop = *req.IdleStop
 	}
 	gpuCount := int32(0)
+	var gpuModel *string
 	if req.GPU != nil {
 		if req.GPU.Count < 0 {
 			writeProblem(w, "invalid_request", "gpu.count must be zero or a positive number")
 			return
 		}
 		gpuCount = req.GPU.Count
+		if req.GPU.Count > 0 && req.GPU.Model != nil && *req.GPU.Model != "" {
+			if !validDisplayName(*req.GPU.Model) {
+				writeProblem(w, "invalid_request", "gpu.model must be at most 255 characters")
+				return
+			}
+			gpuModel = req.GPU.Model
+		}
 	}
 	snapshot := s.cfg.SnapshotDigest
 	if req.Snapshot != nil && *req.Snapshot != "" {
@@ -181,7 +191,8 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	sandbox, err := q.CreateSandbox(ctx, store.CreateSandboxParams{
 		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels,
 		SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
-		GpuCount: gpuCount, IdleStopSeconds: idleStop, IdempotencyKey: key,
+		GpuCount: gpuCount, GpuModel: gpuModel,
+		IdleStopSeconds: idleStop, IdempotencyKey: key,
 	})
 	if err != nil {
 		if index := uniqueViolation(err); index != "" {
@@ -303,6 +314,14 @@ func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request, p *
 			return
 		}
 		params.NodeID = &id
+	}
+	if raw := r.URL.Query().Get("has_gpu"); raw != "" {
+		hasGPU, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeProblem(w, "invalid_request", "has_gpu must be true or false")
+			return
+		}
+		params.HasGpu = &hasGPU
 	}
 	if raw := r.URL.Query().Get("label"); raw != "" {
 		key, value, found := strings.Cut(raw, "=")
@@ -568,7 +587,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
 	}
 	if sb.GpuCount > 0 {
-		dto.GPU = &sandboxGPUDTO{Count: sb.GpuCount}
+		dto.GPU = &sandboxGPUDTO{Count: sb.GpuCount, Model: sb.GpuModel}
 	}
 	// queue_position exists only while the admission request is open. Ignoring
 	// a failed read degrades the display, not the response.

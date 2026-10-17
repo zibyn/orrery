@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/zibyn/stars-sandbox/internal/nodeproto"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -22,6 +23,11 @@ type nodeFit struct {
 	memory        float64
 	usedCPU       float64
 	usedMemory    float64
+	usedCPUNoGPU  float64
+	usedMemNoGPU  float64
+	cpuPerGPU     float64
+	memoryPerGPU  float64
+	gpuTotal      int
 	diskFree      uint64
 	diskTotal     uint64
 	diskWatermark float64
@@ -40,6 +46,71 @@ func (f nodeFit) admits(cpu float64, memory int64) bool {
 	return f.cpu-f.usedCPU >= cpu && f.memory-f.usedMemory >= float64(memory)
 }
 
+// gpuShare reports the CPU and memory that count cards reserve on this Node
+// (defaults.md: three quarters of the allocatable amount, split by card
+// count). ok is false when the Node publishes no share yet.
+func (f nodeFit) gpuShare(count int32) (cpu, memory float64, ok bool) {
+	if count <= 0 || f.cpuPerGPU <= 0 || f.memoryPerGPU <= 0 {
+		return 0, 0, false
+	}
+	return float64(count) * f.cpuPerGPU, float64(count) * f.memoryPerGPU, true
+}
+
+// admitsGPU reports whether a GPU Sandbox fits: its CPU and memory stay inside
+// the share its own cards reserve, and the Node has the total capacity.
+func (f nodeFit) admitsGPU(cpu float64, memory int64, count int32) bool {
+	shareCPU, shareMemory, ok := f.gpuShare(count)
+	if !ok || cpu > shareCPU || float64(memory) > shareMemory {
+		return false
+	}
+	return f.admits(cpu, memory)
+}
+
+// admitsNonGPU keeps GPU-less Sandboxes out of the shares reserved for the
+// cards, so they cannot strand an idle GPU (ADR-0015). On a Node without GPUs
+// the whole allocatable amount is theirs.
+func (f nodeFit) admitsNonGPU(cpu float64, memory int64) bool {
+	if !f.admits(cpu, memory) {
+		return false
+	}
+	if f.gpuTotal == 0 {
+		return true
+	}
+	freeCPU := f.cpu - float64(f.gpuTotal)*f.cpuPerGPU
+	freeMemory := f.memory - float64(f.gpuTotal)*f.memoryPerGPU
+	return f.usedCPUNoGPU+cpu <= freeCPU && f.usedMemNoGPU+float64(memory) <= freeMemory
+}
+
+// takeGPUs picks count free cards, matching the requested model when one is
+// given. The inventory is ordered by UUID, so placements are reproducible.
+func takeGPUs(free []store.Gpu, count int32, model *string) ([]string, bool) {
+	if count <= 0 {
+		return nil, true
+	}
+	ids := make([]string, 0, count)
+	for _, gpu := range free {
+		if model != nil && *model != "" && gpu.Model != *model {
+			continue
+		}
+		ids = append(ids, gpu.Uuid)
+		if len(ids) == int(count) {
+			return ids, true
+		}
+	}
+	return nil, false
+}
+
+// gpuFit reports whether a GPU Sandbox fits this Node and which cards it
+// takes. free is the Node's whole inventory for the exhaust check and its free
+// cards for placement.
+func gpuFit(node store.Node, fit nodeFit, free []store.Gpu, sb store.Sandbox) ([]string, bool) {
+	if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapGPUDeviceVisibility) ||
+		!fit.admitsGPU(sb.Cpu, sb.Memory, sb.GpuCount) {
+		return nil, false
+	}
+	return takeGPUs(free, sb.GpuCount, sb.GpuModel)
+}
+
 type nodeHardware struct {
 	CPUCores      float64 `json:"cpu_cores"`
 	MemoryBytes   int64   `json:"memory_bytes"`
@@ -48,7 +119,7 @@ type nodeHardware struct {
 	DiskWatermark float64 `json:"disk_watermark"`
 }
 
-func fitFor(node store.Node, used store.NodeAllocatedRow) (nodeFit, bool) {
+func fitFor(node store.Node, used store.NodePlacementRow) (nodeFit, bool) {
 	var hw nodeHardware
 	if len(node.Hardware) == 0 || json.Unmarshal(node.Hardware, &hw) != nil {
 		return nodeFit{}, false
@@ -56,8 +127,13 @@ func fitFor(node store.Node, used store.NodeAllocatedRow) (nodeFit, bool) {
 	return nodeFit{
 		cpu:           hw.CPUCores - node.ReservedCpu,
 		memory:        float64(hw.MemoryBytes - node.ReservedMemory),
-		usedCPU:       used.Cpu,
-		usedMemory:    float64(used.Memory),
+		usedCPU:       used.UsedCpu,
+		usedMemory:    float64(used.UsedMemory),
+		usedCPUNoGPU:  used.UsedCpuNoGpu,
+		usedMemNoGPU:  float64(used.UsedMemoryNoGpu),
+		cpuPerGPU:     node.CpuPerGpu,
+		memoryPerGPU:  float64(node.MemoryPerGpu),
+		gpuTotal:      int(used.GpuTotal),
 		diskFree:      hw.DiskFree,
 		diskTotal:     hw.DiskTotal,
 		diskWatermark: hw.DiskWatermark,
@@ -67,20 +143,32 @@ func fitFor(node store.Node, used store.NodeAllocatedRow) (nodeFit, bool) {
 // admissionExhausted reports whether every usable Node is too small for the
 // request, so waiting for capacity cannot help. Unknown hardware (a Node that
 // has not reported yet) is not proof either way. A Sandbox bound to a Node can
-// only ever go there.
-func admissionExhausted(nodes []store.Node, sb store.Sandbox) bool {
+// only ever go there. gpus is each Node's reported inventory.
+func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb store.Sandbox) bool {
 	known, unknown := false, false
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
 			continue
 		}
-		fit, ok := fitFor(node, store.NodeAllocatedRow{})
+		fit, ok := fitFor(node, store.NodePlacementRow{GpuTotal: int64(len(gpus[node.ID]))})
 		if !ok {
 			unknown = true
 			continue
 		}
 		known = true
-		if fit.cpu >= sb.Cpu && fit.memory >= float64(sb.Memory) {
+		if sb.GpuCount > 0 {
+			if len(node.Capabilities) == 0 {
+				// A Node that has not reported its Runtime Capabilities may
+				// still turn out to support CDI.
+				unknown = true
+				continue
+			}
+			if _, ok := gpuFit(node, fit, gpus[node.ID], sb); ok {
+				return false
+			}
+			continue
+		}
+		if fit.admitsNonGPU(sb.Cpu, sb.Memory) {
 			return false
 		}
 	}
@@ -105,6 +193,16 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 	if err != nil {
 		return err
 	}
+	// GPU inventory is a hardware fact, independent of what this sweep
+	// allocates, so one read serves every request's exhaust check.
+	inventory := make(map[uuid.UUID][]store.Gpu, len(nodes))
+	for _, node := range nodes {
+		gpus, err := q.ListNodeGPUs(ctx, node.ID)
+		if err != nil {
+			return err
+		}
+		inventory[node.ID] = gpus
+	}
 	now := time.Now()
 	for _, req := range requests {
 		sb := req.Sandbox
@@ -126,7 +224,7 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 			r.endAdmission(ctx, q, sb.ID, "admitted")
 			continue
 		}
-		if admissionExhausted(nodes, sb) {
+		if admissionExhausted(nodes, inventory, sb) {
 			r.failAdmission(ctx, q, sb, "unsatisfiable")
 		}
 	}
@@ -135,8 +233,8 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 
 // tryAdmit places a Sandbox on the first Node that fits. A Sandbox bound to a
 // Node stays there (a Workspace never moves), so only that Node is considered
-// on a restart. Placement ignores GPU devices until GPU allocation lands;
-// User Quota still bounds the GPU count.
+// on a restart. A GPU Sandbox claims whole cards; their primary key keeps the
+// cards exclusive (ADR-0015).
 func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sandbox, nodes []store.Node, now time.Time) (bool, error) {
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
@@ -145,12 +243,24 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		if deriveNodeStatus(node, now) != "ready" || !r.hub.connected(node.ID) {
 			continue
 		}
-		used, err := q.NodeAllocated(ctx, node.ID)
+		used, err := q.NodePlacement(ctx, node.ID)
 		if err != nil {
 			return false, err
 		}
 		fit, ok := fitFor(node, used)
-		if !ok || !fit.admits(sb.Cpu, sb.Memory) {
+		if !ok {
+			continue
+		}
+		var gpuIDs []string
+		if sb.GpuCount > 0 {
+			free, err := q.ListNodeFreeGPUs(ctx, node.ID)
+			if err != nil {
+				return false, err
+			}
+			if gpuIDs, ok = gpuFit(node, fit, free, sb); !ok {
+				continue
+			}
+		} else if !fit.admitsNonGPU(sb.Cpu, sb.Memory) {
 			continue
 		}
 		// Lock and re-check the state read above: a concurrent stop or delete
@@ -190,6 +300,13 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		}); err != nil {
 			return false, err
 		}
+		for _, gpuUUID := range gpuIDs {
+			if err := q.CreateGPUAllocation(ctx, store.CreateGPUAllocationParams{
+				GpuUuid: gpuUUID, SandboxID: sb.ID,
+			}); err != nil {
+				return false, err
+			}
+		}
 		return true, nil
 	}
 	return false, nil
@@ -209,7 +326,7 @@ func (r *reconciler) failAdmission(ctx context.Context, q *store.Queries, sb sto
 		r.endAdmission(ctx, q, sb.ID, "canceled")
 		return
 	}
-	if err := q.DeleteAllocation(ctx, sb.ID); err != nil {
+	if err := q.ReleaseCompute(ctx, sb.ID); err != nil {
 		r.s.log.Warn("reconcile: release allocation", "sandbox_id", sb.ID, "error", err)
 	}
 	if err := q.DeleteAttachment(ctx, sb.ID); err != nil {

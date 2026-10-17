@@ -1602,9 +1602,12 @@ type CreateSandbox struct {
 	SandboxId  string                 `protobuf:"bytes,2,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
 	Generation int64                  `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
 	// name@sha256:... pinned image digest.
-	ImageDigest   string          `protobuf:"bytes,4,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
-	Limits        *Limits         `protobuf:"bytes,5,opt,name=limits,proto3" json:"limits,omitempty"`
-	Workspace     *WorkspaceMount `protobuf:"bytes,6,opt,name=workspace,proto3" json:"workspace,omitempty"` // GPU, Resource and Secret mounts arrive with later tickets.
+	ImageDigest string          `protobuf:"bytes,4,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
+	Limits      *Limits         `protobuf:"bytes,5,opt,name=limits,proto3" json:"limits,omitempty"`
+	Workspace   *WorkspaceMount `protobuf:"bytes,6,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	// Whole cards, named by their platform UUID (ADR-0015). The Agent attaches
+	// them with CDI and fails a readback that does not show them (runtime.md §9).
+	GpuUuids      []string `protobuf:"bytes,7,rep,name=gpu_uuids,json=gpuUuids,proto3" json:"gpu_uuids,omitempty"` // Resource and Secret mounts arrive with later tickets.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1677,6 +1680,13 @@ func (x *CreateSandbox) GetLimits() *Limits {
 func (x *CreateSandbox) GetWorkspace() *WorkspaceMount {
 	if x != nil {
 		return x.Workspace
+	}
+	return nil
+}
+
+func (x *CreateSandbox) GetGpuUuids() []string {
+	if x != nil {
+		return x.GpuUuids
 	}
 	return nil
 }
@@ -2412,7 +2422,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x03R\n" +
-	"generation\"\xfc\x01\n" +
+	"generation\"\x99\x02\n" +
 	"\rCreateSandbox\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x1d\n" +
@@ -2423,7 +2433,8 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"generation\x12!\n" +
 	"\fimage_digest\x18\x04 \x01(\tR\vimageDigest\x12-\n" +
 	"\x06limits\x18\x05 \x01(\v2\x15.stars.node.v1.LimitsR\x06limits\x12;\n" +
-	"\tworkspace\x18\x06 \x01(\v2\x1d.stars.node.v1.WorkspaceMountR\tworkspace\"2\n" +
+	"\tworkspace\x18\x06 \x01(\v2\x1d.stars.node.v1.WorkspaceMountR\tworkspace\x12\x1b\n" +
+	"\tgpu_uuids\x18\a \x03(\tR\bgpuUuids\"2\n" +
 	"\x06Limits\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\x01R\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x02 \x01(\x03R\x06memory\"G\n" +

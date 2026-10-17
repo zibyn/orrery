@@ -56,6 +56,11 @@ export STARS_ADMISSION_TIMEOUT="${STARS_ADMISSION_TIMEOUT:-10s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
 export STARS_APPS_DOMAIN="${STARS_APPS_DOMAIN:-apps.test}"
+# GPU scenarios are skipped unless a GPU host is reachable over SSH:
+#   STARS_E2E_GPU_SSH=user@gpu-host ./scripts/e2e.sh -run GPU
+# The test deploys the Agent there and tunnels back to this machine's node
+# listener. STARS_E2E_GPU_REMOTE_PORT overrides the remote tunnel port
+# (default 18081).
 
 # Warm the cache; the Agent pulls the image itself if this misses.
 docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null

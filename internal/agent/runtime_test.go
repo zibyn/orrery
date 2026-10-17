@@ -19,22 +19,44 @@ func TestLimitsMatch(t *testing.T) {
 		PidsMax:           "2048",
 		WorkspaceWritable: true,
 	}
-	if !limitsMatch(want, 500_000_000, 134217728) {
+	if !limitsMatch(want, 500_000_000, 134217728, 0) {
 		t.Fatal("matching readback was rejected")
 	}
 	// A daemon that ignored a limit must fail creation instead of running
-	// unbounded (runtime.md §9).
-	for name, mutate := range map[string]func(*supervisor.Result){
-		"cpu":       func(r *supervisor.Result) { r.CPUMax = "max 100000" },
-		"memory":    func(r *supervisor.Result) { r.MemoryMax = "max" },
-		"pids":      func(r *supervisor.Result) { r.PidsMax = "max" },
-		"workspace": func(r *supervisor.Result) { r.WorkspaceWritable = false },
+	// unbounded (runtime.md §9). A container that sees more or fewer cards
+	// than requested fails it too: whole-card isolation is the readback.
+	for name, tt := range map[string]struct {
+		mutate func(*supervisor.Result)
+		gpus   int
+	}{
+		"cpu":       {mutate: func(r *supervisor.Result) { r.CPUMax = "max 100000" }},
+		"memory":    {mutate: func(r *supervisor.Result) { r.MemoryMax = "max" }},
+		"pids":      {mutate: func(r *supervisor.Result) { r.PidsMax = "max" }},
+		"workspace": {mutate: func(r *supervisor.Result) { r.WorkspaceWritable = false }},
+		"gpus": {
+			mutate: func(r *supervisor.Result) { r.NvidiaDevices = nil },
+			gpus:   1,
+		},
+		"extra gpus": {
+			mutate: func(r *supervisor.Result) { r.NvidiaDevices = []string{"/dev/nvidia0", "/dev/nvidia1"} },
+			gpus:   1,
+		},
+		"unrequested gpus": {
+			mutate: func(r *supervisor.Result) { r.NvidiaDevices = []string{"/dev/nvidia0"} },
+		},
 	} {
 		got := want
-		mutate(&got)
-		if limitsMatch(got, 500_000_000, 134217728) {
+		tt.mutate(&got)
+		if limitsMatch(got, 500_000_000, 134217728, tt.gpus) {
 			t.Errorf("%s mismatch was accepted", name)
 		}
+	}
+	// One numbered device per requested card is enough; control nodes do not
+	// count.
+	withGPU := want
+	withGPU.NvidiaDevices = []string{"/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm"}
+	if !limitsMatch(withGPU, 500_000_000, 134217728, 1) {
+		t.Fatal("a readback with the requested card was rejected")
 	}
 }
 

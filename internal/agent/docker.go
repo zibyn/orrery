@@ -62,20 +62,40 @@ func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport
 		return nodeproto.CapabilityReport{}, err
 	}
 
-	result, limitsEnforced, err := d.probe(ctx, binDir, workspace, true)
-	if err != nil {
-		// A daemon without delegated controllers rejects the limits outright
-		// (runtime.md §9). Retry unbounded so the other capabilities still get
-		// an honest reading.
-		result, limitsEnforced, err = d.probe(ctx, binDir, workspace, false)
-		if err != nil {
-			return nodeproto.CapabilityReport{}, err
+	// The host inventory decides what the probe asks CDI for; a CPU-only Node
+	// sends no DeviceRequest at all.
+	gpus := enumerateGPUs(ctx)
+	uuids := gpuUUIDs(gpus)
+	// Each capability is read back on its own (runtime.md §9), so a rejected
+	// limit must not hide a working CDI attachment and vice versa: try the
+	// bounded GPU probe, the bounded plain probe, then the same two unbounded.
+	attempts := []struct{ limits, gpus bool }{{true, false}, {false, false}}
+	if len(uuids) > 0 {
+		attempts = []struct{ limits, gpus bool }{
+			{true, true}, {true, false}, {false, true}, {false, false},
 		}
 	}
-	return capabilities(result, limitsEnforced), nil
+	var result supervisor.Result
+	var limitsEnforced, gpuVisible bool
+	var probeErr error
+	for _, attempt := range attempts {
+		var requested []string
+		if attempt.gpus {
+			requested = uuids
+		}
+		result, limitsEnforced, probeErr = d.probe(ctx, binDir, workspace, attempt.limits, requested)
+		if probeErr == nil {
+			gpuVisible = attempt.gpus && numberedDeviceCount(result.NvidiaDevices) == len(uuids)
+			break
+		}
+	}
+	if probeErr != nil {
+		return nodeproto.CapabilityReport{}, probeErr
+	}
+	return capabilities(result, limitsEnforced, gpuVisible), nil
 }
 
-func capabilities(r supervisor.Result, limitsEnforced bool) nodeproto.CapabilityReport {
+func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
 			return nodeproto.ValueEnforced
@@ -92,10 +112,12 @@ func capabilities(r supervisor.Result, limitsEnforced bool) nodeproto.Capability
 			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(limitsEnforced)},
 			{Name: nodeproto.CapWorkspaceRWMount, Value: value(r.WorkspaceWritable)},
 			{Name: nodeproto.CapExecSupervisor, Value: nodeproto.ValueEnforced},
-			// GPU, disk quota and arbitrary mounts are separate tickets; report
-			// them honestly instead of guessing.
-			{Name: nodeproto.CapGPUDeviceVisibility, Value: nodeproto.ValueUnsupported},
+			// Whole-card visibility is enforced by CDI; GPU memory limits stay
+			// unsupported (ADR-0009).
+			{Name: nodeproto.CapGPUDeviceVisibility, Value: value(gpuVisible)},
 			{Name: nodeproto.CapGPUMemoryLimit, Value: nodeproto.ValueUnsupported},
+			// Disk quota and arbitrary mounts are separate tickets; report them
+			// honestly instead of guessing.
 			{Name: nodeproto.CapDiskCapacityQuota, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapArbitraryMounts, Value: nodeproto.ValueUnsupported},
 		},
@@ -164,7 +186,7 @@ func (d *dockerClient) ensureImage(ctx context.Context) error {
 
 // probe creates, starts and reads back one container. limitsEnforced is true
 // only when the daemon accepted the limits and every readback matched.
-func (d *dockerClient) probe(ctx context.Context, binDir, workspace string, withLimits bool) (supervisor.Result, bool, error) {
+func (d *dockerClient) probe(ctx context.Context, binDir, workspace string, withLimits bool, gpuUUIDs []string) (supervisor.Result, bool, error) {
 	name := "stars-sandbox-probe-" + uuid.NewString()
 	hostConfig := map[string]any{
 		"CgroupnsMode": "private",
@@ -178,6 +200,9 @@ func (d *dockerClient) probe(ctx context.Context, binDir, workspace string, with
 		hostConfig["NanoCpus"] = probeNanoCPUs
 		hostConfig["Memory"] = probeMemory
 		hostConfig["PidsLimit"] = probePidsLimit
+	}
+	if requests := cdiDeviceRequest(gpuUUIDs); requests != nil {
+		hostConfig["DeviceRequests"] = requests
 	}
 	create := map[string]any{
 		"Image":      probeImage,

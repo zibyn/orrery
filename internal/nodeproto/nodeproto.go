@@ -9,7 +9,7 @@ import "encoding/json"
 // refused (ADR-0014).
 const (
 	Major uint32 = 1
-	Minor uint32 = 2
+	Minor uint32 = 3
 )
 
 // Capability names are the Runtime Provider facts a Node self-checks
@@ -66,21 +66,29 @@ type CapabilityEntry struct {
 // CoreEnforced reports whether every Required capability is enforced in the
 // stored report.
 func CoreEnforced(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var report CapabilityReport
-	if err := json.Unmarshal(raw, &report); err != nil {
-		return false
-	}
-	values := make(map[string]string, len(report.Entries))
-	for _, entry := range report.Entries {
-		values[entry.Name] = entry.Value
-	}
+	values := storedValues(raw)
 	for _, name := range Required {
 		if values[name] != ValueEnforced {
 			return false
 		}
 	}
 	return true
+}
+
+// CapabilityEnforced reports whether one capability is enforced in the stored
+// report. An absent capability is not enforced.
+func CapabilityEnforced(raw json.RawMessage, name string) bool {
+	return storedValues(raw)[name] == ValueEnforced
+}
+
+func storedValues(raw json.RawMessage) map[string]string {
+	var report CapabilityReport
+	if len(raw) == 0 || json.Unmarshal(raw, &report) != nil {
+		return nil
+	}
+	values := make(map[string]string, len(report.Entries))
+	for _, entry := range report.Entries {
+		values[entry.Name] = entry.Value
+	}
+	return values
 }
