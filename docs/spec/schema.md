@@ -9,7 +9,7 @@ PostgreSQL 是权威状态。本文列出表、关键列和约束；迁移 SQL �
 - 逻辑删除就是 `deleting`/`deleted` 状态加 `deleted_at`；物理清理由 Reconciler 或 purge 完成。
 - 外键一律 `ON DELETE RESTRICT`：只要还有引用，行就删不掉。
 - Idempotency Key 不建通用表。每张可创建资源的表各有一个可空列 `idempotency_key`，对 (owner_id, key) 建部分唯一索引，purge 在 24 小时后把它置空。
-- 凭据只存哈希（token）或密文（Secret、Git token）。密文旁边带 `key_id`（ADR-0017）。
+- 凭据只存哈希（API Token、Session、Node Token、Enrollment Packet）或密文（Secret、Git token、Sandbox Token）。密文旁边带 `key_id`（ADR-0017），加密方式见 `defaults.md` 的 `STARS_ENCRYPTION_KEYS_FILE`。Sandbox Token 存密文的原因见 ADR-0016。
 - 执行日志相关的表不建成 `UNLOGGED`。
 
 ## 表
@@ -22,7 +22,7 @@ PostgreSQL 是权威状态。本文列出表、关键列和约束；迁移 SQL �
 | `nodes` | `id`, `name`, `token_hash`, `paused`, `lost_at`, `agent_version`, `proto_major`, `proto_minor`, `last_seen_at`, `runtime_health`, `capabilities`, `hardware`, `reserved_cpu`, `reserved_memory`, `cpu_per_gpu`, `memory_per_gpu` | Unreachable 在读取时由 `last_seen_at` 派生，不落库 |
 | `gpus` | `uuid` PK, `node_id`, `model` | |
 | `workspaces` | `id`, `owner_id`, `kind`, `node_id`, `state`, `cause`, `storage_handle`, `conditions`, `idempotency_key`, `deleted_at` | 临时 Workspace 带 `sandbox_id`，删除时随它一起删 |
-| `sandboxes` | `id`, `owner_id`, `name`, `labels`, `desired_state`, `state`, `cause`, `node_id`, `snapshot_digest`, `cpu`, `memory`, `gpu_count`, `gpu_model`, `idle_stop_seconds`, `last_activity_at`, `workspace_id`, `workspace_mode`, `token_hash`, `secret_env_ct`, `generation`, `deleted_at` | 未删除行按 (`owner_id`, `name`) 唯一；`secret_env_ct` 是 start 时拷贝的 Secret 密文（见下）；`gpu_model` 是创建时请求的型号，重启后仍作为准入约束；`workspace_id`/`workspace_mode` 是挂载关系，Attachment 行只在运行时存在 |
+| `sandboxes` | `id`, `owner_id`, `name`, `labels`, `desired_state`, `state`, `cause`, `node_id`, `snapshot_digest`, `cpu`, `memory`, `gpu_count`, `gpu_model`, `idle_stop_seconds`, `last_activity_at`, `workspace_id`, `workspace_mode`, `token_ct`, `token_key_id`, `secret_env_ct`, `generation`, `deleted_at` | 未删除行按 (`owner_id`, `name`) 唯一；`token_ct` 是 Sandbox Token 的密文，创建时生成，整个生命周期不变，Sandbox 删除即失效；认证时按 id 取行、解密，再做常数时间比较；`secret_env_ct` 是 start 时拷贝的 Secret 密文（见下）；`gpu_model` 是创建时请求的型号，重启后仍作为准入约束；`workspace_id`/`workspace_mode` 是挂载关系，Attachment 行只在运行时存在 |
 | `attachments` | `sandbox_id` PK, `workspace_id`, `mode`, `generation` | 部分唯一索引 (`workspace_id`) `WHERE mode = 'rw'`，即单写者规则；Sandbox 停止或删除时删掉这一行，就是释放挂载 |
 | `sandbox_resources` | `sandbox_id`, `resource_version_id`, `mount` | 引用即保留 |
 | `admission_requests` | `id`, `sandbox_id`, `priority`, `enqueued_at`, `deadline_at`, `ended_at`, `outcome` | FIFO 按 (`priority`, `enqueued_at`) 排序 |

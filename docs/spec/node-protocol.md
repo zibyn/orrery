@@ -31,7 +31,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 `ControlMessage`（oneof）：
 - `HelloAck{accepted, registry_credential}`
 - `ProvisionWorkspace` · `DeleteWorkspace`
-- `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, presigned_url, mount}], sandbox_token}`
+- `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, presigned_url, mount}]}`
 - `StopSandbox{sandbox_id, generation}`
 - `StartExec{exec_id, sandbox_id, generation, argv, env, secret_env, cwd, timeout, log_cap, stdin?, pty?}`
 - `CancelExec{exec_id}`
@@ -40,6 +40,16 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 - `OpenTunnel{tunnel_id, target: agent_http | sandbox_port{sandbox_id, port}}`
 
 每条命令都带 `command_id`，并且是幂等的。`generation` 就是 fencing token：对于比当前代数旧的命令，Agent 一律拒绝（ADR-0015）。命令由 Reconciler 根据期望状态反复下发，所以单条命令丢了也没关系。
+
+### Exec 的环境变量
+
+Sandbox Token 不在 `CreateSandbox` 里，而是随每个 `StartExec` 下发，所以 Agent 重启、Reconciler 重复下发都拿得到它。前例是 Coder 的 `workspace_agents.auth_token`：明文存储，放进每个进程的环境（`docs/research/recheck-identity-network-channel-vs-coder-daytona.md` I3、C1）。
+
+- **Control Plane** 往 `secret_env` 放 Secret 快照（`schema.md`）和 `STARS_SANDBOX_TOKEN`，往 `env` 放 `STARS_URL`（取 `STARS_ACCESS_URL`，未配置时不放）。这几项都不写入 `execs.env`。
+- **Agent** 再追加两组：
+  - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`，先写一条 `credential.helper=` 清空镜像的 helper 列表，再写 `credential.helper=/.stars/bin/stars-sandbox git-credential`；
+  - `PATH`：取调用方 `env` 里的 `PATH`，没有就取镜像配置里的 `PATH`（Local Runtime 取 Agent 自身的 `PATH`），在末尾追加 `/.stars/bin`，不遮挡镜像里的同名命令。
+- **合并顺序**：调用方的 Exec `env` 在前，平台写入的值最后合并，同名时覆盖调用方；唯一例外是 `PATH`，按上面的规则追加而不覆盖。Exec `env` 不做保留名校验，保留名只约束 Secret（ADR-0017）。PTY Exec 走同一条路径。
 
 ## ExecOutput：每个 Exec 一条
 

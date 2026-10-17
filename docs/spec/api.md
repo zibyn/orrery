@@ -6,7 +6,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 - **前缀**：`/api/v1`。`api` 监听面上另有 `/metrics`（`admin`）、端口转发子域名（§6）和 `/` 下的 Web 控制台（§8）。
 - **ID**：服务端生成的 UUIDv7，不带类型前缀。Sandbox 的 `name` 每个 User 内唯一，只用于过滤，不进路径。
-- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `ssk_<id>_<secret>`，Sandbox Token 形如 `sst_<id>_<secret>`；服务端按 id 取行、比较 secret 的哈希。前缀便于 secret scanning。
+- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `ssk_<id>_<secret>`，Sandbox Token 形如 `sst_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。
 - **Session cookie**：`stars_session; HttpOnly; Secure; SameSite=Lax; Path=/`，不带 `Domain`，端口转发子域名收不到。值的格式同 API Token，对应 `api_tokens` 里 `kind=session` 的一行。cookie 与 Bearer 等价；用 cookie 认证时，非安全方法要过 `http.CrossOriginProtection`，WebSocket 升级要求 `Origin` 等于 `api` 自己的源（ADR-0020）。
 - **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
@@ -144,6 +144,10 @@ idle_stop?: 秒数，默认 900，0 表示关闭
 | `GET /users/me/git-links` · `DELETE /users/me/git-links/{provider_id}` | |
 | `POST /git/credential` | **只接受 Sandbox Token**。`{host}` 或 `{provider}` → `{username, password}`；未关联或校验失败时返回 `404 not_found`，`authorize_url` 写在 problem 扩展字段里，指向控制台的 Git 关联页 |
 
+Git Provider 来自部署配置 `STARS_GIT_PROVIDERS_FILE`（`defaults.md`）。OAuth `redirect_uri` 和 `authorize_url` 都以 `STARS_ACCESS_URL` 为基址；它未配置时 Git 关联关闭。
+
+沙箱内的 helper 收到 `404` 时，把 `authorize_url` 写到 stderr，stdout 不输出，退出码为 0，由 git 继续尝试下一个 helper 或报认证失败。
+
 **审计**：`GET /audit`，**admin**，过滤 `actor`、`action`、`target`、时间区间。
 
 ## 4. Exec
@@ -204,6 +208,12 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 ## 8. Web 控制台
 
 独立源码，构建成静态文件后嵌进 `stars-sandbox-server`，由 `api` 监听面在 `/` 下提供，与 `/api/v1` 同源，不开 CORS。它只调用本文列出的接口，用 Session cookie 认证（ADR-0020）。范围以下面的页面清单为准，不追求与每个 operation 对等；清单外的操作用 CLI。
+
+技术栈与构建：
+
+- Vite + React + TypeScript + TanStack Router（文件路由）+ TanStack Form + TanStack Query + Zod + shadcn/ui。
+- 纯 SPA，不引入 TanStack Start 运行时；目录结构参考 Start 模板。
+- 源码在 `web/`，产物经 `go:embed` 嵌入，未命中静态文件的路径回退到 `index.html`。仓库提交一个占位 `index.html`，不装 node 也能 `go build`；真正的构建放在 Makefile 和 Dockerfile 的多阶段构建里，`dist` 不进仓库。
 
 | 页面 | 用到的接口 |
 |---|---|

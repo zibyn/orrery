@@ -17,9 +17,11 @@ Supervisor 是同一个平台二进制，有三种模式：
 | 容器内 | 来源 | 模式 |
 |---|---|---|
 | `/workspace` | Workspace | 按 Attachment 的模式，读写或只读 |
-| `/.stars/bin` | Supervisor 二进制 | 只读 |
+| `/.stars/bin` | Supervisor 二进制和外部 CLI `stars-sandbox` | 只读 |
 | `/.stars/run` | 宿主 `/var/lib/stars-sandbox/sandboxes/<sandbox_id>/run` | 读写 |
 | `CreateSandbox.resources[].mount` | Node 的 Resource 缓存 | 只读 |
+
+Node 的部署包同时带外部 CLI。Agent 在自身可执行文件旁边找到 `stars-sandbox`，和 Supervisor 一起放进 `/.stars/bin`。沙箱内的 Git credential helper 和 `stars-sandbox token <provider>` 就是它；CA 的信任见 `defaults.md` 的 `STARS_ACCESS_URL`。每个 Exec 的 `PATH` 末尾追加 `/.stars/bin`，环境变量的拼装见 `node-protocol.md`。Supervisor 把 spec 里的 `env` 和 `secret_env` 原样合进命令的环境，不再改动。
 
 Supervisor 和命令都以镜像默认的 USER 运行，平台不另选 uid。`/.stars/run` 的宿主属主要按 rootful 或 rootless 的映射来设，保证这个用户可写。沙箱内的进程能篡改本 Sandbox 的记录。记录不是防 Sandbox 自身进程的边界：Sandbox 本来就属于它的 owner，而记录按 Sandbox 分目录，影响不到别的 Sandbox。
 

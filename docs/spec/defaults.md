@@ -65,3 +65,28 @@
 | OIDC `allow_signups` | 关 | 部署 | 没有任何 User 时第一个 OIDC 登录者不受它限制（ADR-0020） |
 | OIDC `email_domains` | 空（不限） | 部署 | |
 | 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}` | 部署 | OIDC 自动建号和 `POST /users` 不带 quota 时都用它 |
+
+## 部署配置项
+
+不是数字，但和上面的「部署」项一样，由 Control Plane 的部署配置给出。
+
+| 名称 | 未配置时 | 说明 |
+|---|---|---|
+| `STARS_ACCESS_URL` | Git 关联关闭 | 外部可达的 `api` 地址，对应 Coder 的 `CODER_ACCESS_URL`。OAuth `redirect_uri`、problem 里的 `authorize_url`、沙箱内的 `STARS_URL` 都由它拼出。沙箱内的 CLI 只信任镜像自带的 CA，部署指南要写明：用私有 CA 时，镜像里得装上它 |
+| `STARS_ENCRYPTION_KEYS_FILE` | Secret、Git、Sandbox Token 相关功能返回明确错误 | 每行 `<key_id> <base64 编码的 32 字节>`。第一行用于加密，所有行都可用于解密。AES-256-GCM，AAD 为 owner 的 user id（`schema.md`）。不提供 rewrap 命令 |
+| `STARS_GIT_PROVIDERS_FILE` | 没有 Git Provider | JSON 数组，见下 |
+
+`STARS_GIT_PROVIDERS_FILE` 的每一项：
+
+| 字段 | 说明 |
+|---|---|
+| `id` | `/git-providers/{id}` 里的 id |
+| `type` | `github`、`gitlab`、`gitea`、`generic` |
+| `client_id`、`client_secret_file` | OAuth 应用；secret 从文件读 |
+| `base_url` | 按类型推导各 endpoint（ADR-0017）。`github`、`gitlab` 默认指向公网；`gitea` 必须写 |
+| `auth_url`、`token_url`、`validate_url` | 只用于 `generic`，因为它没有类型可推导：`auth_url`、`token_url` 必须写，`validate_url` 可以不配，不配就跳过校验 |
+| `pkce` | 默认 `true`，即 PKCE S256，可按 provider 关闭（ADR-0017） |
+| `host` | 匹配仓库 host 的模式 |
+| `scopes` | 授权时请求的 scope |
+
+校验路径按类型内置，接在 API 基址后：`github` 为 `/user`，`gitlab` 为 `/api/v4/user`，`gitea` 为 `/api/v1/user`。
