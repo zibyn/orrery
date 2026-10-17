@@ -55,6 +55,15 @@ func NewRuntime(socket, dataRoot string) *Runtime {
 	}
 }
 
+// connect attaches the Runtime to the live Control stream. Commands arrive only
+// after this call, so both callbacks are set together.
+func (r *Runtime) connect(client nodev1.NodeClient, send func(*nodev1.AgentMessage)) {
+	r.send = send
+	r.execStream = func(ctx context.Context) (nodev1.Node_ExecOutputClient, error) {
+		return client.ExecOutput(ctx)
+	}
+}
+
 // PrepareDataRoot creates the directories the mount table needs and stages the
 // Supervisor binary at <dataRoot>/bin/supervisor (runtime.md §2).
 func PrepareDataRoot(root string) error {

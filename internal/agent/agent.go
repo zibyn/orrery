@@ -324,11 +324,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	send(heartbeat())
 
 	runner := newCommandRunner(streamCtx, rt, send)
-	nodeClient := nodev1.NewNodeClient(conn)
-	rt.send = send
-	rt.execStream = func(ctx context.Context) (nodev1.Node_ExecOutputClient, error) {
-		return nodeClient.ExecOutput(ctx)
-	}
+	rt.connect(nodev1.NewNodeClient(conn), send)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {

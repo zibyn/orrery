@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,19 +40,17 @@ type execFrame struct {
 	LogTruncated bool   `json:"log_truncated"`
 }
 
-var execSandboxSeq atomic.Int64
-
 // readyExecSandbox is shared setup: an enrolled Node and a ready Sandbox.
 func readyExecSandbox(t *testing.T, admin string, memory int64) string {
 	t.Helper()
 	suffix := time.Now().UnixNano()
-	nodeName := fmt.Sprintf("e2e-exec-node-%d-%d", suffix, execSandboxSeq.Add(1))
+	nodeName := fmt.Sprintf("e2e-exec-node-%d", suffix)
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
 
 	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
-		"name":      fmt.Sprintf("exec-%d-%d", suffix, execSandboxSeq.Add(1)),
+		"name":      fmt.Sprintf("exec-%d", suffix),
 		"cpu":       0.5,
 		"memory":    memory,
 		"idle_stop": 0,

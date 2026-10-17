@@ -72,25 +72,24 @@ func envOr(key, fallback string) string {
 }
 
 func envInt32(key string, fallback int32) (int32, error) {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback, nil
-	}
-	n, err := strconv.ParseInt(v, 10, 32)
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("%s must be a non-negative integer", key)
-	}
-	return int32(n), nil
+	n, err := envInt(key, int64(fallback), 32, 0, "non-negative")
+	return int32(n), err
 }
 
 func envInt64(key string, fallback int64) (int64, error) {
+	return envInt(key, fallback, 64, 1, "positive")
+}
+
+// envInt reads a signed integer of the given bit width, rejecting values below
+// min; kind names the lower bound in the error.
+func envInt(key string, fallback int64, bits int, min int64, kind string) (int64, error) {
 	v := os.Getenv(key)
 	if v == "" {
 		return fallback, nil
 	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%s must be a positive integer", key)
+	n, err := strconv.ParseInt(v, 10, bits)
+	if err != nil || n < min {
+		return 0, fmt.Errorf("%s must be a %s integer", key, kind)
 	}
 	return n, nil
 }

@@ -10,6 +10,11 @@ import (
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
 )
 
+// noGenerationFence skips the stale-generation check. CancelExec uses it: the
+// persistent cancel intent outlives the Sandbox generation it was created
+// under (runtime.md §5).
+const noGenerationFence int64 = 0
+
 // commandRunner applies Control commands. Commands are idempotent and the
 // generation is the fence: a command older than the last one seen for that
 // resource is rejected (ADR-0015). Slow commands run off the receive loop and
@@ -122,9 +127,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			c.result(cmd.CommandId, "invalid exec id")
 			return
 		}
-		// Generation 0 skips the check: the persistent cancel intent outlives
-		// the Sandbox generation it was created under.
-		go c.run("exec:"+cmd.ExecId, cmd.CommandId, 0, func() error {
+		go c.run("exec:"+cmd.ExecId, cmd.CommandId, noGenerationFence, func() error {
 			return c.rt.cancelExec(c.ctx, execID)
 		})
 	}

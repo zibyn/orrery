@@ -11,7 +11,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 - **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
 - **创建**返回 `201` 和初始状态的资源；**动作**（`POST /{资源}/{id}/{动词}`）返回 `202` 和当前资源；删除用 `DELETE`，返回 `202`，资源进入 `deleting`。
-- **幂等**：所有创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一，重复请求返回已有资源，不比较请求体；key 保留 24 小时。
+- **幂等**：所有创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。
 - **等待**：`GET /sandboxes/{id}?wait_for=<state>` 最多挂起 60 秒，到期返回当前状态，不报错。
 - **分页**：`?limit=`（默认 50，上限 200）和不透明的 `?cursor=`；响应 `{items, next_cursor}`。
 - **条件更新**：`If-Match` 只用于移动 Resource 的 current 指针（ADR-0012）。
@@ -163,7 +163,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 `cause` 的取值：`exited`、`canceled`、`timed_out`、`oom_killed`、`runtime_lost`、`node_lost`、`pty_idle`、`start_failed`。`start_failed` 表示命令从未开始，可以重试（ADR-0015）。
 
-**输出**（仅限非 PTY）：`GET /execs/{id}/output?after=<seq>` 返回一页 `[{seq, stream, data, encoding?}]`。`stream` 取 `stdout`、`stderr`、`truncated` 之一。`data` 是 UTF-8 文本，Exec Supervisor 只在字符边界上切分；遇到非法字节时，该帧带 `encoding: base64`。加 `&follow=true` 就升级为 WebSocket，推送同样的帧，Exec 结束后以一条 `{type: "result", ...}` 帧收尾。
+**输出**（仅限非 PTY）：`GET /execs/{id}/output?after=<offset>` 返回一页 `[{seq, stream, data, encoding?}]`。`offset` 是上一帧末尾在 Node 记录里的字节偏移（`seq + 5 + len(data)`，base64 帧按解码后的长度算）；首屏省略或传 `0`。`stream` 取 `stdout`、`stderr`、`truncated` 之一。`data` 是 UTF-8 文本，Exec Supervisor 只在字符边界上切分；遇到非法字节时，该帧带 `encoding: base64`。加 `&follow=true` 就升级为 WebSocket，推送同样的帧，Exec 结束后以一条 `{type: "result", ...}` 帧收尾。
 
 **PTY**：`GET /execs/{id}/pty` 是 WebSocket，子协议为 `sandbox.v1`。二进制帧传终端字节，文本帧传控制消息（`resize {rows, cols}`）。服务端先回放 Node 上的环形缓冲；进程退出时，在关闭连接之前发送 `{type: "exit", ...}` 文本帧。多个连接可以同时写入。
 

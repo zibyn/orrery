@@ -66,9 +66,20 @@ func (r *Runtime) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 		return fmt.Errorf("start exec: %w", err)
 	}
 
+	// The record outlives the control socket: the Supervisor writes `exit` and
+	// removes ctl.sock before the Agent can reconnect. Delivery therefore never
+	// waits for the spec dial; both goroutines poll the record instead.
+	go r.observeStarted(ctx, execID.String(), dir)
+	go r.streamExec(ctx, sandboxID, execID, dir)
+
 	socket := filepath.Join(dir, "ctl.sock")
 	conn, err := dialUnix(ctx, socket, execDial)
 	if err != nil {
+		// A Supervisor that finished while we dialed has already removed the
+		// socket; streamExec is delivering the record, so this is not a failure.
+		if _, statErr := os.Stat(filepath.Join(dir, "exit")); statErr == nil {
+			return nil
+		}
 		return fmt.Errorf("connect to Supervisor: %w", err)
 	}
 	spec := supervisor.Spec{
@@ -92,8 +103,6 @@ func (r *Runtime) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 	}
 	conn.Close() //nolint:errcheck // the Supervisor keeps the listener
 
-	go r.observeStarted(ctx, execID.String(), dir)
-	go r.streamExec(ctx, sandboxID, execID, dir)
 	return nil
 }
 
@@ -190,9 +199,6 @@ func (r *Runtime) observeStarted(ctx context.Context, execID, dir string) {
 }
 
 func (r *Runtime) sendExecObserved(execID, startedAt string) {
-	if r.send == nil {
-		return
-	}
 	r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_ExecObserved{
 		ExecObserved: &nodev1.ExecObserved{ExecId: execID, StartedAt: startedAt},
 	}})

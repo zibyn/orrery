@@ -93,6 +93,16 @@ func hasPTY(raw json.RawMessage) bool {
 	return len(raw) > 0 && string(raw) != "null"
 }
 
+// rejectPTY writes the unsupported problem for the PTY surface this ticket does
+// not implement, and reports whether it wrote one.
+func rejectPTY(w http.ResponseWriter, raw json.RawMessage, detail string) bool {
+	if !hasPTY(raw) {
+		return false
+	}
+	writeProblem(w, "unsupported", detail)
+	return true
+}
+
 func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *principal) {
 	sandboxID, ok := pathUUID(r, "id")
 	if !ok {
@@ -109,16 +119,12 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
 		return
 	}
-	if key != nil {
-		if existing, err := s.q.GetExecByIdempotencyKey(ctx, store.GetExecByIdempotencyKeyParams{
-			SandboxID: sandboxID, IdempotencyKey: key,
-		}); err == nil {
-			writeJSON(w, http.StatusOK, execToDTO(existing))
-			return
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			s.internal(w, "look up idempotent Exec", err)
-			return
-		}
+	if existing, err := s.idempotentExec(ctx, sandboxID, key); err != nil {
+		s.internal(w, "look up idempotent Exec", err)
+		return
+	} else if existing != nil {
+		writeJSON(w, http.StatusOK, execToDTO(*existing))
+		return
 	}
 	if sb.State != "ready" || sb.DesiredState != "running" {
 		writeProblem(w, "conflict", "the Sandbox is not ready")
@@ -129,8 +135,7 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if hasPTY(req.Pty) {
-		writeProblem(w, "unsupported", "PTY Execs are not supported yet")
+	if rejectPTY(w, req.Pty, "PTY Execs are not supported yet") {
 		return
 	}
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
@@ -194,10 +199,8 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	})
 	if err != nil {
 		if uniqueViolation(err) == "execs_sandbox_idempotency" && key != nil {
-			if existing, lookupErr := s.q.GetExecByIdempotencyKey(ctx, store.GetExecByIdempotencyKeyParams{
-				SandboxID: sandboxID, IdempotencyKey: key,
-			}); lookupErr == nil {
-				writeJSON(w, http.StatusOK, execToDTO(existing))
+			if existing, lookupErr := s.idempotentExec(ctx, sandboxID, key); lookupErr == nil && existing != nil {
+				writeJSON(w, http.StatusOK, execToDTO(*existing))
 				return
 			}
 		}
@@ -283,8 +286,7 @@ func (s *Server) handleExecOutput(w http.ResponseWriter, r *http.Request, p *pri
 	if !ok {
 		return
 	}
-	if hasPTY(e.Pty) {
-		writeProblem(w, "unsupported", "PTY Execs have no output page")
+	if rejectPTY(w, e.Pty, "PTY Execs have no output page") {
 		return
 	}
 	after, ok := parseAfter(r)
@@ -367,6 +369,8 @@ func (s *Server) followExecOutput(w http.ResponseWriter, r *http.Request, execID
 }
 
 // execFrames reads at most one page of stored frames at or after after.
+// ponytail: a page is bounded by outputPageBytes plus the chunk query's
+// LIMIT 32; raise both together if 256 KiB pages prove too small.
 func (s *Server) execFrames(ctx context.Context, execID uuid.UUID, after int64) ([]logFrame, error) {
 	rows, err := s.q.ListExecOutputChunks(ctx, store.ListExecOutputChunksParams{
 		ExecID: execID, After: after,
@@ -437,6 +441,25 @@ func parseAfter(r *http.Request) (int64, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// idempotentExec returns the Exec a repeated Idempotency-Key already created,
+// or nil when the key is unused. The key is scoped to this Sandbox through the
+// request path (api.md §1).
+func (s *Server) idempotentExec(ctx context.Context, sandboxID uuid.UUID, key *string) (*store.Exec, error) {
+	if key == nil {
+		return nil, nil
+	}
+	e, err := s.q.GetExecByIdempotencyKey(ctx, store.GetExecByIdempotencyKeyParams{
+		SandboxID: sandboxID, IdempotencyKey: key,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 func execToDTO(e store.Exec) execDTO {
