@@ -92,6 +92,7 @@ func (s *Server) routes() []route {
 		{http.MethodPost, "/enrollment-packets", "admin", "createEnrollmentPacket", "Issue an Enrollment Packet", "", "EnrollmentPacket", nil, http.StatusCreated, s.handleCreateEnrollmentPacket},
 		{http.MethodGet, "/nodes", "admin", "listNodes", "List Nodes", "", "NodeList", []string{"limit", "cursor"}, http.StatusOK, s.handleListNodes},
 		{http.MethodGet, "/nodes/{id}", "admin", "getNode", "Get a Node", "", "Node", nil, http.StatusOK, s.handleGetNode},
+		{http.MethodGet, "/capacity", "user", "getCapacity", "Get Node capacity", "", "CapacityList", nil, http.StatusOK, s.handleGetCapacity},
 		{http.MethodPost, "/sandboxes", "user", "createSandbox", "Create a Sandbox", "CreateSandboxRequest", "Sandbox", nil, http.StatusCreated, s.handleCreateSandbox},
 		{http.MethodGet, "/sandboxes", "user", "listSandboxes", "List Sandboxes", "", "SandboxList", []string{"state", "label", "node", "limit", "cursor"}, http.StatusOK, s.handleListSandboxes},
 		{http.MethodGet, "/sandboxes/{id}", "user", "getSandbox", "Get a Sandbox", "", "Sandbox", []string{"wait_for"}, http.StatusOK, s.handleGetSandbox},

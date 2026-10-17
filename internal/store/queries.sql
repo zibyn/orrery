@@ -13,6 +13,11 @@ SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 -- name: GetUserByName :one
 SELECT * FROM users WHERE name = $1 AND deleted_at IS NULL;
 
+-- LockUser serializes quota checks of one User: concurrent creates and starts
+-- cannot both observe the same usage (ADR-0015).
+-- name: LockUser :one
+SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
 -- name: GetUserByIdempotencyKey :one
 SELECT * FROM users
 WHERE created_by = $1 AND idempotency_key = $2;
@@ -250,8 +255,12 @@ WHERE owner_id = sqlc.arg('owner_id')
 ORDER BY id
 LIMIT sqlc.arg('limit');
 
--- name: CountActiveSandboxes :one
-SELECT count(*) FROM sandboxes
+-- An open admission request is part of active usage, so the pending state is
+-- the quota hold (ADR-0015).
+-- name: CountActiveSandboxResources :one
+SELECT count(*)::bigint AS sandboxes,
+       COALESCE(SUM(gpu_count), 0)::bigint AS gpus
+FROM sandboxes
 WHERE owner_id = $1 AND state IN ('pending', 'provisioning', 'ready', 'stopping');
 
 -- name: StartSandbox :one
@@ -329,11 +338,58 @@ SET state = 'stopped', cause = $3, desired_state = 'stopped', updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning', 'ready');
 
+-- FailPendingSandbox ends a queued Sandbox without touching a Sandbox that a
+-- concurrent stop or delete already moved on (admission_timeout,
+-- unsatisfiable, quota_exceeded).
+-- name: FailPendingSandbox :execrows
+UPDATE sandboxes
+SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
+WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'running';
+
+-- TouchPendingSandbox locks the row and re-checks the state the admission
+-- sweep read, so a concurrent stop or delete cannot be handed an Allocation.
+-- name: TouchPendingSandbox :execrows
+UPDATE sandboxes
+SET updated_at = updated_at
+WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'running';
+
 -- name: MarkSandboxStopped :execrows
 UPDATE sandboxes
 SET state = 'stopped', updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+
+-- Admission requests
+
+-- name: CreateAdmissionRequest :one
+INSERT INTO admission_requests (id, sandbox_id, priority, deadline_at)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: EndAdmissionRequest :execrows
+UPDATE admission_requests
+SET ended_at = now(), outcome = $2
+WHERE sandbox_id = $1 AND ended_at IS NULL;
+
+-- The feasible-set FIFO queue: every open request in admission order. A
+-- request that does not fit is skipped, not allowed to block later ones.
+-- name: ListOpenAdmissionRequests :many
+SELECT sqlc.embed(a), sqlc.embed(s)
+FROM admission_requests a
+JOIN sandboxes s ON s.id = a.sandbox_id
+WHERE a.ended_at IS NULL
+ORDER BY CASE a.priority WHEN 'system' THEN 0 ELSE 1 END, a.enqueued_at, a.id;
+
+-- name: AdmissionQueuePosition :one
+-- HAVING drops the aggregate row when the Sandbox has no open request, so
+-- pgx.ErrNoRows means "not queued" rather than position zero.
+SELECT count(*)::bigint AS position
+FROM admission_requests other
+JOIN admission_requests me ON me.sandbox_id = $1 AND me.ended_at IS NULL
+WHERE other.ended_at IS NULL
+  AND (CASE other.priority WHEN 'system' THEN 0 ELSE 1 END, other.enqueued_at, other.id)
+   <= (CASE me.priority WHEN 'system' THEN 0 ELSE 1 END, me.enqueued_at, me.id)
+HAVING count(*) > 0;
 
 -- Workspaces
 

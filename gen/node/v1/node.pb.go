@@ -444,8 +444,13 @@ type Heartbeat struct {
 	MemoryBytes    uint64  `protobuf:"varint,5,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
 	ReservedCpu    float64 `protobuf:"fixed64,6,opt,name=reserved_cpu,json=reservedCpu,proto3" json:"reserved_cpu,omitempty"`
 	ReservedMemory uint64  `protobuf:"varint,7,opt,name=reserved_memory,json=reservedMemory,proto3" json:"reserved_memory,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Disk capacity, so the Control Plane can apply the disk watermark.
+	DiskTotal uint64 `protobuf:"varint,8,opt,name=disk_total,json=diskTotal,proto3" json:"disk_total,omitempty"`
+	// Fraction of the disk that must stay free before the Node takes new
+	// allocations (defaults.md, Node configuration).
+	DiskWatermark float64 `protobuf:"fixed64,9,opt,name=disk_watermark,json=diskWatermark,proto3" json:"disk_watermark,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Heartbeat) Reset() {
@@ -523,6 +528,20 @@ func (x *Heartbeat) GetReservedCpu() float64 {
 func (x *Heartbeat) GetReservedMemory() uint64 {
 	if x != nil {
 		return x.ReservedMemory
+	}
+	return 0
+}
+
+func (x *Heartbeat) GetDiskTotal() uint64 {
+	if x != nil {
+		return x.DiskTotal
+	}
+	return 0
+}
+
+func (x *Heartbeat) GetDiskWatermark() float64 {
+	if x != nil {
+		return x.DiskWatermark
 	}
 	return 0
 }
@@ -2298,7 +2317,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\vproto_major\x18\x03 \x01(\rR\n" +
 	"protoMajor\x12\x1f\n" +
 	"\vproto_minor\x18\x04 \x01(\rR\n" +
-	"protoMinor\"\x94\x02\n" +
+	"protoMinor\"\xda\x02\n" +
 	"\tHeartbeat\x12%\n" +
 	"\x0eruntime_health\x18\x01 \x01(\tR\rruntimeHealth\x12\x1b\n" +
 	"\tdisk_free\x18\x02 \x01(\x04R\bdiskFree\x127\n" +
@@ -2307,7 +2326,10 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\tcpu_cores\x18\x04 \x01(\x01R\bcpuCores\x12!\n" +
 	"\fmemory_bytes\x18\x05 \x01(\x04R\vmemoryBytes\x12!\n" +
 	"\freserved_cpu\x18\x06 \x01(\x01R\vreservedCpu\x12'\n" +
-	"\x0freserved_memory\x18\a \x01(\x04R\x0ereservedMemory\"5\n" +
+	"\x0freserved_memory\x18\a \x01(\x04R\x0ereservedMemory\x12\x1d\n" +
+	"\n" +
+	"disk_total\x18\b \x01(\x04R\tdiskTotal\x12%\n" +
+	"\x0edisk_watermark\x18\t \x01(\x01R\rdiskWatermark\"5\n" +
 	"\tGPUHealth\x12\x12\n" +
 	"\x04uuid\x18\x01 \x01(\tR\x04uuid\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\"\x8a\x01\n" +

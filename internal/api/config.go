@@ -24,6 +24,9 @@ type Config struct {
 	ExecLogCap int64
 	// PtyIdleSeconds is the deployment PTY idle reap (defaults.md, 300 s).
 	PtyIdleSeconds int64
+	// AdmissionTimeout is how long a queued Sandbox waits before it fails
+	// with admission_timeout (defaults.md, 1 hour).
+	AdmissionTimeout time.Duration
 	// AppsDomain is the wildcard domain port forwarding serves (api.md §6).
 	// Empty means the Gateway is off; the CLI tunnel still works.
 	AppsDomain string
@@ -60,6 +63,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.PtyIdleSeconds, err = envInt64("STARS_PTY_IDLE_SECONDS", 300); err != nil {
+		return Config{}, err
+	}
+	if cfg.AdmissionTimeout, err = envDuration("STARS_ADMISSION_TIMEOUT", time.Hour); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

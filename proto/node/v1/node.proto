@@ -63,6 +63,11 @@ message Heartbeat {
   uint64 memory_bytes = 5;
   double reserved_cpu = 6;
   uint64 reserved_memory = 7;
+  // Disk capacity, so the Control Plane can apply the disk watermark.
+  uint64 disk_total = 8;
+  // Fraction of the disk that must stay free before the Node takes new
+  // allocations (defaults.md, Node configuration).
+  double disk_watermark = 9;
 }
 
 message GPUHealth {

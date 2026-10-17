@@ -28,17 +28,27 @@ var sandboxStates = map[string]bool{
 }
 
 type createSandboxRequest struct {
-	Name     *string           `json:"name"`
-	Labels   map[string]string `json:"labels"`
-	Snapshot *string           `json:"snapshot"`
-	CPU      *float64          `json:"cpu"`
-	Memory   *int64            `json:"memory"`
-	IdleStop *int32            `json:"idle_stop"`
+	Name     *string            `json:"name"`
+	Labels   map[string]string  `json:"labels"`
+	Snapshot *string            `json:"snapshot"`
+	CPU      *float64           `json:"cpu"`
+	Memory   *int64             `json:"memory"`
+	GPU      *sandboxGPURequest `json:"gpu"`
+	IdleStop *int32             `json:"idle_stop"`
+}
+
+type sandboxGPURequest struct {
+	Count int32   `json:"count"`
+	Model *string `json:"model"`
 }
 
 type sandboxWorkspaceDTO struct {
 	ID   string `json:"id"`
 	Mode string `json:"mode"`
+}
+
+type sandboxGPUDTO struct {
+	Count int32 `json:"count"`
 }
 
 type sandboxDTO struct {
@@ -51,8 +61,10 @@ type sandboxDTO struct {
 	Snapshot      string               `json:"snapshot"`
 	CPU           float64              `json:"cpu"`
 	Memory        int64                `json:"memory"`
+	GPU           *sandboxGPUDTO       `json:"gpu,omitempty"`
 	IdleStop      int32                `json:"idle_stop"`
 	Workspace     *sandboxWorkspaceDTO `json:"workspace,omitempty"`
+	QueuePosition *int64               `json:"queue_position,omitempty"`
 	BlockedReason *string              `json:"blocked_reason,omitempty"`
 	CreatedAt     time.Time            `json:"created_at"`
 }
@@ -73,7 +85,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		if existing, err := s.q.GetSandboxByIdempotencyKey(ctx, store.GetSandboxByIdempotencyKeyParams{
 			OwnerID: p.user.ID, IdempotencyKey: key,
 		}); err == nil {
-			writeJSON(w, http.StatusOK, s.sandboxToDTO(existing))
+			writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
 			return
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			s.internal(w, "look up idempotent Sandbox", err)
@@ -105,21 +117,19 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		}
 		idleStop = *req.IdleStop
 	}
+	gpuCount := int32(0)
+	if req.GPU != nil {
+		if req.GPU.Count < 0 {
+			writeProblem(w, "invalid_request", "gpu.count must be zero or a positive number")
+			return
+		}
+		gpuCount = req.GPU.Count
+	}
 	snapshot := s.cfg.SnapshotDigest
 	if req.Snapshot != nil && *req.Snapshot != "" {
 		snapshot = *req.Snapshot
 	} else if snapshot == "" {
 		writeProblem(w, "internal", "no default Snapshot is configured; set STARS_DEFAULT_SNAPSHOT_DIGEST or pass snapshot")
-		return
-	}
-
-	used, err := s.q.CountActiveSandboxes(ctx, p.user.ID)
-	if err != nil {
-		s.internal(w, "count active Sandboxes", err)
-		return
-	}
-	if used >= int64(p.user.SandboxQuota) {
-		writeProblem(w, "quota_exceeded", fmt.Sprintf("sandbox quota is %d", p.user.SandboxQuota))
 		return
 	}
 
@@ -152,10 +162,26 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
+	// Quota is checked at admission, under the User's row lock, so concurrent
+	// creates cannot both take the last slot (ADR-0015).
+	owner, err := q.LockUser(ctx, p.user.ID)
+	if err != nil {
+		s.internal(w, "lock User for quota", err)
+		return
+	}
+	usage, err := q.CountActiveSandboxResources(ctx, p.user.ID)
+	if err != nil {
+		s.internal(w, "count active Sandboxes", err)
+		return
+	}
+	if problem := quotaProblem(owner, usage, gpuCount); problem != "" {
+		writeProblem(w, "quota_exceeded", problem)
+		return
+	}
 	sandbox, err := q.CreateSandbox(ctx, store.CreateSandboxParams{
 		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels,
 		SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
-		GpuCount: 0, IdleStopSeconds: idleStop, IdempotencyKey: key,
+		GpuCount: gpuCount, IdleStopSeconds: idleStop, IdempotencyKey: key,
 	})
 	if err != nil {
 		if index := uniqueViolation(err); index != "" {
@@ -165,7 +191,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 					if existing, lookupErr := s.q.GetSandboxByIdempotencyKey(ctx, store.GetSandboxByIdempotencyKeyParams{
 						OwnerID: p.user.ID, IdempotencyKey: key,
 					}); lookupErr == nil {
-						writeJSON(w, http.StatusOK, s.sandboxToDTO(existing))
+						writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
 						return
 					}
 				}
@@ -201,17 +227,54 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		s.internal(w, "create Attachment", err)
 		return
 	}
+	if err := s.enqueueAdmission(ctx, q, sandbox.ID); err != nil {
+		s.internal(w, "enqueue admission request", err)
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		s.internal(w, "commit Sandbox", err)
 		return
 	}
 	s.audit(ctx, p, "sandbox.create", "sandbox", sandbox.ID.String(), map[string]any{
-		"name": name, "cpu": *req.CPU, "memory": *req.Memory, "snapshot": snapshot,
+		"name": name, "cpu": *req.CPU, "memory": *req.Memory, "gpu": gpuCount, "snapshot": snapshot,
 	})
 	s.changed(ctx)
-	dto := s.sandboxToDTO(sandbox)
+	dto := s.sandboxToDTO(ctx, sandbox)
 	dto.Workspace = &sandboxWorkspaceDTO{ID: workspaceID.String(), Mode: "rw"}
 	writeJSON(w, http.StatusCreated, dto)
+}
+
+// quotaProblem returns the 429 detail when a create or start would exceed the
+// owner's quota, or "" when it fits (ADR-0015).
+func quotaProblem(owner store.User, usage store.CountActiveSandboxResourcesRow, gpuCount int32) string {
+	if usage.Sandboxes >= int64(owner.SandboxQuota) {
+		return fmt.Sprintf("sandbox quota is %d", owner.SandboxQuota)
+	}
+	if usage.Gpus+int64(gpuCount) > int64(owner.GpuQuota) {
+		return fmt.Sprintf("GPU quota is %d", owner.GpuQuota)
+	}
+	return ""
+}
+
+// enqueueAdmission opens the admission request that holds the Sandbox's quota
+// slot until it is placed or the deadline passes.
+func (s *Server) enqueueAdmission(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) error {
+	deadline := time.Now().Add(s.cfg.AdmissionTimeout)
+	id, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+	// A restart can race the sweep that ends the previous request; canceling
+	// first keeps the open-request unique index honest.
+	if _, err := q.EndAdmissionRequest(ctx, store.EndAdmissionRequestParams{
+		SandboxID: sandboxID, Outcome: strPtr("canceled"),
+	}); err != nil {
+		return err
+	}
+	_, err = q.CreateAdmissionRequest(ctx, store.CreateAdmissionRequestParams{
+		ID: id, SandboxID: sandboxID, Priority: "user", DeadlineAt: timestamptzPtr(&deadline),
+	})
+	return err
 }
 
 func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -261,7 +324,7 @@ func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request, p *
 			list.NextCursor = &cursor
 			break
 		}
-		list.Items = append(list.Items, s.sandboxToDTO(row))
+		list.Items = append(list.Items, s.sandboxToDTO(r.Context(), row))
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -283,7 +346,7 @@ func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request, p *pri
 		}
 		sb = s.waitForSandbox(r.Context(), sb, want)
 	}
-	writeJSON(w, http.StatusOK, s.sandboxToDTO(sb))
+	writeJSON(w, http.StatusOK, s.sandboxToDTO(r.Context(), sb))
 }
 
 func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -305,14 +368,7 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		writeProblem(w, "conflict", "the Sandbox is not stopped")
 		return
 	}
-	used, err := s.q.CountActiveSandboxes(ctx, p.user.ID)
-	if err != nil {
-		s.internal(w, "count active Sandboxes", err)
-		return
-	}
 
-	// One transaction: the Reconciler must never see a pending Sandbox without
-	// its Attachment or its allocation.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		s.internal(w, "begin transaction", err)
@@ -320,6 +376,16 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
+	owner, err := q.LockUser(ctx, sb.OwnerID)
+	if err != nil {
+		s.internal(w, "lock Sandbox owner for quota", err)
+		return
+	}
+	usage, err := q.CountActiveSandboxResources(ctx, sb.OwnerID)
+	if err != nil {
+		s.internal(w, "count active Sandboxes", err)
+		return
+	}
 	started, err := q.StartSandbox(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeProblem(w, "conflict", "the Sandbox state changed; retry")
@@ -329,9 +395,11 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		s.internal(w, "start Sandbox", err)
 		return
 	}
-	if used >= int64(p.user.SandboxQuota) {
+	// Re-admission checks the same quota as creation (api.md §2). The stopped
+	// Sandbox is not counted yet, so usage is the other Sandboxes.
+	if quotaProblem(owner, usage, started.GpuCount) != "" {
 		cause := "quota_exceeded"
-		if _, err := q.MarkSandboxFailed(ctx, store.MarkSandboxFailedParams{
+		if _, err := q.FailPendingSandbox(ctx, store.FailPendingSandboxParams{
 			ID: id, Generation: started.Generation, Cause: &cause,
 		}); err != nil {
 			s.internal(w, "fail Sandbox on quota", err)
@@ -347,7 +415,7 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 			return
 		}
 		s.changed(ctx)
-		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(failed))
+		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(ctx, failed))
 		return
 	}
 	ws, err := q.GetSandboxWorkspace(ctx, &id)
@@ -359,8 +427,9 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		s.internal(w, "look up Workspace", err)
 		return
 	}
-	// Stopping released the Attachment and the Allocation; start re-acquires
-	// both. The implicit Workspace is always read-write (ADR-0018).
+	// Stopping released the Attachment; start re-acquires it. The implicit
+	// Workspace is always read-write (ADR-0018). Admission re-acquires the
+	// Allocation.
 	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
 		SandboxID: id, WorkspaceID: ws.ID, Mode: "rw", Generation: started.Generation,
 	}); err != nil {
@@ -371,14 +440,9 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		s.internal(w, "re-create Attachment", err)
 		return
 	}
-	if started.NodeID != nil {
-		if err := q.CreateAllocation(ctx, store.CreateAllocationParams{
-			SandboxID: id, NodeID: *started.NodeID, Cpu: started.Cpu,
-			Memory: started.Memory, Generation: started.Generation,
-		}); err != nil {
-			s.internal(w, "re-create Allocation", err)
-			return
-		}
+	if err := s.enqueueAdmission(ctx, q, id); err != nil {
+		s.internal(w, "enqueue admission request", err)
+		return
 	}
 	if err := tx.Commit(ctx); err != nil {
 		s.internal(w, "commit start", err)
@@ -386,7 +450,7 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 	}
 	s.audit(ctx, p, "sandbox.start", "sandbox", id.String(), nil)
 	s.changed(ctx)
-	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(started))
+	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(ctx, started))
 }
 
 func (s *Server) handleStopSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -402,7 +466,7 @@ func (s *Server) handleStopSandbox(w http.ResponseWriter, r *http.Request, p *pr
 	}
 	switch sb.State {
 	case "stopped":
-		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(sb))
+		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(r.Context(), sb))
 		return
 	case "deleting", "deleted":
 		writeProblem(w, "conflict", "the Sandbox is being deleted")
@@ -412,7 +476,7 @@ func (s *Server) handleStopSandbox(w http.ResponseWriter, r *http.Request, p *pr
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Already stopping: the action is idempotent.
 		if current, getErr := s.q.GetSandbox(ctx, id); getErr == nil {
-			writeJSON(w, http.StatusAccepted, s.sandboxToDTO(current))
+			writeJSON(w, http.StatusAccepted, s.sandboxToDTO(r.Context(), current))
 			return
 		}
 		writeProblem(w, "conflict", "the Sandbox state changed; retry")
@@ -424,7 +488,7 @@ func (s *Server) handleStopSandbox(w http.ResponseWriter, r *http.Request, p *pr
 	}
 	s.audit(ctx, p, "sandbox.stop", "sandbox", id.String(), nil)
 	s.changed(ctx)
-	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(stopped))
+	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(r.Context(), stopped))
 }
 
 func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -439,7 +503,7 @@ func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	if sb.State == "deleting" {
-		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(sb))
+		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(r.Context(), sb))
 		return
 	}
 	deleted, err := s.q.DeleteSandbox(ctx, id)
@@ -453,7 +517,7 @@ func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request, p *
 	}
 	s.audit(ctx, p, "sandbox.delete", "sandbox", id.String(), nil)
 	s.changed(ctx)
-	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(deleted))
+	writeJSON(w, http.StatusAccepted, s.sandboxToDTO(r.Context(), deleted))
 }
 
 func (s *Server) getOwnedSandbox(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Sandbox, bool) {
@@ -492,7 +556,7 @@ func (s *Server) waitForSandbox(ctx context.Context, sb store.Sandbox, want stri
 	return sb
 }
 
-func (s *Server) sandboxToDTO(sb store.Sandbox) sandboxDTO {
+func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO {
 	labels := map[string]string{}
 	if len(sb.Labels) > 0 {
 		_ = json.Unmarshal(sb.Labels, &labels)
@@ -503,11 +567,28 @@ func (s *Server) sandboxToDTO(sb store.Sandbox) sandboxDTO {
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
 	}
-	if sb.State == "pending" && sb.NodeID == nil {
-		reason := "waiting for Node capacity"
-		dto.BlockedReason = &reason
+	if sb.GpuCount > 0 {
+		dto.GPU = &sandboxGPUDTO{Count: sb.GpuCount}
+	}
+	// queue_position exists only while the admission request is open. Ignoring
+	// a failed read degrades the display, not the response.
+	if sb.State == "pending" {
+		if position, err := s.q.AdmissionQueuePosition(ctx, sb.ID); err == nil {
+			hint := queueHint(sb)
+			dto.QueuePosition = &position
+			dto.BlockedReason = &hint
+		}
 	}
 	return dto
+}
+
+// queueHint describes why a pending Sandbox is waiting. It is deliberately
+// coarse: the exact fitting decision is the admission sweep's.
+func queueHint(sb store.Sandbox) string {
+	if sb.NodeID == nil {
+		return "waiting for Node capacity"
+	}
+	return "the bound Node cannot take the Sandbox"
 }
 
 func validLabel(s string) bool {

@@ -13,6 +13,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const admissionQueuePosition = `-- name: AdmissionQueuePosition :one
+SELECT count(*)::bigint AS position
+FROM admission_requests other
+JOIN admission_requests me ON me.sandbox_id = $1 AND me.ended_at IS NULL
+WHERE other.ended_at IS NULL
+  AND (CASE other.priority WHEN 'system' THEN 0 ELSE 1 END, other.enqueued_at, other.id)
+   <= (CASE me.priority WHEN 'system' THEN 0 ELSE 1 END, me.enqueued_at, me.id)
+HAVING count(*) > 0
+`
+
+// HAVING drops the aggregate row when the Sandbox has no open request, so
+// pgx.ErrNoRows means "not queued" rather than position zero.
+func (q *Queries) AdmissionQueuePosition(ctx context.Context, sandboxID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, admissionQueuePosition, sandboxID)
+	var position int64
+	err := row.Scan(&position)
+	return position, err
+}
+
 const advanceExecStoredSeq = `-- name: AdvanceExecStoredSeq :exec
 UPDATE execs
 SET stored_seq = GREATEST(stored_seq, $2),
@@ -167,16 +186,25 @@ func (q *Queries) CountActiveExecs(ctx context.Context, sandboxID uuid.UUID) (in
 	return count, err
 }
 
-const countActiveSandboxes = `-- name: CountActiveSandboxes :one
-SELECT count(*) FROM sandboxes
+const countActiveSandboxResources = `-- name: CountActiveSandboxResources :one
+SELECT count(*)::bigint AS sandboxes,
+       COALESCE(SUM(gpu_count), 0)::bigint AS gpus
+FROM sandboxes
 WHERE owner_id = $1 AND state IN ('pending', 'provisioning', 'ready', 'stopping')
 `
 
-func (q *Queries) CountActiveSandboxes(ctx context.Context, ownerID uuid.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countActiveSandboxes, ownerID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+type CountActiveSandboxResourcesRow struct {
+	Sandboxes int64
+	Gpus      int64
+}
+
+// An open admission request is part of active usage, so the pending state is
+// the quota hold (ADR-0015).
+func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.UUID) (CountActiveSandboxResourcesRow, error) {
+	row := q.db.QueryRow(ctx, countActiveSandboxResources, ownerID)
+	var i CountActiveSandboxResourcesRow
+	err := row.Scan(&i.Sandboxes, &i.Gpus)
+	return i, err
 }
 
 const countUsers = `-- name: CountUsers :one
@@ -188,6 +216,41 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createAdmissionRequest = `-- name: CreateAdmissionRequest :one
+
+INSERT INTO admission_requests (id, sandbox_id, priority, deadline_at)
+VALUES ($1, $2, $3, $4)
+RETURNING id, sandbox_id, priority, enqueued_at, deadline_at, ended_at, outcome
+`
+
+type CreateAdmissionRequestParams struct {
+	ID         uuid.UUID
+	SandboxID  uuid.UUID
+	Priority   string
+	DeadlineAt pgtype.Timestamptz
+}
+
+// Admission requests
+func (q *Queries) CreateAdmissionRequest(ctx context.Context, arg CreateAdmissionRequestParams) (AdmissionRequest, error) {
+	row := q.db.QueryRow(ctx, createAdmissionRequest,
+		arg.ID,
+		arg.SandboxID,
+		arg.Priority,
+		arg.DeadlineAt,
+	)
+	var i AdmissionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.SandboxID,
+		&i.Priority,
+		&i.EnqueuedAt,
+		&i.DeadlineAt,
+		&i.EndedAt,
+		&i.Outcome,
+	)
+	return i, err
 }
 
 const createAllocation = `-- name: CreateAllocation :exec
@@ -689,6 +752,48 @@ DELETE FROM api_tokens WHERE user_id = $1 AND kind = 'session'
 
 func (q *Queries) DeleteUserSessions(ctx context.Context, userID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteUserSessions, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const endAdmissionRequest = `-- name: EndAdmissionRequest :execrows
+UPDATE admission_requests
+SET ended_at = now(), outcome = $2
+WHERE sandbox_id = $1 AND ended_at IS NULL
+`
+
+type EndAdmissionRequestParams struct {
+	SandboxID uuid.UUID
+	Outcome   *string
+}
+
+func (q *Queries) EndAdmissionRequest(ctx context.Context, arg EndAdmissionRequestParams) (int64, error) {
+	result, err := q.db.Exec(ctx, endAdmissionRequest, arg.SandboxID, arg.Outcome)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failPendingSandbox = `-- name: FailPendingSandbox :execrows
+UPDATE sandboxes
+SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
+WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'running'
+`
+
+type FailPendingSandboxParams struct {
+	ID         uuid.UUID
+	Generation int64
+	Cause      *string
+}
+
+// FailPendingSandbox ends a queued Sandbox without touching a Sandbox that a
+// concurrent stop or delete already moved on (admission_timeout,
+// unsatisfiable, quota_exceeded).
+func (q *Queries) FailPendingSandbox(ctx context.Context, arg FailPendingSandboxParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failPendingSandbox, arg.ID, arg.Generation, arg.Cause)
 	if err != nil {
 		return 0, err
 	}
@@ -1708,6 +1813,70 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 	return items, nil
 }
 
+const listOpenAdmissionRequests = `-- name: ListOpenAdmissionRequests :many
+SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_hash, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at
+FROM admission_requests a
+JOIN sandboxes s ON s.id = a.sandbox_id
+WHERE a.ended_at IS NULL
+ORDER BY CASE a.priority WHEN 'system' THEN 0 ELSE 1 END, a.enqueued_at, a.id
+`
+
+type ListOpenAdmissionRequestsRow struct {
+	AdmissionRequest AdmissionRequest
+	Sandbox          Sandbox
+}
+
+// The feasible-set FIFO queue: every open request in admission order. A
+// request that does not fit is skipped, not allowed to block later ones.
+func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmissionRequestsRow, error) {
+	rows, err := q.db.Query(ctx, listOpenAdmissionRequests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenAdmissionRequestsRow{}
+	for rows.Next() {
+		var i ListOpenAdmissionRequestsRow
+		if err := rows.Scan(
+			&i.AdmissionRequest.ID,
+			&i.AdmissionRequest.SandboxID,
+			&i.AdmissionRequest.Priority,
+			&i.AdmissionRequest.EnqueuedAt,
+			&i.AdmissionRequest.DeadlineAt,
+			&i.AdmissionRequest.EndedAt,
+			&i.AdmissionRequest.Outcome,
+			&i.Sandbox.ID,
+			&i.Sandbox.OwnerID,
+			&i.Sandbox.Name,
+			&i.Sandbox.Labels,
+			&i.Sandbox.DesiredState,
+			&i.Sandbox.State,
+			&i.Sandbox.Cause,
+			&i.Sandbox.NodeID,
+			&i.Sandbox.SnapshotDigest,
+			&i.Sandbox.Cpu,
+			&i.Sandbox.Memory,
+			&i.Sandbox.GpuCount,
+			&i.Sandbox.IdleStopSeconds,
+			&i.Sandbox.LastActivityAt,
+			&i.Sandbox.TokenHash,
+			&i.Sandbox.SecretEnvCt,
+			&i.Sandbox.Generation,
+			&i.Sandbox.IdempotencyKey,
+			&i.Sandbox.CreatedAt,
+			&i.Sandbox.UpdatedAt,
+			&i.Sandbox.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReconcilableSandboxes = `-- name: ListReconcilableSandboxes :many
 
 SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_hash, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at FROM sandboxes
@@ -1925,6 +2094,35 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockUser = `-- name: LockUser :one
+SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+`
+
+// LockUser serializes quota checks of one User: concurrent creates and starts
+// cannot both observe the same usage (ADR-0015).
+func (q *Queries) LockUser(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, lockUser, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.IsAdmin,
+		&i.LoginType,
+		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
+		&i.GpuQuota,
+		&i.SandboxQuota,
+		&i.IdempotencyKey,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
 }
 
 const markSandboxDeleted = `-- name: MarkSandboxDeleted :execrows
@@ -2466,6 +2664,27 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const touchPendingSandbox = `-- name: TouchPendingSandbox :execrows
+UPDATE sandboxes
+SET updated_at = updated_at
+WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'running'
+`
+
+type TouchPendingSandboxParams struct {
+	ID         uuid.UUID
+	Generation int64
+}
+
+// TouchPendingSandbox locks the row and re-checks the state the admission
+// sweep read, so a concurrent stop or delete cannot be handed an Allocation.
+func (q *Queries) TouchPendingSandbox(ctx context.Context, arg TouchPendingSandboxParams) (int64, error) {
+	result, err := q.db.Exec(ctx, touchPendingSandbox, arg.ID, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchToken = `-- name: TouchToken :exec

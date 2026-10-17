@@ -345,15 +345,14 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request, p *principa
 }
 
 func (s *Server) handleGetMyQuota(w http.ResponseWriter, r *http.Request, p *principal) {
-	used, err := s.q.CountActiveSandboxes(r.Context(), p.user.ID)
+	usage, err := s.q.CountActiveSandboxResources(r.Context(), p.user.ID)
 	if err != nil {
 		s.internal(w, "count active Sandboxes", err)
 		return
 	}
-	// ponytail: GPU usage is 0 until GPU Allocation exists.
 	writeJSON(w, http.StatusOK, userQuotaUsage{
-		GPUs:      quotaUsageItem{Limit: p.user.GpuQuota, Used: 0},
-		Sandboxes: quotaUsageItem{Limit: p.user.SandboxQuota, Used: int32(used)},
+		GPUs:      quotaUsageItem{Limit: p.user.GpuQuota, Used: int32(usage.Gpus)},
+		Sandboxes: quotaUsageItem{Limit: p.user.SandboxQuota, Used: int32(usage.Sandboxes)},
 	})
 }
 

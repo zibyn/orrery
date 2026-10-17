@@ -11,6 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AdmissionRequest struct {
+	ID         uuid.UUID
+	SandboxID  uuid.UUID
+	Priority   string
+	EnqueuedAt pgtype.Timestamptz
+	DeadlineAt pgtype.Timestamptz
+	EndedAt    pgtype.Timestamptz
+	Outcome    *string
+}
+
 type Allocation struct {
 	SandboxID  uuid.UUID
 	NodeID     uuid.UUID

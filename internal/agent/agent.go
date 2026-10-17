@@ -37,6 +37,9 @@ const (
 	DefaultDataRoot     = "/var/lib/stars-sandbox"
 	DefaultReserveCPU   = 1.0
 	DefaultReserveBytes = 2 << 30 // 2 GiB
+	// DefaultDiskWatermark is the fraction of the disk that must stay free
+	// (defaults.md, Node configuration).
+	DefaultDiskWatermark = 0.10
 
 	maxBackoff = time.Minute
 )
@@ -145,6 +148,7 @@ type RunOptions struct {
 	DataRoot      string
 	ReserveCPU    float64
 	ReserveMemory int64
+	DiskWatermark float64
 }
 
 // Run keeps one Control stream alive, probing capabilities once per
@@ -170,6 +174,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	if opts.ReserveMemory == 0 {
 		opts.ReserveMemory = DefaultReserveBytes
+	}
+	if opts.DiskWatermark <= 0 {
+		opts.DiskWatermark = DefaultDiskWatermark
 	}
 	if err := PrepareDataRoot(opts.DataRoot); err != nil {
 		return err
@@ -319,7 +326,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	}})
 	host := hostHardware()
 	heartbeat := func() *nodev1.AgentMessage {
-		return heartbeatMessage(health, host, opts.ReserveCPU, opts.ReserveMemory)
+		return heartbeatMessage(health, host, opts)
 	}
 	send(heartbeat())
 
@@ -394,15 +401,18 @@ func hostHardware() hardware {
 	return hardware{CPUCores: float64(runtime.NumCPU()), MemoryBytes: memory}
 }
 
-func heartbeatMessage(health string, host hardware, reserveCPU float64, reserveMemory int64) *nodev1.AgentMessage {
+func heartbeatMessage(health string, host hardware, opts RunOptions) *nodev1.AgentMessage {
+	free, total := diskUsage("/")
 	return &nodev1.AgentMessage{Message: &nodev1.AgentMessage_Heartbeat{
 		Heartbeat: &nodev1.Heartbeat{
 			RuntimeHealth:  health,
-			DiskFree:       diskFree("/"),
+			DiskFree:       free,
+			DiskTotal:      total,
+			DiskWatermark:  opts.DiskWatermark,
 			CpuCores:       host.CPUCores,
 			MemoryBytes:    uint64(host.MemoryBytes),
-			ReservedCpu:    reserveCPU,
-			ReservedMemory: uint64(reserveMemory),
+			ReservedCpu:    opts.ReserveCPU,
+			ReservedMemory: uint64(opts.ReserveMemory),
 		},
 	}}
 }
@@ -453,12 +463,12 @@ func serverName(server string) string {
 	return strings.Trim(host, "[]")
 }
 
-func diskFree(path string) uint64 {
+func diskUsage(path string) (free, total uint64) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0
+		return 0, 0
 	}
-	return stat.Bavail * uint64(stat.Bsize)
+	return stat.Bavail * uint64(stat.Bsize), stat.Blocks * uint64(stat.Bsize)
 }
 
 func buildVersion() string {

@@ -124,6 +124,17 @@ func (r *reconciler) once(ctx context.Context) {
 	}
 	r.deleteWorkspaces(ctx)
 	r.execs(ctx)
+	// Admission is last so its writes commit with the sweep and its own
+	// capacity arithmetic sees everything this tick already released.
+	if err := r.admit(ctx, tx); err != nil {
+		if ctx.Err() == nil {
+			r.s.log.Warn("reconcile: admit", "error", err)
+		}
+		return // the deferred Rollback discards a partial admission
+	}
+	if err := tx.Commit(ctx); err != nil && ctx.Err() == nil {
+		r.s.log.Warn("reconcile: commit sweep", "error", err)
+	}
 }
 
 // execs derives StartExec and CancelExec from the unavoidable truth of the
@@ -221,9 +232,13 @@ func (r *reconciler) finishExec(ctx context.Context, id uuid.UUID, cause string)
 	}
 }
 
-// pending places a Sandbox on a Node, provisions its Workspace there, and then
-// hands off to create on the next tick.
+// pending provisions a Sandbox that the admission sweep has placed. Placement
+// itself is the admission queue's job (admission.go); a Sandbox without a Node
+// is still waiting for capacity.
 func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
+	if sb.NodeID == nil {
+		return
+	}
 	ws, err := r.s.q.GetSandboxWorkspace(ctx, &sb.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		r.fail(ctx, sb, "runtime_create_failed")
@@ -231,16 +246,6 @@ func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
 	}
 	if err != nil {
 		r.s.log.Warn("reconcile: workspace lookup", "sandbox_id", sb.ID, "error", err)
-		return
-	}
-	if sb.NodeID == nil {
-		nodeID, ok := r.place(ctx, sb)
-		if !ok {
-			return // stays pending; blocked_reason is derived on read
-		}
-		if err := r.bind(ctx, sb, ws, nodeID); err != nil {
-			r.s.log.Warn("reconcile: bind sandbox", "sandbox_id", sb.ID, "error", err)
-		}
 		return
 	}
 	if ws.NodeID == nil {
@@ -267,34 +272,6 @@ func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
 			r.s.log.Warn("reconcile: mark sandbox provisioning", "sandbox_id", sb.ID, "error", err)
 		}
 	}
-}
-
-func (r *reconciler) bind(ctx context.Context, sb store.Sandbox, ws store.Workspace, nodeID uuid.UUID) error {
-	tx, err := r.s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	q := r.s.q.WithTx(tx)
-	// The state guards make a concurrent stop or delete win the race: then the
-	// Sandbox is not bound and no Allocation exists.
-	bound, err := q.SetSandboxNode(ctx, store.SetSandboxNodeParams{ID: sb.ID, NodeID: &nodeID})
-	if err != nil {
-		return err
-	}
-	if bound == 0 {
-		// A concurrent stop or delete won the state guard: write nothing.
-		return nil
-	}
-	if _, err := q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{ID: ws.ID, NodeID: &nodeID}); err != nil {
-		return err
-	}
-	if err := q.CreateAllocation(ctx, store.CreateAllocationParams{
-		SandboxID: sb.ID, NodeID: nodeID, Cpu: sb.Cpu, Memory: sb.Memory, Generation: sb.Generation,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }
 
 func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
@@ -448,43 +425,6 @@ func (r *reconciler) finalizeWorkspace(ctx context.Context, ws store.Workspace) 
 	}
 }
 
-// place picks the first ready Node with enough unreserved CPU and memory. FIFO
-// admission is the GPU scheduling ticket's job.
-func (r *reconciler) place(ctx context.Context, sb store.Sandbox) (uuid.UUID, bool) {
-	nodes, err := r.s.q.ListAllNodes(ctx)
-	if err != nil {
-		r.s.log.Warn("reconcile: list nodes", "error", err)
-		return uuid.UUID{}, false
-	}
-	now := time.Now()
-	for _, node := range nodes {
-		// A Node that just dropped still looks ready for nodeUnreachableAfter;
-		// binding there would leave the Sandbox without a command stream.
-		if deriveNodeStatus(node, now) != "ready" || !r.hub.connected(node.ID) {
-			continue
-		}
-		var hw struct {
-			CPUCores    float64 `json:"cpu_cores"`
-			MemoryBytes int64   `json:"memory_bytes"`
-		}
-		if len(node.Hardware) == 0 || json.Unmarshal(node.Hardware, &hw) != nil {
-			continue
-		}
-		used, err := r.s.q.NodeAllocated(ctx, node.ID)
-		if err != nil {
-			continue
-		}
-		if hw.CPUCores-node.ReservedCpu-used.Cpu < sb.Cpu {
-			continue
-		}
-		if hw.MemoryBytes-node.ReservedMemory-used.Memory < sb.Memory {
-			continue
-		}
-		return node.ID, true
-	}
-	return uuid.UUID{}, false
-}
-
 func (r *reconciler) fail(ctx context.Context, sb store.Sandbox, cause string) {
 	tx, err := r.s.pool.Begin(ctx)
 	if err != nil {
@@ -509,6 +449,7 @@ func (r *reconciler) fail(ctx context.Context, sb store.Sandbox, cause string) {
 			return
 		}
 	}
+	r.endAdmission(ctx, q, sb.ID, "canceled")
 	if err := tx.Commit(ctx); err != nil {
 		r.s.log.Warn("reconcile: commit failure", "sandbox_id", sb.ID, "error", err)
 	}

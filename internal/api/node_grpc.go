@@ -234,10 +234,12 @@ func (n *nodeService) recordHeartbeat(ctx context.Context, id uuid.UUID, heartbe
 		health = &heartbeat.RuntimeHealth
 	}
 	hardware, err := json.Marshal(map[string]any{
-		"disk_free":    heartbeat.DiskFree,
-		"gpu_health":   heartbeat.GpuHealth,
-		"cpu_cores":    heartbeat.CpuCores,
-		"memory_bytes": heartbeat.MemoryBytes,
+		"disk_free":      heartbeat.DiskFree,
+		"disk_total":     heartbeat.DiskTotal,
+		"disk_watermark": heartbeat.DiskWatermark,
+		"gpu_health":     heartbeat.GpuHealth,
+		"cpu_cores":      heartbeat.CpuCores,
+		"memory_bytes":   heartbeat.MemoryBytes,
 	})
 	if err != nil {
 		return err

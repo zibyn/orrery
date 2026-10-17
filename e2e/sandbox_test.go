@@ -15,16 +15,20 @@ import (
 )
 
 type sandboxView struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Labels    map[string]string `json:"labels"`
-	State     string            `json:"state"`
-	Cause     *string           `json:"cause"`
-	NodeID    *string           `json:"node_id"`
-	Snapshot  string            `json:"snapshot"`
-	CPU       float64           `json:"cpu"`
-	Memory    int64             `json:"memory"`
-	BlockedBy *string           `json:"blocked_reason"`
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	Labels   map[string]string `json:"labels"`
+	State    string            `json:"state"`
+	Cause    *string           `json:"cause"`
+	NodeID   *string           `json:"node_id"`
+	Snapshot string            `json:"snapshot"`
+	CPU      float64           `json:"cpu"`
+	Memory   int64             `json:"memory"`
+	GPU      *struct {
+		Count int32 `json:"count"`
+	} `json:"gpu"`
+	QueuePosition *int64  `json:"queue_position"`
+	BlockedBy     *string `json:"blocked_reason"`
 }
 
 // TestSandboxLifecycle is the "sandbox-lifecycle" acceptance scenario (#50):
@@ -204,8 +208,16 @@ type agentProcess struct {
 
 func startAgent(t *testing.T, state, dataRoot string) *agentProcess {
 	t.Helper()
+	return startAgentWith(t, state, dataRoot)
+}
+
+// startAgentWith adds Agent flags, such as a zero CPU reservation so a test
+// can fill a Node exactly.
+func startAgentWith(t *testing.T, state, dataRoot string, extra ...string) *agentProcess {
+	t.Helper()
+	args := append([]string{"--ca", nodeCA(), "--state", state, "--data-root", dataRoot}, extra...)
 	p := &agentProcess{
-		cmd: runAgentCommand(t, "--ca", nodeCA(), "--state", state, "--data-root", dataRoot),
+		cmd: runAgentCommand(t, args...),
 		log: &bytes.Buffer{},
 	}
 	p.cmd.Stdout, p.cmd.Stderr = p.log, p.log

@@ -22,6 +22,7 @@ type nodeView struct {
 	Status        string           `json:"status"`
 	RuntimeHealth *string          `json:"runtime_health"`
 	Capabilities  map[string]any   `json:"capabilities"`
+	Hardware      map[string]any   `json:"hardware"`
 	GPUs          []map[string]any `json:"gpus"`
 }
 

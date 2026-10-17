@@ -93,6 +93,7 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "Workspace and Supervisor data directory")
 	fs.Float64Var(&opts.ReserveCPU, "reserve-cpu", agent.DefaultReserveCPU, "CPU cores kept free for the host")
 	fs.Int64Var(&opts.ReserveMemory, "reserve-memory", agent.DefaultReserveBytes, "memory bytes kept free for the host")
+	fs.Float64Var(&opts.DiskWatermark, "disk-watermark", agent.DefaultDiskWatermark, "fraction of disk kept free before new allocations are refused")
 	fs.Parse(args)
 	return agent.Run(ctx, opts)
 }
