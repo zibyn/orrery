@@ -55,14 +55,10 @@ func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req crea
 			UserID: userID, IdempotencyKey: key,
 		})
 	}
-	if key != nil {
-		existing, err := lookup()
-		if err == nil {
-			return existing, "", true, nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return store.ApiToken{}, "", false, err
-		}
+	if existing, replayed, err := replayExisting(key, lookup); err != nil {
+		return store.ApiToken{}, "", false, err
+	} else if replayed {
+		return existing, "", true, nil
 	}
 	raw, id, hash, err := NewToken()
 	if err != nil {
@@ -79,16 +75,11 @@ func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req crea
 		IdempotencyKey: key,
 	})
 	if err != nil {
-		switch uniqueViolation(err) {
-		case "api_tokens_name_unique":
+		if existing, replayed := replayConflict(key, err, "api_tokens_idempotency_key_unique", lookup); replayed {
+			return existing, "", true, nil
+		}
+		if uniqueViolation(err) == "api_tokens_name_unique" {
 			return store.ApiToken{}, "", false, errTokenNameTaken
-		case "api_tokens_idempotency_key_unique":
-			// A concurrent request claimed the key; return its token.
-			if key != nil {
-				if existing, lookupErr := lookup(); lookupErr == nil {
-					return existing, "", true, nil
-				}
-			}
 		}
 		return store.ApiToken{}, "", false, err
 	}
@@ -113,12 +104,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "list tokens", err)
 		return
 	}
-	var next *string
-	if len(rows) > int(limit) {
-		cursor := EncodeCursor(rows[limit-1].ID)
-		next = &cursor
-		rows = rows[:limit]
-	}
+	rows, next := trimPage(rows, limit, func(t store.ApiToken) string { return EncodeCursor(t.ID) })
 	out := tokenList{Items: make([]tokenDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		out.Items = append(out.Items, tokenToDTO(row))

@@ -138,11 +138,16 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
 		return
 	}
-	if existing, err := s.idempotentExec(ctx, sandboxID, key); err != nil {
+	lookup := func() (store.Exec, error) {
+		return s.q.GetExecByIdempotencyKey(ctx, store.GetExecByIdempotencyKeyParams{
+			SandboxID: sandboxID, IdempotencyKey: key,
+		})
+	}
+	if existing, replayed, err := replayExisting(key, lookup); err != nil {
 		s.internal(w, "look up idempotent Exec", err)
 		return
-	} else if existing != nil {
-		writeJSON(w, http.StatusOK, execToDTO(*existing))
+	} else if replayed {
+		writeJSON(w, http.StatusOK, execToDTO(existing))
 		return
 	}
 	if sb.State != "ready" || sb.DesiredState != "running" {
@@ -222,11 +227,9 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 		IdempotencyKey: key, Pty: pty,
 	})
 	if err != nil {
-		if uniqueViolation(err) == "execs_sandbox_idempotency" && key != nil {
-			if existing, lookupErr := s.idempotentExec(ctx, sandboxID, key); lookupErr == nil && existing != nil {
-				writeJSON(w, http.StatusOK, execToDTO(*existing))
-				return
-			}
+		if existing, replayed := replayConflict(key, err, "execs_sandbox_idempotency", lookup); replayed {
+			writeJSON(w, http.StatusOK, execToDTO(existing))
+			return
 		}
 		s.internal(w, "create Exec", err)
 		return
@@ -262,13 +265,9 @@ func (s *Server) handleListExecs(w http.ResponseWriter, r *http.Request, p *prin
 		s.internal(w, "list Execs", err)
 		return
 	}
-	list := execList{Items: make([]execDTO, 0, len(rows))}
-	for i, row := range rows {
-		if int32(i) == limit {
-			cursor := EncodeCursor(rows[i-1].ID)
-			list.NextCursor = &cursor
-			break
-		}
+	rows, next := trimPage(rows, limit, func(e store.Exec) string { return EncodeCursor(e.ID) })
+	list := execList{Items: make([]execDTO, 0, len(rows)), NextCursor: next}
+	for _, row := range rows {
 		list.Items = append(list.Items, execToDTO(row))
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -471,22 +470,6 @@ func parseAfter(r *http.Request) (int64, bool) {
 // idempotentExec returns the Exec a repeated Idempotency-Key already created,
 // or nil when the key is unused. The key is scoped to this Sandbox through the
 // request path (api.md §1).
-func (s *Server) idempotentExec(ctx context.Context, sandboxID uuid.UUID, key *string) (*store.Exec, error) {
-	if key == nil {
-		return nil, nil
-	}
-	e, err := s.q.GetExecByIdempotencyKey(ctx, store.GetExecByIdempotencyKeyParams{
-		SandboxID: sandboxID, IdempotencyKey: key,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &e, nil
-}
-
 func execToDTO(e store.Exec) execDTO {
 	state := ""
 	if e.State != nil {

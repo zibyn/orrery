@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
@@ -225,4 +227,48 @@ func parseCursor(r *http.Request) (*uuid.UUID, bool) {
 		return nil, false
 	}
 	return &id, true
+}
+
+// trimPage returns one page from the limit+1 rows the caller fetched. The
+// extra row proves another page exists and supplies its cursor.
+func trimPage[T any](rows []T, limit int32, cursor func(T) string) ([]T, *string) {
+	if len(rows) <= int(limit) {
+		return rows, nil
+	}
+	next := cursor(rows[limit-1])
+	return rows[:limit], &next
+}
+
+// replayExisting returns the row an earlier request with the same
+// Idempotency-Key produced. A nil key never replays.
+func replayExisting[T any](key *string, lookup func() (T, error)) (T, bool, error) {
+	if key == nil {
+		var zero T
+		return zero, false, nil
+	}
+	row, err := lookup()
+	if errors.Is(err, pgx.ErrNoRows) {
+		var zero T
+		return zero, false, nil
+	}
+	if err != nil {
+		var zero T
+		return zero, false, err
+	}
+	return row, true, nil
+}
+
+// replayConflict resolves a create that lost the idempotency unique index to
+// a concurrent request; the winner's row is the answer. Other creation errors
+// are left for the caller to classify.
+func replayConflict[T any](key *string, err error, constraint string, lookup func() (T, error)) (T, bool) {
+	var zero T
+	if key == nil || uniqueViolation(err) != constraint {
+		return zero, false
+	}
+	row, lookupErr := lookup()
+	if lookupErr != nil {
+		return zero, false
+	}
+	return row, true
 }

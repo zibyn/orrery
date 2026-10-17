@@ -83,16 +83,17 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	ctx := r.Context()
-	if key != nil {
-		if existing, err := s.q.GetWorkspaceByIdempotencyKey(ctx, store.GetWorkspaceByIdempotencyKeyParams{
+	lookup := func() (store.Workspace, error) {
+		return s.q.GetWorkspaceByIdempotencyKey(ctx, store.GetWorkspaceByIdempotencyKeyParams{
 			OwnerID: p.user.ID, IdempotencyKey: key,
-		}); err == nil {
-			writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, existing))
-			return
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			s.internal(w, "look up idempotent Workspace", err)
-			return
-		}
+		})
+	}
+	if existing, replayed, err := replayExisting(key, lookup); err != nil {
+		s.internal(w, "look up idempotent Workspace", err)
+		return
+	} else if replayed {
+		writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, existing))
+		return
 	}
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -103,13 +104,9 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 		ID: id, OwnerID: p.user.ID, Kind: "persistent", IdempotencyKey: key,
 	})
 	if err != nil {
-		if uniqueViolation(err) == "workspaces_owner_idempotency" && key != nil {
-			if existing, lookupErr := s.q.GetWorkspaceByIdempotencyKey(ctx, store.GetWorkspaceByIdempotencyKeyParams{
-				OwnerID: p.user.ID, IdempotencyKey: key,
-			}); lookupErr == nil {
-				writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, existing))
-				return
-			}
+		if existing, replayed := replayConflict(key, err, "workspaces_owner_idempotency", lookup); replayed {
+			writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, existing))
+			return
 		}
 		s.internal(w, "create Workspace", err)
 		return
@@ -137,13 +134,9 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request, p 
 		s.internal(w, "list Workspaces", err)
 		return
 	}
-	list := workspaceList{Items: make([]workspaceDTO, 0, len(rows))}
-	for i, row := range rows {
-		if int32(i) == limit {
-			cursor := EncodeCursor(rows[i-1].ID)
-			list.NextCursor = &cursor
-			break
-		}
+	rows, next := trimPage(rows, limit, func(ws store.Workspace) string { return EncodeCursor(ws.ID) })
+	list := workspaceList{Items: make([]workspaceDTO, 0, len(rows)), NextCursor: next}
+	for _, row := range rows {
 		list.Items = append(list.Items, s.workspaceToDTO(r.Context(), row))
 	}
 	writeJSON(w, http.StatusOK, list)

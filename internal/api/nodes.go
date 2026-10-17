@@ -93,12 +93,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request, p *prin
 		s.internal(w, "list nodes", err)
 		return
 	}
-	var next *string
-	if len(rows) > int(limit) {
-		cursor := EncodeCursor(rows[limit-1].ID)
-		next = &cursor
-		rows = rows[:limit]
-	}
+	rows, next := trimPage(rows, limit, func(n store.Node) string { return EncodeCursor(n.ID) })
 	out := nodeList{Items: make([]nodeDTO, 0, len(rows)), NextCursor: next}
 	now := time.Now()
 	for _, row := range rows {

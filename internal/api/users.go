@@ -20,16 +20,17 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 		return
 	}
 	ctx := r.Context()
-	if key != nil {
-		if existing, err := s.q.GetUserByIdempotencyKey(ctx, store.GetUserByIdempotencyKeyParams{
+	lookup := func() (store.User, error) {
+		return s.q.GetUserByIdempotencyKey(ctx, store.GetUserByIdempotencyKeyParams{
 			CreatedBy: &p.user.ID, IdempotencyKey: key,
-		}); err == nil {
-			writeJSON(w, http.StatusOK, userToDTO(existing))
-			return
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			s.internal(w, "look up idempotent user", err)
-			return
-		}
+		})
+	}
+	if existing, replayed, err := replayExisting(key, lookup); err != nil {
+		s.internal(w, "look up idempotent user", err)
+		return
+	} else if replayed {
+		writeJSON(w, http.StatusOK, userToDTO(existing))
+		return
 	}
 
 	var req createUserRequest
@@ -83,24 +84,17 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 		CreatedBy:      &p.user.ID,
 	})
 	if err != nil {
-		if constraint := uniqueViolation(err); constraint != "" {
-			switch constraint {
-			case "users_idempotency_key_unique":
-				if key != nil {
-					if existing, lookupErr := s.q.GetUserByIdempotencyKey(ctx, store.GetUserByIdempotencyKeyParams{
-						CreatedBy: &p.user.ID, IdempotencyKey: key,
-					}); lookupErr == nil {
-						writeJSON(w, http.StatusOK, userToDTO(existing))
-						return
-					}
-				}
-			case "users_name_key":
-				writeProblem(w, "conflict", "a User with that name already exists")
-				return
-			case "users_email_unique":
-				writeProblem(w, "conflict", "a User with that email already exists")
-				return
-			}
+		if existing, replayed := replayConflict(key, err, "users_idempotency_key_unique", lookup); replayed {
+			writeJSON(w, http.StatusOK, userToDTO(existing))
+			return
+		}
+		switch uniqueViolation(err) {
+		case "users_name_key":
+			writeProblem(w, "conflict", "a User with that name already exists")
+			return
+		case "users_email_unique":
+			writeProblem(w, "conflict", "a User with that email already exists")
+			return
 		}
 		s.internal(w, "create user", err)
 		return
@@ -129,12 +123,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request, p *prin
 		s.internal(w, "list users", err)
 		return
 	}
-	var next *string
-	if len(rows) > int(limit) {
-		cursor := EncodeCursor(rows[limit-1].ID)
-		next = &cursor
-		rows = rows[:limit]
-	}
+	rows, next := trimPage(rows, limit, func(u store.User) string { return EncodeCursor(u.ID) })
 	out := userList{Items: make([]userDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		out.Items = append(out.Items, userToDTO(row))

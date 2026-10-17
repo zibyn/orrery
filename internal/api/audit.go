@@ -73,12 +73,7 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request, p *prin
 		s.internal(w, "list audit", err)
 		return
 	}
-	var next *string
-	if len(rows) > int(limit) {
-		cursor := EncodeIntCursor(rows[limit-1].ID)
-		next = &cursor
-		rows = rows[:limit]
-	}
+	rows, next := trimPage(rows, limit, func(a store.ListAuditRow) string { return EncodeIntCursor(a.ID) })
 	out := auditList{Items: make([]auditDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		out.Items = append(out.Items, auditDTO{

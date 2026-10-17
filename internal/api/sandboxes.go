@@ -88,16 +88,17 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	ctx := r.Context()
-	if key != nil {
-		if existing, err := s.q.GetSandboxByIdempotencyKey(ctx, store.GetSandboxByIdempotencyKeyParams{
+	lookup := func() (store.Sandbox, error) {
+		return s.q.GetSandboxByIdempotencyKey(ctx, store.GetSandboxByIdempotencyKeyParams{
 			OwnerID: p.user.ID, IdempotencyKey: key,
-		}); err == nil {
-			writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
-			return
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			s.internal(w, "look up idempotent Sandbox", err)
-			return
-		}
+		})
+	}
+	if existing, replayed, err := replayExisting(key, lookup); err != nil {
+		s.internal(w, "look up idempotent Sandbox", err)
+		return
+	} else if replayed {
+		writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
+		return
 	}
 
 	var req createSandboxRequest
@@ -236,21 +237,13 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		IdleStopSeconds: idleStop, IdempotencyKey: key,
 	})
 	if err != nil {
-		if index := uniqueViolation(err); index != "" {
-			switch index {
-			case "sandboxes_owner_idempotency":
-				if key != nil {
-					if existing, lookupErr := s.q.GetSandboxByIdempotencyKey(ctx, store.GetSandboxByIdempotencyKeyParams{
-						OwnerID: p.user.ID, IdempotencyKey: key,
-					}); lookupErr == nil {
-						writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
-						return
-					}
-				}
-			case "sandboxes_owner_name":
-				writeProblem(w, "conflict", "a Sandbox with that name already exists")
-				return
-			}
+		if existing, replayed := replayConflict(key, err, "sandboxes_owner_idempotency", lookup); replayed {
+			writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
+			return
+		}
+		if uniqueViolation(err) == "sandboxes_owner_name" {
+			writeProblem(w, "conflict", "a Sandbox with that name already exists")
+			return
 		}
 		s.internal(w, "create Sandbox", err)
 		return
@@ -402,13 +395,9 @@ func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request, p *
 		s.internal(w, "list Sandboxes", err)
 		return
 	}
-	list := sandboxList{Items: make([]sandboxDTO, 0, len(rows))}
-	for i, row := range rows {
-		if int32(i) == limit {
-			cursor := EncodeCursor(rows[i-1].ID)
-			list.NextCursor = &cursor
-			break
-		}
+	rows, next := trimPage(rows, limit, func(sb store.Sandbox) string { return EncodeCursor(sb.ID) })
+	list := sandboxList{Items: make([]sandboxDTO, 0, len(rows)), NextCursor: next}
+	for _, row := range rows {
 		list.Items = append(list.Items, s.sandboxToDTO(r.Context(), row))
 	}
 	writeJSON(w, http.StatusOK, list)
