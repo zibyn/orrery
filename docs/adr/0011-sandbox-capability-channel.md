@@ -9,7 +9,7 @@ ADR-0010 settled that a Sandbox reaches platform capabilities through a credenti
 
 ## Decision
 
-**Verbs.** The channel accepts a closed enumeration of verbs. Each verb's semantics belong to the decision that defines it; this ADR defines only transport, identity and the authorization frame. Phase 1's list is the Git remote verbs defined by `#35`; this ADR adds none. Adding a verb is a new decision. File operations stay on the Data Plane, Artifacts are declared on the Exec and collected by the Node Agent, and Resources are attached at creation, so none of them is a channel verb.
+**Verbs.** The channel accepts a closed enumeration of verbs. Each verb's semantics belong to the decision that defines it; this ADR defines only transport, identity and the authorization frame. Phase 1's list is exactly `git.credential`, defined by ADR-0013; this ADR adds none. Adding a verb is a new decision. File operations stay on the Data Plane, Artifacts are declared on the Exec and collected by the Node Agent, and Resources are attached at creation, so none of them is a channel verb.
 
 **Host side.** The owning Node Agent listens and forwards over its existing outbound mTLS connection to the Control Plane. A socket on the Node's local filesystem is not a connection into the Node.
 
@@ -17,21 +17,20 @@ ADR-0010 settled that a Sandbox reaches platform capabilities through a credenti
 
 **Wire protocol.** HTTP/1.1 with JSON bodies, reusing the REST error model of `#31`, so `curl --unix-socket` is a sufficient client.
 
-**Authorization.** The Control Plane decides every request: the Sandbox is `ready`, the verb is on the list, and the target lies in the Sandbox's scope (such as the Repository bound to its Workspace). The decision is written as an Audit Record in the same transaction, as for Gateway authorizations. A verb that mutates the Workspace additionally requires the Sandbox to hold the current read-write Attachment, whose fencing token the Node Agent checks locally at execution (`#32`). An unreachable Control Plane fails the request closed with `unavailable`; there is no cached authorization.
+**Authorization.** The Control Plane decides every request: the Sandbox is `ready`, the verb is on the list, and the target lies in the Sandbox's scope (such as a Git account linked by the Sandbox's owner). The decision is written as an Audit Record in the same transaction, as for Gateway authorizations. A verb that mutates the Workspace additionally requires the Sandbox to hold the current read-write Attachment, whose fencing token the Node Agent checks locally at execution (`#32`). An unreachable Control Plane fails the request closed with `unavailable`; there is no cached authorization.
 
 **Fencing and teardown.** When the write Lease is fenced, Workspace-mutating verbs are refused with `conflict` and in-flight ones are terminated before the next writer is admitted, as `#32` does for write-dependent processes; read-only verbs continue. When the Sandbox enters `stopping` or `deleting`, new requests are refused, in-flight ones are cancelled, and the socket goes with the Runtime. A Node Agent restart rebuilds the socket mapping and fails in-flight requests. Channel requests are not durable intents: no Reconciler, no automatic retry.
 
-**Egress.** The channel does not use the network stack, so it is reachable under every Egress Policy including `none`. Egress Policy governs the Sandbox's network only; channel verbs are governed by their own authorization and reach only platform-registered targets. A caller who wants no push at all binds no Repository to the Sandbox.
+**Egress.** The channel does not use the network stack, so it is reachable under every Egress Policy including `none`. Egress Policy governs the Sandbox's network only; channel verbs are governed by their own authorization and reach only platform-registered targets.
 
 **Capability.** `capability_channel`: `enforced` on Docker and Podman, `best_effort` on Local Runtime, where the socket is a host file any host process can open and so proves nothing. It is always mounted where enforced; there is no opt-out, since an empty verb list is already the narrowest surface.
 
-**Secrets.** No credential travels on the channel in either direction. Caller Secrets reach a Sandbox only from the host side, placed by the Node Agent in an environment variable or a private file that it refreshes in place.
+**Secrets.** The only credential on the channel is the Git account token returned by `git.credential` (ADR-0013). Other caller Secrets reach a Sandbox as environment variables set at creation.
 
 ## Consequences
 
-- An audit fact for a channel push names the Sandbox and its owner, never the Exec that issued it.
+- An audit fact for a channel request names the Sandbox and its owner, never the Exec that issued it.
 - Every channel call costs a Control Plane round trip and fails while the Control Plane is unreachable; Agent-facing documentation must say so, so it is not mistaken for network flakiness.
-- `egress: none` does not mean "no data leaves": it means no network. The documentation says which knob closes the channel's outward verbs.
 - ADR-0009's capability table gains a `capability_channel` row.
 
 ## Rejected alternatives
@@ -42,4 +41,4 @@ ADR-0010 settled that a Sandbox reaches platform capabilities through a credenti
 - Peer-credential attribution to an Exec: precision the trust model does not use.
 - Cached authorization on the Node Agent: it would outlive revocation.
 - gRPC on the socket: needs a generated client inside every image.
-- Delivering or refreshing Secrets as a channel verb: it puts credentials on the channel, which ADR-0010 rules out.
+- Delivering or refreshing general Secrets as a channel verb: environment variables at creation suffice (ADR-0013).

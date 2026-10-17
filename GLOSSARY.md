@@ -10,15 +10,11 @@ _Avoid_: Workspace, container (when referring to the platform resource)
 
 **Workspace**:
 A mutable working directory for an agent. It may contain arbitrary files and zero or more Git repositories, and is permanently bound to one compute Node for its lifetime. It can be ephemeral or persistent, and may become temporarily unavailable or permanently lost with that Node. A Workspace is not owned by a Sandbox; multiple Sandboxes may access it subject to their attachment mode and the single-writer rule.
-_Avoid_: Repository, Sandbox filesystem
+_Avoid_: Sandbox filesystem
 
 **Workspace Attachment**:
 The relationship between a Sandbox and a Workspace, with either read-only or read-write access. An attachment does not transfer ownership of the Workspace.
 _Avoid_: Workspace lease
-
-**Repository**:
-A managed relationship to a remote Git repository, including its remote identity and credential reference; it is not the local working tree.
-_Avoid_: Workspace, checkout
 
 **Resource**:
 A stable named collection of persisted content whose current version may be mounted, copied, or referenced by execution.
@@ -181,11 +177,19 @@ A single-use, short-lived credential by which an unregistered Node obtains its f
 _Avoid_: join token, registration token, bootstrap secret
 
 **Secret**:
-Caller-originated credential material that the platform holds for a User and may deliver into a Sandbox, under a lifetime and a revocation the platform controls.
+Caller-originated credential material that the platform holds for a User and may deliver into the User's Sandboxes. Its value can be written but never read back.
 _Avoid_: environment variable, config value, password
 
+**Git Provider**:
+A platform-configured Git hosting service, public or self-hosted, through which Users may link accounts.
+_Avoid_: Repository, remote
+
+**Git Account Link**:
+A User's authorization of the platform to act for that User's account on one Git Provider. Git inside the User's Sandboxes authenticates through it.
+_Avoid_: Repository, deploy key, PAT
+
 **Capability Channel**:
-The platform-managed path by which a Sandbox asks the platform to perform a capability it cannot perform itself. It carries declared platform verbs and their targets, never credentials and never arbitrary commands. Each Sandbox has its own, a request on it speaks for that Sandbox, and it is independent of the Sandbox's Egress Policy.
+The platform-managed path by which a Sandbox asks the platform to perform a capability it cannot perform itself. It carries declared platform verbs and their targets, never arbitrary commands. Each Sandbox has its own, a request on it speaks for that Sandbox, and it is independent of the Sandbox's Egress Policy.
 _Avoid_: agent socket, proxy, sidecar
 
 **Egress Policy**:

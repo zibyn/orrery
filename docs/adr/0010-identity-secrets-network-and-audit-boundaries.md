@@ -15,9 +15,9 @@ The platform has to answer who a caller is, how a Node becomes trusted, where th
 
 **Platform secrets.** Object-store keys, Git provider minting credentials, the CA private key and database credentials are deployment-time file path references. They do not live in PostgreSQL and are not reachable through the API, so they stay out of backups, the query surface, and the question of who may read a table.
 
-**Caller secrets.** A caller's secrets may enter a Sandbox, but only short-lived, Sandbox-scoped, platform-accounted and revocable ones, and only through an environment variable or a private file. They are never written inside the Workspace, which outlives the Sandbox and would stretch a credential's life from the run to the Workspace's TTL. Egress-proxy placeholder substitution is the documented upgrade path, not the Phase 1 mechanism.
+**Caller secrets.** A caller's secrets and Git account tokens may enter a Sandbox, as Coder and Daytona allow; how is ADR-0013. The platform never writes them inside the Workspace. Egress-proxy placeholder substitution is the documented upgrade path, not the Phase 1 mechanism.
 
-**Capability Channel.** The Sandbox reaches platform capabilities through a platform-managed channel, which is a named exception to the Runtime Provider contract's "no arbitrary host mounts". It carries declared verbs and targets; it is never a general command executor and it never carries credentials. Source-address authentication is not a mechanism: nothing inside a Sandbox can be authenticated by where it connects from.
+**Capability Channel.** The Sandbox reaches platform capabilities through a platform-managed channel, which is a named exception to the Runtime Provider contract's "no arbitrary host mounts". It carries declared verbs and targets and is never a general command executor; its only credential-carrying verb is ADR-0013's `git.credential`. Source-address authentication is not a mechanism: nothing inside a Sandbox can be authenticated by where it connects from.
 
 **Egress.** Default `public`: public addresses reachable, while private ranges, CGNAT, loopback, link-local, cloud metadata and host addresses are unconditionally denied, and Control Plane, Gateway and session addresses are unconditionally subtracted from whatever is reachable. The policy is a property of the Sandbox, declared when it is created, not a property of the Workspace. A caller's `allow: [CIDR]` is a request: a platform-maintained Egress Opening list decides whether it may land on a denied destination, and a request that cannot land fails loudly at creation.
 
@@ -29,7 +29,7 @@ The platform has to answer who a caller is, how a Node becomes trusted, where th
 
 ## Consequences
 
-- The previous design round's "no credentials inside the Sandbox" property is deliberately given up for *caller* secrets. What replaces it is lifetime, revocation and accounting. The counter-precedent still governs *platform* credentials, which never enter a Sandbox at all.
+- The previous design round's "no credentials inside the Sandbox" property is deliberately given up for *caller* secrets. What replaces it is provider scoping and audit (ADR-0013). The counter-precedent still governs *platform* credentials, which never enter a Sandbox at all.
 - Because the Capability Channel is a host-side mount, the Runtime Provider contract needs one named exception and a Capability that reports it honestly as `enforced` or `unsupported`.
 - Ownership-only deletion means there is no delegation between Users; every shared-resource question is answered by `admin` or not at all.
 - Because audit shares the control-plane database, there is no second source of truth to reconcile, and no separate audit store to keep alive.
