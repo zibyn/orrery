@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc"
+
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -73,6 +75,9 @@ func (s *Server) routes() []route {
 		{http.MethodPost, "/sessions", "", "createSession", "Log in with a password", "SessionRequest", "LoginResponse", nil, http.StatusCreated, s.handleCreateSession},
 		{http.MethodDelete, "/sessions/current", "user", "deleteCurrentSession", "Log out the current Session", "", "Token", nil, http.StatusAccepted, s.handleDeleteCurrentSession},
 		{http.MethodGet, "/audit", "admin", "listAudit", "List Audit Records", "", "AuditList", []string{"actor", "action", "target", "target_type", "from", "to", "limit", "cursor"}, http.StatusOK, s.handleListAudit},
+		{http.MethodPost, "/enrollment-packets", "admin", "createEnrollmentPacket", "Issue an Enrollment Packet", "", "EnrollmentPacket", nil, http.StatusCreated, s.handleCreateEnrollmentPacket},
+		{http.MethodGet, "/nodes", "admin", "listNodes", "List Nodes", "", "NodeList", []string{"limit", "cursor"}, http.StatusOK, s.handleListNodes},
+		{http.MethodGet, "/nodes/{id}", "admin", "getNode", "Get a Node", "", "Node", nil, http.StatusOK, s.handleGetNode},
 	}
 }
 
@@ -212,29 +217,40 @@ func (s *Server) internal(w http.ResponseWriter, what string, err error) {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
-	go s.purgeIdempotencyKeys(ctx)
-	srv := &http.Server{
+	go s.purgeExpired(ctx)
+	httpServer := &http.Server{
 		Addr:              s.cfg.Addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
+	grpcServer, nodeListener, err := s.nodeServer()
+	if err != nil {
+		return err
+	}
+	errCh := make(chan error, 2)
+	go func() { errCh <- httpServer.ListenAndServe() }()
+	go func() { errCh <- grpcServer.Serve(nodeListener) }()
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		// Abrupt Stop ends long-lived Control streams; Agents reconnect.
+		grpcServer.Stop()
+		_ = nodeListener.Close()
+		return httpServer.Shutdown(shutdownCtx)
 	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
+		grpcServer.Stop()
+		_ = httpServer.Close()
+		if errors.Is(err, http.ErrServerClosed) || errors.Is(err, grpc.ErrServerStopped) {
 			return nil
 		}
 		return err
 	}
 }
 
-// purgeIdempotencyKeys enforces the 24-hour retention in api.md §1.
-func (s *Server) purgeIdempotencyKeys(ctx context.Context) {
+// purgeExpired enforces the 24-hour idempotency retention (api.md §1) and
+// removes used or expired Enrollment Packets (ADR-0017).
+func (s *Server) purgeExpired(ctx context.Context) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
@@ -243,6 +259,9 @@ func (s *Server) purgeIdempotencyKeys(ctx context.Context) {
 		}
 		if err := s.q.PurgeTokenIdempotencyKeys(ctx); err != nil && ctx.Err() == nil {
 			s.log.Warn("purge token idempotency keys", "error", err)
+		}
+		if err := s.q.PurgeEnrollmentPackets(ctx); err != nil && ctx.Err() == nil {
+			s.log.Warn("purge Enrollment Packets", "error", err)
 		}
 		select {
 		case <-ctx.Done():

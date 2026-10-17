@@ -43,6 +43,27 @@ func TestParseToken(t *testing.T) {
 	}
 }
 
+func TestParseNodeTokenAndEnrollmentPacket(t *testing.T) {
+	id := uuid.MustParse("0192f0a0-0000-7000-8000-000000000002")
+	secret := strings.Repeat("b", 43)
+
+	parts, ok := ParseNodeToken("ssn_" + id.String() + "_" + secret)
+	if !ok || parts.ID != id || parts.Secret != secret {
+		t.Fatalf("ParseNodeToken = %+v, %v", parts, ok)
+	}
+	if _, ok := ParseNodeToken("ssk_" + id.String() + "_" + secret); ok {
+		t.Fatal("ParseNodeToken accepted an API Token prefix")
+	}
+
+	parts, ok = ParseEnrollmentPacket("sse_" + id.String() + "_" + secret)
+	if !ok || parts.ID != id || parts.Secret != secret {
+		t.Fatalf("ParseEnrollmentPacket = %+v, %v", parts, ok)
+	}
+	if _, ok := ParseEnrollmentPacket("ssn_" + id.String() + "_" + secret); ok {
+		t.Fatal("ParseEnrollmentPacket accepted a Node Token prefix")
+	}
+}
+
 func TestTokenHashIsStableAndSecretOnly(t *testing.T) {
 	a := HashSecret("secret")
 	b := HashSecret("secret")

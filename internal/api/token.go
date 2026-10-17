@@ -10,9 +10,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// API tokens are "ssk_<id>_<secret>". The prefix lets secret scanners spot
+// Tokens are "<prefix>_<id>_<secret>". The prefix lets secret scanners spot
 // them; the id is what the server looks up, the secret is compared by hash.
-const apiTokenPrefix = "ssk_"
+// API tokens are ssk_, Node Tokens ssn_, Enrollment Packets sse_.
+const (
+	apiTokenPrefix         = "ssk_"
+	nodeTokenPrefix        = "ssn_"
+	enrollmentPacketPrefix = "sse_"
+)
 
 type TokenParts struct {
 	ID     uuid.UUID
@@ -20,7 +25,19 @@ type TokenParts struct {
 }
 
 func ParseToken(raw string) (TokenParts, bool) {
-	rest, ok := strings.CutPrefix(raw, apiTokenPrefix)
+	return parsePrefixedToken(apiTokenPrefix, raw)
+}
+
+func ParseNodeToken(raw string) (TokenParts, bool) {
+	return parsePrefixedToken(nodeTokenPrefix, raw)
+}
+
+func ParseEnrollmentPacket(raw string) (TokenParts, bool) {
+	return parsePrefixedToken(enrollmentPacketPrefix, raw)
+}
+
+func parsePrefixedToken(prefix, raw string) (TokenParts, bool) {
+	rest, ok := strings.CutPrefix(raw, prefix)
 	if !ok {
 		return TokenParts{}, false
 	}
@@ -36,6 +53,18 @@ func ParseToken(raw string) (TokenParts, bool) {
 }
 
 func NewToken() (raw string, id uuid.UUID, hash []byte, err error) {
+	return newPrefixedToken(apiTokenPrefix)
+}
+
+func NewNodeToken() (raw string, id uuid.UUID, hash []byte, err error) {
+	return newPrefixedToken(nodeTokenPrefix)
+}
+
+func NewEnrollmentPacket() (raw string, id uuid.UUID, hash []byte, err error) {
+	return newPrefixedToken(enrollmentPacketPrefix)
+}
+
+func newPrefixedToken(prefix string) (raw string, id uuid.UUID, hash []byte, err error) {
 	id, err = uuid.NewV7()
 	if err != nil {
 		return "", uuid.UUID{}, nil, err
@@ -45,7 +74,7 @@ func NewToken() (raw string, id uuid.UUID, hash []byte, err error) {
 		return "", uuid.UUID{}, nil, err
 	}
 	secret := base64.RawURLEncoding.EncodeToString(buf)
-	return apiTokenPrefix + id.String() + "_" + secret, id, HashSecret(secret), nil
+	return prefix + id.String() + "_" + secret, id, HashSecret(secret), nil
 }
 
 func HashSecret(secret string) []byte {

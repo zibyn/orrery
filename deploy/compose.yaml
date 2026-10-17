@@ -18,8 +18,14 @@ services:
     environment:
       STARS_DATABASE_URL: postgres://stars:stars@postgres:5432/stars?sslmode=disable
       STARS_API_ADDR: ":8080"
+      STARS_NODE_ADDR: ":8081"
+      STARS_NODE_TLS_CERT: /tls/server.crt
+      STARS_NODE_TLS_KEY: /tls/server.key
+    volumes:
+      - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "18080:8080"
+      - "18081:8081"

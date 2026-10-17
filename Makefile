@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: build test vet e2e sqlc
+.PHONY: build test vet e2e sqlc proto
 
 build:
 	$(GO) build ./...
@@ -16,3 +16,6 @@ e2e:
 
 sqlc:
 	sqlc generate
+
+proto:
+	buf generate

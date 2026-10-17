@@ -74,6 +74,84 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const createEnrollmentPacket = `-- name: CreateEnrollmentPacket :one
+
+INSERT INTO enrollment_packets (id, secret_hash, expires_at, created_by)
+VALUES ($1, $2, $3, $4)
+RETURNING id, secret_hash, expires_at, used_at, created_by, created_at
+`
+
+type CreateEnrollmentPacketParams struct {
+	ID         uuid.UUID
+	SecretHash []byte
+	ExpiresAt  pgtype.Timestamptz
+	CreatedBy  uuid.UUID
+}
+
+// Enrollment packets and nodes
+func (q *Queries) CreateEnrollmentPacket(ctx context.Context, arg CreateEnrollmentPacketParams) (EnrollmentPacket, error) {
+	row := q.db.QueryRow(ctx, createEnrollmentPacket,
+		arg.ID,
+		arg.SecretHash,
+		arg.ExpiresAt,
+		arg.CreatedBy,
+	)
+	var i EnrollmentPacket
+	err := row.Scan(
+		&i.ID,
+		&i.SecretHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createNode = `-- name: CreateNode :one
+INSERT INTO nodes (
+    id, name, token_hash, agent_version, proto_major, proto_minor, last_seen_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
+RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at
+`
+
+type CreateNodeParams struct {
+	ID           uuid.UUID
+	Name         string
+	TokenHash    []byte
+	AgentVersion *string
+	ProtoMajor   *int32
+	ProtoMinor   *int32
+}
+
+func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, error) {
+	row := q.db.QueryRow(ctx, createNode,
+		arg.ID,
+		arg.Name,
+		arg.TokenHash,
+		arg.AgentVersion,
+		arg.ProtoMajor,
+		arg.ProtoMinor,
+	)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.TokenHash,
+		&i.Paused,
+		&i.LostAt,
+		&i.AgentVersion,
+		&i.ProtoMajor,
+		&i.ProtoMinor,
+		&i.LastSeenAt,
+		&i.RuntimeHealth,
+		&i.Capabilities,
+		&i.Hardware,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createToken = `-- name: CreateToken :one
 
 INSERT INTO api_tokens (
@@ -178,6 +256,15 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const deleteNodeGPUs = `-- name: DeleteNodeGPUs :exec
+DELETE FROM gpus WHERE node_id = $1
+`
+
+func (q *Queries) DeleteNodeGPUs(ctx context.Context, nodeID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteNodeGPUs, nodeID)
+	return err
+}
+
 const deleteToken = `-- name: DeleteToken :execrows
 DELETE FROM api_tokens WHERE id = $1 AND user_id = $2
 `
@@ -205,6 +292,74 @@ func (q *Queries) DeleteUserSessions(ctx context.Context, userID uuid.UUID) (int
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getEnrollmentPacket = `-- name: GetEnrollmentPacket :one
+SELECT id, secret_hash, expires_at, used_at, created_by, created_at FROM enrollment_packets WHERE id = $1
+`
+
+func (q *Queries) GetEnrollmentPacket(ctx context.Context, id uuid.UUID) (EnrollmentPacket, error) {
+	row := q.db.QueryRow(ctx, getEnrollmentPacket, id)
+	var i EnrollmentPacket
+	err := row.Scan(
+		&i.ID,
+		&i.SecretHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getNode = `-- name: GetNode :one
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at FROM nodes WHERE id = $1
+`
+
+func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
+	row := q.db.QueryRow(ctx, getNode, id)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.TokenHash,
+		&i.Paused,
+		&i.LostAt,
+		&i.AgentVersion,
+		&i.ProtoMajor,
+		&i.ProtoMinor,
+		&i.LastSeenAt,
+		&i.RuntimeHealth,
+		&i.Capabilities,
+		&i.Hardware,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getNodeByName = `-- name: GetNodeByName :one
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at FROM nodes WHERE name = $1
+`
+
+func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) {
+	row := q.db.QueryRow(ctx, getNodeByName, name)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.TokenHash,
+		&i.Paused,
+		&i.LostAt,
+		&i.AgentVersion,
+		&i.ProtoMajor,
+		&i.ProtoMinor,
+		&i.LastSeenAt,
+		&i.RuntimeHealth,
+		&i.Capabilities,
+		&i.Hardware,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getToken = `-- name: GetToken :one
@@ -416,6 +571,22 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 	return err
 }
 
+const insertNodeGPU = `-- name: InsertNodeGPU :exec
+INSERT INTO gpus (uuid, node_id, model) VALUES ($1, $2, $3)
+ON CONFLICT (uuid) DO UPDATE SET node_id = EXCLUDED.node_id, model = EXCLUDED.model
+`
+
+type InsertNodeGPUParams struct {
+	Uuid   string
+	NodeID uuid.UUID
+	Model  string
+}
+
+func (q *Queries) InsertNodeGPU(ctx context.Context, arg InsertNodeGPUParams) error {
+	_, err := q.db.Exec(ctx, insertNodeGPU, arg.Uuid, arg.NodeID, arg.Model)
+	return err
+}
+
 const listAudit = `-- name: ListAudit :many
 SELECT a.id, a.at, a.actor_user_id, a.actor_token_id, a.action, a.target_type, a.target_id, a.correlation_id, a.detail, u.name AS actor_name
 FROM audit_records a
@@ -484,6 +655,76 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 			&i.CorrelationID,
 			&i.Detail,
 			&i.ActorName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodeGPUs = `-- name: ListNodeGPUs :many
+SELECT uuid, node_id, model FROM gpus WHERE node_id = $1 ORDER BY uuid
+`
+
+func (q *Queries) ListNodeGPUs(ctx context.Context, nodeID uuid.UUID) ([]Gpu, error) {
+	rows, err := q.db.Query(ctx, listNodeGPUs, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Gpu{}
+	for rows.Next() {
+		var i Gpu
+		if err := rows.Scan(&i.Uuid, &i.NodeID, &i.Model); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodes = `-- name: ListNodes :many
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at FROM nodes
+WHERE ($1::uuid IS NULL OR id > $1)
+ORDER BY id
+LIMIT $2
+`
+
+type ListNodesParams struct {
+	After *uuid.UUID
+	Limit int32
+}
+
+func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, error) {
+	rows, err := q.db.Query(ctx, listNodes, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.TokenHash,
+			&i.Paused,
+			&i.LostAt,
+			&i.AgentVersion,
+			&i.ProtoMajor,
+			&i.ProtoMinor,
+			&i.LastSeenAt,
+			&i.RuntimeHealth,
+			&i.Capabilities,
+			&i.Hardware,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -589,6 +830,61 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 	return items, nil
 }
 
+const nodeHeartbeat = `-- name: NodeHeartbeat :exec
+UPDATE nodes
+SET last_seen_at = now(),
+    runtime_health = $2,
+    hardware = $3
+WHERE id = $1
+`
+
+type NodeHeartbeatParams struct {
+	ID            uuid.UUID
+	RuntimeHealth *string
+	Hardware      json.RawMessage
+}
+
+func (q *Queries) NodeHeartbeat(ctx context.Context, arg NodeHeartbeatParams) error {
+	_, err := q.db.Exec(ctx, nodeHeartbeat, arg.ID, arg.RuntimeHealth, arg.Hardware)
+	return err
+}
+
+const nodeHello = `-- name: NodeHello :exec
+UPDATE nodes
+SET last_seen_at = now(),
+    agent_version = $2,
+    proto_major = $3,
+    proto_minor = $4
+WHERE id = $1
+`
+
+type NodeHelloParams struct {
+	ID           uuid.UUID
+	AgentVersion *string
+	ProtoMajor   *int32
+	ProtoMinor   *int32
+}
+
+func (q *Queries) NodeHello(ctx context.Context, arg NodeHelloParams) error {
+	_, err := q.db.Exec(ctx, nodeHello,
+		arg.ID,
+		arg.AgentVersion,
+		arg.ProtoMajor,
+		arg.ProtoMinor,
+	)
+	return err
+}
+
+const purgeEnrollmentPackets = `-- name: PurgeEnrollmentPackets :exec
+DELETE FROM enrollment_packets
+WHERE used_at IS NOT NULL OR expires_at < now()
+`
+
+func (q *Queries) PurgeEnrollmentPackets(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeEnrollmentPackets)
+	return err
+}
+
 const purgeTokenIdempotencyKeys = `-- name: PurgeTokenIdempotencyKeys :exec
 UPDATE api_tokens SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
@@ -606,6 +902,43 @@ WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
 
 func (q *Queries) PurgeUserIdempotencyKeys(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, purgeUserIdempotencyKeys)
+	return err
+}
+
+const redeemEnrollmentPacket = `-- name: RedeemEnrollmentPacket :one
+UPDATE enrollment_packets
+SET used_at = now()
+WHERE id = $1 AND used_at IS NULL AND expires_at > now()
+RETURNING id, secret_hash, expires_at, used_at, created_by, created_at
+`
+
+// RedeemEnrollmentPacket is the single-use claim: it fails when the packet was
+// already used or has expired.
+func (q *Queries) RedeemEnrollmentPacket(ctx context.Context, id uuid.UUID) (EnrollmentPacket, error) {
+	row := q.db.QueryRow(ctx, redeemEnrollmentPacket, id)
+	var i EnrollmentPacket
+	err := row.Scan(
+		&i.ID,
+		&i.SecretHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const setNodeCapabilities = `-- name: SetNodeCapabilities :exec
+UPDATE nodes SET capabilities = $2 WHERE id = $1
+`
+
+type SetNodeCapabilitiesParams struct {
+	ID           uuid.UUID
+	Capabilities json.RawMessage
+}
+
+func (q *Queries) SetNodeCapabilities(ctx context.Context, arg SetNodeCapabilitiesParams) error {
+	_, err := q.db.Exec(ctx, setNodeCapabilities, arg.ID, arg.Capabilities)
 	return err
 }
 

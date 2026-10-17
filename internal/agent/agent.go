@@ -1,0 +1,376 @@
+// Package agent is the Node Agent: enrollment, the Control stream, and the
+// Runtime capability self-check (docs/spec/node-protocol.md, runtime.md §9).
+package agent
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime/debug"
+	"strings"
+	"syscall"
+	"time"
+
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
+	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/nodeproto"
+)
+
+const (
+	// HeartbeatInterval is a constant in defaults.md.
+	HeartbeatInterval = 15 * time.Second
+	DefaultStatePath  = "/var/lib/stars-sandbox-agent/identity.json"
+	DefaultDockerSock = "/var/run/docker.sock"
+
+	maxBackoff = time.Minute
+)
+
+// Identity is what `enroll` leaves behind for `run`. It is the Node's only
+// secret and never leaves the host unencrypted.
+type Identity struct {
+	NodeURL   string `json:"node_url"`
+	NodeID    string `json:"node_id"`
+	NodeToken string `json:"node_token"`
+}
+
+type EnrollOptions struct {
+	Server string
+	CAPath string
+	Packet string
+	Name   string
+	State  string
+}
+
+// Enroll redeems a single-use Enrollment Packet and stores the Node identity
+// with mode 0600.
+func Enroll(ctx context.Context, opts EnrollOptions) (Identity, error) {
+	if opts.Packet == "" {
+		return Identity{}, errors.New("--packet is required")
+	}
+	if opts.Server == "" {
+		return Identity{}, errors.New("--server is required")
+	}
+	name := opts.Name
+	if name == "" {
+		host, err := os.Hostname()
+		if err != nil {
+			return Identity{}, fmt.Errorf("hostname: %w", err)
+		}
+		name = host
+	}
+	version := buildVersion()
+	creds, err := transportCredentials(opts.CAPath, opts.Server)
+	if err != nil {
+		return Identity{}, err
+	}
+	conn, err := grpc.NewClient(opts.Server, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		return Identity{}, fmt.Errorf("dial %s: %w", opts.Server, err)
+	}
+	defer conn.Close() //nolint:errcheck // nothing to flush
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := nodev1.NewNodeClient(conn).Redeem(ctx, &nodev1.RedeemRequest{
+		Packet:       opts.Packet,
+		Name:         name,
+		AgentVersion: version,
+		ProtoMajor:   nodeproto.Major,
+		ProtoMinor:   nodeproto.Minor,
+	})
+	if err != nil {
+		return Identity{}, fmt.Errorf("redeem Enrollment Packet: %w", err)
+	}
+	id := Identity{NodeURL: opts.Server, NodeID: resp.NodeId, NodeToken: resp.NodeToken}
+	if err := SaveIdentity(opts.State, id); err != nil {
+		return Identity{}, err
+	}
+	return id, nil
+}
+
+func LoadIdentity(path string) (Identity, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return Identity{}, fmt.Errorf("read identity %s (run enroll first): %w", path, err)
+	}
+	var id Identity
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return Identity{}, fmt.Errorf("parse identity %s: %w", path, err)
+	}
+	if id.NodeID == "" || id.NodeToken == "" {
+		return Identity{}, fmt.Errorf("identity %s is incomplete", path)
+	}
+	return id, nil
+}
+
+func SaveIdentity(path string, id Identity) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create identity directory: %w", err)
+	}
+	raw, err := json.Marshal(id)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("write identity: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("write identity: %w", err)
+	}
+	return nil
+}
+
+type RunOptions struct {
+	CAPath string
+	Server string // overrides the address stored at enroll time
+	State  string
+	Docker string
+}
+
+// Run keeps one Control stream alive, probing capabilities once per
+// connection. NOT_FOUND/UNAUTHENTICATED clears local identity; anything else
+// keeps it and backs off (ADR-0010's asymmetric rule).
+func Run(ctx context.Context, opts RunOptions) error {
+	id, err := LoadIdentity(opts.State)
+	if err != nil {
+		return err
+	}
+	server := opts.Server
+	if server == "" {
+		server = id.NodeURL
+	}
+	if server == "" {
+		return errors.New("no node address: pass --server or re-enroll")
+	}
+	if opts.Docker == "" {
+		opts.Docker = DefaultDockerSock
+	}
+	version := buildVersion()
+
+	backoff := time.Second
+	for {
+		connected, err := runOnce(ctx, server, id, opts, version)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil && clearsIdentity(err) {
+			if rmErr := os.Remove(opts.State); rmErr != nil && !os.IsNotExist(rmErr) {
+				slog.Warn("identity was rejected and could not be removed", "error", rmErr)
+			}
+			return fmt.Errorf("identity rejected by the Control Plane, local identity cleared: %w", err)
+		}
+		if connected {
+			backoff = time.Second
+		}
+		if err != nil {
+			if isIncompatible(err) {
+				slog.Error("Node protocol version incompatible; keep this Agent installed and upgrade the Control Plane first",
+					"error", err)
+			} else {
+				slog.Warn("control stream ended", "error", err, "retry_in", backoff)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+func clearsIdentity(err error) bool {
+	switch status.Code(err) {
+	case codes.NotFound, codes.Unauthenticated:
+		return true
+	default:
+		return false
+	}
+}
+
+func isIncompatible(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.FailedPrecondition {
+		return false
+	}
+	for _, detail := range st.Details() {
+		if info, ok := detail.(*errdetails.ErrorInfo); ok && info.Reason == "incompatible" {
+			return true
+		}
+	}
+	return false
+}
+
+func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
+	creds, err := transportCredentials(opts.CAPath, server)
+	if err != nil {
+		return false, err
+	}
+	conn, err := grpc.NewClient(server, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close() //nolint:errcheck // stream ends first
+
+	streamCtx, cancel := context.WithCancel(metadata.AppendToOutgoingContext(ctx,
+		"authorization", "Bearer "+id.NodeToken))
+	defer cancel()
+	stream, err := nodev1.NewNodeClient(conn).Control(streamCtx)
+	if err != nil {
+		return false, err
+	}
+	if err := stream.Send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Hello{
+		Hello: &nodev1.Hello{
+			NodeId:       id.NodeID,
+			AgentVersion: version,
+			ProtoMajor:   nodeproto.Major,
+			ProtoMinor:   nodeproto.Minor,
+		},
+	}}); err != nil {
+		return false, err
+	}
+	first, err := stream.Recv()
+	if err != nil {
+		return false, err
+	}
+	ack := first.GetHelloAck()
+	if ack == nil || !ack.Accepted {
+		return false, errors.New("the Control Plane rejected Hello")
+	}
+	slog.Info("control stream connected", "node_id", id.NodeID)
+
+	report, probeErr := dockerProbe(ctx, opts.Docker)
+	health := "healthy"
+	if probeErr != nil {
+		health = "unhealthy"
+		report = nodeproto.CapabilityReport{Runtime: "docker"}
+		slog.Error("runtime self-check failed", "error", probeErr)
+	}
+	if err := stream.Send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
+		Capabilities: capabilitiesMessage(report),
+	}}); err != nil {
+		return false, err
+	}
+	if err := stream.Send(heartbeatMessage(health)); err != nil {
+		return false, err
+	}
+
+	recvErr := make(chan error, 1)
+	go func() {
+		for {
+			if _, err := stream.Recv(); err != nil {
+				recvErr <- err
+				return
+			}
+		}
+	}()
+	ticker := time.NewTicker(HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return true, nil
+		case err := <-recvErr:
+			return true, err
+		case <-ticker.C:
+			// Runtime health is live: a daemon that dies mid-stream must stop
+			// receiving placements, not keep its startup verdict.
+			hctx, hcancel := context.WithTimeout(ctx, 5*time.Second)
+			if dockerHealthy(hctx, opts.Docker) {
+				health = "healthy"
+			} else {
+				health = "unhealthy"
+			}
+			hcancel()
+			if err := stream.Send(heartbeatMessage(health)); err != nil {
+				return true, err
+			}
+		}
+	}
+}
+
+func heartbeatMessage(health string) *nodev1.AgentMessage {
+	return &nodev1.AgentMessage{Message: &nodev1.AgentMessage_Heartbeat{
+		Heartbeat: &nodev1.Heartbeat{
+			RuntimeHealth: health,
+			DiskFree:      diskFree("/"),
+		},
+	}}
+}
+
+func capabilitiesMessage(snapshot nodeproto.CapabilityReport) *nodev1.Capabilities {
+	caps := &nodev1.Capabilities{Runtime: snapshot.Runtime}
+	for _, entry := range snapshot.Entries {
+		caps.Entries = append(caps.Entries, &nodev1.CapabilityEntry{
+			Name:  entry.Name,
+			Value: capabilityProto(entry.Value),
+		})
+	}
+	return caps
+}
+
+func capabilityProto(value string) nodev1.CapabilityValue {
+	switch value {
+	case nodeproto.ValueEnforced:
+		return nodev1.CapabilityValue_CAPABILITY_VALUE_ENFORCED
+	case nodeproto.ValueBestEffort:
+		return nodev1.CapabilityValue_CAPABILITY_VALUE_BEST_EFFORT
+	default:
+		return nodev1.CapabilityValue_CAPABILITY_VALUE_UNSUPPORTED
+	}
+}
+
+func transportCredentials(caPath, server string) (credentials.TransportCredentials, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName(server)}
+	if caPath != "" {
+		pem, err := os.ReadFile(caPath)
+		if err != nil {
+			return nil, fmt.Errorf("read CA %s: %w", caPath, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("CA %s contains no certificates", caPath)
+		}
+		cfg.RootCAs = pool
+	}
+	return credentials.NewTLS(cfg), nil
+}
+
+func serverName(server string) string {
+	host := server
+	if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host[i:], "]") {
+		host = host[:i]
+	}
+	return strings.Trim(host, "[]")
+}
+
+func diskFree(path string) uint64 {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0
+	}
+	return stat.Bavail * uint64(stat.Bsize)
+}
+
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}

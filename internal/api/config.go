@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // Config is the deployment configuration. Values that defaults.md marks as
@@ -11,6 +12,10 @@ import (
 type Config struct {
 	DatabaseURL         string
 	Addr                string
+	NodeAddr            string
+	NodeTLSCert         string
+	NodeTLSKey          string
+	EnrollmentPacketTTL time.Duration
 	DefaultGPUQuota     int32
 	DefaultSandboxQuota int32
 }
@@ -19,11 +24,17 @@ func ConfigFromEnv() (Config, error) {
 	cfg := Config{
 		DatabaseURL: os.Getenv("STARS_DATABASE_URL"),
 		Addr:        envOr("STARS_API_ADDR", ":8080"),
+		NodeAddr:    envOr("STARS_NODE_ADDR", ":8081"),
+		NodeTLSCert: os.Getenv("STARS_NODE_TLS_CERT"),
+		NodeTLSKey:  os.Getenv("STARS_NODE_TLS_KEY"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("STARS_DATABASE_URL is required")
 	}
 	var err error
+	if cfg.EnrollmentPacketTTL, err = envDuration("STARS_ENROLLMENT_PACKET_TTL", time.Hour); err != nil {
+		return Config{}, err
+	}
 	if cfg.DefaultGPUQuota, err = envInt32("STARS_DEFAULT_GPU_QUOTA", 0); err != nil {
 		return Config{}, err
 	}
@@ -31,6 +42,18 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", key)
+	}
+	return d, nil
 }
 
 func envOr(key, fallback string) string {

@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package stars.node.v1;
+
+option go_package = "github.com/zibyn/stars-sandbox/gen/node/v1;nodev1";
+
+// Node is the Agent-facing service on the `node` listener. Sandbox commands,
+// Tunnel and ExecOutput arrive with later tickets (docs/spec/node-protocol.md).
+service Node {
+  // Redeem is the only unauthenticated entry point: an Enrollment Packet buys
+  // one Node Token. Both travel over TLS.
+  rpc Redeem(RedeemRequest) returns (RedeemResponse);
+  // Control is one long-lived stream per Agent.
+  rpc Control(stream AgentMessage) returns (stream ControlMessage);
+}
+
+message RedeemRequest {
+  string packet = 1;
+  string name = 2;
+  string agent_version = 3;
+  uint32 proto_major = 4;
+  uint32 proto_minor = 5;
+}
+
+message RedeemResponse {
+  string node_id = 1;
+  // Plaintext Node Token; shown only in this response.
+  string node_token = 2;
+}
+
+message AgentMessage {
+  oneof message {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    Capabilities capabilities = 3;
+  }
+}
+
+message Hello {
+  string node_id = 1;
+  string agent_version = 2;
+  uint32 proto_major = 3;
+  uint32 proto_minor = 4;
+}
+
+message Heartbeat {
+  // "healthy" or "unhealthy".
+  string runtime_health = 1;
+  uint64 disk_free = 2;
+  repeated GPUHealth gpu_health = 3;
+}
+
+message GPUHealth {
+  string uuid = 1;
+  string state = 2;
+}
+
+message Capabilities {
+  string runtime = 1;
+  repeated CapabilityEntry entries = 2;
+  repeated GPU gpus = 3;
+}
+
+message CapabilityEntry {
+  string name = 1;
+  CapabilityValue value = 2;
+}
+
+enum CapabilityValue {
+  CAPABILITY_VALUE_UNSPECIFIED = 0;
+  CAPABILITY_VALUE_ENFORCED = 1;
+  CAPABILITY_VALUE_BEST_EFFORT = 2;
+  CAPABILITY_VALUE_UNSUPPORTED = 3;
+}
+
+message GPU {
+  string uuid = 1;
+  string model = 2;
+}
+
+message ControlMessage {
+  oneof message {
+    HelloAck hello_ack = 1;
+  }
+}
+
+message HelloAck {
+  bool accepted = 1;
+  // Empty until the OCI registry exists (M4).
+  string registry_credential = 2;
+}

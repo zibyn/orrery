@@ -143,3 +143,71 @@ WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 -- name: PurgeTokenIdempotencyKeys :exec
 UPDATE api_tokens SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
+-- Enrollment packets and nodes
+
+-- name: CreateEnrollmentPacket :one
+INSERT INTO enrollment_packets (id, secret_hash, expires_at, created_by)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: GetEnrollmentPacket :one
+SELECT * FROM enrollment_packets WHERE id = $1;
+
+-- RedeemEnrollmentPacket is the single-use claim: it fails when the packet was
+-- already used or has expired.
+-- name: RedeemEnrollmentPacket :one
+UPDATE enrollment_packets
+SET used_at = now()
+WHERE id = $1 AND used_at IS NULL AND expires_at > now()
+RETURNING *;
+
+-- name: CreateNode :one
+INSERT INTO nodes (
+    id, name, token_hash, agent_version, proto_major, proto_minor, last_seen_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
+RETURNING *;
+
+-- name: GetNode :one
+SELECT * FROM nodes WHERE id = $1;
+
+-- name: GetNodeByName :one
+SELECT * FROM nodes WHERE name = $1;
+
+-- name: ListNodes :many
+SELECT * FROM nodes
+WHERE (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- name: NodeHello :exec
+UPDATE nodes
+SET last_seen_at = now(),
+    agent_version = $2,
+    proto_major = $3,
+    proto_minor = $4
+WHERE id = $1;
+
+-- name: NodeHeartbeat :exec
+UPDATE nodes
+SET last_seen_at = now(),
+    runtime_health = $2,
+    hardware = $3
+WHERE id = $1;
+
+-- name: SetNodeCapabilities :exec
+UPDATE nodes SET capabilities = $2 WHERE id = $1;
+
+-- name: DeleteNodeGPUs :exec
+DELETE FROM gpus WHERE node_id = $1;
+
+-- name: InsertNodeGPU :exec
+INSERT INTO gpus (uuid, node_id, model) VALUES ($1, $2, $3)
+ON CONFLICT (uuid) DO UPDATE SET node_id = EXCLUDED.node_id, model = EXCLUDED.model;
+
+-- name: ListNodeGPUs :many
+SELECT * FROM gpus WHERE node_id = $1 ORDER BY uuid;
+
+-- name: PurgeEnrollmentPackets :exec
+DELETE FROM enrollment_packets
+WHERE used_at IS NOT NULL OR expires_at < now();

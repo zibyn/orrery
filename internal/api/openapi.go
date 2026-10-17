@@ -303,5 +303,50 @@ func schemas() map[string]any {
 				"next_cursor": nullableString,
 			},
 		},
+		"EnrollmentPacket": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "packet", "expires_at"},
+			"properties": map[string]any{
+				"id":         map[string]any{"type": "string", "format": "uuid"},
+				"packet":     map[string]any{"type": "string", "description": "Plaintext, shown only in this response. Single-use."},
+				"expires_at": map[string]any{"type": "string", "format": "date-time"},
+			},
+		},
+		"GPU": map[string]any{
+			"type":     "object",
+			"required": []string{"uuid", "model"},
+			"properties": map[string]any{
+				"uuid":  map[string]any{"type": "string"},
+				"model": map[string]any{"type": "string"},
+			},
+		},
+		"Node": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "name", "status", "paused", "gpus", "created_at"},
+			"properties": map[string]any{
+				"id":             map[string]any{"type": "string", "format": "uuid"},
+				"name":           map[string]any{"type": "string"},
+				"status":         map[string]any{"type": "string", "enum": []string{"ready", "paused", "unavailable", "outdated", "lost"}},
+				"paused":         map[string]any{"type": "boolean"},
+				"lost_at":        nullableTime,
+				"agent_version":  nullableString,
+				"proto_major":    map[string]any{"type": []string{"integer", "null"}},
+				"proto_minor":    map[string]any{"type": []string{"integer", "null"}},
+				"last_seen_at":   nullableTime,
+				"runtime_health": nullableString,
+				"capabilities":   map[string]any{"type": []string{"object", "null"}},
+				"hardware":       map[string]any{"type": []string{"object", "null"}},
+				"gpus":           map[string]any{"type": "array", "items": schemaRef("GPU")},
+				"created_at":     map[string]any{"type": "string", "format": "date-time"},
+			},
+		},
+		"NodeList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("Node")},
+				"next_cursor": nullableString,
+			},
+		},
 	}
 }

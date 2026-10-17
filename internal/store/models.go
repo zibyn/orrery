@@ -36,6 +36,37 @@ type AuditRecord struct {
 	Detail        json.RawMessage
 }
 
+type EnrollmentPacket struct {
+	ID         uuid.UUID
+	SecretHash []byte
+	ExpiresAt  pgtype.Timestamptz
+	UsedAt     pgtype.Timestamptz
+	CreatedBy  uuid.UUID
+	CreatedAt  pgtype.Timestamptz
+}
+
+type Gpu struct {
+	Uuid   string
+	NodeID uuid.UUID
+	Model  string
+}
+
+type Node struct {
+	ID            uuid.UUID
+	Name          string
+	TokenHash     []byte
+	Paused        bool
+	LostAt        pgtype.Timestamptz
+	AgentVersion  *string
+	ProtoMajor    *int32
+	ProtoMinor    *int32
+	LastSeenAt    pgtype.Timestamptz
+	RuntimeHealth *string
+	Capabilities  json.RawMessage
+	Hardware      json.RawMessage
+	CreatedAt     pgtype.Timestamptz
+}
+
 type User struct {
 	ID             uuid.UUID
 	Name           string
