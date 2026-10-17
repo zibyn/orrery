@@ -122,7 +122,7 @@ func (s *Server) handlePortTicket(w http.ResponseWriter, r *http.Request, p *pri
 	if !ok {
 		return
 	}
-	if sb.State != "ready" {
+	if SandboxState(sb.State) != SandboxReady {
 		writeProblem(w, "conflict", "the Sandbox is not ready")
 		return
 	}
@@ -198,7 +198,7 @@ func (s *Server) servePortGateway(w http.ResponseWriter, r *http.Request, sandbo
 	if !ok {
 		return
 	}
-	if sb.State != "ready" {
+	if SandboxState(sb.State) != SandboxReady {
 		writeProblem(w, "unavailable", "the Sandbox is not ready")
 		return
 	}

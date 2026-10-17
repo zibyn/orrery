@@ -108,17 +108,17 @@ func (r *reconciler) once(ctx context.Context) {
 		return
 	}
 	for _, sb := range sandboxes {
-		switch sb.DesiredState {
-		case "running":
-			switch sb.State {
-			case "pending":
+		switch SandboxDesiredState(sb.DesiredState) {
+		case SandboxDesiredRunning:
+			switch SandboxState(sb.State) {
+			case SandboxPending:
 				r.pending(ctx, sb)
-			case "provisioning":
+			case SandboxProvisioning:
 				r.create(ctx, sb)
 			}
-		case "stopped":
+		case SandboxDesiredStopped:
 			r.stop(ctx, sb)
-		case "deleted":
+		case SandboxDesiredDeleted:
 			r.stopForDelete(ctx, sb)
 		}
 	}
@@ -152,8 +152,9 @@ func (r *reconciler) execs(ctx context.Context) {
 	for _, row := range rows {
 		e := row.Exec
 		connected := row.SandboxNodeID != nil && r.hub.connected(*row.SandboxNodeID)
+		state := SandboxState(row.SandboxState)
 		switch {
-		case row.SandboxState == "stopped" || row.SandboxState == "deleted" || row.SandboxState == "failed":
+		case state == SandboxStopped || state == SandboxDeleted || state == SandboxFailed:
 			// The Runtime is gone, so every remaining Exec failed with it.
 			r.finishExec(ctx, e.ID, "runtime_lost")
 		case e.CancelRequestedAt.Valid:
@@ -176,13 +177,13 @@ func (r *reconciler) execs(ctx context.Context) {
 					CommandId: id, ExecId: e.ID.String(),
 				}},
 			})
-		case row.SandboxDesiredState != "running":
+		case SandboxDesiredState(row.SandboxDesiredState) != SandboxDesiredRunning:
 			// Stop and delete wait for the runtime to be gone; turn the active
 			// Execs into cancel intents first (api.md §3).
 			if _, err := r.s.q.CancelSandboxExecs(ctx, e.SandboxID); err != nil {
 				r.s.log.Warn("reconcile: cancel execs", "sandbox_id", e.SandboxID, "error", err)
 			}
-		case row.SandboxState != "ready":
+		case state != SandboxReady:
 			// The Sandbox is still provisioning; the Exec waits.
 		default:
 			r.startExec(ctx, row)
@@ -258,10 +259,10 @@ func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
 		}
 		return
 	}
-	switch ws.State {
-	case "provisioning":
+	switch WorkspaceState(ws.State) {
+	case WorkspaceProvisioning:
 		// The Workspace sweep sends ProvisionWorkspace with its retry backoff.
-	case "ready":
+	case WorkspaceReady:
 		if _, err := r.s.q.SetSandboxProvisioning(ctx, sb.ID); err != nil {
 			r.s.log.Warn("reconcile: mark sandbox provisioning", "sandbox_id", sb.ID, "error", err)
 		}

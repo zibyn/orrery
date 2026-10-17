@@ -55,7 +55,7 @@ func encodeWorkspaceConditions(c workspaceConditions) json.RawMessage {
 // workspaceUsable reports whether a Sandbox may attach or start against the
 // Workspace. A failed, lost or deleting Workspace cannot be mounted.
 func workspaceUsable(ws store.Workspace) bool {
-	return ws.State == "ready" || ws.State == "provisioning"
+	return WorkspaceState(ws.State) == WorkspaceReady || WorkspaceState(ws.State) == WorkspaceProvisioning
 }
 
 type workspaceDTO struct {
@@ -166,7 +166,7 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request, p
 	if !ok {
 		return
 	}
-	if ws.State == "deleted" || ws.State == "deleting" {
+	if WorkspaceState(ws.State) == WorkspaceDeleted || WorkspaceState(ws.State) == WorkspaceDeleting {
 		writeJSON(w, http.StatusAccepted, s.workspaceToDTO(ctx, ws))
 		return
 	}

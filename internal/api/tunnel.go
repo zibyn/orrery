@@ -145,7 +145,7 @@ func (s *Server) handlePortTunnel(w http.ResponseWriter, r *http.Request, p *pri
 	if !ok {
 		return
 	}
-	if sb.State != "ready" {
+	if SandboxState(sb.State) != SandboxReady {
 		writeProblem(w, "conflict", "the Sandbox is not ready")
 		return
 	}

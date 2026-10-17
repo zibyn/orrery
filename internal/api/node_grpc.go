@@ -456,7 +456,7 @@ func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, gener
 	// A deleted Sandbox waits for its runtime to be gone before the Workspace
 	// can be removed.
 	sb, err := n.s.q.GetSandbox(ctx, id)
-	if err != nil || sb.DesiredState != "deleted" {
+	if err != nil || SandboxDesiredState(sb.DesiredState) != SandboxDesiredDeleted {
 		return
 	}
 	tx, err := n.s.pool.Begin(ctx)
@@ -658,7 +658,7 @@ func (n *nodeService) recordWorkspaceObserved(ctx context.Context, nodeID uuid.U
 		return
 	}
 	switch obs.Phase {
-	case "ready":
+	case string(WorkspaceReady):
 		rows, err := n.s.q.MarkWorkspaceReady(ctx, store.MarkWorkspaceReadyParams{
 			ID: id, Generation: obs.Generation,
 		})
@@ -711,7 +711,7 @@ func (n *nodeService) recordWorkspaceCommandFailure(ctx context.Context, command
 		return
 	}
 	ws, err := n.s.q.GetWorkspace(ctx, id)
-	if err != nil || ws.State != "provisioning" {
+	if err != nil || WorkspaceState(ws.State) != WorkspaceProvisioning {
 		return
 	}
 	conditions := parseWorkspaceConditions(ws.Conditions)

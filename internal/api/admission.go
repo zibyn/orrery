@@ -215,7 +215,7 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 			r.failAdmission(ctx, q, sb, "admission_timeout")
 			continue
 		}
-		if sb.State != "pending" || sb.DesiredState != "running" {
+		if SandboxState(sb.State) != SandboxPending || SandboxDesiredState(sb.DesiredState) != SandboxDesiredRunning {
 			// A concurrent stop or delete won: the request is no longer
 			// waiting for capacity.
 			r.endAdmission(ctx, q, sb.ID, "canceled")

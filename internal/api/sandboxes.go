@@ -21,8 +21,8 @@ const waitForLimit = 60 * time.Second
 const maxMemoryBytes = 1 << 50 // 1 PiB, a sanity bound only
 
 var sandboxStates = map[string]bool{
-	"pending": true, "provisioning": true, "ready": true, "stopping": true,
-	"stopped": true, "deleting": true, "deleted": true, "failed": true,
+	string(SandboxPending): true, string(SandboxProvisioning): true, string(SandboxReady): true, string(SandboxStopping): true,
+	string(SandboxStopped): true, string(SandboxDeleting): true, string(SandboxDeleted): true, string(SandboxFailed): true,
 }
 
 type createSandboxRequest struct {
@@ -418,7 +418,7 @@ func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request, p *pri
 			writeProblem(w, "invalid_request", "unknown Sandbox state")
 			return
 		}
-		sb = s.waitForSandbox(r.Context(), sb, want)
+		sb = s.waitForSandbox(r.Context(), sb, SandboxState(want))
 	}
 	writeJSON(w, http.StatusOK, s.sandboxToDTO(r.Context(), sb))
 }
@@ -434,11 +434,11 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 	if !ok {
 		return
 	}
-	if sb.State == "failed" {
+	if SandboxState(sb.State) == SandboxFailed {
 		writeProblem(w, "conflict", "a failed Sandbox cannot be started; delete it")
 		return
 	}
-	if sb.State != "stopped" {
+	if SandboxState(sb.State) != SandboxStopped {
 		writeProblem(w, "conflict", "the Sandbox is not stopped")
 		return
 	}
@@ -542,11 +542,11 @@ func (s *Server) handleStopSandbox(w http.ResponseWriter, r *http.Request, p *pr
 	if !ok {
 		return
 	}
-	switch sb.State {
-	case "stopped":
+	switch SandboxState(sb.State) {
+	case SandboxStopped:
 		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(r.Context(), sb))
 		return
-	case "deleting", "deleted":
+	case SandboxDeleting, SandboxDeleted:
 		writeProblem(w, "conflict", "the Sandbox is being deleted")
 		return
 	}
@@ -580,7 +580,7 @@ func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !ok {
 		return
 	}
-	if sb.State == "deleting" {
+	if SandboxState(sb.State) == SandboxDeleting {
 		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(r.Context(), sb))
 		return
 	}
@@ -617,9 +617,9 @@ func (s *Server) ownerOrAdmin(p *principal, owner uuid.UUID) bool {
 
 // waitForSandbox polls until the wanted state, a terminal state, or the
 // 60-second cap. Expiry returns the current state, not an error (api.md §1).
-func (s *Server) waitForSandbox(ctx context.Context, sb store.Sandbox, want string) store.Sandbox {
+func (s *Server) waitForSandbox(ctx context.Context, sb store.Sandbox, want SandboxState) store.Sandbox {
 	deadline := time.Now().Add(waitForLimit)
-	for sb.State != want && sb.State != "failed" && sb.State != "deleted" && time.Now().Before(deadline) {
+	for state := SandboxState(sb.State); state != want && state != SandboxFailed && state != SandboxDeleted && time.Now().Before(deadline); state = SandboxState(sb.State) {
 		select {
 		case <-ctx.Done():
 			return sb
@@ -653,7 +653,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 	}
 	// queue_position exists only while the admission request is open. Ignoring
 	// a failed read degrades the display, not the response.
-	if sb.State == "pending" {
+	if SandboxState(sb.State) == SandboxPending {
 		if position, err := s.q.AdmissionQueuePosition(ctx, sb.ID); err == nil {
 			hint := queueHint(sb)
 			dto.QueuePosition = &position

@@ -25,7 +25,7 @@ func (s *Server) fileHandler(suffix string, write bool) handlerFunc {
 		if !ok {
 			return
 		}
-		if sb.State != "ready" {
+		if SandboxState(sb.State) != SandboxReady {
 			writeProblem(w, "conflict", "the Sandbox is not ready")
 			return
 		}

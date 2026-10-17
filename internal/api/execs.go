@@ -150,7 +150,7 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 		writeJSON(w, http.StatusOK, execToDTO(existing))
 		return
 	}
-	if sb.State != "ready" || sb.DesiredState != "running" {
+	if SandboxState(sb.State) != SandboxReady || SandboxDesiredState(sb.DesiredState) != SandboxDesiredRunning {
 		writeProblem(w, "conflict", "the Sandbox is not ready")
 		return
 	}
