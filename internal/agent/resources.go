@@ -34,9 +34,11 @@ var resourceFetchBackoff = []time.Duration{
 	time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
 }
 
-// resourceTreeMu serializes tree assembly. Two Sandboxes mounting the same
-// version may create it concurrently; the tree is built in a temporary
-// directory and renamed, so one build wins.
+// resourceTreeMu serializes tree assembly and eviction. Two Sandboxes mounting
+// the same version may create it concurrently; the tree is built in a temporary
+// directory and renamed, so one build wins. Eviction takes it while removing a
+// tree and reclaiming objects, so a download cannot lose its object between the
+// write and the hard link.
 var resourceTreeMu sync.Mutex
 
 // resourceHTTPClient fetches presigned URLs. The URL lifetime is an hour, so a
