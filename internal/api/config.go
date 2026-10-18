@@ -35,6 +35,16 @@ type Config struct {
 	ExecLogRetention time.Duration
 	// AuditRetention keeps Audit Records this long (defaults.md, 0 = forever).
 	AuditRetention time.Duration
+	// ResourceVersionTTL expires a non-current, unreferenced ResourceVersion
+	// this long after creation (defaults.md, 30 days; 0 keeps it forever).
+	ResourceVersionTTL time.Duration
+	// CASGrace keeps an unreferenced CAS object this long after upload
+	// (defaults.md, 24 hours; 0 disables the sweep).
+	CASGrace time.Duration
+	// PurgeInterval is the periodic cleanup cadence. The deployment default is
+	// the constant 10 minutes; STARS_PURGE_INTERVAL exists only so e2e can
+	// observe a sweep without waiting (internal, test-only).
+	PurgeInterval time.Duration
 	// PtyIdleSeconds is the deployment PTY idle reap (defaults.md, 300 s).
 	PtyIdleSeconds int64
 	// IdleStopSeconds is the deployment default for a Sandbox's Idle Stop
@@ -142,6 +152,17 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.AuditRetention, err = envRetention("STARS_AUDIT_RETENTION", 0); err != nil {
+		return Config{}, err
+	}
+	if cfg.ResourceVersionTTL, err = envRetention("STARS_RESOURCE_VERSION_TTL", 30*24*time.Hour); err != nil {
+		return Config{}, err
+	}
+	if cfg.CASGrace, err = envRetention("STARS_CAS_GRACE", 24*time.Hour); err != nil {
+		return Config{}, err
+	}
+	// Internal, test-only: the documented cadence is the 10-minute constant
+	// (defaults.md). The e2e suite shortens it to observe a sweep.
+	if cfg.PurgeInterval, err = envDuration("STARS_PURGE_INTERVAL", purgeInterval); err != nil {
 		return Config{}, err
 	}
 	if cfg.PtyIdleSeconds, err = envInt64("STARS_PTY_IDLE_SECONDS", 300); err != nil {
