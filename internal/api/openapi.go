@@ -143,7 +143,8 @@ func responsesFor(rt route) map[string]any {
 			"description": "The SnapshotVersion created by an earlier request with the same Idempotency-Key",
 			"content":     map[string]any{"application/json": map[string]any{"schema": schemaRef(rt.Response)}},
 		}
-		responses["422"] = problemResponse("unsupported")
+		// A build is asynchronous; an unfulfillable build ends the version
+		// failed/build_failed through admission, not with 422.
 		responses["503"] = problemResponse("unavailable")
 	case "createResourceUpload":
 		responses["413"] = problemResponse("payload_too_large")
@@ -587,7 +588,7 @@ func schemas() map[string]any {
 		},
 		"CreateSnapshotVersionRequest": map[string]any{
 			"type":        "object",
-			"description": "Exactly one of import or build. Build execution arrives with #89 and currently answers 422 unsupported.",
+			"description": "Exactly one of import or build.",
 			"properties": map[string]any{
 				"import": map[string]any{
 					"type":     "object",
@@ -597,9 +598,25 @@ func schemas() map[string]any {
 						"auth_secret": map[string]any{"type": "string", "description": "Name of the caller's Secret holding a Docker config.json for the source."},
 					},
 				},
-				"build": map[string]any{
-					"type":        "object",
-					"description": "Reserved for #89.",
+				"build": schemaRef("BuildRequest"),
+			},
+		},
+		"BuildRequest": map[string]any{
+			"type":        "object",
+			"description": "Build a Snapshot on a Node. The build runs with system priority, holds an Allocation, does not count toward User Quota, and is bounded by the deployment build CPU/memory/timeout limits.",
+			"required":    []string{"dockerfile"},
+			"properties": map[string]any{
+				"dockerfile": map[string]any{"type": "string", "description": "Dockerfile text. There is no default build context."},
+				"base":       map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name (own first, then platform), injected as the named context base."},
+				"contexts": map[string]any{
+					"type":                 "object",
+					"additionalProperties": map[string]any{"type": "string"},
+					"description":          "Named context to resource[@version]; resolved to concrete versions at create time.",
+				},
+				"secrets": map[string]any{
+					"type":                 "object",
+					"additionalProperties": map[string]any{"type": "string"},
+					"description":          "Docker secret id to Secret name. A build with Secrets runs without the build cache.",
 				},
 			},
 		},

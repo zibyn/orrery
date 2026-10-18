@@ -155,6 +155,19 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		if workspaceNode != nil && node.ID != *workspaceNode {
 			continue
 		}
+		if sb.Kind == "build" {
+			if len(node.Capabilities) == 0 {
+				// A Node that has not reported its Capabilities may still turn
+				// out to support builds.
+				unknown = true
+				continue
+			}
+			if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapSnapshotBuild) {
+				// Reported and incapable: this Node can never take the build.
+				known = true
+				continue
+			}
+		}
 		fit, ok := fitFor(node, store.NodePlacementRow{GpuTotal: int64(len(gpus[node.ID]))})
 		if !ok {
 			unknown = true
@@ -222,6 +235,21 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 			continue
 		}
 		ws, err := q.GetSandboxWorkspace(ctx, sb.ID)
+		if sb.Kind == "build" {
+			// A build row has no Workspace or Attachment (schema.md, ADR-0021).
+			placed, err := r.tryAdmit(ctx, q, sb, store.Workspace{}, nodes, now)
+			if err != nil {
+				return err
+			}
+			if placed {
+				r.endAdmission(ctx, q, sb.ID, "admitted")
+				continue
+			}
+			if admissionExhausted(nodes, inventory, sb, nil) {
+				r.failAdmission(ctx, q, sb, "unsatisfiable")
+			}
+			continue
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.failAdmission(ctx, q, sb, "runtime_create_failed")
 			continue
@@ -275,21 +303,31 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 	// create keeps a mixed fleet working: api.md's Local `422 unsupported` is
 	// the single-Runtime case, and here a fleet with no capable Node ends the
 	// admission request `unsatisfiable` instead.
-	resourceMounts, err := q.CountSandboxResources(ctx, sb.ID)
-	if err != nil {
-		return false, err
+	isBuild := sb.Kind == "build"
+	var resourceMounts int64
+	if !isBuild {
+		var err error
+		resourceMounts, err = q.CountSandboxResources(ctx, sb.ID)
+		if err != nil {
+			return false, err
+		}
 	}
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
 			continue
 		}
-		if ws.NodeID != nil && node.ID != *ws.NodeID {
+		if !isBuild && ws.NodeID != nil && node.ID != *ws.NodeID {
 			continue
 		}
-		if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
+		if isBuild {
+			// Builds run on the host build API only (ADR-0021).
+			if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapSnapshotBuild) {
+				continue
+			}
+		} else if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
 			continue
 		}
-		if !nodeSchedulable(node, now, ws.NodeID != nil) || !r.hub.connected(node.ID) {
+		if !nodeSchedulable(node, now, !isBuild && ws.NodeID != nil) || !r.hub.connected(node.ID) {
 			continue
 		}
 		used, err := q.NodePlacement(ctx, node.ID)
@@ -331,7 +369,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			if rows == 0 {
 				return false, nil
 			}
-			if ws.NodeID == nil {
+			if !isBuild && ws.NodeID == nil {
 				if _, err := q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{
 					ID: ws.ID, NodeID: &node.ID,
 				}); err != nil {

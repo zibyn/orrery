@@ -167,6 +167,10 @@ services:
       STARS_REGISTRY_PUSH_ADDR: "${STARS_REGISTRY_PUSH_ADDR:-host.docker.internal:15000}"
       # Docker config.json auth document; matches deploy/registry/htpasswd.
       STARS_REGISTRY_CREDENTIAL: "${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"},\"host.docker.internal:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"}}}}"
+      # Snapshot build limits (defaults.md: 4 CPU + 8 GiB, 1 hour).
+      STARS_BUILD_CPU: "${STARS_BUILD_CPU:-}"
+      STARS_BUILD_MEMORY: "${STARS_BUILD_MEMORY:-}"
+      STARS_BUILD_TIMEOUT: "${STARS_BUILD_TIMEOUT:-}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

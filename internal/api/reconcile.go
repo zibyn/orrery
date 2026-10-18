@@ -125,6 +125,7 @@ func (r *reconciler) once(ctx context.Context) {
 	r.deleteWorkspaces(ctx)
 	r.workspaces(ctx)
 	r.publishWorkspaces(ctx)
+	r.builds(ctx)
 	r.execs(ctx)
 	r.idle(ctx)
 	// Admission is last so its writes commit with the sweep and its own
