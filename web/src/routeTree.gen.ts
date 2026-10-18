@@ -12,8 +12,10 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AuthedAccountRouteImport } from './routes/_authed.account'
 import { Route as AuthedCliAuthRouteImport } from './routes/_authed.cli-auth'
 import { Route as AuthedGitRouteImport } from './routes/_authed.git'
+import { Route as AuthedSecretsRouteImport } from './routes/_authed.secrets'
 import { Route as AuthedAdminAuditRouteImport } from './routes/_authed.admin.audit'
 import { Route as AuthedAdminNodesRouteImport } from './routes/_authed.admin.nodes'
 import { Route as AuthedAdminUsersRouteImport } from './routes/_authed.admin.users'
@@ -37,6 +39,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthedAccountRoute = AuthedAccountRouteImport.update({
+  id: '/account',
+  path: '/account',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedCliAuthRoute = AuthedCliAuthRouteImport.update({
   id: '/cli-auth',
   path: '/cli-auth',
@@ -45,6 +52,11 @@ const AuthedCliAuthRoute = AuthedCliAuthRouteImport.update({
 const AuthedGitRoute = AuthedGitRouteImport.update({
   id: '/git',
   path: '/git',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedSecretsRoute = AuthedSecretsRouteImport.update({
+  id: '/secrets',
+  path: '/secrets',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedAdminAuditRoute = AuthedAdminAuditRouteImport.update({
@@ -92,8 +104,10 @@ const AuthedSandboxesIdTerminalRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/account': typeof AuthedAccountRoute
   '/cli-auth': typeof AuthedCliAuthRoute
   '/git': typeof AuthedGitRoute
+  '/secrets': typeof AuthedSecretsRoute
   '/admin/audit': typeof AuthedAdminAuditRoute
   '/admin/nodes': typeof AuthedAdminNodesRoute
   '/admin/users': typeof AuthedAdminUsersRoute
@@ -106,8 +120,10 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/account': typeof AuthedAccountRoute
   '/cli-auth': typeof AuthedCliAuthRoute
   '/git': typeof AuthedGitRoute
+  '/secrets': typeof AuthedSecretsRoute
   '/admin/audit': typeof AuthedAdminAuditRoute
   '/admin/nodes': typeof AuthedAdminNodesRoute
   '/admin/users': typeof AuthedAdminUsersRoute
@@ -122,8 +138,10 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
+  '/_authed/account': typeof AuthedAccountRoute
   '/_authed/cli-auth': typeof AuthedCliAuthRoute
   '/_authed/git': typeof AuthedGitRoute
+  '/_authed/secrets': typeof AuthedSecretsRoute
   '/_authed/admin/audit': typeof AuthedAdminAuditRoute
   '/_authed/admin/nodes': typeof AuthedAdminNodesRoute
   '/_authed/admin/users': typeof AuthedAdminUsersRoute
@@ -138,8 +156,10 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/account'
     | '/cli-auth'
     | '/git'
+    | '/secrets'
     | '/admin/audit'
     | '/admin/nodes'
     | '/admin/users'
@@ -152,8 +172,10 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
+    | '/account'
     | '/cli-auth'
     | '/git'
+    | '/secrets'
     | '/admin/audit'
     | '/admin/nodes'
     | '/admin/users'
@@ -167,8 +189,10 @@ export interface FileRouteTypes {
     | '/'
     | '/_authed'
     | '/login'
+    | '/_authed/account'
     | '/_authed/cli-auth'
     | '/_authed/git'
+    | '/_authed/secrets'
     | '/_authed/admin/audit'
     | '/_authed/admin/nodes'
     | '/_authed/admin/users'
@@ -208,6 +232,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authed/account': {
+      id: '/_authed/account'
+      path: '/account'
+      fullPath: '/account'
+      preLoaderRoute: typeof AuthedAccountRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/cli-auth': {
       id: '/_authed/cli-auth'
       path: '/cli-auth'
@@ -220,6 +251,13 @@ declare module '@tanstack/react-router' {
       path: '/git'
       fullPath: '/git'
       preLoaderRoute: typeof AuthedGitRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/secrets': {
+      id: '/_authed/secrets'
+      path: '/secrets'
+      fullPath: '/secrets'
+      preLoaderRoute: typeof AuthedSecretsRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/admin/audit': {
@@ -282,8 +320,10 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthedRouteChildren {
+  AuthedAccountRoute: typeof AuthedAccountRoute
   AuthedCliAuthRoute: typeof AuthedCliAuthRoute
   AuthedGitRoute: typeof AuthedGitRoute
+  AuthedSecretsRoute: typeof AuthedSecretsRoute
   AuthedAdminAuditRoute: typeof AuthedAdminAuditRoute
   AuthedAdminNodesRoute: typeof AuthedAdminNodesRoute
   AuthedAdminUsersRoute: typeof AuthedAdminUsersRoute
@@ -295,8 +335,10 @@ interface AuthedRouteChildren {
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedAccountRoute: AuthedAccountRoute,
   AuthedCliAuthRoute: AuthedCliAuthRoute,
   AuthedGitRoute: AuthedGitRoute,
+  AuthedSecretsRoute: AuthedSecretsRoute,
   AuthedAdminAuditRoute: AuthedAdminAuditRoute,
   AuthedAdminNodesRoute: AuthedAdminNodesRoute,
   AuthedAdminUsersRoute: AuthedAdminUsersRoute,

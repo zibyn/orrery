@@ -33,12 +33,22 @@ export type QuotaUsage = {
   sandboxes: { limit: number; used: number }
 }
 
-export type CreatedToken = {
+export type Token = {
   id: string
+  kind: 'token' | 'session'
   name: string
-  scope: string
-  token: string
+  scope: 'read_only' | 'user' | 'admin'
+  expires_at: string | null
+  last_used_at: string | null
   created_at: string
+}
+
+// The plaintext `token` is present only on creation (api.md §8).
+export type CreatedToken = Token & { token: string }
+
+export type Secret = {
+  name: string
+  updated_at: string
 }
 
 export type ListResponse<T> = {

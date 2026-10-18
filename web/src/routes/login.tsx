@@ -3,10 +3,11 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { z } from 'zod'
 
-import { api, ApiError } from '@/api'
+import { api, ApiError, type Token } from '@/api'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { rememberCurrentSession } from '@/lib/current-session'
 import { safeReturn } from '@/lib/return-path'
 
 const loginSchema = z.object({
@@ -34,7 +35,10 @@ function LoginPage() {
         return
       }
       try {
-        await api('POST', '/sessions', parsed.data)
+        // The response is the Session's Token DTO; its id lets the account
+        // page mark this Session. OIDC logins never see this id.
+        const session = await api<Token>('POST', '/sessions', parsed.data)
+        rememberCurrentSession(session.id)
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
           setError('Wrong username or password.')
