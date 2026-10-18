@@ -16,6 +16,15 @@ const (
 	SandboxFailed       SandboxState = "failed"
 )
 
+// SandboxKind distinguishes a caller's Sandbox from the internal row a
+// Snapshot build runs (ADR-0021).
+type SandboxKind string
+
+const (
+	SandboxKindUser  SandboxKind = "user"
+	SandboxKindBuild SandboxKind = "build"
+)
+
 // SandboxDesiredState is the lifecycle the caller asked a Sandbox to reach.
 type SandboxDesiredState string
 

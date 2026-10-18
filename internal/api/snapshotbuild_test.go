@@ -132,7 +132,7 @@ func TestAdmissionExhaustedRequiresSnapshotBuild(t *testing.T) {
 	now := time.Now()
 	node := readyNode(t, now)
 	node.Hardware = []byte(`{"cpu_cores":8,"memory_bytes":34359738368,"disk_free":1000,"disk_total":1000}`)
-	build := store.Sandbox{Kind: "build", Cpu: 4, Memory: 8 << 30}
+	build := store.Sandbox{Kind: string(SandboxKindBuild), Cpu: 4, Memory: 8 << 30}
 	if !admissionExhausted([]store.Node{node}, nil, build, nil) {
 		t.Fatal("a Node without snapshot_build must make the build unsatisfiable")
 	}

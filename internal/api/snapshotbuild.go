@@ -235,12 +235,12 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 
 	var baseDigest string
 	if hasBase {
-		pin, code, detail := resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Base)
+		var code, detail string
+		baseDigest, code, detail = resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Base)
 		if code != "" {
 			writeProblem(w, code, detail)
 			return
 		}
-		baseDigest = pin.digest
 	}
 	// Contexts resolve to concrete versions now; the rows pin them for the
 	// build's life and are read back by the Reconciler (schema.md).
@@ -618,7 +618,7 @@ func (n *nodeService) recordBuildObserved(ctx context.Context, nodeID uuid.UUID,
 		return
 	}
 	sb, err := n.s.q.GetSandboxIncludingDeleted(ctx, *version.BuildSandboxID)
-	if err != nil || sb.Kind != "build" || sb.NodeID == nil || *sb.NodeID != nodeID {
+	if err != nil || sb.Kind != string(SandboxKindBuild) || sb.NodeID == nil || *sb.NodeID != nodeID {
 		return
 	}
 	if obs.Cause != "" {
