@@ -106,6 +106,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runNode(c, rest[1:], stderr)
 	case "port-forward":
 		err = runPortForward(c, rest[1:])
+	case "mcp":
+		err = runMCP(c, rest[1:], stderr)
 	case "git-credential":
 		err = runGitCredential(c, rest[1:], stdout, stderr)
 	case "git":
@@ -165,6 +167,7 @@ commands:
   node declare-lost <id>            declare an unreachable Node lost (admin)
   port-forward <sandbox-id> [LOCAL:]REMOTE
                                     tunnel a local TCP port to a Sandbox port
+  mcp                              serve the MCP Tool API over stdio
 
 global flags:
   --config PATH    config file (default $STARS_SANDBOX_CONFIG or $XDG_CONFIG_HOME/stars-sandbox/config.json)
