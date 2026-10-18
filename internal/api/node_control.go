@@ -100,6 +100,9 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 		case *nodev1.AgentMessage_ExecObserved:
 			n.recordExecObserved(ctx, node.ID, m.ExecObserved)
 		case *nodev1.AgentMessage_CommandResult:
+			// A Workspace publish is finalized from its CommandResult: success
+			// verifies the objects, failure ends the version (node-protocol.md).
+			n.handlePublishCommandResult(ctx, node, m.CommandResult)
 			if m.CommandResult.Error != "" {
 				n.s.log.Warn("command failed on Agent",
 					"node_id", node.ID, "command_id", m.CommandResult.CommandId, "error", m.CommandResult.Error)
