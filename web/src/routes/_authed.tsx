@@ -3,6 +3,7 @@ import { createFileRoute, Link, Outlet, redirect } from '@tanstack/react-router'
 
 import { api, ApiError, getMe } from '@/api'
 import { Button } from '@/components/ui/button'
+import { forgetCurrentSession } from '@/lib/current-session'
 
 // Every page under _authed needs a Session. A 401 sends the browser to the
 // login page with the current location as ?return= (ADR-0020).
@@ -14,6 +15,7 @@ export const Route = createFileRoute('/_authed')({
       return { user }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
+        forgetCurrentSession()
         throw redirect({ to: '/login', search: { return: location.href } })
       }
       throw err
@@ -29,6 +31,15 @@ const NAV = [
   { to: '/snapshots', label: 'Snapshots' },
   { to: '/git', label: 'Git accounts' },
   { to: '/cli-auth', label: 'CLI authorization' },
+  { to: '/secrets', label: 'Secrets' },
+  { to: '/account', label: 'Account' },
+] as const
+
+// Admin pages are UI-gated on is_admin; the server still enforces scope (api.md §8).
+const ADMIN_NAV = [
+  { to: '/admin/users', label: 'Users' },
+  { to: '/admin/nodes', label: 'Nodes' },
+  { to: '/admin/audit', label: 'Audit' },
 ] as const
 
 const navLinkClass =
@@ -38,7 +49,10 @@ function AuthedShell() {
   const { user } = Route.useRouteContext()
   const logout = useMutation({
     mutationFn: () => api('DELETE', '/sessions/current'),
-    onSuccess: () => window.location.assign('/login'),
+    onSuccess: () => {
+      forgetCurrentSession()
+      window.location.assign('/login')
+    },
   })
 
   return (
@@ -59,6 +73,17 @@ function AuthedShell() {
                 {item.label}
               </Link>
             ))}
+            {user.is_admin &&
+              ADMIN_NAV.map((item) => (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  className={navLinkClass}
+                  activeProps={{ className: `${navLinkClass} bg-muted text-foreground` }}
+                >
+                  {item.label}
+                </Link>
+              ))}
           </nav>
           <div className="flex items-center gap-3 text-sm">
             <span className="text-muted-foreground">{user.name}</span>

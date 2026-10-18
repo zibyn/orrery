@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 
 import { api, type CreatedToken } from '@/api'
-import { Button } from '@/components/ui/button'
+import { TokenReveal } from '@/components/token-reveal'
 
 // The page itself creates the token with the Session (api.md §8). A loader,
 // unlike an effect, runs once, so StrictMode cannot mint two tokens.
@@ -33,17 +33,7 @@ export const Route = createFileRoute('/_authed/cli-auth')({
 
 function CliAuthPage() {
   const token = Route.useLoaderData()
-  const [copied, setCopied] = useState(false)
   const [done, setDone] = useState(false)
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(token.token)
-      setCopied(true)
-    } catch {
-      // Clipboard access can be denied; the token stays visible to select.
-    }
-  }
 
   if (done) {
     return (
@@ -64,13 +54,7 @@ function CliAuthPage() {
           This token appears once. Paste it into the <code className="font-mono">stars-sandbox login</code> prompt.
         </p>
       </div>
-      <pre className="overflow-x-auto rounded-md border border-border bg-muted p-3 font-mono text-sm">{token.token}</pre>
-      <div className="flex gap-2">
-        <Button onClick={copy}>{copied ? 'Copied' : 'Copy token'}</Button>
-        <Button variant="outline" onClick={() => setDone(true)}>
-          Done
-        </Button>
-      </div>
+      <TokenReveal token={token.token} onDone={() => setDone(true)} />
     </div>
   )
 }
