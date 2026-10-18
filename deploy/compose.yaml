@@ -56,12 +56,24 @@ services:
   registry:
     image: registry:3
     network_mode: host
+    environment:
+      # Distribution signs blob redirects for this endpoint. Nodes reach the
+      # host-mapped 127.0.0.1:19000; in e2e the Control Plane (a container)
+      # must reach it too, so the script points this at the bridge gateway.
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: "${STARS_REGISTRY_S3_REGIONENDPOINT:-http://127.0.0.1:19000}"
     volumes:
       - ./registry/config.yml:/etc/distribution/config.yml:ro
       - ./registry/htpasswd:/etc/distribution/htpasswd:ro
     depends_on:
       rustfs-init:
         condition: service_completed_successfully
+    healthcheck:
+      # /v2/ answers 401 to anonymous requests, so the healthcheck sends the
+      # development credential (base64 of stars:stars-registry-password).
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header='Authorization: Basic c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=' http://127.0.0.1:15000/v2/"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
 
   dex:
     image: ghcr.io/dexidp/dex:v2.41.1
@@ -107,7 +119,8 @@ services:
       STARS_NODE_ADDR: ":8081"
       STARS_NODE_TLS_CERT: /tls/server.crt
       STARS_NODE_TLS_KEY: /tls/server.key
-      STARS_DEFAULT_SNAPSHOT_DIGEST: "${STARS_DEFAULT_SNAPSHOT_DIGEST:-}"
+      STARS_PLATFORM_SNAPSHOTS: "${STARS_PLATFORM_SNAPSHOTS:-}"
+      STARS_DEFAULT_SNAPSHOT: "${STARS_DEFAULT_SNAPSHOT:-}"
       STARS_EXEC_LOG_CAP: "${STARS_EXEC_LOG_CAP:-}"
       STARS_EXEC_LOG_RETENTION: "${STARS_EXEC_LOG_RETENTION:-}"
       STARS_AUDIT_RETENTION: "${STARS_AUDIT_RETENTION:-}"
@@ -132,8 +145,14 @@ services:
       STARS_S3_ACCESS_KEY: "${STARS_S3_ACCESS_KEY:-stars}"
       STARS_S3_SECRET_KEY: "${STARS_S3_SECRET_KEY:-stars-secret}"
       STARS_REGISTRY_ADDR: "${STARS_REGISTRY_ADDR:-127.0.0.1:15000}"
+      # Nodes reach the registry at 127.0.0.1:15000 (host networking). The
+      # Control Plane is a container, so its pushes go through the host
+      # gateway instead; the credential document lists both hosts.
+      STARS_REGISTRY_PUSH_ADDR: "${STARS_REGISTRY_PUSH_ADDR:-host.docker.internal:15000}"
       # Docker config.json auth document; matches deploy/registry/htpasswd.
-      STARS_REGISTRY_CREDENTIAL: "${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"}}}}"
+      STARS_REGISTRY_CREDENTIAL: "${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"},\"host.docker.internal:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"}}}}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
       - "${STARS_ENCRYPTION_KEYS_DIR:-./keys}:/keys:ro"
@@ -144,6 +163,8 @@ services:
         condition: service_healthy
       rustfs-init:
         condition: service_completed_successfully
+      registry:
+        condition: service_healthy
     ports:
       - "18080:8080"
       - "18081:8081"
