@@ -304,19 +304,39 @@ INSERT INTO sandboxes (
 ) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11, $12, $13, $14)
 RETURNING *;
 
--- name: GetSandbox :one
-SELECT * FROM sandboxes WHERE id = $1 AND state <> 'deleted';
+-- CreateBuildSandbox is the internal row that carries a Snapshot build's
+-- Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no
+-- Workspace and no Runtime; secret_env_ct holds the build's Secret snapshot.
+-- name: CreateBuildSandbox :one
+INSERT INTO sandboxes (
+    id, owner_id, kind, name, labels, desired_state, state, snapshot_digest,
+    cpu, memory, gpu_count, idle_stop_seconds, generation, secret_env_ct
+) VALUES ($1, $2, 'build', $3, '{}', 'running', 'pending', $4, $5, $6, 0, 0, 1, $7)
+RETURNING *;
 
+-- MarkBuildSandboxDone takes a build row out of the admission and reconcile
+-- sweeps once its version is terminal. It has no Runtime to stop.
+-- name: MarkBuildSandboxDone :execrows
+UPDATE sandboxes
+SET state = 'stopped', desired_state = 'stopped', updated_at = now()
+WHERE id = $1 AND kind = 'build' AND state <> 'stopped';
+
+-- name: GetSandbox :one
+SELECT * FROM sandboxes WHERE id = $1 AND kind = 'user' AND state <> 'deleted';
+
+-- GetSandboxIncludingDeleted does not filter kind: a build Exec's log is
+-- readable through its owner, and the build row carries that ownership.
 -- name: GetSandboxIncludingDeleted :one
 SELECT * FROM sandboxes WHERE id = $1;
 
 -- name: GetSandboxByIdempotencyKey :one
 SELECT * FROM sandboxes
-WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
+WHERE owner_id = $1 AND kind = 'user' AND idempotency_key = $2 AND state <> 'deleted';
 
 -- name: ListSandboxes :many
 SELECT * FROM sandboxes
 WHERE owner_id = sqlc.arg('owner_id')
+  AND kind = 'user'
   AND state <> 'deleted'
   AND (sqlc.narg('state')::text IS NULL OR state = sqlc.narg('state'))
   AND (sqlc.narg('node_id')::uuid IS NULL OR node_id = sqlc.narg('node_id'))
@@ -329,12 +349,13 @@ ORDER BY id
 LIMIT sqlc.arg('limit');
 
 -- An open admission request is part of active usage, so the pending state is
--- the quota hold (ADR-0015).
+-- the quota hold (ADR-0015). Builds are system work and never count (ADR-0021).
 -- name: CountActiveSandboxResources :one
 SELECT count(*)::bigint AS sandboxes,
        COALESCE(SUM(gpu_count), 0)::bigint AS gpus
 FROM sandboxes
-WHERE owner_id = $1 AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+WHERE owner_id = $1 AND kind = 'user'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping');
 
 -- name: StartSandbox :one
 UPDATE sandboxes
@@ -361,7 +382,7 @@ UPDATE sandboxes SET last_activity_at = now() WHERE id = $1 AND state = 'ready';
 -- period (defaults.md, ADR-0015).
 -- name: ListIdleSandboxes :many
 SELECT * FROM sandboxes
-WHERE state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
+WHERE kind = 'user' AND state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
 ORDER BY id;
 
 -- name: DeleteSandbox :one
@@ -376,7 +397,8 @@ RETURNING *;
 
 -- name: ListReconcilableSandboxes :many
 SELECT * FROM sandboxes
-WHERE state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+WHERE kind = 'user'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
 ORDER BY id;
 
 -- name: SetSandboxNode :execrows
@@ -723,7 +745,7 @@ SELECT sqlc.embed(e), s.node_id AS sandbox_node_id, s.owner_id AS sandbox_owner_
        s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
 FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id
-WHERE e.finished_at IS NULL
+WHERE e.finished_at IS NULL AND s.kind = 'user'
 ORDER BY e.id;
 
 -- Execution Log retention is counted from the Exec's terminal state
@@ -1061,11 +1083,12 @@ RETURNING *;
 -- name: CreateSnapshotVersion :one
 INSERT INTO snapshot_versions (
     id, snapshot_id, digest, state, cause, source,
-    build_sandbox_id, build_exec_id, provenance, idempotency_key
+    build_sandbox_id, build_exec_id, provenance, idempotency_key, build_request
 ) VALUES (
     sqlc.arg('id'), sqlc.arg('snapshot_id'), sqlc.narg('digest'), sqlc.arg('state'),
     sqlc.narg('cause'), sqlc.arg('source'), sqlc.narg('build_sandbox_id'),
-    sqlc.narg('build_exec_id'), sqlc.narg('provenance'), sqlc.narg('idempotency_key')
+    sqlc.narg('build_exec_id'), sqlc.narg('provenance'), sqlc.narg('idempotency_key'),
+    sqlc.narg('build_request')
 )
 RETURNING *;
 
@@ -1084,7 +1107,8 @@ ORDER BY id
 LIMIT sqlc.arg('limit');
 
 -- name: MarkSnapshotVersionReady :one
-UPDATE snapshot_versions SET state = 'ready', digest = sqlc.arg('digest')
+UPDATE snapshot_versions
+SET state = 'ready', digest = sqlc.arg('digest'), provenance = sqlc.narg('provenance')
 WHERE id = sqlc.arg('id') AND state = 'building'
 RETURNING *;
 
@@ -1111,12 +1135,30 @@ WHERE state = 'building' AND source = 'import';
 -- registry address a Sandbox was created against.
 -- name: CountSandboxSnapshotReferences :one
 SELECT count(*)::bigint FROM sandboxes
-WHERE state <> 'deleted'
+WHERE kind = 'user' AND state <> 'deleted'
   AND right(snapshot_digest, length(sqlc.arg('ref')::text)) = sqlc.arg('ref')::text;
 
 -- name: GetSnapshotVersionByID :one
 SELECT * FROM snapshot_versions WHERE id = $1;
 
+-- ListBuildRuns is the build sweep's queue: every build version still tied to
+-- a live build sandbox or Exec, terminal versions included, so cleanup is
+-- retried until it succeeds (ADR-0014: desired state is the queue).
+-- name: ListBuildRuns :many
+SELECT sqlc.embed(v), sqlc.embed(s),
+       e.id AS exec_id, e.accepted_at AS exec_accepted_at,
+       e.started_at AS exec_started_at, e.deadline_at AS exec_deadline_at,
+       e.cancel_requested_at AS exec_cancel_requested_at,
+       e.finished_at AS exec_finished_at, e.timeout_seconds AS exec_timeout_seconds,
+       e.generation AS exec_generation
+FROM snapshot_versions v
+JOIN sandboxes s ON s.id = v.build_sandbox_id
+JOIN execs e ON e.id = v.build_exec_id
+WHERE v.source = 'build' AND s.kind = 'build'
+  -- A terminal version whose sandbox and Exec are already settled needs no
+  -- more work.
+  AND NOT (s.state = 'stopped' AND e.finished_at IS NOT NULL)
+ORDER BY v.id;
 -- M4 ticket #90: Retention, CAS sweep and tombstone cleanup (ADR-0012).
 
 -- ListExpiredResourceVersions is the ResourceVersion TTL sweep. The handler

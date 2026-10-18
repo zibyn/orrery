@@ -66,6 +66,25 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 	}
 }
 
+func TestSnapshotBuildCapabilityIsIndependent(t *testing.T) {
+	report := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false)
+	enforced := withSnapshotBuild(report, true)
+	values := map[string]string{}
+	for _, entry := range enforced.Entries {
+		values[entry.Name] = entry.Value
+	}
+	if values[nodeproto.CapSnapshotBuild] != nodeproto.ValueEnforced {
+		t.Fatalf("snapshot_build = %q, want enforced even when the runtime probe is weak",
+			values[nodeproto.CapSnapshotBuild])
+	}
+	unsupported := withSnapshotBuild(report, false)
+	for _, entry := range unsupported.Entries {
+		if entry.Name == nodeproto.CapSnapshotBuild && entry.Value != nodeproto.ValueUnsupported {
+			t.Fatalf("snapshot_build = %q, want unsupported", entry.Value)
+		}
+	}
+}
+
 func TestNumberedDeviceCount(t *testing.T) {
 	devices := []string{
 		"/dev/nvidia0", "/dev/nvidia1", "/dev/nvidiactl",

@@ -95,6 +95,26 @@ func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport
 	return capabilities(result, limitsEnforced, gpuVisible), nil
 }
 
+// withSnapshotBuild adds the BuildKit endpoint self-check to a Runtime report.
+// It is independent of the Runtime type (runtime.md §12): a Local or Podman
+// Node with a reachable BuildKit endpoint builds too.
+func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.CapabilityReport {
+	value := nodeproto.ValueUnsupported
+	if ok {
+		value = nodeproto.ValueEnforced
+	}
+	for i := range report.Entries {
+		if report.Entries[i].Name == nodeproto.CapSnapshotBuild {
+			report.Entries[i].Value = value
+			return report
+		}
+	}
+	report.Entries = append(report.Entries, nodeproto.CapabilityEntry{
+		Name: nodeproto.CapSnapshotBuild, Value: value,
+	})
+	return report
+}
+
 func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
@@ -125,6 +145,8 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeprot
 			// unsupported, which keeps the Scheduler from placing a Sandbox
 			// with Resources there.
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
+			// snapshot_build is added by the Agent from the BuildKit endpoint
+			// self-check, independent of the Runtime (runtime.md §12).
 		},
 	}
 }

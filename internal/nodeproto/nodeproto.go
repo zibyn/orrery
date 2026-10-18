@@ -10,7 +10,7 @@ import "encoding/json"
 // refused (ADR-0014).
 const (
 	Major uint32 = 1
-	Minor uint32 = 3
+	Minor uint32 = 4
 )
 
 // Capability names are the Runtime Provider facts a Node self-checks
@@ -33,6 +33,10 @@ const (
 	// need it, and the Scheduler filters Nodes that do not enforce it when the
 	// Sandbox has Resources (runtime.md §10-11).
 	CapResourceMount = "resource_mount"
+	// CapSnapshotBuild is the Runtime's ability to run a Snapshot build on the
+	// host build API. It is optional: Local Runtime reports it unsupported and
+	// the Scheduler filters build rows to Nodes that enforce it (ADR-0021).
+	CapSnapshotBuild = "snapshot_build"
 )
 
 // Required lists the capabilities the Scheduler needs before it can place a

@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -21,12 +22,14 @@ type snapshotView struct {
 }
 
 type snapshotVersionView struct {
-	ID         string  `json:"id"`
-	SnapshotID string  `json:"snapshot_id"`
-	Digest     *string `json:"digest"`
-	State      string  `json:"state"`
-	Cause      *string `json:"cause"`
-	Source     string  `json:"source"`
+	ID          string          `json:"id"`
+	SnapshotID  string          `json:"snapshot_id"`
+	Digest      *string         `json:"digest"`
+	State       string          `json:"state"`
+	Cause       *string         `json:"cause"`
+	Source      string          `json:"source"`
+	BuildExecID *string         `json:"build_exec_id"`
+	Provenance  json.RawMessage `json:"provenance"`
 }
 
 // TestSnapshotImport is the "snapshot-import" acceptance scenario (#88): an

@@ -180,6 +180,10 @@ func (r *Runtime) imagePath(ctx context.Context, sandboxID uuid.UUID) string {
 // cancelExec relays the persistent cancel intent. It waits for the Supervisor's
 // socket so a cancel that arrives before StartExec still lands.
 func (r *Runtime) cancelExec(ctx context.Context, execID uuid.UUID) error {
+	// A build has no Supervisor socket: CancelExec aborts the buildx process.
+	if r.cancelBuild(execID.String()) {
+		return nil
+	}
 	pattern := filepath.Join(r.dataRoot, "sandboxes", "*", "run", execID.String())
 	// ponytail: one glob over every Sandbox on this Node; index run/ by Exec if
 	// the Sandbox count makes the scan visible.

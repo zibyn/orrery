@@ -165,6 +165,28 @@ func (k keychain) Resolve(res authn.Resource) (authn.Authenticator, error) {
 	return authn.FromConfig(cfg), nil
 }
 
+// VerifyDigest reports whether the registry serves ref, a full
+// `<addr>/<repo>@sha256:…` reference. A build reports a pushed digest; the
+// Control Plane checks it exists before moving the Snapshot current pointer.
+func VerifyDigest(ctx context.Context, ref string, auth *Credential) error {
+	target, err := name.NewDigest(ref)
+	if err != nil {
+		return fmt.Errorf("invalid digest reference %q: %w", ref, err)
+	}
+	opts := []remote.Option{remote.WithContext(ctx)}
+	if auth != nil {
+		opts = append(opts, remote.WithAuthFromKeychain(auth.Keychain()))
+	}
+	desc, err := remote.Head(target, opts...)
+	if err != nil {
+		return fmt.Errorf("verify %s: %w", target, err)
+	}
+	if desc.Digest.String() != target.DigestStr() {
+		return fmt.Errorf("registry serves %s, wanted %s", desc.Digest, target.DigestStr())
+	}
+	return nil
+}
+
 // DeleteManifest removes one manifest from the platform registry (ADR-0012:
 // a deleted Snapshot's versions go once the last Sandbox reference is gone).
 // A manifest that is already absent is the desired end state.

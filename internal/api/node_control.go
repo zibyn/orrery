@@ -99,6 +99,8 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 			n.recordWorkspaceObserved(ctx, node.ID, m.WorkspaceObserved)
 		case *nodev1.AgentMessage_ExecObserved:
 			n.recordExecObserved(ctx, node.ID, m.ExecObserved)
+		case *nodev1.AgentMessage_BuildObserved:
+			n.recordBuildObserved(ctx, node.ID, m.BuildObserved)
 		case *nodev1.AgentMessage_CommandResult:
 			// A Workspace publish is finalized from its CommandResult: success
 			// verifies the objects, failure ends the version (node-protocol.md).

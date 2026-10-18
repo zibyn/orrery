@@ -40,6 +40,12 @@ const (
 type Runtime struct {
 	d        *dockerClient
 	dataRoot string
+	// socket is the Docker Engine socket. It is also the default BuildKit
+	// endpoint (dockerd's built-in BuildKit via /grpc).
+	socket string
+	// buildkit is the Agent-configured BuildKit endpoint. Empty means the
+	// Docker daemon's built-in BuildKit.
+	buildkit string
 
 	// Execs are launched from the Control stream; the output stream is opened
 	// per Exec against the same connection.
@@ -49,6 +55,12 @@ type Runtime struct {
 	execMu         sync.Mutex
 	execs          map[string]struct{} // exec id -> output delivery in flight
 	ptyAttachments map[string]int      // exec id -> live tunnel attachments
+
+	// buildCancels aborts a running build by Exec id. CancelExec reaches
+	// builds here instead of a Supervisor socket.
+	buildMu      sync.Mutex
+	buildCancels map[string]context.CancelCauseFunc
+	buildDone    map[string]struct{}
 
 	// client makes one-shot Node RPCs outside the Control stream (Presign).
 	client nodev1.NodeClient
@@ -64,8 +76,11 @@ func NewRuntime(socket, dataRoot string) *Runtime {
 	return &Runtime{
 		d:              &dockerClient{http: unixHTTPClient(socket)},
 		dataRoot:       dataRoot,
+		socket:         socket,
 		execs:          make(map[string]struct{}),
 		ptyAttachments: make(map[string]int),
+		buildCancels:   make(map[string]context.CancelCauseFunc),
+		buildDone:      make(map[string]struct{}),
 		managed:        make(map[string]int64),
 	}
 }
@@ -116,6 +131,7 @@ func PrepareDataRoot(root string) error {
 		filepath.Join(root, "bin"),
 		filepath.Join(root, "workspaces"),
 		filepath.Join(root, "sandboxes"),
+		filepath.Join(root, "builds"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create data root: %w", err)
@@ -407,6 +423,12 @@ func (r *Runtime) reconcileRecords(ctx context.Context, report func(sandboxID st
 	for _, entry := range entries {
 		sandboxID, err := uuid.Parse(entry.Name())
 		if err != nil {
+			continue
+		}
+		// A build Sandbox has no container. Its build marker is resumed by
+		// resumeBuilds; treating the missing Runtime as lost would settle the
+		// build Exec with the wrong cause.
+		if _, err := os.Stat(filepath.Join(sandboxPath(r.dataRoot, sandboxID), "build")); err == nil {
 			continue
 		}
 		runDir := sandboxRunPath(r.dataRoot, sandboxID)

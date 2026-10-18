@@ -53,6 +53,14 @@ type Config struct {
 	// AdmissionTimeout is how long a queued Sandbox waits before it fails
 	// with admission_timeout (defaults.md, 1 hour).
 	AdmissionTimeout time.Duration
+	// BuildCPU and BuildMemory are a Snapshot build's resource ceiling
+	// (defaults.md, deployment; 4 CPU + 8 GiB). Builds do not count toward
+	// User Quota (ADR-0021).
+	BuildCPU    float64
+	BuildMemory int64
+	// BuildTimeout bounds a Snapshot build from admission to completion
+	// (defaults.md, deployment; 1 hour).
+	BuildTimeout time.Duration
 	// AppsDomain is the wildcard domain port forwarding serves (api.md §6).
 	// Empty means the Gateway is off; the CLI tunnel still works.
 	AppsDomain string
@@ -172,6 +180,15 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.AdmissionTimeout, err = envDuration("STARS_ADMISSION_TIMEOUT", time.Hour); err != nil {
+		return Config{}, err
+	}
+	if cfg.BuildCPU, err = envFloat("STARS_BUILD_CPU", 4); err != nil {
+		return Config{}, err
+	}
+	if cfg.BuildMemory, err = envInt64("STARS_BUILD_MEMORY", 8<<30); err != nil {
+		return Config{}, err
+	}
+	if cfg.BuildTimeout, err = envDuration("STARS_BUILD_TIMEOUT", time.Hour); err != nil {
 		return Config{}, err
 	}
 	if err := cfg.loadOIDC(); err != nil {
@@ -338,6 +355,19 @@ func envInt32(key string, fallback int32) (int32, error) {
 
 func envInt64(key string, fallback int64) (int64, error) {
 	return envInt(key, fallback, 64, 1, "positive")
+}
+
+// envFloat reads a positive floating-point value (a build's CPU ceiling).
+func envFloat(key string, fallback float64) (float64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return 0, fmt.Errorf("%s must be a positive number", key)
+	}
+	return f, nil
 }
 
 // envInt reads a signed integer of the given bit width, rejecting values below

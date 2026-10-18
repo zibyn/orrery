@@ -127,6 +127,9 @@ commands:
   secret rm <name>
   snapshot import <name> <ref@sha256:…> [--auth-secret NAME]
                                     import an image and follow it to a terminal state
+  snapshot build <name> -f Dockerfile [--base SNAPSHOT]
+                   [--context name=resource[@version] ...] [--secret id=secret ...]
+                                    build a Snapshot and follow its log
   snapshot ls
   snapshot rm <name-or-id>
   snapshot versions <name-or-id>

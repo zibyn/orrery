@@ -25,7 +25,7 @@ type createSnapshotRequest struct {
 
 type createSnapshotVersionRequest struct {
 	Import *snapshotImportRequest `json:"import"`
-	Build  json.RawMessage        `json:"build"`
+	Build  *snapshotBuildRequest  `json:"build"`
 }
 
 type snapshotImportRequest struct {
@@ -262,14 +262,12 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if len(req.Build) > 0 && string(req.Build) != "null" {
-		// Build execution belongs to #89; the endpoint accepts the field so
-		// the document stays stable, but answers unsupported until then.
-		writeProblem(w, "unsupported", "Snapshot builds are not implemented yet")
+	if (req.Import == nil) == (req.Build == nil) {
+		writeProblem(w, "invalid_request", "exactly one of import or build is required")
 		return
 	}
-	if req.Import == nil {
-		writeProblem(w, "invalid_request", "one of import or build is required")
+	if req.Build != nil {
+		s.createBuild(w, r, p, snap, *req.Build, key)
 		return
 	}
 	source, err := registry.ParseSourceRef(req.Import.Ref)
@@ -506,6 +504,12 @@ func (s *Server) handleDeleteSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		writeProblem(w, "conflict", "the current SnapshotVersion cannot be deleted")
 		return
 	}
+	if version.Source == "build" && version.State == string(SnapshotVersionBuilding) {
+		// The build row and Exec reference the version; deleting it would
+		// orphan a running build.
+		writeProblem(w, "conflict", "cancel the build before deleting its SnapshotVersion")
+		return
+	}
 	if version.Digest != nil {
 		ref := registry.Repo(snap.ID, platformName(snap)) + "@" + *version.Digest
 		count, err := s.q.CountSandboxSnapshotReferences(r.Context(), ref)
@@ -593,6 +597,14 @@ func (s *Server) handleCancelSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		}
 		if cancel, ok := s.takeSnapshotCancel(version.ID); ok {
 			cancel()
+		}
+		// A build is stopped by the Reconciler through CancelExec (runtime.md
+		// §12); the Exec's cancel intent is the durable form of that command.
+		if version.Source == "build" && version.BuildExecID != nil {
+			if _, err := s.q.CancelExec(r.Context(), *version.BuildExecID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				s.log.Warn("request build cancel", "version_id", version.ID, "error", err)
+			}
+			s.changed(r.Context())
 		}
 		s.audit(r.Context(), p, "snapshot.version.cancel", "snapshot", snap.ID.String(), map[string]any{
 			"version": version.ID.String(),

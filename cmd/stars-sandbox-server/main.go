@@ -67,6 +67,9 @@ environment:
   STARS_REGISTRY_ADDR           Node-reachable registry address (e.g. 127.0.0.1:15000)
   STARS_REGISTRY_PUSH_ADDR      Control Plane push address (default STARS_REGISTRY_ADDR)
   STARS_REGISTRY_CREDENTIAL     Docker config.json for Nodes and pushes; list both hosts
+  STARS_BUILD_CPU               Snapshot build CPU ceiling (default 4)
+  STARS_BUILD_MEMORY            Snapshot build memory ceiling in bytes (default 8 GiB)
+  STARS_BUILD_TIMEOUT           Snapshot build timeout (default 1h)
 `)
 }
 
