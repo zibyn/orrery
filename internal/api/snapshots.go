@@ -245,18 +245,13 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 			SnapshotID: snap.ID, IdempotencyKey: key,
 		})
 	}
-	// The idempotent answer is the version, not the Sandbox DTO the shared
-	// helper would need; keep the lookup local.
-	if key != nil {
-		existing, err := lookup()
-		if err == nil {
-			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-			return
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			s.internal(w, "look up idempotent SnapshotVersion", err)
-			return
-		}
+	// The idempotent answer is the version DTO.
+	if existing, replayed, err := replayExisting(key, lookup); err != nil {
+		s.internal(w, "look up idempotent SnapshotVersion", err)
+		return
+	} else if replayed {
+		writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
+		return
 	}
 	var req createSnapshotVersionRequest
 	if !decodeJSON(w, r, &req) {
@@ -301,11 +296,9 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		Source: "import", IdempotencyKey: key,
 	})
 	if err != nil {
-		if key != nil && uniqueViolation(err) == "snapshot_versions_idempotency" {
-			if existing, lookupErr := lookup(); lookupErr == nil {
-				writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-				return
-			}
+		if existing, replayed := replayConflict(key, err, "snapshot_versions_idempotency", lookup); replayed {
+			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
+			return
 		}
 		s.internal(w, "create SnapshotVersion", err)
 		return
@@ -627,15 +620,10 @@ func (s *Server) takeSnapshotCancel(versionID uuid.UUID) (context.CancelFunc, bo
 	return cancel, ok
 }
 
-// snapshotPin is the immutable reference a Sandbox runs.
-type snapshotPin struct {
-	digest string // full pull reference, stored in sandboxes.snapshot_digest
-}
-
 // resolveSnapshotPin resolves a create request's `snapshot` (a
 // SnapshotVersion id or a Snapshot name, own first and then platform) to the
 // digest to pin. A missing or unusable Snapshot returns a problem code.
-func resolveSnapshotPin(ctx context.Context, q *store.Queries, cfg Config, owner uuid.UUID, raw *string) (snapshotPin, string, string) {
+func resolveSnapshotPin(ctx context.Context, q *store.Queries, cfg Config, owner uuid.UUID, raw *string) (string, string, string) {
 	ref := cfg.DefaultSnapshot
 	platformOnly := true
 	if raw != nil && *raw != "" {
@@ -643,28 +631,28 @@ func resolveSnapshotPin(ctx context.Context, q *store.Queries, cfg Config, owner
 		platformOnly = false
 	}
 	if ref == "" {
-		return snapshotPin{}, "internal", "no default Snapshot is configured; set STARS_DEFAULT_SNAPSHOT or pass snapshot"
+		return "", "internal", "no default Snapshot is configured; set STARS_DEFAULT_SNAPSHOT or pass snapshot"
 	}
 	if id, err := uuid.Parse(ref); err == nil && !platformOnly {
 		version, err := q.GetSnapshotVersionByID(ctx, id)
 		if err == nil {
 			snap, err := q.GetSnapshot(ctx, version.SnapshotID)
 			if err != nil || (snap.OwnerID != nil && *snap.OwnerID != owner) {
-				return snapshotPin{}, "not_found", "no such SnapshotVersion"
+				return "", "not_found", "no such SnapshotVersion"
 			}
 			return pinVersion(cfg, snap, version)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			return snapshotPin{}, "internal", "resolve SnapshotVersion"
+			return "", "internal", "resolve SnapshotVersion"
 		}
 	}
 	if platformOnly {
 		snap, err := q.GetPlatformSnapshotByName(ctx, ref)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return snapshotPin{}, "not_found", "no such platform Snapshot"
+			return "", "not_found", "no such platform Snapshot"
 		}
 		if err != nil {
-			return snapshotPin{}, "internal", "resolve Snapshot"
+			return "", "internal", "resolve Snapshot"
 		}
 		return pinSnapshotCurrent(ctx, q, cfg, snap)
 	}
@@ -673,39 +661,37 @@ func resolveSnapshotPin(ctx context.Context, q *store.Queries, cfg Config, owner
 		snap, err = q.GetPlatformSnapshotByName(ctx, ref)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return snapshotPin{}, "not_found", "no such Snapshot"
+		return "", "not_found", "no such Snapshot"
 	}
 	if err != nil {
-		return snapshotPin{}, "internal", "resolve Snapshot"
+		return "", "internal", "resolve Snapshot"
 	}
 	return pinSnapshotCurrent(ctx, q, cfg, snap)
 }
 
 // pinSnapshotCurrent pins the Snapshot's current version.
-func pinSnapshotCurrent(ctx context.Context, q *store.Queries, cfg Config, snap store.Snapshot) (snapshotPin, string, string) {
+func pinSnapshotCurrent(ctx context.Context, q *store.Queries, cfg Config, snap store.Snapshot) (string, string, string) {
 	if snap.CurrentVersionID == nil {
-		return snapshotPin{}, "conflict", "the Snapshot has no ready version"
+		return "", "conflict", "the Snapshot has no ready version"
 	}
 	version, err := q.GetSnapshotVersion(ctx, store.GetSnapshotVersionParams{
 		ID: *snap.CurrentVersionID, SnapshotID: snap.ID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return snapshotPin{}, "conflict", "the Snapshot has no ready version"
+		return "", "conflict", "the Snapshot has no ready version"
 	}
 	if err != nil {
-		return snapshotPin{}, "internal", "resolve Snapshot current version"
+		return "", "internal", "resolve Snapshot current version"
 	}
 	return pinVersion(cfg, snap, version)
 }
 
-func pinVersion(cfg Config, snap store.Snapshot, version store.SnapshotVersion) (snapshotPin, string, string) {
+func pinVersion(cfg Config, snap store.Snapshot, version store.SnapshotVersion) (string, string, string) {
 	if version.State != string(SnapshotVersionReady) || version.Digest == nil {
-		return snapshotPin{}, "conflict", "the SnapshotVersion is not ready"
+		return "", "conflict", "the SnapshotVersion is not ready"
 	}
 	if cfg.RegistryAddr == "" {
-		return snapshotPin{}, "internal", "the platform registry is not configured; set STARS_REGISTRY_ADDR"
+		return "", "internal", "the platform registry is not configured; set STARS_REGISTRY_ADDR"
 	}
-	return snapshotPin{
-		digest: registry.Ref(cfg.RegistryAddr, registry.Repo(snap.ID, platformName(snap)), *version.Digest),
-	}, "", ""
+	return registry.Ref(cfg.RegistryAddr, registry.Repo(snap.ID, platformName(snap)), *version.Digest), "", ""
 }

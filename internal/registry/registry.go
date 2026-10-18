@@ -140,12 +140,18 @@ func (c *Credential) Alias(host, from string) {
 	}
 }
 
+// Get returns the credentials for host, if the document lists them.
+func (c *Credential) Get(host string) (authn.AuthConfig, bool) {
+	if c == nil {
+		return authn.AuthConfig{}, false
+	}
+	cfg, ok := c.auths[normalizeHost(host)]
+	return cfg, ok
+}
+
 // Has reports whether the document holds credentials for host.
 func (c *Credential) Has(host string) bool {
-	if c == nil {
-		return false
-	}
-	_, ok := c.auths[normalizeHost(host)]
+	_, ok := c.Get(host)
 	return ok
 }
 

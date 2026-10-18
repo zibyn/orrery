@@ -41,9 +41,10 @@ type Config struct {
 	// CASGrace keeps an unreferenced CAS object this long after upload
 	// (defaults.md, 24 hours; 0 disables the sweep).
 	CASGrace time.Duration
-	// PurgeInterval is the periodic cleanup cadence. The deployment default is
-	// the constant 10 minutes; STARS_PURGE_INTERVAL exists only so e2e can
-	// observe a sweep without waiting (internal, test-only).
+	// PurgeInterval is the periodic cleanup cadence. Production always uses the
+	// 10-minute constant (defaults.md); STARS_TEST_PURGE_INTERVAL is an
+	// explicit test hook so e2e can observe a sweep. It is not a deployment
+	// knob.
 	PurgeInterval time.Duration
 	// PtyIdleSeconds is the deployment PTY idle reap (defaults.md, 300 s).
 	PtyIdleSeconds int64
@@ -168,9 +169,8 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.CASGrace, err = envRetention("STARS_CAS_GRACE", 24*time.Hour); err != nil {
 		return Config{}, err
 	}
-	// Internal, test-only: the documented cadence is the 10-minute constant
-	// (defaults.md). The e2e suite shortens it to observe a sweep.
-	if cfg.PurgeInterval, err = envDuration("STARS_PURGE_INTERVAL", purgeInterval); err != nil {
+	// Test hook only: production uses the 10-minute constant (defaults.md).
+	if cfg.PurgeInterval, err = envDuration("STARS_TEST_PURGE_INTERVAL", purgeInterval); err != nil {
 		return Config{}, err
 	}
 	if cfg.PtyIdleSeconds, err = envInt64("STARS_PTY_IDLE_SECONDS", 300); err != nil {

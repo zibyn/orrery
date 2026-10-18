@@ -27,6 +27,7 @@ import (
 	"github.com/tonistiigi/fsutil"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/dockerfile"
 	"github.com/zibyn/stars-sandbox/internal/supervisor"
 )
 
@@ -360,19 +361,12 @@ func (r *Runtime) authProvider() session.Attachable {
 		AuthConfigProvider: func(_ context.Context, host string, _ []string, _ authprovider.ExpireCachedAuthCheck) (types.AuthConfig, error) {
 			r.registryMu.Lock()
 			defer r.registryMu.Unlock()
-			if r.registry == nil {
-				return types.AuthConfig{}, nil
-			}
 			host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
-			encoded, ok := r.registry.auths[host]
+			cfg, ok := r.registry.Get(host)
 			if !ok {
 				return types.AuthConfig{}, nil
 			}
-			user, pass, ok := strings.Cut(decodeBase64(encoded), ":")
-			if !ok {
-				return types.AuthConfig{}, nil
-			}
-			return types.AuthConfig{Username: user, Password: pass, ServerAddress: host}, nil
+			return types.AuthConfig{Username: cfg.Username, Password: cfg.Password, ServerAddress: host}, nil
 		},
 	})
 }
@@ -396,7 +390,7 @@ func collectFromDigests(status *client.SolveStatus, set map[string]struct{}) {
 // pinnedFromDigests is the provenance fallback: every external FROM and
 // --from= reference was validated as digest-pinned at create time, and the
 // base Snapshot is pinned too.
-func pinnedFromDigests(dockerfile, baseDigest string) []string {
+func pinnedFromDigests(text, baseDigest string) []string {
 	set := map[string]struct{}{}
 	add := func(ref string) {
 		if match := pinnedDigestPattern.FindStringSubmatch(ref); match != nil {
@@ -407,7 +401,7 @@ func pinnedFromDigests(dockerfile, baseDigest string) []string {
 	// Every external image reference in a Dockerfile is a FROM or --from=
 	// source and was validated as digest-pinned at create time. Scanning the
 	// logical lines captures both forms (including RUN --mount=...,from=).
-	for _, line := range dockerfileLogicalLines(dockerfile) {
+	for _, line := range dockerfile.LogicalLines(text) {
 		for _, match := range pinnedDigestPattern.FindAllStringSubmatch(line, -1) {
 			set[match[1]] = struct{}{}
 		}
@@ -417,39 +411,6 @@ func pinnedFromDigests(dockerfile, baseDigest string) []string {
 		out = append(out, digest)
 	}
 	sort.Strings(out)
-	return out
-}
-
-// dockerfileLogicalLines handles continuations and full-line comments for the
-// provenance fallback.
-func dockerfileLogicalLines(text string) []string {
-	var out []string
-	var current strings.Builder
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSuffix(raw, "\r")
-		if current.Len() == 0 {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-		}
-		trimmed := strings.TrimRight(line, " \t")
-		continuation := strings.HasSuffix(trimmed, "\\")
-		if continuation {
-			trimmed = strings.TrimRight(strings.TrimSuffix(trimmed, "\\"), " \t")
-		}
-		if current.Len() > 0 {
-			current.WriteByte(' ')
-		}
-		current.WriteString(strings.TrimSpace(trimmed))
-		if !continuation {
-			out = append(out, current.String())
-			current.Reset()
-		}
-	}
-	if current.Len() > 0 {
-		out = append(out, current.String())
-	}
 	return out
 }
 
@@ -638,7 +599,11 @@ func writeBuildMarker(path string, marker buildMarker) error {
 // manager and the slice name; an unprivileged Agent uses its user manager and
 // the cgroupfs path, because the Docker daemon (root) cannot see the user
 // manager's unit. An empty parent means the Node cannot bound a single build;
-// the deployment must bound builds Node-wide (runtime.md §12).
+// the deployment must bound builds Node-wide (runtime.md §12). The e2e
+// snapshot-build scenario asserts that a RUN process lands in
+// stars-build-<version_id>.slice when the slice can be created; when it cannot
+// (no systemd, no permission, no cgroupfs entry) the build deliberately falls
+// back to the Node-wide limit instead of failing.
 func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64, memory int64) (string, func()) {
 	if cpu <= 0 || memory <= 0 {
 		return "", func() {}

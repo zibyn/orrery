@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/dockerfile"
 	"github.com/zibyn/stars-sandbox/internal/registry"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
@@ -82,7 +80,7 @@ func parseContextRef(ref string) (string, *string) {
 // resolved as BuildKit would.
 func validateBuildDockerfile(text string, contexts map[string]bool, hasBase bool) error {
 	stages := map[string]bool{}
-	for _, line := range dockerfileLogicalLines(text) {
+	for _, line := range dockerfile.LogicalLines(text) {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
@@ -167,40 +165,6 @@ func isStageIndex(value string) bool {
 	return true
 }
 
-// dockerfileLogicalLines handles continuations and full-line comments. It is
-// deliberately not a full Dockerfile parser: validation only needs the image
-// references, and anything it cannot resolve is rejected.
-func dockerfileLogicalLines(text string) []string {
-	var out []string
-	var current strings.Builder
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSuffix(raw, "\r")
-		if current.Len() == 0 {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-		}
-		trimmed := strings.TrimRight(line, " \t")
-		continuation := strings.HasSuffix(trimmed, "\\")
-		if continuation {
-			trimmed = strings.TrimRight(strings.TrimSuffix(trimmed, "\\"), " \t")
-		}
-		if current.Len() > 0 {
-			current.WriteByte(' ')
-		}
-		current.WriteString(strings.TrimSpace(trimmed))
-		if !continuation {
-			out = append(out, current.String())
-			current.Reset()
-		}
-	}
-	if current.Len() > 0 {
-		out = append(out, current.String())
-	}
-	return out
-}
-
 // createBuild validates a POST /snapshots/{id}/versions build request and
 // creates the building version, the kind=build Sandbox row, its Exec and the
 // admission request in one transaction.
@@ -268,12 +232,12 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 
 	var baseDigest string
 	if hasBase {
-		pin, code, detail := resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Base)
+		var code, detail string
+		baseDigest, code, detail = resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Base)
 		if code != "" {
 			writeProblem(w, code, detail)
 			return
 		}
-		baseDigest = pin.digest
 	}
 	// Contexts resolve to concrete versions now; the rows pin them for the
 	// build's life and are read back by the Reconciler (schema.md).
@@ -342,15 +306,13 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 		IdempotencyKey: key, BuildRequest: data,
 	})
 	if err != nil {
-		if key != nil && uniqueViolation(err) == "snapshot_versions_idempotency" {
-			existing, lookupErr := s.q.GetSnapshotVersionByIdempotencyKey(ctx, store.GetSnapshotVersionByIdempotencyKeyParams{
+		lookup := func() (store.SnapshotVersion, error) {
+			return s.q.GetSnapshotVersionByIdempotencyKey(ctx, store.GetSnapshotVersionByIdempotencyKeyParams{
 				SnapshotID: snap.ID, IdempotencyKey: key,
 			})
-			if lookupErr == nil {
-				writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-				return
-			}
-			s.internal(w, "look up idempotent SnapshotVersion", lookupErr)
+		}
+		if existing, replayed := replayConflict(key, err, "snapshot_versions_idempotency", lookup); replayed {
+			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
 			return
 		}
 		s.internal(w, "create build SnapshotVersion", err)
@@ -394,417 +356,4 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 	s.audit(ctx, p, "snapshot.version.create", "snapshot", snap.ID.String(), detail)
 	s.changed(ctx)
 	writeJSON(w, http.StatusCreated, snapshotVersionToDTO(version))
-}
-
-// --- Reconciler ---------------------------------------------------------
-
-// builds derives BuildSnapshot and build cleanup from snapshot_versions. It is
-// the build counterpart of the execs sweep: the desired-state tables are the
-// queue (ADR-0014).
-func (r *reconciler) builds(ctx context.Context) {
-	rows, err := r.s.q.ListBuildRuns(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			r.s.log.Warn("reconcile: list builds", "error", err)
-		}
-		return
-	}
-	now := time.Now()
-	for _, row := range rows {
-		r.build(ctx, row, now)
-	}
-}
-
-func (r *reconciler) build(ctx context.Context, row store.ListBuildRunsRow, now time.Time) {
-	version, sb := row.SnapshotVersion, row.Sandbox
-	if version.State != string(SnapshotVersionBuilding) {
-		r.cleanupBuild(ctx, row, execCauseForVersion(version))
-		return
-	}
-	if sb.State == string(SandboxFailed) || sb.State == string(SandboxStopped) || sb.State == string(SandboxDeleted) {
-		cause := versionCauseForSandbox(sb)
-		if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: fail build version", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, execCauseForVersionCause(cause))
-		return
-	}
-	if sb.NodeID == nil {
-		return // waiting for admission
-	}
-	node, err := r.s.q.GetNode(ctx, *sb.NodeID)
-	if err == nil && node.LostAt.Valid {
-		cause := "node_lost"
-		if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: fail lost build", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, "node_lost")
-		return
-	}
-	if row.ExecCancelRequestedAt.Valid {
-		if _, err := r.s.q.CancelSnapshotVersion(ctx, version.ID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: cancel build version", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, "canceled")
-		return
-	}
-	if buildExpired(row, now) {
-		cause := "timed_out"
-		if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: time out build", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, "timed_out")
-		return
-	}
-	cmd, err := r.buildCommand(ctx, row)
-	if err != nil {
-		cause := "build_failed"
-		r.s.log.Warn("reconcile: derive build command", "version_id", version.ID, "error", err)
-		if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: fail build", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, execCauseForVersionCause(cause))
-		return
-	}
-	if !row.ExecStartedAt.Valid {
-		// The build Exec never runs through the Supervisor; the sweep stamps
-		// its start so the API and the timeout have a clock.
-		if err := r.s.q.SetExecStarted(ctx, store.SetExecStartedParams{
-			ID: row.ExecID, StartedAt: timestamptzPtr(&now),
-		}); err != nil {
-			r.s.log.Warn("reconcile: start build Exec", "exec_id", row.ExecID, "error", err)
-			return
-		}
-	}
-	// The build row's generation is the stable token: SnapshotVersions have no
-	// generation of their own, and this row never changes it.
-	id := commandID("build-snapshot", version.ID, row.ExecGeneration)
-	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{
-		Message: &nodev1.ControlMessage_BuildSnapshot{BuildSnapshot: cmd},
-	})
-}
-
-// buildCommand assembles the wire command from the rows. Every field is
-// re-derived on every tick, so a reconnect redelivers the same work.
-func (r *reconciler) buildCommand(ctx context.Context, row store.ListBuildRunsRow) (*nodev1.BuildSnapshot, error) {
-	version, sb := row.SnapshotVersion, row.Sandbox
-	var request storedBuildRequest
-	if err := json.Unmarshal(version.BuildRequest, &request); err != nil || request.Dockerfile == "" {
-		return nil, fmt.Errorf("build request is missing or malformed: %w", err)
-	}
-	mounts, err := r.s.q.ListSandboxResourceMounts(ctx, sb.ID)
-	if err != nil {
-		return nil, err
-	}
-	contexts := make([]*nodev1.BuildContext, 0, len(mounts))
-	for _, mount := range mounts {
-		if mount.Address == nil {
-			return nil, fmt.Errorf("context %q has no manifest address", mount.Mount)
-		}
-		contexts = append(contexts, &nodev1.BuildContext{Name: mount.Mount, Address: *mount.Address})
-	}
-	// Secrets are decrypted only when the command is sent, the same rule as
-	// StartExec.secret_env (schema.md, node-protocol.md).
-	secretEnv, err := decryptSecretEnv(r.s.cfg.EncryptionKeys, sb.OwnerID, sb.SecretEnvCt)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt build Secrets: %w", err)
-	}
-	ids := make([]string, 0, len(secretEnv))
-	for id := range secretEnv {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	secrets := make([]*nodev1.BuildSecret, 0, len(ids))
-	for _, id := range ids {
-		secrets = append(secrets, &nodev1.BuildSecret{Id: id, Value: secretEnv[id]})
-	}
-	snapshot, err := r.s.q.GetSnapshot(ctx, version.SnapshotID)
-	if err != nil {
-		return nil, err
-	}
-	if r.s.cfg.RegistryAddr == "" {
-		return nil, errors.New("the platform registry is not configured")
-	}
-	timeout := int64(r.s.cfg.BuildTimeout / time.Second)
-	if row.ExecTimeoutSeconds != nil && *row.ExecTimeoutSeconds > 0 {
-		timeout = int64(*row.ExecTimeoutSeconds)
-	}
-	pushRepository := strings.TrimSuffix(r.s.cfg.RegistryAddr, "/") + "/" +
-		registry.Repo(snapshot.ID, platformName(snapshot))
-	return &nodev1.BuildSnapshot{
-		CommandId:      commandID("build-snapshot", version.ID, row.ExecGeneration),
-		VersionId:      version.ID.String(),
-		SandboxId:      sb.ID.String(),
-		ExecId:         row.ExecID.String(),
-		Dockerfile:     request.Dockerfile,
-		BaseDigest:     sb.SnapshotDigest,
-		Contexts:       contexts,
-		Secrets:        secrets,
-		Limits:         &nodev1.Limits{Cpu: sb.Cpu, Memory: sb.Memory},
-		TimeoutSeconds: timeout,
-		PushRepository: pushRepository,
-	}, nil
-}
-
-// cleanupBuild stops the build on the Node (best effort) and releases the
-// build row once its version is terminal. Every step is idempotent, so the
-// sweep retries until it succeeds.
-func (r *reconciler) cleanupBuild(ctx context.Context, row store.ListBuildRunsRow, cause string) {
-	if !row.ExecFinishedAt.Valid {
-		id := commandID("cancel-exec", row.ExecID, row.ExecGeneration)
-		r.send(ctx, row.Sandbox.NodeID, id, &nodev1.ControlMessage{
-			Message: &nodev1.ControlMessage_CancelExec{CancelExec: &nodev1.CancelExec{
-				CommandId: id, ExecId: row.ExecID.String(),
-			}},
-		})
-	}
-	tx, err := r.s.pool.Begin(ctx)
-	if err != nil {
-		return
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	q := r.s.q.WithTx(tx)
-	if !row.ExecFinishedAt.Valid {
-		if _, err := q.FinishExec(ctx, store.FinishExecParams{
-			ID: row.ExecID, Cause: &cause,
-		}); err != nil {
-			r.s.log.Warn("reconcile: finish build Exec", "exec_id", row.ExecID, "error", err)
-			return
-		}
-	}
-	if err := releaseCompute(ctx, q, row.Sandbox.ID); err != nil {
-		r.s.log.Warn("reconcile: release build compute", "sandbox_id", row.Sandbox.ID, "error", err)
-		return
-	}
-	if _, err := q.MarkBuildSandboxDone(ctx, row.Sandbox.ID); err != nil {
-		r.s.log.Warn("reconcile: finish build Sandbox", "sandbox_id", row.Sandbox.ID, "error", err)
-		return
-	}
-	if err := tx.Commit(ctx); err != nil {
-		r.s.log.Warn("reconcile: commit build cleanup", "version_id", row.SnapshotVersion.ID, "error", err)
-	}
-}
-
-// buildExpired applies the deployment timeout while the Exec is still running
-// (after SetExecStarted) or while it waits to start.
-func buildExpired(row store.ListBuildRunsRow, now time.Time) bool {
-	if row.ExecDeadlineAt.Valid {
-		return !now.Before(row.ExecDeadlineAt.Time)
-	}
-	if row.ExecTimeoutSeconds != nil && *row.ExecTimeoutSeconds > 0 {
-		return !now.Before(row.ExecAcceptedAt.Time.Add(time.Duration(*row.ExecTimeoutSeconds) * time.Second))
-	}
-	return false
-}
-
-// versionCauseForSandbox maps a failed build Sandbox to its SnapshotVersion
-// cause (api.md §1's closed set).
-func versionCauseForSandbox(sb store.Sandbox) string {
-	if sb.Cause != nil {
-		switch *sb.Cause {
-		case "admission_timeout":
-			return "timed_out"
-		case "node_lost":
-			return "node_lost"
-		}
-	}
-	return "build_failed"
-}
-
-func execCauseForVersion(version store.SnapshotVersion) string {
-	if version.State == string(SnapshotVersionCancelled) {
-		return "canceled"
-	}
-	if version.State == string(SnapshotVersionFailed) && version.Cause != nil {
-		return execCauseForVersionCause(*version.Cause)
-	}
-	return "exited"
-}
-
-func execCauseForVersionCause(cause string) string {
-	switch cause {
-	case "timed_out":
-		return "timed_out"
-	case "build_interrupted":
-		return "runtime_lost"
-	case "node_lost":
-		return "node_lost"
-	default:
-		return "exited"
-	}
-}
-
-// --- BuildObserved ------------------------------------------------------
-
-// recordBuildObserved applies the Agent's terminal build result. A stale
-// observation (the version already failed, timed out or was cancelled) is
-// dropped: only a building version can move.
-func (n *nodeService) recordBuildObserved(ctx context.Context, nodeID uuid.UUID, obs *nodev1.BuildObserved) {
-	versionID, err := uuid.Parse(obs.VersionId)
-	if err != nil {
-		return
-	}
-	version, err := n.s.q.GetSnapshotVersionByID(ctx, versionID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return
-	}
-	if err != nil {
-		n.s.log.Warn("record BuildObserved", "version_id", versionID, "error", err)
-		return
-	}
-	if version.State != string(SnapshotVersionBuilding) || version.BuildSandboxID == nil || version.BuildExecID == nil {
-		return
-	}
-	sb, err := n.s.q.GetSandboxIncludingDeleted(ctx, *version.BuildSandboxID)
-	if err != nil || sb.Kind != "build" || sb.NodeID == nil || *sb.NodeID != nodeID {
-		return
-	}
-	if obs.Cause != "" {
-		cause := buildFailureCause(obs.Cause)
-		n.finishBuildObserved(ctx, version, sb, nil, cause)
-		return
-	}
-	if obs.Digest == "" {
-		n.s.log.Warn("BuildObserved carries neither a digest nor a cause", "version_id", versionID)
-		return
-	}
-	if !digestPattern.MatchString(obs.Digest) {
-		n.s.log.Warn("BuildObserved digest is malformed", "version_id", versionID, "digest", obs.Digest)
-		n.finishBuildObserved(ctx, version, sb, nil, "build_failed")
-		return
-	}
-	snapshot, err := n.s.q.GetSnapshot(ctx, version.SnapshotID)
-	if err != nil {
-		n.s.log.Warn("record BuildObserved Snapshot", "version_id", versionID, "error", err)
-		return
-	}
-	// The Agent pushed to the registry the Node reaches; verify the manifest
-	// through the Control Plane's push address before moving the pointer.
-	ref := registry.Ref(n.s.cfg.RegistryPushAddr,
-		registry.Repo(snapshot.ID, platformName(snapshot)), obs.Digest)
-	verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := registry.VerifyDigest(verifyCtx, ref, n.s.cfg.RegistryCredentialDoc); err != nil {
-		n.s.log.Warn("build digest is not in the platform registry", "version_id", versionID, "error", err)
-		n.finishBuildObserved(ctx, version, sb, nil, "build_failed")
-		return
-	}
-	mounts, err := n.s.q.ListSandboxResourceMounts(ctx, sb.ID)
-	if err != nil {
-		n.s.log.Warn("record BuildObserved contexts", "version_id", versionID, "error", err)
-		return
-	}
-	contexts := make([]buildContext, 0, len(mounts))
-	for _, mount := range mounts {
-		address := ""
-		if mount.Address != nil {
-			address = *mount.Address
-		}
-		contexts = append(contexts, buildContext{Name: mount.Mount, Address: address})
-	}
-	provenance, err := json.Marshal(buildProvenance{
-		FromDigests: append([]string{}, obs.FromDigests...), Contexts: contexts,
-	})
-	if err != nil {
-		n.s.log.Warn("encode build provenance", "version_id", versionID, "error", err)
-		return
-	}
-	n.finishBuildObserved(ctx, version, sb, &store.MarkSnapshotVersionReadyParams{
-		ID: version.ID, Digest: &obs.Digest, Provenance: provenance,
-	}, "")
-}
-
-var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-
-func buildFailureCause(cause string) string {
-	switch cause {
-	case "timed_out", "build_interrupted", "node_lost", "build_failed":
-		return cause
-	default:
-		return "build_failed"
-	}
-}
-
-// finishBuildObserved commits the version transition, the current pointer,
-// the Exec result and the Allocation release together. A conditional update
-// losing the race to a cancel or timeout writes nothing and is dropped.
-func (n *nodeService) finishBuildObserved(ctx context.Context, version store.SnapshotVersion,
-	sb store.Sandbox, ready *store.MarkSnapshotVersionReadyParams, cause string) {
-	tx, err := n.s.pool.Begin(ctx)
-	if err != nil {
-		n.s.log.Warn("begin build observation", "version_id", version.ID, "error", err)
-		return
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	q := n.s.q.WithTx(tx)
-	if ready != nil {
-		if _, err := q.MarkSnapshotVersionReady(ctx, *ready); err != nil {
-			if !errors.Is(err, pgx.ErrNoRows) {
-				n.s.log.Warn("mark build ready", "version_id", version.ID, "error", err)
-			}
-			return
-		}
-		if _, err := q.SetSnapshotCurrentVersion(ctx, store.SetSnapshotCurrentVersionParams{
-			ID: version.SnapshotID, VersionID: &version.ID,
-		}); err != nil {
-			n.s.log.Warn("move Snapshot current pointer", "version_id", version.ID, "error", err)
-			return
-		}
-	} else {
-		if _, err := q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil {
-			if !errors.Is(err, pgx.ErrNoRows) {
-				n.s.log.Warn("mark build failed", "version_id", version.ID, "error", err)
-			}
-			return
-		}
-	}
-	execCause := execCauseForVersionCause(cause)
-	if ready != nil {
-		execCause = "exited"
-	}
-	if _, err := q.FinishExec(ctx, store.FinishExecParams{ID: *version.BuildExecID, Cause: &execCause}); err != nil {
-		n.s.log.Warn("finish build Exec", "exec_id", *version.BuildExecID, "error", err)
-		return
-	}
-	if err := releaseCompute(ctx, q, sb.ID); err != nil {
-		n.s.log.Warn("release build compute", "sandbox_id", sb.ID, "error", err)
-		return
-	}
-	if _, err := q.MarkBuildSandboxDone(ctx, sb.ID); err != nil {
-		n.s.log.Warn("finish build Sandbox", "sandbox_id", sb.ID, "error", err)
-		return
-	}
-	if err := tx.Commit(ctx); err != nil {
-		n.s.log.Warn("commit build observation", "version_id", version.ID, "error", err)
-		return
-	}
-	action := "snapshot.version.build.failed"
-	detail := map[string]any{"version": version.ID.String(), "cause": cause}
-	if ready != nil {
-		action = "snapshot.version.build"
-		detail["digest"] = *ready.Digest
-	}
-	owner := snapshotOwner(ctx, n.s.q, version.SnapshotID)
-	n.s.auditAs(ctx, owner, nil, action, "snapshot", version.SnapshotID.String(), detail)
-	n.s.reconcile.notify()
-}
-
-// snapshotOwner resolves the User a Snapshot belongs to, for audit records
-// written from an Agent observation (which carries no principal).
-func snapshotOwner(ctx context.Context, q *store.Queries, snapshotID uuid.UUID) *uuid.UUID {
-	snap, err := q.GetSnapshot(ctx, snapshotID)
-	if err != nil || snap.OwnerID == nil {
-		return nil
-	}
-	return snap.OwnerID
 }

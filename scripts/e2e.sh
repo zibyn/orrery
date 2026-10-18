@@ -30,6 +30,19 @@ COMPOSE_FILE="$PWD/deploy/compose.yaml"
 COMPOSE_PROJECT="stars-sandbox-e2e"
 COMPOSE=(docker compose --profile oidc --profile e2e -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
 
+# wait_for_http polls a URL until it answers the expected status, then leaves a
+# last-status diagnostic on failure.
+wait_for_http() {
+  local url="$1" want="$2" name="$3" code=""
+  for _ in $(seq 1 120); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)"
+    [ "$code" = "$want" ] && return 0
+    sleep 1
+  done
+  echo "$name did not become ready (last status: ${code:-none})" >&2
+  return 1
+}
+
 # The e2e Agents copy their binaries into every Sandbox data root. On hosts
 # where /tmp is a small quota'd tmpfs that exhausts quickly, keep the test
 # directories on the regular filesystem instead.
@@ -86,7 +99,8 @@ export STARS_ADMISSION_TIMEOUT="${STARS_ADMISSION_TIMEOUT:-10s}"
 # documented 10-minute cadence and 30-day TTL. Production defaults are
 # untouched; these are e2e-only overrides.
 export STARS_RESOURCE_VERSION_TTL="${STARS_RESOURCE_VERSION_TTL:-1s}"
-export STARS_PURGE_INTERVAL="${STARS_PURGE_INTERVAL:-1s}"
+# Test hook only: production uses the 10-minute constant (defaults.md).
+export STARS_TEST_PURGE_INTERVAL="${STARS_TEST_PURGE_INTERVAL:-1s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
 export STARS_APPS_DOMAIN="${STARS_APPS_DOMAIN:-apps.test}"
@@ -220,33 +234,15 @@ export STARS_GIT_PROVIDERS_FILE=/git/providers.json
 # startup, so both must be serving first. The registry answers 401 without
 # credentials once it is serving.
 "${COMPOSE[@]}" up -d rustfs rustfs-init registry registry-source
-for _ in $(seq 1 120); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:19000/health" || true)"
-  [ "$code" = "200" ] && break
-  sleep 1
-done
-if [ "$code" != "200" ]; then
-  echo "rustfs did not become ready (last status: ${code:-none})" >&2
+if ! wait_for_http "http://127.0.0.1:19000/health" 200 rustfs; then
   "${COMPOSE[@]}" logs --no-color rustfs rustfs-init >&2 || true
   exit 1
 fi
-for _ in $(seq 1 120); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:15000/v2/" || true)"
-  [ "$code" = "401" ] && break
-  sleep 1
-done
-if [ "$code" != "401" ]; then
-  echo "registry did not become ready (last status: ${code:-none})" >&2
+if ! wait_for_http "http://127.0.0.1:15000/v2/" 401 registry; then
   "${COMPOSE[@]}" logs --no-color registry >&2 || true
   exit 1
 fi
-for _ in $(seq 1 120); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:15001/v2/" || true)"
-  [ "$code" = "200" ] && break
-  sleep 1
-done
-if [ "$code" != "200" ]; then
-  echo "registry-source did not become ready (last status: ${code:-none})" >&2
+if ! wait_for_http "http://127.0.0.1:15001/v2/" 200 registry-source; then
   "${COMPOSE[@]}" logs --no-color registry-source >&2 || true
   exit 1
 fi

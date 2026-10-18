@@ -183,12 +183,8 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request, p *pr
 		writeProblem(w, "invalid_request", "id must be a UUID")
 		return
 	}
-	resource, ok := s.getOwnedResource(w, r.Context(), p, id)
+	resource, ok := s.getLiveResource(w, r.Context(), p, id)
 	if !ok {
-		return
-	}
-	if resource.DeletedAt.Valid {
-		writeProblem(w, "not_found", "no such Resource")
 		return
 	}
 	writeJSON(w, http.StatusOK, resourceToDTO(resource))
@@ -438,7 +434,9 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 	// published only when all of them exist with the declared digest
 	// (ADR-0012).
 	bad := []badObject{}
+	validated := make([]string, 0, len(manifest.FileObjects(m)))
 	for _, object := range manifest.FileObjects(m) {
+		validated = append(validated, object.SHA256)
 		stored, err := s.objects.HeadSHA256(ctx, resource.OwnerID.String(), object.SHA256)
 		switch {
 		case errors.Is(err, objectstore.ErrNotFound):
@@ -538,6 +536,9 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 		s.internal(w, "commit publish", err)
 		return
 	}
+	// The publish just proved these objects exist, so versions marked
+	// unavailable by an earlier 404 may now be usable again (api.md §3).
+	s.recoverUnavailableVersions(ctx, resource.OwnerID, validated)
 	s.audit(ctx, p, "resource.version.publish", "resource_version", version.ID.String(), map[string]any{
 		"resource_id": resource.ID.String(), "address": address, "size": version.Size,
 	})
@@ -545,6 +546,45 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 		"version": version.ID.String(),
 	})
 	writeJSON(w, http.StatusCreated, resourceVersionToDTO(version))
+}
+
+// recoverUnavailableVersions re-checks the owner's unavailable versions that
+// reference a digest the publish just validated. An unavailable version
+// returns to ready only when every one of its objects is again present and
+// matching; the current pointer is untouched (api.md §3). Recovery is a repair
+// after the fact, so a failure here is logged rather than failing the publish.
+func (s *Server) recoverUnavailableVersions(ctx context.Context, ownerID uuid.UUID, digests []string) {
+	if s.objects == nil || len(digests) == 0 {
+		return
+	}
+	versions, err := s.q.ListUnavailableVersionsReferencing(ctx, store.ListUnavailableVersionsReferencingParams{
+		OwnerID: ownerID, Sha256: digests,
+	})
+	if err != nil {
+		s.log.Warn("list unavailable ResourceVersions", "error", err)
+		return
+	}
+	for _, versionID := range versions {
+		objects, err := s.q.ListResourceVersionObjects(ctx, versionID)
+		if err != nil {
+			s.log.Warn("list unavailable ResourceVersion objects", "version_id", versionID, "error", err)
+			continue
+		}
+		complete := true
+		for _, digest := range objects {
+			stored, err := s.objects.HeadSHA256(ctx, ownerID.String(), digest)
+			if err != nil || stored != digest {
+				complete = false
+				break
+			}
+		}
+		if !complete {
+			continue
+		}
+		if _, err := s.q.MarkResourceVersionAvailable(ctx, versionID); err != nil {
+			s.log.Warn("mark ResourceVersion available", "version_id", versionID, "error", err)
+		}
+	}
 }
 
 func (s *Server) handleListResourceVersions(w http.ResponseWriter, r *http.Request, p *principal) {

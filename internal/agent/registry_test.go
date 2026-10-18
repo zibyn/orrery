@@ -4,16 +4,18 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+
+	"github.com/zibyn/stars-sandbox/internal/registry"
 )
 
 func TestRegistryCredentialMatchesImageHost(t *testing.T) {
 	auth := base64.StdEncoding.EncodeToString([]byte("stars:secret"))
-	cred, err := parseRegistryCredential(`{"auths":{"127.0.0.1:15000":{"auth":"` + auth + `"}}}`)
+	cred, err := registry.ParseCredential(`{"auths":{"127.0.0.1:15000":{"auth":"` + auth + `"}}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const ref = "127.0.0.1:15000/snapshots/0192@sha256:abc"
-	header := cred.authHeader(ref)
+	header := authHeader(cred, ref)
 	if header == "" {
 		t.Fatalf("no auth for %s", ref)
 	}
@@ -35,7 +37,7 @@ func TestRegistryCredentialMatchesImageHost(t *testing.T) {
 }
 
 func TestRegistryCredentialLeavesDockerHubUnauthenticated(t *testing.T) {
-	cred, err := parseRegistryCredential(`{"auths":{"registry.example:5000":{"auth":"eDp5"}}}`)
+	cred, err := registry.ParseCredential(`{"auths":{"registry.example:5000":{"auth":"eDp5"}}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,21 +47,17 @@ func TestRegistryCredentialLeavesDockerHubUnauthenticated(t *testing.T) {
 		"docker.io/library/alpine:3.22",
 		"registry.example:5001/foo",
 	} {
-		if header := cred.authHeader(ref); header != "" {
+		if header := authHeader(cred, ref); header != "" {
 			t.Fatalf("%s got an auth header; only registry.example:5000 is configured", ref)
 		}
 	}
 }
 
 func TestRegistryCredentialAbsentOrMalformed(t *testing.T) {
-	cred, err := parseRegistryCredential("")
-	if err != nil || cred != nil {
-		t.Fatalf("empty credential = %v, %v; want nil, nil", cred, err)
-	}
-	if header := cred.authHeader("127.0.0.1:15000/x"); header != "" {
+	if header := authHeader(nil, "127.0.0.1:15000/x"); header != "" {
 		t.Fatalf("nil credential returned auth %q", header)
 	}
-	if _, err := parseRegistryCredential("not json"); err == nil {
+	if _, err := registry.ParseCredential("not json"); err == nil {
 		t.Fatal("malformed credential was accepted")
 	}
 }

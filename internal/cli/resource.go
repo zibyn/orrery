@@ -1,14 +1,11 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/zibyn/stars-sandbox/internal/castransfer"
 	"github.com/zibyn/stars-sandbox/internal/manifest"
 )
 
@@ -290,8 +288,7 @@ func ensureResource(c *client, name string) (resourceRef, error) {
 }
 
 // buildManifest walks root deterministically. Symlinks are recorded, never
-// followed; devices, FIFOs and sockets are rejected. files maps each digest
-// to a local path for the upload PUTs.
+// followed; devices, FIFOs and sockets are rejected.
 func buildManifest(root string) (manifest.Manifest, map[string]string, error) {
 	info, err := os.Stat(root)
 	if err != nil {
@@ -300,73 +297,20 @@ func buildManifest(root string) (manifest.Manifest, map[string]string, error) {
 	if !info.IsDir() {
 		return manifest.Manifest{}, nil, fmt.Errorf("%s is not a directory", root)
 	}
-	entries := []manifest.Entry{}
-	files := map[string]string{}
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path == root {
-			return nil
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		name := filepath.ToSlash(relative)
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case info.Mode()&fs.ModeSymlink != 0:
-			target, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			entries = append(entries, manifest.Entry{Path: name, Type: manifest.TypeSymlink, Target: target})
-		case entry.IsDir():
-			entries = append(entries, manifest.Entry{Path: name, Type: manifest.TypeDir})
-		case info.Mode().IsRegular():
-			if info.Size() > manifest.MaxFileSize {
-				return fmt.Errorf("%s is larger than 5 GiB", name)
-			}
-			digest, err := hashFile(path)
-			if err != nil {
-				return err
-			}
-			size := info.Size()
-			files[digest] = path
-			entries = append(entries, manifest.Entry{
-				Path: name, Type: manifest.TypeFile, Size: &size, SHA256: digest,
-				Executable: info.Mode().Perm()&0o111 != 0,
-			})
-		default:
-			return fmt.Errorf("%s is not a regular file, directory or symlink", name)
-		}
-		return nil
-	})
+	dir, err := os.OpenRoot(root)
 	if err != nil {
 		return manifest.Manifest{}, nil, err
 	}
-	normalized, err := manifest.Normalize(manifest.Manifest{Entries: entries})
+	defer dir.Close()
+	m, files, err := manifest.Walk(dir.FS(), ".")
 	if err != nil {
 		return manifest.Manifest{}, nil, err
 	}
-	return normalized, files, nil
-}
-
-func hashFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
+	// The walker reports filesystem paths; uploads open host paths.
+	for digest, fsPath := range files {
+		files[digest] = filepath.Join(root, filepath.FromSlash(fsPath))
 	}
-	defer f.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
+	return m, files, nil
 }
 
 func pushResource(c *client, dir, name string) error {
@@ -413,31 +357,12 @@ func pushResource(c *client, dir, name string) error {
 // putObject sends one CAS object through a presigned URL. The store verifies
 // x-amz-checksum-sha256 (ADR-0021).
 func putObject(url, path, digest string) error {
-	raw, err := hex.DecodeString(digest)
-	if err != nil || len(raw) != sha256.Size {
-		return fmt.Errorf("invalid sha256 %q", digest)
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	req, err := http.NewRequest(http.MethodPut, url, f)
-	if err != nil {
-		return err
-	}
-	req.ContentLength = fileSize(f)
-	req.Header.Set("x-amz-checksum-sha256", base64.StdEncoding.EncodeToString(raw))
-	resp, err := transferClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("upload %s: HTTP %d: %s", digest, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return nil
+	return castransfer.Put(context.Background(), transferClient, url, f, fileSize(f), digest)
 }
 
 func fileSize(f *os.File) int64 {
@@ -538,28 +463,16 @@ func pullResource(c *client, ref, dest string) error {
 }
 
 func downloadObject(path, url, digest string, mode os.FileMode) error {
-	resp, err := transferClient.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: HTTP %d", digest, resp.StatusCode)
-	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
-	sum := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, sum), resp.Body); err != nil {
-		f.Close()
+	if err := castransfer.Get(context.Background(), transferClient, url, f, digest, 0); err != nil {
+		f.Close() //nolint:errcheck // report the transfer error instead
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
-	}
-	if got := hex.EncodeToString(sum.Sum(nil)); got != digest {
-		return fmt.Errorf("%s downloaded with sha256 %s", path, got)
 	}
 	return os.Chmod(path, mode)
 }

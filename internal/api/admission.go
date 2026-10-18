@@ -146,7 +146,7 @@ func fitFor(node store.Node, used store.NodePlacementRow) (nodeFit, bool) {
 // has not reported yet) is not proof either way. A Sandbox bound to a Node can
 // only ever go there. gpus is each Node's reported inventory.
 func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb store.Sandbox, workspaceNode *uuid.UUID) bool {
-	if sb.Kind == "build" && len(nodes) == 0 {
+	if sb.Kind == string(SandboxKindBuild) && len(nodes) == 0 {
 		// No Node can enforce snapshot_build (ADR-0021).
 		return true
 	}
@@ -159,7 +159,7 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		if workspaceNode != nil && node.ID != *workspaceNode {
 			continue
 		}
-		if sb.Kind == "build" {
+		if sb.Kind == string(SandboxKindBuild) {
 			if len(node.Capabilities) == 0 {
 				// A Node that has not reported its Capabilities may still turn
 				// out to support builds.
@@ -239,7 +239,7 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 			continue
 		}
 		ws, err := q.GetSandboxWorkspace(ctx, sb.ID)
-		if sb.Kind == "build" {
+		if sb.Kind == string(SandboxKindBuild) {
 			// A build row has no Workspace or Attachment (schema.md, ADR-0021).
 			placed, err := r.tryAdmit(ctx, q, sb, store.Workspace{}, nodes, now)
 			if err != nil {
@@ -307,7 +307,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 	// create keeps a mixed fleet working: api.md's Local `422 unsupported` is
 	// the single-Runtime case, and here a fleet with no capable Node ends the
 	// admission request `unsatisfiable` instead.
-	isBuild := sb.Kind == "build"
+	isBuild := sb.Kind == string(SandboxKindBuild)
 	var resourceMounts int64
 	if !isBuild {
 		var err error

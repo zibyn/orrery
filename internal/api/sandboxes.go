@@ -207,12 +207,11 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	q := s.q.WithTx(tx)
 	// Resolve the Snapshot inside the transaction: the pinned version cannot
 	// be deleted between the check and the row that references it.
-	pin, pinCode, pinDetail := resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Snapshot)
+	snapshot, pinCode, pinDetail := resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Snapshot)
 	if pinCode != "" {
 		writeProblem(w, pinCode, pinDetail)
 		return
 	}
-	snapshot := pin.digest
 	// Quota is checked at admission, under the User's row lock, so concurrent
 	// creates cannot both take the last slot (ADR-0015).
 	owner, err := q.LockUser(ctx, p.user.ID)
@@ -423,7 +422,7 @@ func (s *Server) resolveSandboxResource(w http.ResponseWriter, ctx context.Conte
 	if id, parseErr := uuid.Parse(reference); parseErr == nil {
 		resource, err = q.GetResource(ctx, id)
 	} else {
-		resource, err = q.GetResourceByName(ctx, store.GetResourceByNameParams{OwnerID: ownerID, Name: reference})
+		resource, err = q.GetLiveResourceByName(ctx, store.GetLiveResourceByNameParams{OwnerID: ownerID, Name: reference})
 	}
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (resource.OwnerID != ownerID || resource.DeletedAt.Valid)) {
 		writeProblem(w, "not_found", "no such Resource")

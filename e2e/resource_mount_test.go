@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -271,4 +272,109 @@ func makeTreeRemovable(root string) {
 		}
 		return nil
 	})
+}
+
+// TestUnavailableVersionRecovers is the api.md §3 recovery half of #86: an
+// object that 404s marks its ResourceVersion unavailable; re-publishing the
+// same content re-uploads the object, the publish validation re-checks every
+// object of the affected version, and a complete version returns to ready
+// without moving the current pointer.
+func TestUnavailableVersionRecovers(t *testing.T) {
+	admin := adminToken(t)
+	raiseSandboxQuota(t, admin, 100)
+	suffix := time.Now().UnixNano()
+	nodeName := fmt.Sprintf("e2e-recover-node-%d", suffix)
+	state, dataRoot := enrollAgent(t, admin, nodeName)
+	startAgent(t, state, dataRoot)
+	waitForNodeReady(t, admin, nodeName)
+	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
+
+	status, data := call(t, http.MethodGet, "/api/v1/users/me", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET users/me: %d %s", status, data)
+	}
+	var me struct {
+		ID string `json:"id"`
+	}
+	mustJSON(t, data, &me)
+
+	cli := newCLIRunner(t, admin)
+	name := fmt.Sprintf("recover-%d", suffix)
+	src := t.TempDir()
+	content := "recover this version\n"
+	writeTestFile(t, filepath.Join(src, "hello.txt"), content, 0o644)
+	var v1 resourceVersionView
+	mustJSON(t, cli.run(t, "", "resource", "push", src, name), &v1)
+	if v1.State != "ready" {
+		t.Fatalf("v1 = %+v, want ready", v1)
+	}
+
+	// Delete the CAS object behind the tree: the next mount 404s and the
+	// Control Plane marks the referenced version unavailable.
+	sum := sha256.Sum256([]byte(content))
+	digest := hex.EncodeToString(sum[:])
+	store := e2eObjectStore(t)
+	if err := store.DeleteCASObject(context.Background(), me.ID, digest); err != nil {
+		t.Fatalf("delete CAS object: %v", err)
+	}
+
+	broken := createResourceSandbox(t, admin, fmt.Sprintf("recover-broken-%d", suffix), name)
+	defer deleteSandbox(t, admin, broken.ID)
+	waitForFailed(t, admin, broken.ID, "resource_fetch_failed")
+	waitForVersionState(t, admin, v1, "unavailable", 60*time.Second)
+
+	// Re-pushing identical content uploads the missing object again. Its
+	// successful validation revives the older version.
+	var v2 resourceVersionView
+	mustJSON(t, cli.run(t, "", "resource", "push", src, name), &v2)
+	if v2.ID == v1.ID || v2.State != "ready" {
+		t.Fatalf("v2 = %+v, want a new ready version", v2)
+	}
+	waitForVersionState(t, admin, v1, "ready", 60*time.Second)
+
+	// The recovered version is mountable again.
+	recovered := createVersionSandbox(t, admin, fmt.Sprintf("recover-ok-%d", suffix), name, v1.ID)
+	defer deleteSandbox(t, admin, recovered.ID)
+	waitForSandboxState(t, admin, recovered.ID, "ready", 120*time.Second)
+	if got, _, code := execInSandbox(t, admin, recovered.ID, "cat", "/resources/data/hello.txt"); code != 0 || got != content {
+		t.Fatalf("cat recovered mount = %q code %d, want %q", got, code, content)
+	}
+}
+
+func createVersionSandbox(t *testing.T, admin, name, resource, version string) sandboxView {
+	t.Helper()
+	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
+		"name":      name,
+		"cpu":       0.5,
+		"memory":    128 << 20,
+		"idle_stop": 0,
+		"resources": []map[string]any{{"resource": resource, "version": version, "mount": "data"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create Sandbox with %s@%s: %d %s", resource, version, status, data)
+	}
+	var sb sandboxView
+	mustJSON(t, data, &sb)
+	return sb
+}
+
+func waitForVersionState(t *testing.T, admin string, version resourceVersionView, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		status, data := call(t, http.MethodGet,
+			"/api/v1/resources/"+version.ResourceID+"/versions/"+version.ID, admin, nil)
+		if status != http.StatusOK {
+			t.Fatalf("get ResourceVersion: %d %s", status, data)
+		}
+		var current resourceVersionView
+		mustJSON(t, data, &current)
+		if current.State == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ResourceVersion %s stayed %q, want %q", version.ID, current.State, want)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }

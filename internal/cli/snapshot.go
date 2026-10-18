@@ -410,40 +410,22 @@ func showSnapshotCurrent(c *client, snapshotID string) error {
 	return c.getAndPrint("/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions/"+url.PathEscape(*snap.CurrentVersionID), nil)
 }
 
-// waitForSnapshotVersion polls until the import reaches a terminal state.
+// waitForSnapshotVersion polls an import to its terminal state, prints it and
+// fails when it did not become ready.
 func waitForSnapshotVersion(c *client, snapshotID string, version snapshotVersionView) error {
-	deadline := time.Now().Add(time.Hour)
-	for version.State == "building" {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("SnapshotVersion %s is still building", version.ID)
-		}
-		time.Sleep(time.Second)
-		data, err := c.do(http.MethodGet,
-			"/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions/"+url.PathEscape(version.ID), nil, nil, "")
-		if err != nil {
-			return err
-		}
-		if err := json.Unmarshal(data, &version); err != nil {
-			return err
-		}
-	}
-	status, data, err := c.send(http.MethodGet,
-		"/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions/"+url.PathEscape(version.ID), nil, nil, "")
+	final, raw, err := pollSnapshotVersion(c, snapshotID, version.ID)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusOK {
-		return problemError(status, data)
-	}
-	if err := c.print(data); err != nil {
+	if err := c.print(raw); err != nil {
 		return err
 	}
-	if version.State != "ready" {
+	if final.State != "ready" {
 		cause := ""
-		if version.Cause != nil {
-			cause = ": " + *version.Cause
+		if final.Cause != nil {
+			cause = ": " + *final.Cause
 		}
-		return fmt.Errorf("SnapshotVersion %s ended %s%s", version.ID, version.State, cause)
+		return fmt.Errorf("SnapshotVersion %s ended %s%s", final.ID, final.State, cause)
 	}
 	return nil
 }
