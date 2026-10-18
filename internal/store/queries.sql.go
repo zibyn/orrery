@@ -1340,6 +1340,21 @@ func (q *Queries) DeleteAllocation(ctx context.Context, sandboxID uuid.UUID) err
 	return err
 }
 
+const deleteAllocationsOnNodeLost = `-- name: DeleteAllocationsOnNodeLost :execrows
+DELETE FROM allocations
+WHERE sandbox_id IN (
+    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
+)
+`
+
+func (q *Queries) DeleteAllocationsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAllocationsOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteAttachment = `-- name: DeleteAttachment :exec
 DELETE FROM attachments WHERE sandbox_id = $1
 `
@@ -1419,6 +1434,21 @@ DELETE FROM gpu_allocations WHERE sandbox_id = $1
 func (q *Queries) DeleteGPUAllocations(ctx context.Context, sandboxID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, deleteGPUAllocations, sandboxID)
 	return err
+}
+
+const deleteGPUAllocationsOnNodeLost = `-- name: DeleteGPUAllocationsOnNodeLost :execrows
+DELETE FROM gpu_allocations
+WHERE sandbox_id IN (
+    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
+)
+`
+
+func (q *Queries) DeleteGPUAllocationsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteGPUAllocationsOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteGitLink = `-- name: DeleteGitLink :one
@@ -1514,6 +1544,21 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.Kind,
 	)
 	return i, err
+}
+
+const deleteSandboxAttachmentsOnNodeLost = `-- name: DeleteSandboxAttachmentsOnNodeLost :execrows
+DELETE FROM attachments
+WHERE sandbox_id IN (
+    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
+)
+`
+
+func (q *Queries) DeleteSandboxAttachmentsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSandboxAttachmentsOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteSecret = `-- name: DeleteSecret :one
@@ -1649,6 +1694,21 @@ func (q *Queries) FailBuildingSnapshotImports(ctx context.Context) error {
 	return err
 }
 
+const failBuildsOnNodeLost = `-- name: FailBuildsOnNodeLost :execrows
+UPDATE snapshot_versions
+SET state = 'failed', cause = 'node_lost'
+WHERE state = 'building'
+  AND build_sandbox_id IN (SELECT id FROM sandboxes WHERE node_id = $1)
+`
+
+func (q *Queries) FailBuildsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, failBuildsOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failPendingSandbox = `-- name: FailPendingSandbox :execrows
 UPDATE sandboxes
 SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
@@ -1666,6 +1726,53 @@ type FailPendingSandboxParams struct {
 // unsatisfiable, quota_exceeded).
 func (q *Queries) FailPendingSandbox(ctx context.Context, arg FailPendingSandboxParams) (int64, error) {
 	result, err := q.db.Exec(ctx, failPendingSandbox, arg.ID, arg.Generation, arg.Cause)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failPublishesOnNodeLost = `-- name: FailPublishesOnNodeLost :execrows
+UPDATE resource_versions
+SET state = 'failed', cause = 'node_lost'
+WHERE state = 'pending'
+  AND publish_workspace_id IN (SELECT id FROM workspaces WHERE node_id = $1)
+`
+
+func (q *Queries) FailPublishesOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, failPublishesOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failSandboxesOnNodeLost = `-- name: FailSandboxesOnNodeLost :execrows
+UPDATE sandboxes
+SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
+    conditions = NULL, updated_at = now()
+WHERE node_id = $1 AND state <> 'deleted'
+`
+
+// Every non-deleted Sandbox on the Node, including stopped and bound pending
+// ones and build rows, becomes failed/node_lost (api.md §3).
+func (q *Queries) FailSandboxesOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, failSandboxesOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failSandboxesOnWorkspaceLost = `-- name: FailSandboxesOnWorkspaceLost :execrows
+UPDATE sandboxes
+SET state = 'failed', cause = 'workspace_lost', desired_state = 'stopped',
+    conditions = NULL, updated_at = now()
+WHERE workspace_id = $1 AND state NOT IN ('deleted', 'deleting')
+`
+
+func (q *Queries) FailSandboxesOnWorkspaceLost(ctx context.Context, workspaceID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, failSandboxesOnWorkspaceLost, workspaceID)
 	if err != nil {
 		return 0, err
 	}
@@ -1720,6 +1827,41 @@ func (q *Queries) FinishExec(ctx context.Context, arg FinishExecParams) (int64, 
 		arg.ExitCode,
 		arg.Signal,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const finishExecsOnNodeLost = `-- name: FinishExecsOnNodeLost :execrows
+UPDATE execs
+SET finished_at = now(), cause = 'node_lost'
+WHERE finished_at IS NULL
+  AND sandbox_id IN (
+      SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
+  )
+`
+
+func (q *Queries) FinishExecsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, finishExecsOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const finishExecsOnWorkspaceLost = `-- name: FinishExecsOnWorkspaceLost :execrows
+UPDATE execs
+SET finished_at = now(), cause = 'runtime_lost'
+WHERE finished_at IS NULL
+  AND sandbox_id IN (
+      SELECT id FROM sandboxes
+      WHERE workspace_id = $1 AND state = 'failed' AND cause = 'workspace_lost'
+  )
+`
+
+func (q *Queries) FinishExecsOnWorkspaceLost(ctx context.Context, workspaceID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, finishExecsOnWorkspaceLost, workspaceID)
 	if err != nil {
 		return 0, err
 	}
@@ -3963,7 +4105,12 @@ const listReconcilableSandboxes = `-- name: ListReconcilableSandboxes :many
 
 SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
 WHERE kind = 'user'
-  AND state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+  AND (state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+       -- A failed Sandbox can still hold a Runtime (workspace_lost); the stop
+       -- command runs until the Node observes it gone and the compute is
+       -- released (ADR-0017).
+       OR (state = 'failed'
+           AND EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = sandboxes.id)))
 ORDER BY id
 `
 
@@ -4813,6 +4960,40 @@ func (q *Queries) MarkBuildSandboxDone(ctx context.Context, id uuid.UUID) (int64
 	return result.RowsAffected(), nil
 }
 
+const markDeletingWorkspacesDeletedOnNodeLost = `-- name: MarkDeletingWorkspacesDeletedOnNodeLost :execrows
+UPDATE workspaces
+SET state = 'deleted', deleted_at = now(), updated_at = now()
+WHERE node_id = $1 AND state = 'deleting'
+`
+
+// A Workspace being deleted on a lost Node reaches deleted without a command;
+// every other non-terminal one becomes lost (ADR-0014).
+func (q *Queries) MarkDeletingWorkspacesDeletedOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markDeletingWorkspacesDeletedOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markNodeLost = `-- name: MarkNodeLost :execrows
+
+UPDATE nodes
+SET token_hash = '', paused = true, lost_at = now()
+WHERE id = $1
+`
+
+// Lost cascades (#95)
+// Declaring a Node lost is irreversible: the Token is cleared, the Node is
+// paused, and lost_at is what deriveNodeStatus reads (ADR-0014).
+func (q *Queries) MarkNodeLost(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markNodeLost, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markResourceVersionAvailable = `-- name: MarkResourceVersionAvailable :execrows
 UPDATE resource_versions
 SET state = 'ready'
@@ -5040,6 +5221,22 @@ func (q *Queries) MarkSnapshotVersionReady(ctx context.Context, arg MarkSnapshot
 	return i, err
 }
 
+const markWorkspaceAbandoned = `-- name: MarkWorkspaceAbandoned :execrows
+UPDATE workspaces
+SET state = 'deleted', deleted_at = now(), updated_at = now()
+WHERE id = $1 AND state = 'deleting'
+`
+
+// Abandoning a Workspace stuck in deleting reaches deleted with no Node
+// command (api.md §3).
+func (q *Queries) MarkWorkspaceAbandoned(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markWorkspaceAbandoned, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markWorkspaceDeleted = `-- name: MarkWorkspaceDeleted :execrows
 UPDATE workspaces
 SET state = 'deleted', deleted_at = now(), updated_at = now()
@@ -5079,6 +5276,23 @@ func (q *Queries) MarkWorkspaceFailed(ctx context.Context, arg MarkWorkspaceFail
 	return result.RowsAffected(), nil
 }
 
+const markWorkspaceLost = `-- name: MarkWorkspaceLost :execrows
+UPDATE workspaces
+SET state = 'lost', updated_at = now()
+WHERE id = $1 AND state IN ('provisioning', 'ready')
+`
+
+// A Workspace declared lost on a live Node: its attached Sandboxes become
+// failed/workspace_lost and their Execs end runtime_lost (ADR-0017). A row
+// already deleting keeps its own teardown.
+func (q *Queries) MarkWorkspaceLost(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markWorkspaceLost, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markWorkspaceReady = `-- name: MarkWorkspaceReady :execrows
 UPDATE workspaces
 SET state = 'ready', updated_at = now()
@@ -5092,6 +5306,20 @@ type MarkWorkspaceReadyParams struct {
 
 func (q *Queries) MarkWorkspaceReady(ctx context.Context, arg MarkWorkspaceReadyParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markWorkspaceReady, arg.ID, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markWorkspacesLostOnNodeLost = `-- name: MarkWorkspacesLostOnNodeLost :execrows
+UPDATE workspaces
+SET state = 'lost', updated_at = now()
+WHERE node_id = $1 AND state IN ('provisioning', 'ready')
+`
+
+func (q *Queries) MarkWorkspacesLostOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markWorkspacesLostOnNodeLost, nodeID)
 	if err != nil {
 		return 0, err
 	}

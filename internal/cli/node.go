@@ -2,15 +2,17 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 )
 
-// runNode is the admin Node lifecycle surface (api.md §3, ADR-0014). Delete
-// is refused unless the Node is paused with no non-terminal Workspace or
-// Sandbox, because it leaves a tombstone the Control Plane never purges.
-func runNode(c *client, args []string) error {
+// runNode is the admin Node lifecycle surface (api.md §3, ADR-0014).
+// declare-lost clears the Token and cascades; pause/resume is the placement
+// switch; delete requires a paused, drained Node and leaves a tombstone.
+func runNode(c *client, args []string, stderr io.Writer) error {
+	const usage = "usage: stars-sandbox node pause|resume|delete|declare-lost <id>"
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox node pause|resume|delete <id>")
+		return fmt.Errorf(usage)
 	}
 	switch args[0] {
 	case "pause", "resume":
@@ -23,6 +25,11 @@ func runNode(c *client, args []string) error {
 			return fmt.Errorf("usage: stars-sandbox node delete <id>")
 		}
 		return c.sendAndPrint(http.MethodDelete, "/api/v1/nodes/"+args[1], nil, "")
+	case "declare-lost":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: stars-sandbox node declare-lost <id>")
+		}
+		return c.sendAndPrint(http.MethodPost, "/api/v1/nodes/"+args[1]+"/declare-lost", nil, "")
 	default:
 		return fmt.Errorf("unknown node command %q", args[0])
 	}

@@ -96,7 +96,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "workspace":
 		err = runWorkspace(c, rest[1:], stderr)
 	case "node":
-		err = runNode(c, rest[1:])
+		err = runNode(c, rest[1:], stderr)
 	case "port-forward":
 		err = runPortForward(c, rest[1:])
 	case "git-credential":
@@ -152,7 +152,10 @@ commands:
                                     download a version into a directory
   workspace publish <id> <path> <name>
                                     publish a Workspace path as a Resource version
+  workspace declare-lost <id>       declare a Workspace lost (admin)
+  workspace abandon <id>            abandon a stuck Workspace deletion (admin)
   node pause|resume|delete <id>     admin: pause, resume or delete a Node
+  node declare-lost <id>            declare an unreachable Node lost (admin)
   port-forward <sandbox-id> [LOCAL:]REMOTE
                                     tunnel a local TCP port to a Sandbox port
 
