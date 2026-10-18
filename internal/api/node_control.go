@@ -176,7 +176,7 @@ func perGPUShare(heartbeat *nodev1.Heartbeat, cards int) (cpu float64, memory in
 }
 
 func (n *nodeService) recordCapabilities(ctx context.Context, id uuid.UUID, caps *nodev1.Capabilities) error {
-	snapshot := nodeproto.CapabilityReport{Runtime: caps.Runtime}
+	snapshot := nodeproto.CapabilityReport{RuntimeProvider: caps.RuntimeProvider}
 	for _, entry := range caps.Entries {
 		snapshot.Entries = append(snapshot.Entries, nodeproto.CapabilityEntry{
 			Name:  entry.Name,

@@ -83,8 +83,8 @@ func compatible(cpMajor, cpMinor, agentMajor, agentMinor uint32) (accepted, outd
 // CapabilityReport is the stored form of the Capabilities message. GPUs live
 // in their own table, so they are not repeated here.
 type CapabilityReport struct {
-	Runtime string            `json:"runtime"`
-	Entries []CapabilityEntry `json:"entries"`
+	RuntimeProvider string            `json:"runtime_provider"`
+	Entries         []CapabilityEntry `json:"entries"`
 }
 
 type CapabilityEntry struct {

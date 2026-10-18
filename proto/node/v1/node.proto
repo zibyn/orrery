@@ -122,7 +122,7 @@ message GPUHealth {
 }
 
 message Capabilities {
-  string runtime = 1;
+  string runtime_provider = 1;
   repeated CapabilityEntry entries = 2;
   repeated GPU gpus = 3;
 }

@@ -128,7 +128,7 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, buildx bool) 
 	isolated := r.PIDNamespace != "" && r.PIDNamespace != pidNS &&
 		r.MountNamespace != "" && r.MountNamespace != mntNS
 	return nodeproto.CapabilityReport{
-		Runtime: "docker",
+		RuntimeProvider: "docker",
 		Entries: []nodeproto.CapabilityEntry{
 			{Name: nodeproto.CapProcessMountNamespace, Value: value(isolated)},
 			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(limitsEnforced)},

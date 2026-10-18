@@ -909,12 +909,12 @@ func (x *GPUHealth) GetState() string {
 }
 
 type Capabilities struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Runtime       string                 `protobuf:"bytes,1,opt,name=runtime,proto3" json:"runtime,omitempty"`
-	Entries       []*CapabilityEntry     `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
-	Gpus          []*GPU                 `protobuf:"bytes,3,rep,name=gpus,proto3" json:"gpus,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	RuntimeProvider string                 `protobuf:"bytes,1,opt,name=runtime_provider,json=runtimeProvider,proto3" json:"runtime_provider,omitempty"`
+	Entries         []*CapabilityEntry     `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
+	Gpus            []*GPU                 `protobuf:"bytes,3,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Capabilities) Reset() {
@@ -947,9 +947,9 @@ func (*Capabilities) Descriptor() ([]byte, []int) {
 	return file_node_v1_node_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *Capabilities) GetRuntime() string {
+func (x *Capabilities) GetRuntimeProvider() string {
 	if x != nil {
-		return x.Runtime
+		return x.RuntimeProvider
 	}
 	return ""
 }
@@ -3157,9 +3157,9 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\x0edisk_watermark\x18\t \x01(\x01R\rdiskWatermark\"5\n" +
 	"\tGPUHealth\x12\x12\n" +
 	"\x04uuid\x18\x01 \x01(\tR\x04uuid\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\tR\x05state\"\x8a\x01\n" +
-	"\fCapabilities\x12\x18\n" +
-	"\aruntime\x18\x01 \x01(\tR\aruntime\x128\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\"\x9b\x01\n" +
+	"\fCapabilities\x12)\n" +
+	"\x10runtime_provider\x18\x01 \x01(\tR\x0fruntimeProvider\x128\n" +
 	"\aentries\x18\x02 \x03(\v2\x1e.stars.node.v1.CapabilityEntryR\aentries\x12&\n" +
 	"\x04gpus\x18\x03 \x03(\v2\x12.stars.node.v1.GPUR\x04gpus\"[\n" +
 	"\x0fCapabilityEntry\x12\x12\n" +
