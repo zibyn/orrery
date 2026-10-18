@@ -3256,7 +3256,7 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 const listExpiredResourceVersions = `-- name: ListExpiredResourceVersions :many
 
 SELECT rv.id, rv.address, rv.manifest_key, rv.state, rv.created_at,
-       (r.current_version_id = rv.id) AS current, r.owner_id
+       (r.current_version_id IS NOT DISTINCT FROM rv.id) AS current, r.owner_id
 FROM resource_versions rv
 JOIN resources r ON r.id = rv.resource_id
 WHERE r.deleted_at IS NULL
