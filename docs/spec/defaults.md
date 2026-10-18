@@ -81,7 +81,7 @@
 | `STARS_ENCRYPTION_KEYS_FILE` | Secret、Git、Sandbox Token 相关功能返回明确错误 | 每行 `<key_id> <base64 编码的 32 字节>`。第一行用于加密，所有行都可用于解密。AES-256-GCM，AAD 为 owner 的 user id（`schema.md`）。不提供 rewrap 命令 |
 | `STARS_GIT_PROVIDERS_FILE` | 没有 Git Provider | JSON 数组，见下 |
 | `STARS_PLATFORM_SNAPSHOTS` | 没有平台 Snapshot | `name=ref@sha256:…,…`。Control Plane 启动时导入其中还没导入的条目，存到 registry 的 `platform/<name>`；导入失败不影响启动，只让用到它的 Sandbox 创建失败。平台 Snapshot 所有 User 可读，API 不能增删（ADR-0021） |
-| `STARS_DEFAULT_SNAPSHOT` | 不带 `snapshot` 的创建请求返回错误 | `STARS_PLATFORM_SNAPSHOTS` 里的一个 `name` |
+| `STARS_DEFAULT_SNAPSHOT` | 不带 `snapshot` 的 `runtime: container` 创建请求返回错误；`runtime: local` 不用 Snapshot | `STARS_PLATFORM_SNAPSHOTS` 里的一个 `name` |
 
 `STARS_GIT_PROVIDERS_FILE` 的每一项：
 
