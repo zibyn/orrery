@@ -194,9 +194,15 @@ func TestObjectStoreOutage(t *testing.T) {
 	waitForSandboxState(t, admin, first.ID, "ready", 180*time.Second)
 
 	// Kept down past the backoff, the Sandbox ends failed with the fetch
-	// cause (defaults.md: 1, 2, 4, 8, 16 seconds).
+	// cause (defaults.md: 1, 2, 4, 8, 16 seconds). The failure needs a version
+	// the Node has not cached yet, so push a second Resource while the store
+	// is still up.
+	uncached := fmt.Sprintf("outage-uncached-%d", suffix)
+	uncachedSrc := t.TempDir()
+	writeTestFile(t, filepath.Join(uncachedSrc, "payload.txt"), "never fetched\n", 0o644)
+	mustJSON(t, cli.run(t, "", "resource", "push", uncachedSrc, uncached), &version)
 	composeService(t, "stop", "rustfs")
-	second := createResourceSandbox(t, admin, fmt.Sprintf("outage-fail-%d", suffix), name)
+	second := createResourceSandbox(t, admin, fmt.Sprintf("outage-fail-%d", suffix), uncached)
 	defer deleteSandbox(t, admin, second.ID)
 	waitForFailed(t, admin, second.ID, "resource_fetch_failed")
 }
