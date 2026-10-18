@@ -44,18 +44,18 @@ func (s *Server) importPlatformSnapshot(ctx context.Context, configured Platform
 		return err
 	}
 	digest := source.DigestStr()
-	// Idempotent across restarts: a ready version already carrying this
-	// digest is the import.
-	_, err = s.q.GetReadyPlatformSnapshotVersionByDigest(ctx, store.GetReadyPlatformSnapshotVersionByDigestParams{
-		Name: configured.Name, Digest: &digest,
-	})
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
 	snap, err := s.q.GetPlatformSnapshotByName(ctx, configured.Name)
+	if err == nil && snap.CurrentVersionID != nil {
+		// Idempotent across restarts: the current ready version already
+		// carries the configured digest.
+		current, versionErr := s.q.GetSnapshotVersion(ctx, store.GetSnapshotVersionParams{
+			ID: *snap.CurrentVersionID, SnapshotID: snap.ID,
+		})
+		if versionErr == nil && current.State == string(SnapshotVersionReady) &&
+			current.Digest != nil && *current.Digest == digest {
+			return nil
+		}
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		id, idErr := uuid.NewV7()
 		if idErr != nil {

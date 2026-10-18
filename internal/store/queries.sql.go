@@ -1509,37 +1509,6 @@ func (q *Queries) GetPlatformSnapshotByName(ctx context.Context, name string) (S
 	return i, err
 }
 
-const getReadyPlatformSnapshotVersionByDigest = `-- name: GetReadyPlatformSnapshotVersionByDigest :one
-SELECT sv.id, sv.snapshot_id, sv.digest, sv.state, sv.cause, sv.source, sv.build_sandbox_id, sv.build_exec_id, sv.provenance, sv.idempotency_key, sv.created_at FROM snapshot_versions sv
-JOIN snapshots s ON s.id = sv.snapshot_id
-WHERE s.owner_id IS NULL AND s.name = $1 AND s.deleted_at IS NULL
-  AND sv.state = 'ready' AND sv.digest = $2
-`
-
-type GetReadyPlatformSnapshotVersionByDigestParams struct {
-	Name   string
-	Digest *string
-}
-
-func (q *Queries) GetReadyPlatformSnapshotVersionByDigest(ctx context.Context, arg GetReadyPlatformSnapshotVersionByDigestParams) (SnapshotVersion, error) {
-	row := q.db.QueryRow(ctx, getReadyPlatformSnapshotVersionByDigest, arg.Name, arg.Digest)
-	var i SnapshotVersion
-	err := row.Scan(
-		&i.ID,
-		&i.SnapshotID,
-		&i.Digest,
-		&i.State,
-		&i.Cause,
-		&i.Source,
-		&i.BuildSandboxID,
-		&i.BuildExecID,
-		&i.Provenance,
-		&i.IdempotencyKey,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getSandbox = `-- name: GetSandbox :one
 SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id FROM sandboxes WHERE id = $1 AND state <> 'deleted'
 `

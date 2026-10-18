@@ -855,12 +855,6 @@ DELETE FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2;
 UPDATE snapshot_versions SET state = 'failed', cause = 'import_failed'
 WHERE state = 'building' AND source = 'import';
 
--- name: GetReadyPlatformSnapshotVersionByDigest :one
-SELECT sv.* FROM snapshot_versions sv
-JOIN snapshots s ON s.id = sv.snapshot_id
-WHERE s.owner_id IS NULL AND s.name = $1 AND s.deleted_at IS NULL
-  AND sv.state = 'ready' AND sv.digest = $2;
-
 -- The suffix is "<repo>@<digest>"; matching the suffix avoids caring which
 -- registry address a Sandbox was created against.
 -- name: CountSandboxSnapshotReferences :one
