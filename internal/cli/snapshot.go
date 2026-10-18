@@ -1,17 +1,18 @@
 package cli
 
 import (
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	starsclient "github.com/zibyn/stars-sandbox/client"
 )
 
 // snapshot import|ls|rm|versions|current (api.md §3). Imports are
@@ -33,14 +34,11 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		q := url.Values{}
-		if *limit > 0 {
-			q.Set("limit", fmt.Sprint(*limit))
+		page, err := c.ListSnapshots(ctx, *limit, *cursor)
+		if err != nil {
+			return err
 		}
-		if *cursor != "" {
-			q.Set("cursor", *cursor)
-		}
-		return c.getAndPrint("/api/v1/snapshots", q)
+		return c.print(page)
 	case "rm":
 		fs := flag.NewFlagSet("snapshot rm", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -54,7 +52,11 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return c.sendAndPrint(http.MethodDelete, "/api/v1/snapshots/"+url.PathEscape(id), nil, "")
+		snapshot, err := c.DeleteSnapshot(ctx, id)
+		if err != nil {
+			return err
+		}
+		return c.print(snapshot)
 	case "versions":
 		fs := flag.NewFlagSet("snapshot versions", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -70,14 +72,11 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		q := url.Values{}
-		if *limit > 0 {
-			q.Set("limit", fmt.Sprint(*limit))
+		page, err := c.ListSnapshotVersions(ctx, id, *limit, *cursor)
+		if err != nil {
+			return err
 		}
-		if *cursor != "" {
-			q.Set("cursor", *cursor)
-		}
-		return c.getAndPrint("/api/v1/snapshots/"+url.PathEscape(id)+"/versions", q)
+		return c.print(page)
 	case "current":
 		fs := flag.NewFlagSet("snapshot current", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -92,8 +91,11 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() == 2 {
-			return c.sendAndPrint(http.MethodPut, "/api/v1/snapshots/"+url.PathEscape(id)+"/current",
-				map[string]string{"version": fs.Arg(1)}, "")
+			snapshot, err := c.SetSnapshotCurrent(ctx, id, fs.Arg(1))
+			if err != nil {
+				return err
+			}
+			return c.print(snapshot)
 		}
 		return showSnapshotCurrent(c, id)
 	default:
@@ -169,9 +171,9 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 		}
 		dockerfile = data
 	}
-	build := map[string]any{"dockerfile": string(dockerfile)}
+	build := &starsclient.SnapshotBuild{Dockerfile: string(dockerfile)}
 	if base != "" {
-		build["base"] = base
+		build.Base = &base
 	}
 	contexts := map[string]string{}
 	for _, raw := range contextFlags {
@@ -182,7 +184,7 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 		contexts[name] = value
 	}
 	if len(contexts) > 0 {
-		build["contexts"] = contexts
+		build.Contexts = contexts
 	}
 	secrets := map[string]string{}
 	for _, raw := range secretFlags {
@@ -193,74 +195,47 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 		secrets[id] = value
 	}
 	if len(secrets) > 0 {
-		build["secrets"] = secrets
+		build.Secrets = secrets
 	}
 	snapshotID, err := ensureSnapshot(c, positional[0])
 	if err != nil {
 		return err
 	}
-	status, data, err := c.send(http.MethodPost,
-		"/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions", nil,
-		map[string]any{"build": build}, idem)
+	version, err := c.CreateSnapshotVersion(ctx, snapshotID,
+		starsclient.SnapshotVersionRequest{Build: build}, idem)
 	if err != nil {
-		return err
-	}
-	if status != http.StatusCreated && status != http.StatusOK {
-		return problemError(status, data)
-	}
-	var version snapshotVersionView
-	if err := json.Unmarshal(data, &version); err != nil {
 		return err
 	}
 	if noFollow {
-		return c.print(data)
+		return c.print(version)
 	}
 	if version.BuildExecID != nil {
 		// The build log is a normal Exec log (api.md §3).
-		if _, err := c.followExec(*version.BuildExecID, 0, c.out, stderr); err != nil {
+		if _, err := c.FollowOutput(ctx, *version.BuildExecID, c.out, stderr); err != nil {
 			return err
 		}
 	}
-	final, raw, err := pollSnapshotVersion(c, snapshotID, version.ID)
+	final, err := pollSnapshotVersion(c, snapshotID, version.ID)
 	if err != nil {
 		return err
 	}
-	if err := c.print(raw); err != nil {
-		return err
-	}
-	if final.State != "ready" {
-		cause := ""
-		if final.Cause != nil {
-			cause = ": " + *final.Cause
-		}
-		return fmt.Errorf("SnapshotVersion %s ended %s%s", final.ID, final.State, cause)
-	}
-	return nil
+	return printSnapshotVersion(c, final)
 }
 
 // pollSnapshotVersion waits for a terminal state and returns the final
-// version, with the raw response for printing.
-func pollSnapshotVersion(c *client, snapshotID, versionID string) (snapshotVersionView, []byte, error) {
+// version.
+func pollSnapshotVersion(c *client, snapshotID, versionID string) (*starsclient.SnapshotVersion, error) {
 	deadline := time.Now().Add(time.Hour)
 	for {
-		status, data, err := c.send(http.MethodGet,
-			"/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions/"+url.PathEscape(versionID),
-			nil, nil, "")
+		version, err := c.GetSnapshotVersion(ctx, snapshotID, versionID)
 		if err != nil {
-			return snapshotVersionView{}, nil, err
-		}
-		if status != http.StatusOK {
-			return snapshotVersionView{}, nil, problemError(status, data)
-		}
-		var version snapshotVersionView
-		if err := json.Unmarshal(data, &version); err != nil {
-			return snapshotVersionView{}, nil, err
+			return nil, err
 		}
 		if version.State != "building" {
-			return version, data, nil
+			return version, nil
 		}
 		if time.Now().After(deadline) {
-			return snapshotVersionView{}, nil, fmt.Errorf("SnapshotVersion %s is still building", versionID)
+			return nil, fmt.Errorf("SnapshotVersion %s is still building", versionID)
 		}
 		time.Sleep(time.Second)
 	}
@@ -291,37 +266,20 @@ func runSnapshotImport(c *client, args []string) error {
 	if err != nil {
 		return err
 	}
-	body := map[string]any{"import": map[string]any{"ref": ref}}
+	imp := &starsclient.SnapshotImport{Ref: ref}
 	if authSecret != "" {
-		body["import"].(map[string]any)["auth_secret"] = authSecret
+		imp.AuthSecret = &authSecret
 	}
-	status, data, err := c.send(http.MethodPost, "/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions", nil, body, "")
+	version, err := c.CreateSnapshotVersion(ctx, snapshotID,
+		starsclient.SnapshotVersionRequest{Import: imp}, "")
 	if err != nil {
 		return err
 	}
-	if status != http.StatusCreated && status != http.StatusOK {
-		return problemError(status, data)
-	}
-	var version snapshotVersionView
-	if err := json.Unmarshal(data, &version); err != nil {
+	final, err := pollSnapshotVersion(c, snapshotID, version.ID)
+	if err != nil {
 		return err
 	}
-	return waitForSnapshotVersion(c, snapshotID, version)
-}
-
-type snapshotView struct {
-	ID               string  `json:"id"`
-	OwnerID          *string `json:"owner_id"`
-	Name             string  `json:"name"`
-	CurrentVersionID *string `json:"current_version_id"`
-}
-
-type snapshotVersionView struct {
-	ID          string  `json:"id"`
-	State       string  `json:"state"`
-	Cause       *string `json:"cause"`
-	Digest      *string `json:"digest"`
-	BuildExecID *string `json:"build_exec_id"`
+	return printSnapshotVersion(c, final)
 }
 
 // ensureSnapshot finds the caller's Snapshot by name or creates it.
@@ -329,21 +287,15 @@ func ensureSnapshot(c *client, name string) (string, error) {
 	if id, err := findSnapshotByName(c, name, true); err == nil {
 		return id, nil
 	}
-	status, data, err := c.send(http.MethodPost, "/api/v1/snapshots", nil, map[string]string{"name": name}, "")
-	if err != nil {
-		return "", err
+	snapshot, err := c.CreateSnapshot(ctx, name)
+	if err == nil {
+		return snapshot.ID, nil
 	}
-	if status == http.StatusCreated {
-		var snap snapshotView
-		if err := json.Unmarshal(data, &snap); err != nil {
-			return "", err
-		}
-		return snap.ID, nil
-	}
-	if status == http.StatusConflict {
+	var problem *starsclient.Error
+	if errors.As(err, &problem) && problem.Status == http.StatusConflict {
 		return findSnapshotByName(c, name, true)
 	}
-	return "", problemError(status, data)
+	return "", err
 }
 
 // resolveSnapshotID accepts an id or a name. A name prefers the caller's own
@@ -361,19 +313,8 @@ func resolveSnapshotID(c *client, ref string) (string, error) {
 func findSnapshotByName(c *client, name string, ownOnly bool) (string, error) {
 	cursor := ""
 	for {
-		q := url.Values{"limit": []string{"200"}}
-		if cursor != "" {
-			q.Set("cursor", cursor)
-		}
-		data, err := c.do(http.MethodGet, "/api/v1/snapshots", q, nil, "")
+		page, err := c.ListSnapshots(ctx, 200, cursor)
 		if err != nil {
-			return "", err
-		}
-		var page struct {
-			Items      []snapshotView `json:"items"`
-			NextCursor *string        `json:"next_cursor"`
-		}
-		if err := json.Unmarshal(data, &page); err != nil {
 			return "", err
 		}
 		for _, snap := range page.Items {
@@ -396,36 +337,32 @@ func findSnapshotByName(c *client, name string, ownOnly bool) (string, error) {
 }
 
 func showSnapshotCurrent(c *client, snapshotID string) error {
-	data, err := c.do(http.MethodGet, "/api/v1/snapshots/"+url.PathEscape(snapshotID), nil, nil, "")
+	snapshot, err := c.GetSnapshot(ctx, snapshotID)
 	if err != nil {
 		return err
 	}
-	var snap snapshotView
-	if err := json.Unmarshal(data, &snap); err != nil {
+	if snapshot.CurrentVersionID == nil {
+		return c.print(snapshot)
+	}
+	version, err := c.GetSnapshotVersion(ctx, snapshotID, *snapshot.CurrentVersionID)
+	if err != nil {
 		return err
 	}
-	if snap.CurrentVersionID == nil {
-		return c.print(data)
-	}
-	return c.getAndPrint("/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions/"+url.PathEscape(*snap.CurrentVersionID), nil)
+	return c.print(version)
 }
 
-// waitForSnapshotVersion polls an import to its terminal state, prints it and
-// fails when it did not become ready.
-func waitForSnapshotVersion(c *client, snapshotID string, version snapshotVersionView) error {
-	final, raw, err := pollSnapshotVersion(c, snapshotID, version.ID)
-	if err != nil {
+// printSnapshotVersion prints the final version and fails when it did not
+// become ready.
+func printSnapshotVersion(c *client, version *starsclient.SnapshotVersion) error {
+	if err := c.print(version); err != nil {
 		return err
 	}
-	if err := c.print(raw); err != nil {
-		return err
-	}
-	if final.State != "ready" {
+	if version.State != "ready" {
 		cause := ""
-		if final.Cause != nil {
-			cause = ": " + *final.Cause
+		if version.Cause != nil {
+			cause = ": " + *version.Cause
 		}
-		return fmt.Errorf("SnapshotVersion %s ended %s%s", final.ID, final.State, cause)
+		return fmt.Errorf("SnapshotVersion %s ended %s%s", version.ID, version.State, cause)
 	}
 	return nil
 }

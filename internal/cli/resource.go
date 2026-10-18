@@ -1,22 +1,12 @@
 package cli
 
 import (
-	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
-	"strings"
 	"text/tabwriter"
 
-	"github.com/google/uuid"
-
-	"github.com/zibyn/stars-sandbox/internal/castransfer"
-	"github.com/zibyn/stars-sandbox/internal/manifest"
+	starsclient "github.com/zibyn/stars-sandbox/client"
 )
 
 func runResource(c *client, args []string, stderr io.Writer) error {
@@ -33,7 +23,11 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: stars-sandbox resource create <name>")
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/resources", map[string]string{"name": fs.Arg(0)}, "")
+		resource, err := c.CreateResource(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		return c.print(resource)
 	case "ls":
 		fs := flag.NewFlagSet("resource ls", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -54,7 +48,11 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return c.sendAndPrint(http.MethodDelete, "/api/v1/resources/"+resource.ID, nil, "")
+		deleted, err := c.DeleteResource(ctx, resource.ID)
+		if err != nil {
+			return err
+		}
+		return c.print(deleted)
 	case "versions":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: stars-sandbox resource versions <name|id>")
@@ -68,7 +66,7 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		version, _, err := getResourceVersion(c, resource, "")
+		version, err := getResourceVersion(c, resource, "")
 		if err != nil {
 			return err
 		}
@@ -77,95 +75,30 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		if len(args) != 3 {
 			return fmt.Errorf("usage: stars-sandbox resource push <dir> <name>")
 		}
-		return pushResource(c, args[1], args[2])
+		version, err := c.PushResource(ctx, args[1], args[2])
+		if err != nil {
+			return err
+		}
+		return c.print(version)
 	case "pull":
 		if len(args) != 3 {
 			return fmt.Errorf("usage: stars-sandbox resource pull <name>[@version] <dir>")
 		}
-		return pullResource(c, args[1], args[2])
+		return c.PullResource(ctx, args[1], args[2])
 	default:
 		return fmt.Errorf("unknown resource command %q", args[0])
 	}
 }
 
-// resourceRef is the id and current pointer of a Resource.
-type resourceRef struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	CurrentVersionID *string `json:"current_version_id"`
-}
-
-type resourceVersionRef struct {
-	ID         string  `json:"id"`
-	ResourceID string  `json:"resource_id"`
-	Address    *string `json:"address"`
-	Size       int64   `json:"size"`
-	State      string  `json:"state"`
-	CreatedAt  string  `json:"created_at"`
-}
-
 // resolveResource accepts an id directly or lists pages until the name matches.
-func resolveResource(c *client, arg string) (resourceRef, error) {
-	if _, err := uuid.Parse(arg); err == nil {
-		data, err := c.do(http.MethodGet, "/api/v1/resources/"+arg, nil, nil, "")
-		if err != nil {
-			return resourceRef{}, err
-		}
-		var resource resourceRef
-		return resource, json.Unmarshal(data, &resource)
-	}
-	cursor := ""
-	for {
-		query := url.Values{"limit": {"200"}}
-		if cursor != "" {
-			query.Set("cursor", cursor)
-		}
-		data, err := c.do(http.MethodGet, "/api/v1/resources", query, nil, "")
-		if err != nil {
-			return resourceRef{}, err
-		}
-		var page struct {
-			Items      []resourceRef `json:"items"`
-			NextCursor *string       `json:"next_cursor"`
-		}
-		if err := json.Unmarshal(data, &page); err != nil {
-			return resourceRef{}, fmt.Errorf("decode Resource list: %w", err)
-		}
-		for _, item := range page.Items {
-			if item.Name == arg {
-				return item, nil
-			}
-		}
-		if page.NextCursor == nil {
-			return resourceRef{}, fmt.Errorf("no Resource named %q", arg)
-		}
-		cursor = *page.NextCursor
-	}
+func resolveResource(c *client, arg string) (*starsclient.Resource, error) {
+	return c.ResolveResource(ctx, arg)
 }
 
 func listResources(c *client, limit int, cursor string) error {
-	query := url.Values{}
-	if limit > 0 {
-		query.Set("limit", fmt.Sprint(limit))
-	}
-	if cursor != "" {
-		query.Set("cursor", cursor)
-	}
-	data, err := c.do(http.MethodGet, "/api/v1/resources", query, nil, "")
+	page, err := c.ListResources(ctx, limit, cursor)
 	if err != nil {
 		return err
-	}
-	var page struct {
-		Items []struct {
-			ID               string  `json:"id"`
-			Name             string  `json:"name"`
-			CurrentVersionID *string `json:"current_version_id"`
-			CreatedAt        string  `json:"created_at"`
-		} `json:"items"`
-		NextCursor *string `json:"next_cursor"`
-	}
-	if err := json.Unmarshal(data, &page); err != nil {
-		return fmt.Errorf("decode Resource list: %w", err)
 	}
 	tw := tabwriter.NewWriter(c.out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tNAME\tCURRENT\tCREATED")
@@ -190,16 +123,9 @@ func listResourceVersions(c *client, ref string) error {
 	if err != nil {
 		return err
 	}
-	data, err := c.do(http.MethodGet, "/api/v1/resources/"+resource.ID+"/versions", url.Values{"limit": {"200"}}, nil, "")
+	page, err := c.ListResourceVersions(ctx, resource.ID, 200, "")
 	if err != nil {
 		return err
-	}
-	var page struct {
-		Items      []resourceVersionRef `json:"items"`
-		NextCursor *string              `json:"next_cursor"`
-	}
-	if err := json.Unmarshal(data, &page); err != nil {
-		return fmt.Errorf("decode ResourceVersion list: %w", err)
 	}
 	tw := tabwriter.NewWriter(c.out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tADDRESS\tSIZE\tSTATE\tCREATED")
@@ -224,255 +150,12 @@ func listResourceVersions(c *client, ref string) error {
 }
 
 // getResourceVersion resolves an explicit version, or the current one.
-func getResourceVersion(c *client, resource resourceRef, version string) (json.RawMessage, resourceVersionRef, error) {
+func getResourceVersion(c *client, resource *starsclient.Resource, version string) (*starsclient.ResourceVersion, error) {
 	if version == "" {
 		if resource.CurrentVersionID == nil {
-			return nil, resourceVersionRef{}, fmt.Errorf("Resource %q has no current version", resource.Name)
+			return nil, fmt.Errorf("Resource %q has no current version", resource.Name)
 		}
 		version = *resource.CurrentVersionID
 	}
-	data, err := c.do(http.MethodGet, "/api/v1/resources/"+resource.ID+"/versions/"+version, nil, nil, "")
-	if err != nil {
-		return nil, resourceVersionRef{}, err
-	}
-	var ref resourceVersionRef
-	if err := json.Unmarshal(data, &ref); err != nil {
-		return nil, resourceVersionRef{}, fmt.Errorf("decode ResourceVersion: %w", err)
-	}
-	return data, ref, nil
-}
-
-// splitResourceVersion recognizes NAME@<version-uuid>; anything else is a
-// Resource reference.
-func splitResourceVersion(arg string) (string, string) {
-	index := strings.LastIndexByte(arg, '@')
-	if index <= 0 {
-		return arg, ""
-	}
-	if _, err := uuid.Parse(arg[index+1:]); err != nil {
-		return arg, ""
-	}
-	return arg[:index], arg[index+1:]
-}
-
-// ensureResource returns the named Resource, creating it when absent.
-func ensureResource(c *client, name string) (resourceRef, error) {
-	if _, err := uuid.Parse(name); err != nil {
-		// A name: reuse an existing Resource before creating one.
-		if resource, err := resolveResource(c, name); err == nil {
-			return resource, nil
-		}
-		status, data, err := c.send(http.MethodPost, "/api/v1/resources", nil, map[string]string{"name": name}, "")
-		if err != nil {
-			return resourceRef{}, err
-		}
-		if status == http.StatusCreated || status == http.StatusOK {
-			var resource resourceRef
-			return resource, json.Unmarshal(data, &resource)
-		}
-		if status != http.StatusConflict {
-			return resourceRef{}, problemError(status, data)
-		}
-		// A concurrent create won the name; resolve it again below.
-	}
-	resource, err := resolveResource(c, name)
-	if err == nil {
-		return resource, nil
-	}
-	// The argument may be a bare id that does not exist yet, which cannot be
-	// created: names are the only handle POST /resources takes.
-	if _, parseErr := uuid.Parse(name); parseErr == nil {
-		return resourceRef{}, err
-	}
-	return resourceRef{}, fmt.Errorf("create Resource %q: %w", name, err)
-}
-
-// buildManifest walks root deterministically. Symlinks are recorded, never
-// followed; devices, FIFOs and sockets are rejected.
-func buildManifest(root string) (manifest.Manifest, map[string]string, error) {
-	info, err := os.Stat(root)
-	if err != nil {
-		return manifest.Manifest{}, nil, err
-	}
-	if !info.IsDir() {
-		return manifest.Manifest{}, nil, fmt.Errorf("%s is not a directory", root)
-	}
-	dir, err := os.OpenRoot(root)
-	if err != nil {
-		return manifest.Manifest{}, nil, err
-	}
-	defer dir.Close()
-	m, files, err := manifest.Walk(dir.FS(), ".")
-	if err != nil {
-		return manifest.Manifest{}, nil, err
-	}
-	// The walker reports filesystem paths; uploads open host paths.
-	for digest, fsPath := range files {
-		files[digest] = filepath.Join(root, filepath.FromSlash(fsPath))
-	}
-	return m, files, nil
-}
-
-func pushResource(c *client, dir, name string) error {
-	m, files, err := buildManifest(dir)
-	if err != nil {
-		return err
-	}
-	resource, err := ensureResource(c, name)
-	if err != nil {
-		return err
-	}
-	data, err := c.do(http.MethodPost, "/api/v1/resources/"+resource.ID+"/uploads", nil, m, "")
-	if err != nil {
-		return err
-	}
-	var upload struct {
-		UploadID string `json:"upload_id"`
-		Puts     []struct {
-			SHA256 string `json:"sha256"`
-			URL    string `json:"url"`
-		} `json:"puts"`
-	}
-	if err := json.Unmarshal(data, &upload); err != nil {
-		return fmt.Errorf("decode upload session: %w", err)
-	}
-	for _, put := range upload.Puts {
-		path, ok := files[put.SHA256]
-		if !ok {
-			return fmt.Errorf("the server asked for an object this tree does not contain: %s", put.SHA256)
-		}
-		if err := putObject(put.URL, path, put.SHA256); err != nil {
-			return err
-		}
-	}
-	version, err := c.do(http.MethodPost, "/api/v1/resources/"+resource.ID+"/versions", nil, map[string]string{
-		"upload_id": upload.UploadID,
-	}, "")
-	if err != nil {
-		return err
-	}
-	return c.print(version)
-}
-
-// putObject sends one CAS object through a presigned URL. The store verifies
-// x-amz-checksum-sha256 (ADR-0021).
-func putObject(url, path, digest string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return castransfer.Put(context.Background(), transferClient, url, f, fileSize(f), digest)
-}
-
-func fileSize(f *os.File) int64 {
-	info, err := f.Stat()
-	if err != nil {
-		return 0
-	}
-	return info.Size()
-}
-
-func pullResource(c *client, ref, dest string) error {
-	name, version := splitResourceVersion(ref)
-	resource, err := resolveResource(c, name)
-	if err != nil {
-		return err
-	}
-	if version == "" && resource.CurrentVersionID != nil {
-		version = *resource.CurrentVersionID
-	}
-	if version == "" {
-		return fmt.Errorf("Resource %q has no current version", resource.Name)
-	}
-	raw, err := c.do(http.MethodGet, "/api/v1/resources/"+resource.ID+"/versions/"+version+"/manifest", nil, nil, "")
-	if err != nil {
-		return err
-	}
-	var m manifest.Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return fmt.Errorf("decode manifest: %w", err)
-	}
-	if err := manifest.Validate(m); err != nil {
-		return err
-	}
-	objects := manifest.FileObjects(m)
-	digests := make([]string, 0, len(objects))
-	for _, object := range objects {
-		digests = append(digests, object.SHA256)
-	}
-	data, err := c.do(http.MethodPost, "/api/v1/resources/"+resource.ID+"/versions/"+version+"/downloads", nil, map[string]any{
-		"sha256": digests,
-	}, "")
-	if err != nil {
-		return err
-	}
-	var downloads struct {
-		URLs []string `json:"urls"`
-	}
-	if err := json.Unmarshal(data, &downloads); err != nil {
-		return fmt.Errorf("decode download URLs: %w", err)
-	}
-	if len(downloads.URLs) != len(digests) {
-		return fmt.Errorf("got %d download URLs for %d objects", len(downloads.URLs), len(digests))
-	}
-	urls := make(map[string]string, len(digests))
-	for i, digest := range digests {
-		urls[digest] = downloads.URLs[i]
-	}
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return err
-	}
-	// Directories first so empty ones survive and file parents exist.
-	for _, entry := range m.Entries {
-		if entry.Type == manifest.TypeDir {
-			if err := os.MkdirAll(filepath.Join(dest, filepath.FromSlash(entry.Path)), 0o755); err != nil {
-				return err
-			}
-		}
-	}
-	for _, entry := range m.Entries {
-		if entry.Type != manifest.TypeFile {
-			continue
-		}
-		target := filepath.Join(dest, filepath.FromSlash(entry.Path))
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		mode := os.FileMode(0o644)
-		if entry.Executable {
-			mode = 0o755
-		}
-		if err := downloadObject(target, urls[entry.SHA256], entry.SHA256, mode); err != nil {
-			return err
-		}
-	}
-	for _, entry := range m.Entries {
-		if entry.Type != manifest.TypeSymlink {
-			continue
-		}
-		target := filepath.Join(dest, filepath.FromSlash(entry.Path))
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		if err := os.Symlink(entry.Target, target); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func downloadObject(path, url, digest string, mode os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if err := castransfer.Get(context.Background(), transferClient, url, f, digest, 0); err != nil {
-		f.Close() //nolint:errcheck // report the transfer error instead
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Chmod(path, mode)
+	return c.GetResourceVersion(ctx, resource.ID, version)
 }
