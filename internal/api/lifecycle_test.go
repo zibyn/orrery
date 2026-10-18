@@ -54,11 +54,11 @@ func TestSandboxStep(t *testing.T) {
 // start never reached the Supervisor finishes canceled without a command.
 func TestExecStep(t *testing.T) {
 	ready := func(state SandboxState, desired SandboxDesiredState) execFacts {
-		return execFacts{state: state, desired: desired}
+		return execFacts{sandboxState: state, desired: desired}
 	}
 	canceling := func(state SandboxState) execFacts {
 		return execFacts{
-			state: state, desired: SandboxDesiredRunning, cancelRequested: true,
+			sandboxState: state, desired: SandboxDesiredRunning, cancelRequested: true,
 		}
 	}
 

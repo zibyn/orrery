@@ -51,7 +51,7 @@ func sandboxStep(state SandboxState, desired SandboxDesiredState) sandboxStepAct
 
 // execFacts are the durable row facts the Exec ordering rules read.
 type execFacts struct {
-	state           SandboxState
+	sandboxState    SandboxState
 	desired         SandboxDesiredState
 	cancelRequested bool
 	started         bool
@@ -77,7 +77,7 @@ const (
 // Runtime goes.
 func execStep(facts execFacts, connected, delivered bool) execStepAction {
 	switch {
-	case facts.state == SandboxStopped || facts.state == SandboxDeleted || facts.state == SandboxFailed:
+	case facts.sandboxState == SandboxStopped || facts.sandboxState == SandboxDeleted || facts.sandboxState == SandboxFailed:
 		return execRuntimeLost
 	case facts.cancelRequested:
 		if !connected {
@@ -89,7 +89,7 @@ func execStep(facts execFacts, connected, delivered bool) execStepAction {
 		return execSendCancel
 	case facts.desired != SandboxDesiredRunning:
 		return execCancelSandbox
-	case facts.state != SandboxReady:
+	case facts.sandboxState != SandboxReady:
 		return execWait
 	default:
 		return execStart
@@ -123,7 +123,8 @@ func finalizeAction(state SandboxState, desired SandboxDesiredState, workspace *
 // finalizeGone is the one teardown of a Sandbox whose Runtime is gone. It
 // releases the Runtime and then finishes the deletion the desired state asks
 // for. Every step is idempotent, so a repeated observation converges; the
-// caller owns the transaction and the wake.
+// caller owns the transaction, the wake, and the proof that the Runtime is
+// really gone.
 func finalizeGone(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) error {
 	sb, err := q.GetSandbox(ctx, sandboxID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -132,18 +133,20 @@ func finalizeGone(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) er
 	if err != nil {
 		return err
 	}
-	// A deleted or missing Workspace row means the Sandbox finishes alone. A
-	// transient read error must not orphan an implicit Workspace.
+	// Release before the Workspace lookup: a transient read must not leave the
+	// compute allocated.
+	if err := releaseRuntime(ctx, q, sandboxID); err != nil {
+		return err
+	}
+	// A deleted or missing Workspace row means the Sandbox finishes alone.
 	ws, err := q.GetSandboxWorkspace(ctx, sandboxID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		// Do not orphan an implicit Workspace; the next sweep retries.
 		return err
 	}
 	var workspace *store.Workspace
 	if err == nil {
 		workspace = &ws
-	}
-	if err := releaseRuntime(ctx, q, sandboxID); err != nil {
-		return err
 	}
 	switch finalizeAction(SandboxState(sb.State), SandboxDesiredState(sb.DesiredState), workspace) {
 	case goneWorkspaceDeleting:

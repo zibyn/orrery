@@ -188,7 +188,7 @@ func (r *reconciler) cleanupBuild(ctx context.Context, row store.ListBuildRunsRo
 		}
 	}
 	if err := releaseRuntime(ctx, q, row.Sandbox.ID); err != nil {
-		r.s.log.Warn("reconcile: release build compute", "sandbox_id", row.Sandbox.ID, "error", err)
+		r.s.log.Warn("reconcile: release build runtime", "sandbox_id", row.Sandbox.ID, "error", err)
 		return
 	}
 	if _, err := q.MarkBuildSandboxDone(ctx, row.Sandbox.ID); err != nil {

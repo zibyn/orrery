@@ -507,7 +507,7 @@ func (r *reconciler) failAdmission(ctx context.Context, q *store.Queries, sb sto
 		return
 	}
 	if err := releaseRuntime(ctx, q, sb.ID); err != nil {
-		r.s.log.Warn("reconcile: release compute", "sandbox_id", sb.ID, "error", err)
+		r.s.log.Warn("reconcile: release runtime", "sandbox_id", sb.ID, "error", err)
 	}
 	r.endAdmission(ctx, q, sb.ID, cause)
 }

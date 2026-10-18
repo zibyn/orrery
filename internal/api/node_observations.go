@@ -73,17 +73,32 @@ func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, gener
 	if err := finishSandboxExecs(ctx, n.s.q, id, ExecRuntimeLost, generation); err != nil {
 		n.s.log.Warn("finish lost Execs", "sandbox_id", id, "error", err)
 	}
-	if _, err := n.s.q.MarkSandboxStopped(ctx, store.MarkSandboxStoppedParams{
+	stopped, err := n.s.q.MarkSandboxStopped(ctx, store.MarkSandboxStoppedParams{
 		ID: id, Generation: generation,
-	}); err != nil {
+	})
+	if err != nil {
 		n.s.log.Warn("record SandboxObserved gone", "sandbox_id", id, "error", err)
 		return
 	}
-	if _, err := n.s.q.MarkSandboxRuntimeLost(ctx, store.MarkSandboxRuntimeLostParams{
+	lost, err := n.s.q.MarkSandboxRuntimeLost(ctx, store.MarkSandboxRuntimeLostParams{
 		ID: id, Generation: generation, Cause: strPtr("runtime_lost"),
-	}); err != nil {
+	})
+	if err != nil {
 		n.s.log.Warn("record runtime lost", "sandbox_id", id, "error", err)
 		return
+	}
+	// A stale observation (a restart bumped the generation) must not release a
+	// live Runtime's compute; only a transition that matched the generation, a
+	// failed Sandbox, or a deletion waiting for the Runtime has work left.
+	if stopped == 0 && lost == 0 {
+		sb, err := n.s.q.GetSandbox(ctx, id)
+		if err != nil {
+			return
+		}
+		if SandboxState(sb.State) != SandboxFailed &&
+			SandboxDesiredState(sb.DesiredState) != SandboxDesiredDeleted {
+			return
+		}
 	}
 	// finalizeGone releases the compute and finishes a deletion; it covers the
 	// stopped, runtime-lost, failed and already-gone cases alike.
@@ -159,8 +174,13 @@ func (n *nodeService) recordWorkspaceObserved(ctx context.Context, nodeID uuid.U
 		}
 		if rows > 0 {
 			if ws, err := n.s.q.GetWorkspace(ctx, id); err == nil && ws.SandboxID != nil {
-				if err := finalizeGone(ctx, n.s.q, *ws.SandboxID); err != nil {
-					n.s.log.Warn("finalize Sandbox for gone Workspace", "sandbox_id", *ws.SandboxID, "error", err)
+				// Only a Sandbox being deleted finishes with its Workspace; a
+				// running one keeps its Runtime and compute (ADR-0018).
+				if sb, err := n.s.q.GetSandbox(ctx, *ws.SandboxID); err == nil &&
+					SandboxDesiredState(sb.DesiredState) == SandboxDesiredDeleted {
+					if err := finalizeGone(ctx, n.s.q, *ws.SandboxID); err != nil {
+						n.s.log.Warn("finalize Sandbox for gone Workspace", "sandbox_id", *ws.SandboxID, "error", err)
+					}
 				}
 			}
 			n.s.reconcile.notify()
