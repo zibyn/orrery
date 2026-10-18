@@ -286,7 +286,9 @@ func registryImageConfig(t *testing.T, ref string) string {
 	}
 	auth := registryAuthHeader(host)
 	manifest := registryGet(t, host, "/v2/"+repo+"/manifests/"+digest, auth,
-		"application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json")
+		"application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, "+
+			"application/vnd.docker.distribution.manifest.list.v2+json, "+
+			"application/vnd.docker.distribution.manifest.v2+json")
 	var index struct {
 		Manifests []struct {
 			Digest   string `json:"digest"`
@@ -308,7 +310,8 @@ func registryImageConfig(t *testing.T, ref string) string {
 			t.Fatalf("image index has no linux/amd64 manifest: %s", manifest)
 		}
 		manifest = registryGet(t, host, "/v2/"+repo+"/manifests/"+chosen, auth,
-			"application/vnd.oci.image.manifest.v1+json")
+			"application/vnd.oci.image.manifest.v1+json, "+
+				"application/vnd.docker.distribution.manifest.v2+json")
 	}
 	var image struct {
 		Config struct {
