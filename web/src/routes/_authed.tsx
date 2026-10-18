@@ -30,6 +30,13 @@ const NAV = [
   { to: '/cli-auth', label: 'CLI authorization' },
 ] as const
 
+// Admin pages are UI-gated on is_admin; the server still enforces scope (api.md §8).
+const ADMIN_NAV = [
+  { to: '/admin/users', label: 'Users' },
+  { to: '/admin/nodes', label: 'Nodes' },
+  { to: '/admin/audit', label: 'Audit' },
+] as const
+
 const navLinkClass =
   'rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'
 
@@ -58,6 +65,17 @@ function AuthedShell() {
                 {item.label}
               </Link>
             ))}
+            {user.is_admin &&
+              ADMIN_NAV.map((item) => (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  className={navLinkClass}
+                  activeProps={{ className: `${navLinkClass} bg-muted text-foreground` }}
+                >
+                  {item.label}
+                </Link>
+              ))}
           </nav>
           <div className="flex items-center gap-3 text-sm">
             <span className="text-muted-foreground">{user.name}</span>

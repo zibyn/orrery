@@ -12,12 +12,25 @@ export class ApiError extends Error {
   }
 }
 
+export type Quota = {
+  gpus: number
+  sandboxes: number
+}
+
 export type User = {
   id: string
   name: string
   email: string | null
   is_admin: boolean
   login_type: 'password' | 'oidc' | 'none'
+  quota: Quota
+  created_at: string
+  deleted_at: string | null
+}
+
+export type QuotaUsage = {
+  gpus: { limit: number; used: number }
+  sandboxes: { limit: number; used: number }
 }
 
 export type CreatedToken = {
@@ -165,6 +178,36 @@ export type CapacityNode = {
   name: string
   status: string
   gpus: CapacityGPU[]
+}
+
+export type Node = {
+  id: string
+  name: string
+  status: 'ready' | 'paused' | 'unavailable' | 'outdated' | 'lost'
+  paused: boolean
+  lost_at: string | null
+  agent_version: string | null
+  proto_major: number | null
+  proto_minor: number | null
+  last_seen_at: string | null
+  runtime_health: string | null
+  capabilities: unknown
+  hardware: unknown
+  gpus: { uuid: string; model: string }[]
+  created_at: string
+}
+
+export type AuditRecord = {
+  id: number
+  at: string
+  actor_user_id: string | null
+  actor_name: string | null
+  actor_token_id: string | null
+  action: string
+  target_type: string
+  target_id: string
+  correlation_id: string | null
+  detail: unknown
 }
 
 export type FileEntry = {
