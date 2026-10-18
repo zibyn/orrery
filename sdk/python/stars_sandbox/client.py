@@ -343,7 +343,7 @@ class StarsSandbox:
             f"/execs/{_q(exec_id)}/output",
             params=_clean({"after": after}),
         )
-        return [Frame(**item) for item in data]
+        return [_fit(Frame, item) for item in data]
 
     def follow_output(
         self,
