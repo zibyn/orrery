@@ -2,16 +2,10 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/google/uuid"
 
@@ -60,99 +54,13 @@ func (r *Runtime) publishWorkspace(ctx context.Context, cmd *nodev1.PublishWorks
 // walkWorkspaceManifest builds the manifest rooted at publishPath inside the
 // Workspace. Symlinks are recorded and never followed, empty directories and
 // the executable bit survive, and devices/FIFOs/sockets are rejected
-// (ADR-0012). WalkDir never follows links.
+// (ADR-0012).
 func walkWorkspaceManifest(root *os.Root, publishPath string) (manifest.Manifest, map[string]string, error) {
 	base, err := localPath(publishPath)
 	if err != nil {
 		return manifest.Manifest{}, nil, err
 	}
-	info, err := root.Lstat(base)
-	if err != nil {
-		return manifest.Manifest{}, nil, err
-	}
-	baseIsDir := info.IsDir()
-	fsys := root.FS()
-	entries := []manifest.Entry{}
-	files := map[string]string{}
-	err = fs.WalkDir(fsys, base, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if p == base && baseIsDir {
-			return nil
-		}
-		relative := p
-		if base != "." {
-			relative = strings.TrimPrefix(p, base)
-			relative = strings.TrimPrefix(relative, "/")
-		}
-		if relative == "" {
-			// The published path is a single file or symlink.
-			relative = filepath.Base(base)
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case info.Mode()&fs.ModeSymlink != 0:
-			target, err := root.Readlink(p)
-			if err != nil {
-				return err
-			}
-			entries = append(entries, manifest.Entry{
-				Path: filepath.ToSlash(relative), Type: manifest.TypeSymlink, Target: target,
-			})
-		case info.IsDir():
-			entries = append(entries, manifest.Entry{
-				Path: filepath.ToSlash(relative), Type: manifest.TypeDir,
-			})
-		case info.Mode().IsRegular():
-			if info.Size() > manifest.MaxFileSize {
-				return fmt.Errorf("%s: %w", relative, manifest.ErrTooLarge)
-			}
-			digest, err := hashRootFile(fsys, p)
-			if err != nil {
-				return err
-			}
-			size := info.Size()
-			if _, exists := files[digest]; !exists {
-				files[digest] = p
-			}
-			entries = append(entries, manifest.Entry{
-				Path: filepath.ToSlash(relative), Type: manifest.TypeFile, Size: &size, SHA256: digest,
-				Executable: info.Mode().Perm()&0o111 != 0,
-			})
-		default:
-			return fmt.Errorf("%s is not a regular file, directory or symlink", relative)
-		}
-		return nil
-	})
-	if err != nil {
-		return manifest.Manifest{}, nil, err
-	}
-	normalized, err := manifest.Normalize(manifest.Manifest{Entries: entries})
-	if err != nil {
-		return manifest.Manifest{}, nil, err
-	}
-	return normalized, files, nil
-}
-
-func hashRootFile(fsys fs.FS, name string) (string, error) {
-	f, err := fsys.Open(name)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close() //nolint:errcheck // read-only
-	sum := sha256.New()
-	n, err := io.Copy(sum, io.LimitReader(f, manifest.MaxFileSize+1))
-	if err != nil {
-		return "", err
-	}
-	if n > manifest.MaxFileSize {
-		return "", manifest.ErrTooLarge
-	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
+	return manifest.Walk(root.FS(), base)
 }
 
 // submitManifest streams the tree and returns the objects the store lacks.

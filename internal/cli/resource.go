@@ -2,13 +2,10 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -291,8 +288,7 @@ func ensureResource(c *client, name string) (resourceRef, error) {
 }
 
 // buildManifest walks root deterministically. Symlinks are recorded, never
-// followed; devices, FIFOs and sockets are rejected. files maps each digest
-// to a local path for the upload PUTs.
+// followed; devices, FIFOs and sockets are rejected.
 func buildManifest(root string) (manifest.Manifest, map[string]string, error) {
 	info, err := os.Stat(root)
 	if err != nil {
@@ -301,73 +297,20 @@ func buildManifest(root string) (manifest.Manifest, map[string]string, error) {
 	if !info.IsDir() {
 		return manifest.Manifest{}, nil, fmt.Errorf("%s is not a directory", root)
 	}
-	entries := []manifest.Entry{}
-	files := map[string]string{}
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path == root {
-			return nil
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		name := filepath.ToSlash(relative)
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case info.Mode()&fs.ModeSymlink != 0:
-			target, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			entries = append(entries, manifest.Entry{Path: name, Type: manifest.TypeSymlink, Target: target})
-		case entry.IsDir():
-			entries = append(entries, manifest.Entry{Path: name, Type: manifest.TypeDir})
-		case info.Mode().IsRegular():
-			if info.Size() > manifest.MaxFileSize {
-				return fmt.Errorf("%s is larger than 5 GiB", name)
-			}
-			digest, err := hashFile(path)
-			if err != nil {
-				return err
-			}
-			size := info.Size()
-			files[digest] = path
-			entries = append(entries, manifest.Entry{
-				Path: name, Type: manifest.TypeFile, Size: &size, SHA256: digest,
-				Executable: info.Mode().Perm()&0o111 != 0,
-			})
-		default:
-			return fmt.Errorf("%s is not a regular file, directory or symlink", name)
-		}
-		return nil
-	})
+	dir, err := os.OpenRoot(root)
 	if err != nil {
 		return manifest.Manifest{}, nil, err
 	}
-	normalized, err := manifest.Normalize(manifest.Manifest{Entries: entries})
+	defer dir.Close()
+	m, files, err := manifest.Walk(dir.FS(), ".")
 	if err != nil {
 		return manifest.Manifest{}, nil, err
 	}
-	return normalized, files, nil
-}
-
-func hashFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
+	// The walker reports filesystem paths; uploads open host paths.
+	for digest, fsPath := range files {
+		files[digest] = filepath.Join(root, filepath.FromSlash(fsPath))
 	}
-	defer f.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
+	return m, files, nil
 }
 
 func pushResource(c *client, dir, name string) error {
