@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 
 import { api, type Sandbox } from '@/api'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { sandboxPollInterval } from '@/lib/sandbox'
 
 export const Route = createFileRoute('/_authed/sandboxes/$id')({
@@ -78,6 +78,20 @@ function SandboxDetailPage() {
             >
               Delete
             </Button>
+            <Link
+              to="/sandboxes/$id/execs"
+              params={{ id }}
+              className={buttonVariants({ variant: 'outline' })}
+            >
+              Execs
+            </Link>
+            <Link
+              to="/sandboxes/$id/terminal"
+              params={{ id }}
+              className={buttonVariants({ variant: 'outline' })}
+            >
+              Terminal
+            </Link>
           </div>
         )}
       </div>
