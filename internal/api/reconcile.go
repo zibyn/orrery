@@ -108,17 +108,14 @@ func (r *reconciler) once(ctx context.Context) {
 		return
 	}
 	for _, sb := range sandboxes {
-		switch SandboxDesiredState(sb.DesiredState) {
-		case SandboxDesiredRunning:
-			switch SandboxState(sb.State) {
-			case SandboxPending:
-				r.pending(ctx, sb)
-			case SandboxProvisioning:
-				r.create(ctx, sb)
-			}
-		case SandboxDesiredStopped:
+		switch sandboxStep(SandboxState(sb.State), SandboxDesiredState(sb.DesiredState)) {
+		case sandboxStepPending:
+			r.pending(ctx, sb)
+		case sandboxStepCreate:
+			r.create(ctx, sb)
+		case sandboxStepStop:
 			r.stop(ctx, sb)
-		case SandboxDesiredDeleted:
+		case sandboxStepDelete:
 			r.stopForDelete(ctx, sb)
 		}
 	}
@@ -154,40 +151,36 @@ func (r *reconciler) execs(ctx context.Context) {
 	for _, row := range rows {
 		e := row.Exec
 		connected := row.SandboxNodeID != nil && r.hub.connected(*row.SandboxNodeID)
-		state := SandboxState(row.SandboxState)
-		switch {
-		case state == SandboxStopped || state == SandboxDeleted || state == SandboxFailed:
+		delivered := row.SandboxNodeID != nil &&
+			r.hub.wasSent(*row.SandboxNodeID, commandID("start-exec", e.ID, e.Generation))
+		facts := execFacts{
+			state:           SandboxState(row.SandboxState),
+			desired:         SandboxDesiredState(row.SandboxDesiredState),
+			cancelRequested: e.CancelRequestedAt.Valid,
+			started:         e.StartedAt.Valid,
+		}
+		switch execStep(facts, connected, delivered) {
+		case execRuntimeLost:
 			// The Runtime is gone, so every remaining Exec failed with it.
 			r.finishExec(ctx, e.ID, "runtime_lost")
-		case e.CancelRequestedAt.Valid:
-			if !connected {
-				// Cancellation is a persistent intent: with the Agent away there
-				// is nobody to relay it to, so wait (runtime.md §5).
-				continue
-			}
-			delivered := row.SandboxNodeID != nil &&
-				r.hub.wasSent(*row.SandboxNodeID, commandID("start-exec", e.ID, e.Generation))
-			if !e.StartedAt.Valid && !delivered {
-				// The command never reached the Supervisor; there is nothing
-				// to signal.
-				r.finishExec(ctx, e.ID, "canceled")
-				continue
-			}
+		case execFinishCanceled:
+			// The command never reached the Supervisor; there is nothing to
+			// signal.
+			r.finishExec(ctx, e.ID, "canceled")
+		case execSendCancel:
 			id := commandID("cancel-exec", e.ID, e.Generation)
 			r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
 				Message: &nodev1.ControlMessage_CancelExec{CancelExec: &nodev1.CancelExec{
 					CommandId: id, ExecId: e.ID.String(),
 				}},
 			})
-		case SandboxDesiredState(row.SandboxDesiredState) != SandboxDesiredRunning:
+		case execCancelSandbox:
 			// Stop and delete wait for the runtime to be gone; turn the active
 			// Execs into cancel intents first (api.md §3).
 			if _, err := r.s.q.CancelSandboxExecs(ctx, e.SandboxID); err != nil {
 				r.s.log.Warn("reconcile: cancel execs", "sandbox_id", e.SandboxID, "error", err)
 			}
-		case state != SandboxReady:
-			// The Sandbox is still provisioning; the Exec waits.
-		default:
+		case execStart:
 			r.startExec(ctx, row)
 		}
 	}

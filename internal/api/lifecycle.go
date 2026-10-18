@@ -64,9 +64,10 @@ const (
 
 // execStep is the ordering rule of the Exec sweep. A Sandbox whose Runtime is
 // gone loses its Execs before anything else. Cancellation is a persistent
-// intent, so it waits while the Agent is away; an Exec whose start never
-// reached the Supervisor has nothing to signal and finishes canceled. A stop
-// or delete turns active Execs into cancel intents before the Runtime goes.
+// intent, so it waits while the Agent is away (runtime.md §5); an Exec whose
+// start never reached the Supervisor has nothing to signal and finishes
+// canceled. A stop or delete turns active Execs into cancel intents before the
+// Runtime goes.
 func execStep(facts execFacts, connected, delivered bool) execStepAction {
 	switch {
 	case facts.state == SandboxStopped || facts.state == SandboxDeleted || facts.state == SandboxFailed:
