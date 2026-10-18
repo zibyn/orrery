@@ -106,6 +106,54 @@ export type Workspace = {
   deleted_at: string | null
 }
 
+export type ExecState = 'pending' | 'running' | 'canceling' | 'finished'
+
+export type ExecResult = {
+  cause: string
+  exit_code?: number
+  signal?: number
+}
+
+export type Exec = {
+  id: string
+  sandbox_id: string
+  argv: string[]
+  cwd: string
+  timeout: number | null
+  state: ExecState
+  result: ExecResult | null
+  log_truncated: boolean
+  accepted_at: string
+  started_at: string | null
+  finished_at: string | null
+  deadline_at: string | null
+}
+
+export type ExecOutputFrame = {
+  seq: number
+  stream: 'stdout' | 'stderr' | 'truncated'
+  data: string
+  encoding?: 'base64'
+}
+
+export type ExecResultFrame = ExecResult & {
+  type: 'result'
+  log_truncated: boolean
+}
+
+export type PtyExitFrame = ExecResult & {
+  type: 'exit'
+}
+
+export type CreateExecRequest = {
+  argv: string[]
+  env?: Record<string, string>
+  cwd?: string
+  timeout?: number
+  stdin?: string
+  pty?: { rows: number; cols: number }
+}
+
 export type CapacityGPU = {
   model: string
   total: number
