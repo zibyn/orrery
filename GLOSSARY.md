@@ -106,6 +106,10 @@ _Avoid_: cancellation request
 The automatic stopping of a Sandbox that has had no running Exec and no live connection for its idle period.
 _Avoid_: hibernation, eviction
 
+**Desired State**:
+The lifecycle a caller asked a resource to reach. The Reconciler derives commands from it; it is an input to reconciliation, not an observation of what exists.
+_Avoid_: target state, requested status
+
 **Sandbox State**:
 The lifecycle condition of a Sandbox independently of its Runtime instance: pending, provisioning, ready, stopping, stopped, deleting, deleted, or failed with a cause. A stopped Sandbox can be started again; an unreachable Node is an unavailable condition, not a state.
 _Avoid_: Runtime state
