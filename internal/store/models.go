@@ -214,6 +214,7 @@ type Sandbox struct {
 	TokenKeyID      *string
 	Conditions      json.RawMessage
 	Kind            string
+	Runtime         string
 }
 
 type SandboxResource struct {

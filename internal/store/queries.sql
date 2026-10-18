@@ -298,10 +298,10 @@ WHERE used_at IS NOT NULL OR expires_at < now();
 
 -- name: CreateSandbox :one
 INSERT INTO sandboxes (
-    id, owner_id, name, labels, desired_state, state, snapshot_digest,
+    id, owner_id, name, labels, runtime, desired_state, state, snapshot_digest,
     cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation,
     idempotency_key, secret_env_ct, token_ct, token_key_id
-) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11, $12, $13, $14)
+) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15)
 RETURNING *;
 
 -- CreateBuildSandbox is the internal row that carries a Snapshot build's
