@@ -25,7 +25,7 @@ func TestDemux(t *testing.T) {
 }
 
 func TestCapabilitiesFollowTheProbe(t *testing.T) {
-	caps := capabilities(supervisor.Result{
+	caps := capabilities("docker", supervisor.Result{
 		CPUMax:            "50000 100000",
 		MemoryMax:         "67108864",
 		PidsMax:           "64",
@@ -52,7 +52,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 
 	// A daemon that refused the limits must not claim them, and a probe that
 	// could not see the requested cards must not claim GPU visibility.
-	weak := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false)
+	weak := capabilities("docker", supervisor.Result{WorkspaceWritable: false}, false, false)
 	for _, entry := range weak.Entries {
 		if entry.Name == "exec_supervisor" {
 			continue // the probe ran, so the Supervisor works
@@ -67,7 +67,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 }
 
 func TestSnapshotBuildCapabilityIsIndependent(t *testing.T) {
-	report := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false)
+	report := capabilities("docker", supervisor.Result{WorkspaceWritable: false}, false, false)
 	enforced := withSnapshotBuild(report, true)
 	values := map[string]string{}
 	for _, entry := range enforced.Entries {

@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
@@ -253,6 +255,119 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 	noReport.Capabilities = nil
 	if admissionExhausted([]store.Node{noReport}, gpus, request, nil) {
 		t.Fatal("a Node that has not reported capabilities is not proof either way")
+	}
+}
+
+// orderPlacementNodes implements ADR-0015's placement policy among feasible
+// Nodes: GPU requests pack onto the Node with the fewest free cards of the
+// requested model, GPU-less requests prefer Nodes without cards, and ties
+// break by created_at and then id. The fixtures are store.Node values; no
+// database is involved.
+func TestOrderPlacementNodes(t *testing.T) {
+	at := func(unix int64) pgtype.Timestamptz {
+		return pgtype.Timestamptz{Time: time.Unix(unix, 0).UTC(), Valid: true}
+	}
+	mk := func(id byte, createdAt int64, cards int, free []store.Gpu) placementNode {
+		return placementNode{
+			node: store.Node{
+				ID:        uuid.UUID{id},
+				CreatedAt: at(createdAt),
+			},
+			gpus: cards,
+			free: free,
+		}
+	}
+	h100 := func(n int) []store.Gpu {
+		free := make([]store.Gpu, n)
+		for i := range free {
+			free[i] = store.Gpu{Model: "H100"}
+		}
+		return free
+	}
+	names := func(nodes []placementNode) []byte {
+		ids := make([]byte, len(nodes))
+		for i, node := range nodes {
+			ids[i] = node.node.ID[0]
+		}
+		return ids
+	}
+	order := func(nodes []placementNode, sb store.Sandbox) []byte {
+		orderPlacementNodes(nodes, sb)
+		return names(nodes)
+	}
+
+	model := "H100"
+	for name, tt := range map[string]struct {
+		sb    store.Sandbox
+		nodes []placementNode
+		want  []byte
+	}{
+		"GPU request packs onto the fewest free cards of the model": {
+			sb: store.Sandbox{GpuCount: 1, GpuModel: &model},
+			nodes: []placementNode{
+				mk(1, 10, 3, h100(3)),
+				mk(2, 20, 1, h100(1)),
+				mk(3, 30, 2, h100(2)),
+			},
+			want: []byte{2, 3, 1},
+		},
+		"an empty model counts free cards of any model": {
+			sb: store.Sandbox{GpuCount: 1},
+			nodes: []placementNode{
+				mk(1, 10, 3, []store.Gpu{{Model: "A100"}, {Model: "H100"}, {Model: "H100"}}),
+				mk(2, 20, 3, []store.Gpu{{Model: "A100"}}),
+				mk(3, 30, 3, []store.Gpu{{Model: "A100"}, {Model: "A100"}}),
+			},
+			want: []byte{2, 3, 1},
+		},
+		"GPU packing ties break by created_at": {
+			sb: store.Sandbox{GpuCount: 1, GpuModel: &model},
+			nodes: []placementNode{
+				mk(1, 20, 2, h100(2)),
+				mk(2, 10, 2, h100(2)),
+			},
+			want: []byte{2, 1},
+		},
+		"GPU-less request prefers a Node without cards": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 10, 4, nil),
+				mk(2, 20, 0, nil),
+			},
+			want: []byte{2, 1},
+		},
+		"GPU-less requests tie break by created_at": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 20, 4, nil),
+				mk(2, 30, 8, nil),
+				mk(3, 10, 4, nil),
+			},
+			want: []byte{3, 1, 2},
+		},
+		"fully allocated cards still count as a GPU Node": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 10, 4, nil),
+				mk(2, 20, 0, nil),
+			},
+			want: []byte{2, 1},
+		},
+		"a complete created_at tie breaks by id": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(3, 10, 0, nil),
+				mk(1, 10, 0, nil),
+				mk(2, 10, 0, nil),
+			},
+			want: []byte{1, 2, 3},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := order(tt.nodes, tt.sb); string(got) != string(tt.want) {
+				t.Fatalf("order = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

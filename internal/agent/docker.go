@@ -33,7 +33,7 @@ const (
 // dockerProbe runs one probe container and turns the readback into Runtime
 // Capabilities (runtime.md §9). It needs no Docker client dependency: the Engine
 // API over the socket is a handful of JSON requests.
-func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport, error) {
+func dockerProbe(ctx context.Context, socket, provider string) (nodeproto.CapabilityReport, error) {
 	d := &dockerClient{http: unixHTTPClient(socket)}
 	if err := d.negotiate(ctx); err != nil {
 		return nodeproto.CapabilityReport{}, err
@@ -92,7 +92,7 @@ func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport
 	if probeErr != nil {
 		return nodeproto.CapabilityReport{}, probeErr
 	}
-	return capabilities(result, limitsEnforced, gpuVisible), nil
+	return capabilities(provider, result, limitsEnforced, gpuVisible), nil
 }
 
 // withSnapshotBuild adds the BuildKit endpoint self-check to a Runtime report.
@@ -115,7 +115,7 @@ func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.Cap
 	return report
 }
 
-func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeproto.CapabilityReport {
+func capabilities(provider string, r supervisor.Result, limitsEnforced, gpuVisible bool) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
 			return nodeproto.ValueEnforced
@@ -126,7 +126,7 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeprot
 	isolated := r.PIDNamespace != "" && r.PIDNamespace != pidNS &&
 		r.MountNamespace != "" && r.MountNamespace != mntNS
 	return nodeproto.CapabilityReport{
-		RuntimeProvider: "docker",
+		RuntimeProvider: provider,
 		Entries: []nodeproto.CapabilityEntry{
 			{Name: nodeproto.CapProcessMountNamespace, Value: value(isolated)},
 			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(limitsEnforced)},

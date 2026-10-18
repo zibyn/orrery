@@ -41,6 +41,10 @@ const (
 type Runtime struct {
 	d        *dockerClient
 	dataRoot string
+	// nodeID is this Agent's Node identity. Every Runtime instance carries it
+	// as stars.node so two Agents sharing a daemon never touch each other's
+	// containers (runtime.md §8).
+	nodeID string
 	// socket is the Docker Engine socket. It is also the default BuildKit
 	// endpoint (dockerd's built-in BuildKit via /grpc).
 	socket string
@@ -73,10 +77,11 @@ type Runtime struct {
 	managed map[string]int64 // sandbox id -> generation known to run
 }
 
-func NewRuntime(socket, dataRoot string) *Runtime {
+func NewRuntime(socket, dataRoot, nodeID string) *Runtime {
 	return &Runtime{
 		d:              &dockerClient{http: unixHTTPClient(socket)},
 		dataRoot:       dataRoot,
+		nodeID:         nodeID,
 		socket:         socket,
 		execs:          make(map[string]struct{}),
 		ptyAttachments: make(map[string]int),
@@ -182,6 +187,14 @@ func sandboxRunPath(root string, id uuid.UUID) string {
 
 func containerName(id uuid.UUID) string { return "stars-sandbox-" + id.String() }
 
+// containerOwnedBy reports whether a container belongs to this Node. A
+// container carrying stars.managed without this Node's label was left by a
+// previous identity (or another Node on the same daemon) and must not be
+// adopted (runtime.md §8).
+func containerOwnedBy(labels map[string]string, nodeID string) bool {
+	return labels["stars.managed"] == "true" && nodeID != "" && labels["stars.node"] == nodeID
+}
+
 func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {
 	path := workspacePath(r.dataRoot, workspaceID)
 	if err := os.MkdirAll(path, 0o777); err != nil {
@@ -255,7 +268,7 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	touchImageUsage(r.dataRoot, cmd.imageDigest)
 	name := containerName(id)
 
-	if running, exists, err := r.d.inspectContainer(ctx, name); err == nil && exists {
+	if running, exists, _, err := r.d.inspectContainer(ctx, name); err == nil && exists {
 		if running {
 			r.track(id, cmd.generation)
 			return "", nil // adopted after an Agent restart or a lost reply
@@ -301,6 +314,7 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 			"stars.sandbox_id": id.String(),
 			"stars.generation": strconv.FormatInt(cmd.generation, 10),
 			"stars.managed":    "true",
+			"stars.node":       r.nodeID,
 		},
 		"HostConfig": hostConfig,
 	}
@@ -375,11 +389,13 @@ func (r *Runtime) scan(ctx context.Context, report func(sandboxID string, genera
 		if err != nil {
 			continue
 		}
-		running, exists, err := r.d.inspectContainer(ctx, containerName(sandboxID))
+		running, exists, labels, err := r.d.inspectContainer(ctx, containerName(sandboxID))
 		if err != nil {
 			continue
 		}
-		if !exists || !running {
+		// Only a Runtime this Node still owns counts as alive. A same-named
+		// container from another identity is not ours (runtime.md §8).
+		if !exists || !running || !containerOwnedBy(labels, r.nodeID) {
 			r.forget(id)
 			report(id, gen)
 		}
@@ -393,6 +409,7 @@ func (r *Runtime) adopt(ctx context.Context, report func(sandboxID string, gener
 		return
 	}
 	var containers []struct {
+		ID     string            `json:"Id"`
 		Labels map[string]string `json:"Labels"`
 	}
 	filters := url.QueryEscape(`{"label":["stars.managed=true"]}`)
@@ -400,6 +417,17 @@ func (r *Runtime) adopt(ctx context.Context, report func(sandboxID string, gener
 		return
 	}
 	for _, c := range containers {
+		if !containerOwnedBy(c.Labels, r.nodeID) {
+			// A previous identity's Runtime is never adopted. Its Workspace
+			// directory stays untouched: declaring it lost may be wrong, and
+			// the data may have no other copy (runtime.md §8).
+			slog.Info("removing a Runtime left by another Node",
+				"sandbox_id", c.Labels["stars.sandbox_id"], "node", c.Labels["stars.node"])
+			if err := r.d.removeContainer(ctx, c.ID); err != nil {
+				slog.Warn("remove foreign Runtime", "container_id", c.ID, "error", err)
+			}
+			continue
+		}
 		id := c.Labels["stars.sandbox_id"]
 		gen, err := strconv.ParseInt(c.Labels["stars.generation"], 10, 64)
 		if err != nil {
@@ -409,7 +437,7 @@ func (r *Runtime) adopt(ctx context.Context, report func(sandboxID string, gener
 		if err != nil {
 			continue
 		}
-		running, exists, err := r.d.inspectContainer(ctx, containerName(sandboxID))
+		running, exists, _, err := r.d.inspectContainer(ctx, containerName(sandboxID))
 		if err != nil || !exists || !running {
 			continue
 		}
@@ -517,7 +545,7 @@ func (r *Runtime) runtimeAlive(ctx context.Context, id uuid.UUID) (alive, known 
 	if err := r.d.negotiate(ctx); err != nil {
 		return false, false
 	}
-	running, exists, err := r.d.inspectContainer(ctx, containerName(id))
+	running, exists, _, err := r.d.inspectContainer(ctx, containerName(id))
 	if err != nil {
 		return false, false
 	}
@@ -579,7 +607,9 @@ func readGeneration(dir string) (int64, bool) {
 // watchEvents reports a Sandbox whose container died without a Stop command
 // (runtime.md §9); the periodic scan is the fallback when the stream breaks.
 func (r *Runtime) watchEvents(ctx context.Context, report func(sandboxID string, generation int64)) {
-	filters := url.QueryEscape(`{"type":["container"],"event":["die"],"label":["stars.managed=true"]}`)
+	filters := url.QueryEscape(fmt.Sprintf(
+		`{"type":["container"],"event":["die"],"label":["stars.managed=true","stars.node=%s"]}`,
+		r.nodeID))
 	for ctx.Err() == nil {
 		if err := r.d.negotiate(ctx); err != nil {
 			select {
@@ -655,28 +685,31 @@ func (r *Runtime) forget(id string) {
 	delete(r.managed, id)
 }
 
-func (d *dockerClient) inspectContainer(ctx context.Context, name string) (running, exists bool, err error) {
+func (d *dockerClient) inspectContainer(ctx context.Context, name string) (running, exists bool, labels map[string]string, err error) {
 	resp, err := d.request(ctx, http.MethodGet, d.api("/containers/"+name+"/json"), nil)
 	if err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
-		return false, false, nil
+		return false, false, nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, false, fmt.Errorf("inspect container: %s", resp.Status)
+		return false, false, nil, fmt.Errorf("inspect container: %s", resp.Status)
 	}
 	var info struct {
 		State struct {
 			Running bool `json:"Running"`
 		} `json:"State"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
-	return info.State.Running, true, nil
+	return info.State.Running, true, info.Config.Labels, nil
 }
 
 func (d *dockerClient) removeContainer(ctx context.Context, idOrName string) error {

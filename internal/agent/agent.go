@@ -145,6 +145,9 @@ type RunOptions struct {
 	Server string // overrides the address stored at enroll time
 	State  string
 	Docker string
+	// Runtime is the Node's one Runtime Provider (ADR-0014). Only docker is
+	// implemented; podman and local are separate issues.
+	Runtime string
 	// Buildkit is the BuildKit endpoint. Empty means the Docker daemon's
 	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
 	Buildkit      string
@@ -154,10 +157,28 @@ type RunOptions struct {
 	DiskWatermark float64
 }
 
+// resolveRuntime picks the one Runtime Provider this Node runs (ADR-0014).
+// Unimplemented providers fail loudly rather than silently running Docker.
+func resolveRuntime(name string) (string, error) {
+	switch name {
+	case "", "docker":
+		return "docker", nil
+	case "podman", "local":
+		return "", fmt.Errorf("runtime %q not implemented", name)
+	default:
+		return "", fmt.Errorf("unknown runtime %q", name)
+	}
+}
+
 // Run keeps one Control stream alive, probing capabilities once per
 // connection. NOT_FOUND/UNAUTHENTICATED clears local identity; anything else
 // keeps it and backs off (ADR-0010's asymmetric rule).
 func Run(ctx context.Context, opts RunOptions) error {
+	provider, err := resolveRuntime(opts.Runtime)
+	if err != nil {
+		return err
+	}
+	opts.Runtime = provider
 	id, err := LoadIdentity(opts.State)
 	if err != nil {
 		return err
@@ -244,7 +265,7 @@ func isIncompatible(err error) bool {
 }
 
 func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
-	rt := NewRuntime(opts.Docker, opts.DataRoot)
+	rt := NewRuntime(opts.Docker, opts.DataRoot, id.NodeID)
 	rt.buildkit = opts.Buildkit
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
@@ -323,11 +344,11 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// Runtime (runtime.md §12). It is reported even when the Runtime probe
 	// fails; the Node's status already keeps it out of placement then.
 	buildOK := rt.buildkitAvailable(streamCtx)
-	report, probeErr := dockerProbe(streamCtx, opts.Docker)
+	report, probeErr := dockerProbe(streamCtx, opts.Docker, opts.Runtime)
 	health := "healthy"
 	if probeErr != nil {
 		health = "unhealthy"
-		report = nodeproto.CapabilityReport{RuntimeProvider: "docker"}
+		report = nodeproto.CapabilityReport{RuntimeProvider: opts.Runtime}
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
 	report = withSnapshotBuild(report, buildOK)
