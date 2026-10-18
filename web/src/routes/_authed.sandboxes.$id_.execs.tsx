@@ -3,24 +3,11 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
 
-import {
-  api,
-  type Exec,
-  type ExecOutputFrame,
-  type ExecResultFrame,
-  type ListResponse,
-} from '@/api'
+import { api, type Exec, type ExecResultFrame, type ListResponse } from '@/api'
 import { TerminalView } from '@/components/terminal'
 import { Button, buttonVariants } from '@/components/ui/button'
-import {
-  consoleWebSocketUrl,
-  execListPollInterval,
-  formatExecResult,
-  frameEnd,
-  frameText,
-  isResultFrame,
-} from '@/lib/exec-stream'
-import { cn } from '@/lib/utils'
+import { execListPollInterval, followExecOutput, formatExecResult } from '@/lib/exec-stream'
+import { cn, messageOf } from '@/lib/utils'
 
 export const Route = createFileRoute('/_authed/sandboxes/$id_/execs')({
   validateSearch: (search: Record<string, unknown>): { exec?: string } => ({
@@ -40,10 +27,15 @@ function ExecsPage() {
     refetchInterval: (query) => execListPollInterval(query.state.data?.items),
   })
   const selected = execs.data?.items.find((exec) => exec.id === selectedId)
+  const [cancelError, setCancelError] = useState('')
 
   const cancel = useMutation({
     mutationFn: (execId: string) => api<Exec>('POST', `/execs/${execId}/cancel`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['execs', id] }),
+    onSuccess: () => {
+      setCancelError('')
+      queryClient.invalidateQueries({ queryKey: ['execs', id] })
+    },
+    onError: (err) => setCancelError(messageOf(err)),
   })
 
   return (
@@ -143,6 +135,11 @@ function ExecsPage() {
               </Button>
             )}
           </div>
+          {cancelError && (
+            <p className="text-sm text-destructive" role="alert">
+              {cancelError}
+            </p>
+          )}
           <ExecLog exec={selected} />
         </section>
       )}
@@ -161,50 +158,21 @@ function ExecLog({ exec }: { exec: Exec }) {
     setResult(null)
     setError('')
 
-    let closed = false
-    let finished = false
-    let after = 0
-    let retries = 0
-    let retryTimer: number | undefined
-    let socket: WebSocket | null = null
-
-    const connect = () => {
-      socket = new WebSocket(consoleWebSocketUrl(`/execs/${exec.id}/output?after=${after}&follow=true`))
-      socket.onmessage = (event) => {
-        let frame: unknown
-        try {
-          frame = JSON.parse(String(event.data))
-        } catch {
-          return
-        }
-        if (isResultFrame(frame)) {
-          finished = true
-          setResult(frame)
-          return
-        }
-        const output = frame as ExecOutputFrame
-        terminal.write(frameText(output))
-        after = frameEnd(output)
-      }
-      socket.onclose = () => {
-        if (closed || finished) return
-        if (retries < 2) {
-          retries += 1
-          retryTimer = window.setTimeout(connect, 1000)
-          return
-        }
-        setError(
+    return followExecOutput(
+      exec.id,
+      {
+        write: (text) => terminal.write(text),
+        result: setResult,
+        error: setError,
+      },
+      {
+        // A disconnected socket is retried twice; the offset is kept so the
+        // log resumes without replaying bytes.
+        retries: 2,
+        closedMessage:
           'The output stream closed before the Exec finished. A PTY Exec has no log page; attach its terminal instead.',
-        )
-      }
-    }
-    connect()
-
-    return () => {
-      closed = true
-      window.clearTimeout(retryTimer)
-      socket?.close()
-    }
+      },
+    )
   }, [terminal, exec.id])
 
   return (

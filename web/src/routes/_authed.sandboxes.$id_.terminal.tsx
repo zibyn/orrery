@@ -117,10 +117,12 @@ function TerminalPage() {
         if (!canceled && !finished) setStatus('closed')
       }
       socket.onerror = () => {
-        if (!canceled)
-          setError(
-            'The terminal connection failed. The Exec may not be a PTY, or the Sandbox may not be ready.',
-          )
+        if (canceled) return
+        setError(
+          existingExec
+            ? 'The terminal connection failed. This Exec has no PTY, or the Sandbox is not ready.'
+            : 'The terminal connection failed. The Sandbox may not be ready.',
+        )
       }
     }
     attach()

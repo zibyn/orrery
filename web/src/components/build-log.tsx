@@ -4,11 +4,10 @@ import type { Terminal } from '@xterm/xterm'
 import { api, type Exec, type ExecOutputFrame, type ExecResultFrame } from '@/api'
 import { TerminalView } from '@/components/terminal'
 import {
-  consoleWebSocketUrl,
+  followExecOutput,
   formatExecResult,
   frameEnd,
   frameText,
-  isResultFrame,
 } from '@/lib/exec-stream'
 
 export type BuildLogProps = {
@@ -32,38 +31,22 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
     setLoading(true)
 
     if (mode === 'follow') {
-      let closed = false
-      let finished = false
-      const socket = new WebSocket(consoleWebSocketUrl(`/execs/${execId}/output?follow=true`))
-      socket.onopen = () => setLoading(false)
-      socket.onmessage = (event) => {
-        let frame: unknown
-        try {
-          frame = JSON.parse(String(event.data))
-        } catch {
-          return
-        }
-        if (isResultFrame(frame)) {
-          finished = true
-          setResult(frame)
-          return
-        }
-        terminal.write(frameText(frame as ExecOutputFrame))
-      }
-      socket.onclose = () => {
-        setLoading(false)
-        if (closed || finished) return
-        setError('The build log stream closed before the build finished.')
-      }
-      socket.onerror = () => {
-        if (closed || finished) return
-        setLoading(false)
-        setError('The build log stream failed.')
-      }
-      return () => {
-        closed = true
-        socket.close()
-      }
+      return followExecOutput(
+        execId,
+        {
+          write: (text) => terminal.write(text),
+          result: setResult,
+          error: (message) => {
+            setLoading(false)
+            setError(message)
+          },
+          open: () => setLoading(false),
+        },
+        {
+          closedMessage: 'The build log stream closed before the build finished.',
+          failedMessage: 'The build log stream failed.',
+        },
+      )
     }
 
     let cancelled = false

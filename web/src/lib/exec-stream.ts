@@ -100,3 +100,82 @@ export function consoleWebSocketUrl(path: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/api/v1${path}`
 }
+
+export type FollowOutputHandlers = {
+  write: (text: string) => void
+  result: (frame: ExecResultFrame) => void
+  error: (message: string) => void
+  open?: () => void
+}
+
+export type FollowOutputOptions = {
+  after?: number
+  retries?: number
+  retryDelayMs?: number
+  closedMessage: string
+  failedMessage?: string
+}
+
+// Follows GET /execs/{id}/output?follow=true: parses each frame, classifies the
+// terminal result frame and writes data frames to the terminal. The returned
+// cleanup closes the socket. Reconnects resume from the last byte offset, so a
+// caller that wants a bounded retry just sets `retries`.
+export function followExecOutput(
+  execId: string,
+  handlers: FollowOutputHandlers,
+  options: FollowOutputOptions,
+): () => void {
+  const retries = options.retries ?? 0
+  const retryDelayMs = options.retryDelayMs ?? 1000
+  const failedMessage = options.failedMessage
+  let after = options.after ?? 0
+  let closed = false
+  let finished = false
+  let attempts = 0
+  let retryTimer: number | undefined
+  let socket: WebSocket | null = null
+
+  const connect = () => {
+    socket = new WebSocket(consoleWebSocketUrl(`/execs/${execId}/output?after=${after}&follow=true`))
+    socket.onopen = () => {
+      if (!closed) handlers.open?.()
+    }
+    socket.onmessage = (event) => {
+      let frame: unknown
+      try {
+        frame = JSON.parse(String(event.data))
+      } catch {
+        return
+      }
+      if (isResultFrame(frame)) {
+        finished = true
+        handlers.result(frame)
+        return
+      }
+      const output = frame as ExecOutputFrame
+      handlers.write(frameText(output))
+      after = frameEnd(output)
+    }
+    socket.onclose = () => {
+      if (closed || finished) return
+      if (attempts < retries) {
+        attempts += 1
+        retryTimer = window.setTimeout(connect, retryDelayMs)
+        return
+      }
+      handlers.error(options.closedMessage)
+    }
+    if (failedMessage) {
+      socket.onerror = () => {
+        if (!closed && !finished) handlers.error(failedMessage)
+      }
+    }
+  }
+  connect()
+
+  return () => {
+    closed = true
+    window.clearTimeout(retryTimer)
+    socket?.close()
+  }
+}
