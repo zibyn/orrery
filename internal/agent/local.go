@@ -518,6 +518,12 @@ func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) erro
 	if err := d.prepareDirs(workspace, runRoot); err != nil {
 		return err
 	}
+	// Execs run inside the Sandbox's slice. If the placeholder is gone the
+	// slice is gone too, and systemd-run would silently create an unbounded
+	// one; let the Control Plane re-create the Runtime instead.
+	if active, _, _ := localUnitState(ctx, localPlaceholderService(sandboxID)); !active {
+		return errors.New("the Sandbox Runtime is not running")
+	}
 
 	gpus := readSandboxGPUs(sandboxPath(d.r.dataRoot, sandboxID))
 	var props []string
