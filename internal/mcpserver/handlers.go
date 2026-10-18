@@ -16,6 +16,14 @@ import (
 	"github.com/zibyn/stars-sandbox/client"
 )
 
+// requireSandboxID applies the rule every Sandbox-scoped tool shares.
+func requireSandboxID(id string) error {
+	if id == "" {
+		return fmt.Errorf("sandbox_id is required")
+	}
+	return nil
+}
+
 // Sandbox lifecycle.
 
 type sandboxCreateInput struct {
@@ -59,7 +67,7 @@ func (s *server) sandboxCreate(ctx context.Context, _ *sdk.CallToolRequest, in s
 	if err != nil {
 		return fail(err)
 	}
-	sb, err := s.waitSandbox(ctx, created.ID, "ready")
+	sb, err := s.c.GetSandbox(ctx, created.ID, "ready")
 	if err != nil {
 		return fail(err)
 	}
@@ -72,14 +80,14 @@ type sandboxGetInput struct {
 }
 
 func (in *sandboxGetInput) validate() error {
-	if in.SandboxID == "" {
-		return fmt.Errorf("sandbox_id is required")
+	if err := requireSandboxID(in.SandboxID); err != nil {
+		return err
 	}
 	return nil
 }
 
 func (s *server) sandboxGet(ctx context.Context, _ *sdk.CallToolRequest, in sandboxGetInput) (*sdk.CallToolResult, error) {
-	sb, err := s.waitSandbox(ctx, in.SandboxID, in.WaitFor)
+	sb, err := s.c.GetSandbox(ctx, in.SandboxID, in.WaitFor)
 	if err != nil {
 		return fail(err)
 	}
@@ -115,8 +123,8 @@ type sandboxIDInput struct {
 }
 
 func (in *sandboxIDInput) validate() error {
-	if in.SandboxID == "" {
-		return fmt.Errorf("sandbox_id is required")
+	if err := requireSandboxID(in.SandboxID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -147,6 +155,19 @@ func (s *server) sandboxDelete(ctx context.Context, _ *sdk.CallToolRequest, in s
 
 // Exec.
 
+// execResult is the shared success body of exec_run, exec_output and
+// exec_cancel. After is set only by exec_run and NextAfter only by
+// exec_output; the outputSchema of each tool documents its own fields.
+type execResult struct {
+	ExecID       string             `json:"exec_id"`
+	State        string             `json:"state"`
+	Result       *client.ExecResult `json:"result,omitempty"`
+	Output       []client.Frame     `json:"output"`
+	LogTruncated bool               `json:"log_truncated"`
+	After        *int64             `json:"after,omitempty"`
+	NextAfter    *int64             `json:"next_after,omitempty"`
+}
+
 type execRunInput struct {
 	SandboxID   string            `json:"sandbox_id"`
 	Command     string            `json:"command"`
@@ -158,8 +179,8 @@ type execRunInput struct {
 }
 
 func (in *execRunInput) validate() error {
-	if in.SandboxID == "" {
-		return fmt.Errorf("sandbox_id is required")
+	if err := requireSandboxID(in.SandboxID); err != nil {
+		return err
 	}
 	if in.Command == "" {
 		return fmt.Errorf("command is required")
@@ -230,13 +251,13 @@ func (s *server) execRun(ctx context.Context, req *sdk.CallToolRequest, in execR
 	if tail == nil {
 		tail = []client.Frame{}
 	}
-	body := map[string]any{
-		"exec_id":       exec.ID,
-		"state":         state,
-		"result":        exec.Result,
-		"output":        tail,
-		"log_truncated": exec.LogTruncated,
-		"after":         offset,
+	body := execResult{
+		ExecID:       exec.ID,
+		State:        state,
+		Result:       exec.Result,
+		Output:       tail,
+		LogTruncated: exec.LogTruncated,
+		After:        &offset,
 	}
 	return okResult(body)
 }
@@ -261,7 +282,9 @@ func (in *execOutputInput) validate() error {
 }
 
 func (s *server) execOutput(ctx context.Context, _ *sdk.CallToolRequest, in execOutputInput) (*sdk.CallToolResult, error) {
-	// offset is where the next unread byte starts.
+	tail := in.After == nil
+	// offset is where this read starts; end is the offset just past what the
+	// log currently holds.
 	var offset int64
 	if in.After != nil {
 		offset = *in.After
@@ -270,35 +293,52 @@ func (s *server) execOutput(ctx context.Context, _ *sdk.CallToolRequest, in exec
 	if err != nil {
 		return fail(err)
 	}
-	if in.After == nil {
-		frames, offset = tailFrames(frames), end
+	if tail {
+		frames = tailFrames(frames)
 	} else {
 		frames = headFrames(frames)
 	}
 	next := offset
 	if len(frames) > 0 {
-		next = frameEnd(frames[len(frames)-1])
+		next = frames[len(frames)-1].End()
 	}
 
-	if in.WaitSeconds != nil && *in.WaitSeconds > 0 && len(frames) == 0 {
-		deadline := time.Now().Add(time.Duration(*in.WaitSeconds) * time.Second)
+	exec, err := s.c.GetExec(ctx, in.ExecID)
+	if err != nil {
+		return fail(err)
+	}
+	waitSeconds := 0
+	if in.WaitSeconds != nil {
+		waitSeconds = *in.WaitSeconds
+	}
+	// With after, existing frames already answer the call; only wait when the
+	// page is empty. Without after, the tail may hold old output, so wait past
+	// its end for new output or for the Exec to finish (api.md §7).
+	if waitSeconds > 0 && ((!tail && len(frames) == 0) || (tail && exec.State != "finished")) {
+		deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
 		for {
-			exec, err := s.c.GetExec(ctx, in.ExecID)
+			// Read new output before deciding to sleep, so a finished Exec's
+			// last frames are never missed.
+			more, moreEnd, err := readFrames(ctx, s.c, in.ExecID, end)
 			if err != nil {
 				return fail(err)
 			}
-			if exec.State == "finished" {
-				remaining, _, err := readFrames(ctx, s.c, in.ExecID, next)
-				if err != nil {
-					return fail(err)
+			if len(more) > 0 {
+				if tail {
+					frames = tailFrames(append(frames, more...))
+				} else {
+					frames = headFrames(more)
 				}
-				frames = headFrames(remaining)
-				if len(frames) > 0 {
-					next = frameEnd(frames[len(frames)-1])
+				next = frames[len(frames)-1].End()
+				// Output may have arrived together with the finish; report the
+				// state that goes with the frames.
+				if exec, err = s.c.GetExec(ctx, in.ExecID); err != nil {
+					return fail(err)
 				}
 				break
 			}
-			if !time.Now().Before(deadline) {
+			end = moreEnd
+			if exec.State == "finished" || !time.Now().Before(deadline) {
 				break
 			}
 			select {
@@ -306,34 +346,22 @@ func (s *server) execOutput(ctx context.Context, _ *sdk.CallToolRequest, in exec
 				return fail(ctx.Err())
 			case <-time.After(pollInterval):
 			}
-			// Re-read from the resume offset, not from the tail.
-			more, moreEnd, err := readFrames(ctx, s.c, in.ExecID, next)
-			if err != nil {
+			if exec, err = s.c.GetExec(ctx, in.ExecID); err != nil {
 				return fail(err)
 			}
-			if len(more) > 0 {
-				frames = headFrames(more)
-				next = frameEnd(frames[len(frames)-1])
-				break
-			}
-			next = moreEnd
 		}
 	}
 
-	exec, err := s.c.GetExec(ctx, in.ExecID)
-	if err != nil {
-		return fail(err)
-	}
 	if frames == nil {
 		frames = []client.Frame{}
 	}
-	return okResult(map[string]any{
-		"exec_id":       exec.ID,
-		"state":         exec.State,
-		"result":        exec.Result,
-		"output":        frames,
-		"log_truncated": exec.LogTruncated,
-		"next_after":    next,
+	return okResult(execResult{
+		ExecID:       exec.ID,
+		State:        exec.State,
+		Result:       exec.Result,
+		Output:       frames,
+		LogTruncated: exec.LogTruncated,
+		NextAfter:    &next,
 	})
 }
 
@@ -353,11 +381,12 @@ func (s *server) execCancel(ctx context.Context, _ *sdk.CallToolRequest, in exec
 	if err != nil {
 		return fail(err)
 	}
-	return okResult(map[string]any{
-		"exec_id":       exec.ID,
-		"state":         exec.State,
-		"result":        exec.Result,
-		"log_truncated": exec.LogTruncated,
+	return okResult(execResult{
+		ExecID:       exec.ID,
+		State:        exec.State,
+		Result:       exec.Result,
+		Output:       []client.Frame{},
+		LogTruncated: exec.LogTruncated,
 	})
 }
 
@@ -369,8 +398,8 @@ type fileInput struct {
 }
 
 func (in *fileInput) validate() error {
-	if in.SandboxID == "" {
-		return fmt.Errorf("sandbox_id is required")
+	if err := requireSandboxID(in.SandboxID); err != nil {
+		return err
 	}
 	if in.Path == "" {
 		return fmt.Errorf("path is required")
@@ -405,8 +434,8 @@ type fileReadInput struct {
 }
 
 func (in *fileReadInput) validate() error {
-	if in.SandboxID == "" {
-		return fmt.Errorf("sandbox_id is required")
+	if err := requireSandboxID(in.SandboxID); err != nil {
+		return err
 	}
 	if in.Path == "" {
 		return fmt.Errorf("path is required")
@@ -473,8 +502,8 @@ type fileWriteInput struct {
 }
 
 func (in *fileWriteInput) validate() error {
-	if in.SandboxID == "" {
-		return fmt.Errorf("sandbox_id is required")
+	if err := requireSandboxID(in.SandboxID); err != nil {
+		return err
 	}
 	if in.Path == "" {
 		return fmt.Errorf("path is required")
@@ -517,8 +546,8 @@ type fileMoveInput struct {
 }
 
 func (in *fileMoveInput) validate() error {
-	if in.SandboxID == "" {
-		return fmt.Errorf("sandbox_id is required")
+	if err := requireSandboxID(in.SandboxID); err != nil {
+		return err
 	}
 	if in.From == "" || in.To == "" {
 		return fmt.Errorf("from and to are required")
@@ -546,8 +575,8 @@ type portURLInput struct {
 }
 
 func (in *portURLInput) validate() error {
-	if in.SandboxID == "" {
-		return fmt.Errorf("sandbox_id is required")
+	if err := requireSandboxID(in.SandboxID); err != nil {
+		return err
 	}
 	if in.Port < 1 || in.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535")
@@ -560,5 +589,5 @@ func (s *server) portURL(ctx context.Context, _ *sdk.CallToolRequest, in portURL
 	if err != nil {
 		return fail(err)
 	}
-	return okResult(map[string]any{"url": ticket.URL, "expires_in_seconds": 60})
+	return okResult(map[string]any{"url": ticket.URL})
 }

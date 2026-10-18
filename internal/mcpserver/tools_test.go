@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -59,17 +60,32 @@ func validateOutput(t *testing.T, cs *sdk.ClientSession, name string, value any)
 	t.Fatalf("tool %s not found", name)
 }
 
-func errorCode(t *testing.T, result *sdk.CallToolResult) string {
+type toolError struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+}
+
+// errorOf requires an isError result with no structuredContent and decodes
+// code and detail from its text content.
+func errorOf(t *testing.T, result *sdk.CallToolResult) toolError {
 	t.Helper()
 	if !result.IsError {
 		t.Fatalf("result is not an error: %#v", result.Content)
 	}
-	var body struct {
-		Code   string `json:"code"`
-		Detail string `json:"detail"`
+	if result.StructuredContent != nil {
+		t.Fatalf("error result carries structuredContent: %#v", result.StructuredContent)
 	}
+	var body toolError
 	mustTextJSON(t, result, &body)
-	return body.Code
+	if body.Code == "" || body.Detail == "" {
+		t.Fatalf("error result has no code or detail: %#v", body)
+	}
+	return body
+}
+
+func errorCode(t *testing.T, result *sdk.CallToolResult) string {
+	t.Helper()
+	return errorOf(t, result).Code
 }
 
 func mustTextJSON(t *testing.T, result *sdk.CallToolResult, v any) {
@@ -105,8 +121,8 @@ func TestRESTProblemBecomesToolError(t *testing.T) {
 	})
 	cs := connect(t, clientAPI(api))
 	result := callTool(t, cs, "sandbox_get", map[string]any{"sandbox_id": "missing"})
-	if code := errorCode(t, result); code != "not_found" {
-		t.Fatalf("code = %q, want not_found", code)
+	if problem := errorOf(t, result); problem.Code != "not_found" || problem.Detail != "no such Sandbox" {
+		t.Fatalf("error = %#v", problem)
 	}
 	if _, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "sandbox_get", Arguments: map[string]any{"sandbox_id": "missing"}}); err != nil {
 		t.Fatalf("unknown Sandbox must not be a JSON-RPC error: %v", err)
@@ -174,6 +190,10 @@ func TestSandboxCreateWaitsForReady(t *testing.T) {
 		writeJSON(w, http.StatusCreated, map[string]any{"id": "sb-1", "name": "one", "runtime": "container", "state": "pending"})
 	})
 	api.handle("GET", "/api/v1/sandboxes/sb-1", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("wait_for"); got != "ready" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_request", "detail": "wait_for = " + got})
+			return
+		}
 		mu.Lock()
 		calls++
 		mu.Unlock()
@@ -186,6 +206,23 @@ func TestSandboxCreateWaitsForReady(t *testing.T) {
 	}
 	if calls == 0 {
 		t.Fatal("sandbox_create did not wait for ready")
+	}
+}
+
+func TestSandboxGetSendsWaitFor(t *testing.T) {
+	api := fakeAPI(t)
+	var waited string
+	api.handle("GET", "/api/v1/sandboxes/sb-1", func(w http.ResponseWriter, r *http.Request) {
+		waited = r.URL.Query().Get("wait_for")
+		writeJSON(w, http.StatusOK, map[string]any{"id": "sb-1", "name": "one", "runtime": "container", "state": "stopped"})
+	})
+	cs := connect(t, clientAPI(api))
+	body := structured(t, callTool(t, cs, "sandbox_get", map[string]any{"sandbox_id": "sb-1", "wait_for": "stopped"}))
+	if waited != "stopped" {
+		t.Fatalf("wait_for = %q, want stopped", waited)
+	}
+	if body["state"] != "stopped" {
+		t.Fatalf("state = %v, want stopped", body["state"])
 	}
 }
 
@@ -349,6 +386,87 @@ func TestExecOutputTailWithoutAfter(t *testing.T) {
 	result, _ := body["result"].(map[string]any)
 	if result["exit_code"] != float64(3) {
 		t.Fatalf("exit_code = %v", result["exit_code"])
+	}
+}
+
+func TestExecOutputTailWaitsForNewOutput(t *testing.T) {
+	api := fakeAPI(t)
+	reads := 0
+	api.handle("GET", "/api/v1/execs/exec-1/output", func(w http.ResponseWriter, r *http.Request) {
+		after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+		switch {
+		case after == 0:
+			writeJSON(w, http.StatusOK, []map[string]any{
+				{"seq": 0, "stream": "stdout", "data": "old"},
+			})
+		case after == 8:
+			// The first read is the tail scan; the second is the wait loop.
+			reads++
+			if reads < 2 {
+				writeJSON(w, http.StatusOK, []map[string]any{})
+				return
+			}
+			writeJSON(w, http.StatusOK, []map[string]any{
+				{"seq": 8, "stream": "stdout", "data": "new"},
+			})
+		default:
+			writeJSON(w, http.StatusOK, []map[string]any{})
+		}
+	})
+	api.handle("GET", "/api/v1/execs/exec-1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, execJSON("exec-1", "running", nil))
+	})
+	cs := connect(t, clientAPI(api))
+	body := structured(t, callTool(t, cs, "exec_output", map[string]any{
+		"exec_id": "exec-1", "wait_seconds": 5,
+	}))
+	if got := framesOf(t, body); got != "stdout:old|stdout:new" {
+		t.Fatalf("tail = %q, want old plus new", got)
+	}
+	if body["next_after"] != float64(16) {
+		t.Fatalf("next_after = %v, want 16", body["next_after"])
+	}
+	if body["state"] != "running" {
+		t.Fatalf("state = %v, want running", body["state"])
+	}
+}
+
+func TestExecOutputWithAfterReturnsExistingFramesImmediately(t *testing.T) {
+	api := fakeAPI(t)
+	api.handle("GET", "/api/v1/execs/exec-1/output", frameHandler([]map[string]any{
+		{"seq": 0, "stream": "stdout", "data": "one"},
+	}))
+	api.handle("GET", "/api/v1/execs/exec-1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, execJSON("exec-1", "running", nil))
+	})
+	cs := connect(t, clientAPI(api))
+	start := time.Now()
+	body := structured(t, callTool(t, cs, "exec_output", map[string]any{
+		"exec_id": "exec-1", "after": 0, "wait_seconds": 5,
+	}))
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("waited %v for frames that already existed", elapsed)
+	}
+	if got := framesOf(t, body); got != "stdout:one" {
+		t.Fatalf("output = %q, want stdout:one", got)
+	}
+	if body["next_after"] != float64(8) {
+		t.Fatalf("next_after = %v, want 8", body["next_after"])
+	}
+}
+
+func TestPortURLReturnsOnlyURL(t *testing.T) {
+	api := fakeAPI(t)
+	api.handle("POST", "/api/v1/sandboxes/sb-1/ports/8080/ticket", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"url": "https://sb-1-8080.example"})
+	})
+	cs := connect(t, clientAPI(api))
+	body := structured(t, callTool(t, cs, "port_url", map[string]any{"sandbox_id": "sb-1", "port": 8080}))
+	if body["url"] != "https://sb-1-8080.example" {
+		t.Fatalf("url = %v", body["url"])
+	}
+	if _, ok := body["expires_in_seconds"]; ok {
+		t.Fatalf("port_url still returns expires_in_seconds: %#v", body)
 	}
 }
 

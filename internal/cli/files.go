@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +11,6 @@ import (
 
 	"github.com/google/uuid"
 )
-
-// transfers may be large, so they are not bound by the 30-second JSON timeout.
-var transferClient = &http.Client{}
 
 func runFiles(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {

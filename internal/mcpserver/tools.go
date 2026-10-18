@@ -364,8 +364,7 @@ func (s *server) register(srv *sdk.Server) {
 		OutputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "url": {"type": "string"},
-    "expires_in_seconds": {"type": "integer"}
+    "url": {"type": "string"}
   },
   "required": ["url"]
 }`),

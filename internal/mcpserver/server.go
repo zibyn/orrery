@@ -5,7 +5,6 @@ package mcpserver
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,8 +24,6 @@ const (
 	fileLimit = 1 << 20
 	// waitLimit bounds wait_seconds.
 	waitLimit = 300
-	// sandboxWait is how long sandbox_create and sandbox_get wait for a state.
-	sandboxWait = 60 * time.Second
 	// pollInterval is how often a tool polls the REST API while waiting.
 	pollInterval = 200 * time.Millisecond
 )
@@ -112,13 +109,14 @@ func okResult(v any) (*sdk.CallToolResult, error) {
 	}, nil
 }
 
-// errorResult reports a business error the agent can read and correct.
+// errorResult reports a business error the agent can read and correct. An
+// isError result carries no structuredContent: outputSchema describes the
+// success result only.
 func errorResult(code, detail string) *sdk.CallToolResult {
 	data, _ := json.Marshal(map[string]string{"code": code, "detail": detail})
 	return &sdk.CallToolResult{
-		Content:           []sdk.Content{&sdk.TextContent{Text: string(data)}},
-		StructuredContent: json.RawMessage(data),
-		IsError:           true,
+		Content: []sdk.Content{&sdk.TextContent{Text: string(data)}},
+		IsError: true,
 	}
 }
 
@@ -136,49 +134,6 @@ func fail(err error) (*sdk.CallToolResult, error) {
 	return errorResult("unavailable", err.Error()), nil
 }
 
-// waitSandbox polls until the Sandbox reaches state or a terminal state, for
-// at most sandboxWait. Polling instead of `?wait_for=` keeps every request
-// under the client's 30-second HTTP timeout.
-func (s *server) waitSandbox(ctx context.Context, id, state string) (*client.Sandbox, error) {
-	deadline := time.Now().Add(sandboxWait)
-	for {
-		sb, err := s.c.GetSandbox(ctx, id, "")
-		if err != nil {
-			return nil, err
-		}
-		if state == "" || sb.State == state || sb.State == "failed" || sb.State == "deleted" {
-			return sb, nil
-		}
-		if time.Now().After(deadline) {
-			return sb, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(pollInterval):
-		}
-	}
-}
-
-// Frame helpers.
-
-// frameEnd is the byte offset just past a frame, matching the Supervisor's
-// record framing (api.md §4).
-func frameEnd(f client.Frame) int64 {
-	data := []byte(f.Data)
-	if f.Encoding == "base64" {
-		if raw, err := base64.StdEncoding.DecodeString(f.Data); err == nil {
-			data = raw
-		}
-	}
-	return f.Seq + 5 + int64(len(data))
-}
-
-// frameSize is the number of output bytes a frame carries.
-func frameSize(f client.Frame) int64 {
-	return frameEnd(f) - f.Seq - 5
-}
-
 // readFrames reads every page starting at after and returns the frames and the
 // offset just past the last one. Empty frames means the log is exhausted.
 func readFrames(ctx context.Context, c *client.Client, execID string, after int64) ([]client.Frame, int64, error) {
@@ -193,7 +148,7 @@ func readFrames(ctx context.Context, c *client.Client, execID string, after int6
 			return all, offset, nil
 		}
 		all = append(all, page...)
-		offset = frameEnd(page[len(page)-1])
+		offset = page[len(page)-1].End()
 	}
 }
 
@@ -203,7 +158,7 @@ func tailFrames(frames []client.Frame) []client.Frame {
 	total := 0
 	start := len(frames)
 	for i := len(frames) - 1; i >= 0; i-- {
-		n := int(frameSize(frames[i]))
+		n := int(frames[i].Size())
 		if total+n > outputLimit {
 			if start == len(frames) {
 				start = i // one oversized frame is still returned whole
@@ -220,7 +175,7 @@ func tailFrames(frames []client.Frame) []client.Frame {
 func headFrames(frames []client.Frame) []client.Frame {
 	total := 0
 	for i, f := range frames {
-		n := int(frameSize(f))
+		n := int(f.Size())
 		if total+n > outputLimit && i > 0 {
 			return frames[:i]
 		}
@@ -230,13 +185,13 @@ func headFrames(frames []client.Frame) []client.Frame {
 }
 
 // progress sends one notification per poll when the request carries a token.
-func progress(ctx context.Context, req *sdk.CallToolRequest, token any, bytes int64, state string) {
+func progress(ctx context.Context, req *sdk.CallToolRequest, token any, outputBytes int64, state string) {
 	if token == nil {
 		return
 	}
 	_ = req.Session.NotifyProgress(ctx, &sdk.ProgressNotificationParams{
 		ProgressToken: token,
-		Progress:      float64(bytes),
-		Message:       fmt.Sprintf("%d bytes; %s", bytes, state),
+		Progress:      float64(outputBytes),
+		Message:       fmt.Sprintf("%d bytes; %s", outputBytes, state),
 	})
 }
