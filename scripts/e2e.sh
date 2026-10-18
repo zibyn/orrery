@@ -258,20 +258,23 @@ fi
 SOURCE_REGISTRY="127.0.0.1:15001"
 docker tag alpine:3.22 "${SOURCE_REGISTRY}/alpine:3.22"
 docker push "${SOURCE_REGISTRY}/alpine:3.22" >/dev/null
-pushed_ref="$(docker image inspect "${SOURCE_REGISTRY}/alpine:3.22" \
-  --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
-  grep -E '@sha256:' | head -n1 || true)"
-if [ -z "$pushed_ref" ]; then
-  echo "the local source registry did not return a digest for alpine:3.22" >&2
-  exit 1
-fi
 SOURCE_HOST="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
   "${COMPOSE_PROJECT}-registry-source-1" 2>/dev/null || true)"
 if [ -z "$SOURCE_HOST" ]; then
   echo "could not find the registry-source container address" >&2
   exit 1
 fi
-STARS_E2E_ALPINE_REF="${SOURCE_HOST}:5000/alpine@${pushed_ref##*@}"
+# The pushed single-platform manifest's digest is not the local RepoDigest (a
+# multi-arch pull records the index digest), so ask the registry itself.
+SOURCE_ACCEPT="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
+SOURCE_DIGEST="$(curl -fsSI -H "Accept: ${SOURCE_ACCEPT}" \
+  "http://${SOURCE_HOST}:5000/v2/alpine/manifests/3.22" 2>/dev/null | tr -d '\r' |
+  awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')"
+if [ -z "$SOURCE_DIGEST" ]; then
+  echo "the local source registry did not return a digest for alpine:3.22" >&2
+  exit 1
+fi
+STARS_E2E_ALPINE_REF="${SOURCE_HOST}:5000/alpine@${SOURCE_DIGEST}"
 export STARS_E2E_ALPINE_REF
 export STARS_PLATFORM_SNAPSHOTS="${STARS_PLATFORM_SNAPSHOTS:-default=${STARS_E2E_ALPINE_REF}}"
 echo "platform Snapshot: ${STARS_DEFAULT_SNAPSHOT}=${STARS_E2E_ALPINE_REF}"
