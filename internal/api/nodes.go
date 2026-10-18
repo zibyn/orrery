@@ -157,6 +157,14 @@ func (s *Server) setNodePaused(w http.ResponseWriter, r *http.Request, p *princi
 		node, err = s.q.ResumeNode(r.Context(), id)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
+		// ResumeNode refuses a lost Node in SQL; classify the refusal so the
+		// caller learns it is irreversible rather than gone (api.md §3).
+		if !paused {
+			if existing, getErr := s.q.GetNode(r.Context(), id); getErr == nil && nodeLost(existing) {
+				writeProblem(w, "conflict", "a lost Node cannot be resumed")
+				return
+			}
+		}
 		writeProblem(w, "not_found", "")
 		return
 	}
@@ -170,7 +178,13 @@ func (s *Server) setNodePaused(w http.ResponseWriter, r *http.Request, p *princi
 		s.internal(w, "read node GPUs", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, dto)
+	writeJSON(w, http.StatusAccepted, dto)
+}
+
+// nodeLost reports whether the Node was declared lost. The declaration is
+// irreversible (ADR-0014): the token is gone and lost_at is set.
+func nodeLost(node store.Node) bool {
+	return node.LostAt.Valid
 }
 
 // handleDeleteNode leaves a tombstone (api.md §3, ADR-0014): the Node must be
@@ -245,7 +259,7 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "read node GPUs", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, dto)
+	writeJSON(w, http.StatusAccepted, dto)
 }
 
 func (s *Server) nodeToDTO(ctx context.Context, node store.Node, now time.Time) (nodeDTO, error) {
@@ -363,7 +377,7 @@ func (s *Server) handleDeclareNodeLost(w http.ResponseWriter, r *http.Request, p
 		s.internal(w, "read node GPUs", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, dto)
+	writeJSON(w, http.StatusAccepted, dto)
 }
 
 // nodeReachable is liveness, not health: a fresh heartbeat or an open Agent

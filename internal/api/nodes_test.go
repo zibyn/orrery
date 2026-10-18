@@ -48,6 +48,21 @@ func TestDeriveNodeStatus(t *testing.T) {
 	}
 }
 
+// Declaring a Node lost is irreversible (api.md §3): a lost Node can never be
+// resumed, so the resume handler refuses it.
+func TestNodeLost(t *testing.T) {
+	now := time.Now()
+	lost := mutate(readyNode(t, now), func(n *store.Node) {
+		n.LostAt = pgtype.Timestamptz{Time: now, Valid: true}
+	})
+	if !nodeLost(lost) {
+		t.Fatal("a Node with lost_at was not reported lost")
+	}
+	if nodeLost(readyNode(t, now)) {
+		t.Fatal("a live Node was reported lost")
+	}
+}
+
 // Reachable is liveness only: a fresh heartbeat or an open stream. An
 // unhealthy Runtime is still reachable, so declaring that Node lost is refused
 // (ADR-0014).

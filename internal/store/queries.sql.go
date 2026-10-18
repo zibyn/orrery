@@ -293,6 +293,7 @@ func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.
 const countNodeNonTerminalSandboxes = `-- name: CountNodeNonTerminalSandboxes :one
 SELECT count(*)::bigint FROM sandboxes
 WHERE node_id = $1 AND state NOT IN ('deleted', 'failed')
+  AND NOT (kind = 'build' AND state = 'stopped')
 `
 
 func (q *Queries) CountNodeNonTerminalSandboxes(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
@@ -308,8 +309,9 @@ WHERE node_id = $1 AND state NOT IN ('deleted', 'failed', 'lost')
 `
 
 // Deletion requires no non-terminal Workspace (deleted, failed and lost are
-// terminal) and no non-terminal Sandbox, build rows included (only deleted and
-// failed are terminal; a stopped Sandbox still blocks) (api.md §3).
+// terminal) and no non-terminal Sandbox, build rows included (api.md §3). A
+// build row at stopped is finished and has no Runtime, so it is terminal; a
+// stopped user Sandbox still blocks.
 func (q *Queries) CountNodeNonTerminalWorkspaces(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countNodeNonTerminalWorkspaces, nodeID)
 	var column_1 int64
@@ -5633,9 +5635,12 @@ func (q *Queries) RedeemEnrollmentPacket(ctx context.Context, id uuid.UUID) (Enr
 }
 
 const resumeNode = `-- name: ResumeNode :one
-UPDATE nodes SET paused = false WHERE id = $1 AND deleted_at IS NULL RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at
+UPDATE nodes SET paused = false
+WHERE id = $1 AND deleted_at IS NULL AND lost_at IS NULL RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at
 `
 
+// Declaring a Node lost is irreversible, so a lost Node cannot be resumed
+// (api.md §3, ADR-0014).
 func (q *Queries) ResumeNode(ctx context.Context, id uuid.UUID) (Node, error) {
 	row := q.db.QueryRow(ctx, resumeNode, id)
 	var i Node

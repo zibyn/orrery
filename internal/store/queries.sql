@@ -1330,8 +1330,11 @@ WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted';
 -- name: PauseNode :one
 UPDATE nodes SET paused = true WHERE id = $1 AND deleted_at IS NULL RETURNING *;
 
+-- Declaring a Node lost is irreversible, so a lost Node cannot be resumed
+-- (api.md §3, ADR-0014).
 -- name: ResumeNode :one
-UPDATE nodes SET paused = false WHERE id = $1 AND deleted_at IS NULL RETURNING *;
+UPDATE nodes SET paused = false
+WHERE id = $1 AND deleted_at IS NULL AND lost_at IS NULL RETURNING *;
 
 -- Deleting a Node clears its token (bytea NOT NULL, so an empty value, which
 -- no token hash matches) and keeps the row as a tombstone (ADR-0014).
@@ -1340,15 +1343,17 @@ UPDATE nodes SET deleted_at = now(), token_hash = ''
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- Deletion requires no non-terminal Workspace (deleted, failed and lost are
--- terminal) and no non-terminal Sandbox, build rows included (only deleted and
--- failed are terminal; a stopped Sandbox still blocks) (api.md §3).
+-- terminal) and no non-terminal Sandbox, build rows included (api.md §3). A
+-- build row at stopped is finished and has no Runtime, so it is terminal; a
+-- stopped user Sandbox still blocks.
 -- name: CountNodeNonTerminalWorkspaces :one
 SELECT count(*)::bigint FROM workspaces
 WHERE node_id = $1 AND state NOT IN ('deleted', 'failed', 'lost');
 
 -- name: CountNodeNonTerminalSandboxes :one
 SELECT count(*)::bigint FROM sandboxes
-WHERE node_id = $1 AND state NOT IN ('deleted', 'failed');
+WHERE node_id = $1 AND state NOT IN ('deleted', 'failed')
+  AND NOT (kind = 'build' AND state = 'stopped');
 
 -- Lost cascades (#95)
 

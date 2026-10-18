@@ -369,8 +369,22 @@ func TestRetireNode(t *testing.T) {
 	runExecScript(t, admin, sbNew.ID,
 		`cp -a /resources/archive/. /workspace/ && chmod -R a+rwX /workspace && test "$(cat /workspace/data.txt)" = "retire me"`)
 
-	// The stopped Sandbox is the last blocker.
+	// The stopped Sandbox is the last real blocker.
 	deleteSandbox(t, admin, sbStopped.ID)
+
+	// A finished build row is terminal: a Node that ever ran a build can still
+	// be deleted (api.md §3). This insert stands in for a build whose Sandbox
+	// MarkBuildSandboxDone left at stopped.
+	if n := psqlCount(t, fmt.Sprintf(`
+		WITH b AS (
+			INSERT INTO sandboxes
+				(id, owner_id, kind, name, state, node_id, snapshot_digest, cpu, memory)
+			VALUES (gen_random_uuid(), (SELECT id FROM users LIMIT 1), 'build',
+				'e2e-build-%d', 'stopped', '%s', '', 1, 1073741824)
+			RETURNING 1
+		) SELECT count(*) FROM b`, suffix, old.ID)); n != "1" {
+		t.Fatalf("insert a stopped build row: %s", n)
+	}
 	cli.run(t, "", "node", "delete", old.ID)
 
 	// Tombstone: hidden from the Node and capacity views, token cleared, GPU
