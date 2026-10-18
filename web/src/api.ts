@@ -44,6 +44,81 @@ export type GitLink = {
   linked_at: string
 }
 
+export type SandboxState =
+  | 'pending'
+  | 'provisioning'
+  | 'ready'
+  | 'stopping'
+  | 'stopped'
+  | 'deleting'
+  | 'deleted'
+  | 'failed'
+
+export type Sandbox = {
+  id: string
+  name: string
+  labels: Record<string, string>
+  runtime: 'container' | 'local'
+  state: SandboxState
+  cause: string | null
+  node_id: string | null
+  snapshot: string
+  cpu: number
+  memory: number
+  gpu?: { count: number; model?: string }
+  idle_stop: number
+  workspace?: { id: string; mode: 'rw' | 'ro' }
+  conditions: string[]
+  queue_position?: number
+  blocked_reason?: string
+  created_at: string
+}
+
+export type CreateSandboxRequest = {
+  name: string
+  snapshot?: string
+  cpu: number
+  memory: number
+  gpu?: { count: number; model?: string }
+  workspace?: { id: string; mode: 'rw' | 'ro' }
+  idle_stop?: number
+}
+
+export type Snapshot = {
+  id: string
+  owner_id: string | null
+  name: string
+  current_version_id: string | null
+  created_at: string | null
+  deleted_at?: string
+}
+
+export type Workspace = {
+  id: string
+  kind: 'ephemeral' | 'persistent'
+  node_id: string | null
+  state: 'provisioning' | 'ready' | 'deleting' | 'deleted' | 'failed' | 'lost'
+  cause: string | null
+  unavailable: boolean
+  conditions: string[]
+  sandbox_id: string | null
+  created_at: string
+  deleted_at: string | null
+}
+
+export type CapacityGPU = {
+  model: string
+  total: number
+  allocated: number
+}
+
+export type CapacityNode = {
+  node_id: string
+  name: string
+  status: string
+  gpus: CapacityGPU[]
+}
+
 type Problem = { code?: string; detail?: string }
 
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {

@@ -14,6 +14,9 @@ import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthedCliAuthRouteImport } from './routes/_authed.cli-auth'
 import { Route as AuthedGitRouteImport } from './routes/_authed.git'
+import { Route as AuthedSandboxesIndexRouteImport } from './routes/_authed.sandboxes.index'
+import { Route as AuthedSandboxesIdRouteImport } from './routes/_authed.sandboxes.$id'
+import { Route as AuthedSandboxesNewRouteImport } from './routes/_authed.sandboxes.new'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -39,18 +42,39 @@ const AuthedGitRoute = AuthedGitRouteImport.update({
   path: '/git',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedSandboxesIndexRoute = AuthedSandboxesIndexRouteImport.update({
+  id: '/sandboxes/',
+  path: '/sandboxes/',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedSandboxesIdRoute = AuthedSandboxesIdRouteImport.update({
+  id: '/sandboxes/$id',
+  path: '/sandboxes/$id',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedSandboxesNewRoute = AuthedSandboxesNewRouteImport.update({
+  id: '/sandboxes/new',
+  path: '/sandboxes/new',
+  getParentRoute: () => AuthedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/cli-auth': typeof AuthedCliAuthRoute
   '/git': typeof AuthedGitRoute
+  '/sandboxes/$id': typeof AuthedSandboxesIdRoute
+  '/sandboxes/new': typeof AuthedSandboxesNewRoute
+  '/sandboxes/': typeof AuthedSandboxesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/cli-auth': typeof AuthedCliAuthRoute
   '/git': typeof AuthedGitRoute
+  '/sandboxes/$id': typeof AuthedSandboxesIdRoute
+  '/sandboxes/new': typeof AuthedSandboxesNewRoute
+  '/sandboxes': typeof AuthedSandboxesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -59,12 +83,29 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/_authed/cli-auth': typeof AuthedCliAuthRoute
   '/_authed/git': typeof AuthedGitRoute
+  '/_authed/sandboxes/$id': typeof AuthedSandboxesIdRoute
+  '/_authed/sandboxes/new': typeof AuthedSandboxesNewRoute
+  '/_authed/sandboxes/': typeof AuthedSandboxesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/cli-auth' | '/git'
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/cli-auth'
+    | '/git'
+    | '/sandboxes/$id'
+    | '/sandboxes/new'
+    | '/sandboxes/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/cli-auth' | '/git'
+  to:
+    | '/'
+    | '/login'
+    | '/cli-auth'
+    | '/git'
+    | '/sandboxes/$id'
+    | '/sandboxes/new'
+    | '/sandboxes'
   id:
     | '__root__'
     | '/'
@@ -72,6 +113,9 @@ export interface FileRouteTypes {
     | '/login'
     | '/_authed/cli-auth'
     | '/_authed/git'
+    | '/_authed/sandboxes/$id'
+    | '/_authed/sandboxes/new'
+    | '/_authed/sandboxes/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -117,17 +161,44 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedGitRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/sandboxes/': {
+      id: '/_authed/sandboxes/'
+      path: '/sandboxes'
+      fullPath: '/sandboxes/'
+      preLoaderRoute: typeof AuthedSandboxesIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/sandboxes/$id': {
+      id: '/_authed/sandboxes/$id'
+      path: '/sandboxes/$id'
+      fullPath: '/sandboxes/$id'
+      preLoaderRoute: typeof AuthedSandboxesIdRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/sandboxes/new': {
+      id: '/_authed/sandboxes/new'
+      path: '/sandboxes/new'
+      fullPath: '/sandboxes/new'
+      preLoaderRoute: typeof AuthedSandboxesNewRouteImport
+      parentRoute: typeof AuthedRoute
+    }
   }
 }
 
 interface AuthedRouteChildren {
   AuthedCliAuthRoute: typeof AuthedCliAuthRoute
   AuthedGitRoute: typeof AuthedGitRoute
+  AuthedSandboxesIdRoute: typeof AuthedSandboxesIdRoute
+  AuthedSandboxesNewRoute: typeof AuthedSandboxesNewRoute
+  AuthedSandboxesIndexRoute: typeof AuthedSandboxesIndexRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedCliAuthRoute: AuthedCliAuthRoute,
   AuthedGitRoute: AuthedGitRoute,
+  AuthedSandboxesIdRoute: AuthedSandboxesIdRoute,
+  AuthedSandboxesNewRoute: AuthedSandboxesNewRoute,
+  AuthedSandboxesIndexRoute: AuthedSandboxesIndexRoute,
 }
 
 const AuthedRouteWithChildren =
