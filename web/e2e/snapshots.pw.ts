@@ -1,19 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { isAllowedConsoleUrl } from '../src/lib/request-scope'
-
-const ADMIN = { username: 'admin', password: 'admin-password-123' }
-const origin = process.env.STARS_E2E_API_URL ?? 'http://127.0.0.1:18080'
-const scope = { origin, appsDomain: process.env.STARS_E2E_APPS_DOMAIN ?? 'apps.test' }
-
-// console-parity: collect every HTTP request and WebSocket, then assert each
-// URL stays on the console origin or a port-forward subdomain (api.md §8).
-function watchRequests(page: Page): string[] {
-  const urls: string[] = []
-  page.on('request', (request) => urls.push(request.url()))
-  page.on('websocket', (socket) => urls.push(socket.url()))
-  return urls
-}
+import { assertConsoleScope, origin, signIn, watchRequests } from './harness'
 
 type CapabilityEntry = { name: string; value: string }
 type NodeList = { items: { capabilities?: { entries?: CapabilityEntry[] } }[] }
@@ -36,10 +23,7 @@ test('console-parity: list Snapshots, watch a build change state and read its lo
 }) => {
   const requests = watchRequests(page)
 
-  await page.goto('/login?return=%2Fsnapshots')
-  await page.getByLabel('Username').fill(ADMIN.username)
-  await page.getByLabel('Password').fill(ADMIN.password)
-  await page.getByRole('button', { name: 'Sign in' }).click()
+  await signIn(page, { returnTo: '/snapshots' })
   await expect(page).toHaveURL(/\/snapshots$/)
 
   const buildsSupported = await snapshotBuildSupported(page)
@@ -88,24 +72,23 @@ test('console-parity: list Snapshots, watch a build change state and read its lo
     await page.getByTestId(`build-log-link-${version.id}`).click()
     await expect(page).toHaveURL(new RegExp(`version=${version.id}`))
     await expect(page.locator('.xterm-rows')).not.toHaveText('', { timeout: 60_000 })
+    // Each inner wait stays well below the 300 s per-test timeout so a later
+    // assertion still has its own window to fail in.
     await expect(page.getByTestId('build-log-result')).toHaveText(/^Finished: exited/, {
-      timeout: 300_000,
+      timeout: 120_000,
     })
     // The version becomes ready and the current pointer moves to it.
-    await expect(state).toHaveText('ready', { timeout: 300_000 })
+    await expect(state).toHaveText('ready', { timeout: 120_000 })
     await expect(page.getByTestId(`version-current-${version.id}`)).toBeVisible({
-      timeout: 300_000,
+      timeout: 120_000,
     })
   } else {
-    await expect(state).toHaveText(/ready|failed|cancelled/, { timeout: 300_000 })
     const reason =
       'build log assertion skipped: no Node reports snapshot_build=enforced (BuildKit is unavailable in this deployment)'
     test.info().annotations.push({ type: 'skip', description: reason })
     console.warn(reason)
+    await expect(state, reason).toHaveText(/ready|failed|cancelled/, { timeout: 120_000 })
   }
 
-  const disallowed = requests.filter(
-    (url) => /^(https?|wss?):/i.test(url) && !isAllowedConsoleUrl(url, scope),
-  )
-  expect(disallowed, 'requests outside the console origin and port-forward hosts').toEqual([])
+  assertConsoleScope(requests)
 })
