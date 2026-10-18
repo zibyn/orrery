@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -17,9 +18,11 @@ import (
 // asynchronous, so `import` follows the version to its terminal state.
 func runSnapshot(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox snapshot import|ls|rm|versions|current")
+		return fmt.Errorf("usage: stars-sandbox snapshot build|import|ls|rm|versions|current")
 	}
 	switch args[0] {
+	case "build":
+		return runSnapshotBuild(c, args[1:], stderr)
 	case "import":
 		return runSnapshotImport(c, args[1:])
 	case "ls":
@@ -98,6 +101,134 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 	}
 }
 
+func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("snapshot build", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	file := fs.String("f", "", "Dockerfile path, or - for stdin")
+	fs.StringVar(file, "file", "", "Dockerfile path, or - for stdin")
+	base := fs.String("base", "", "platform Snapshot reference injected as the base context")
+	noFollow := fs.Bool("no-follow", false, "create the build and return without following its log")
+	idem := fs.String("idempotency-key", "", "idempotency key")
+	var contextFlags, secretFlags stringList
+	fs.Var(&contextFlags, "context", "name=resource[@version]; may repeat")
+	fs.Var(&secretFlags, "secret", "id=secret_name; may repeat")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || *file == "" {
+		return fmt.Errorf("usage: stars-sandbox snapshot build <name> -f Dockerfile [--base SNAPSHOT] [--context name=resource[@version] ...] [--secret id=secret ...]")
+	}
+	dockerfile := []byte(nil)
+	if *file == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		dockerfile = data
+	} else {
+		data, err := os.ReadFile(*file)
+		if err != nil {
+			return err
+		}
+		dockerfile = data
+	}
+	build := map[string]any{"dockerfile": string(dockerfile)}
+	if *base != "" {
+		build["base"] = *base
+	}
+	contexts := map[string]string{}
+	for _, raw := range contextFlags {
+		name, value, ok := strings.Cut(raw, "=")
+		if !ok || name == "" || value == "" {
+			return fmt.Errorf("--context must be name=resource[@version], got %q", raw)
+		}
+		contexts[name] = value
+	}
+	if len(contexts) > 0 {
+		build["contexts"] = contexts
+	}
+	secrets := map[string]string{}
+	for _, raw := range secretFlags {
+		id, value, ok := strings.Cut(raw, "=")
+		if !ok || id == "" || value == "" {
+			return fmt.Errorf("--secret must be id=secret_name, got %q", raw)
+		}
+		secrets[id] = value
+	}
+	if len(secrets) > 0 {
+		build["secrets"] = secrets
+	}
+	snapshotID, err := ensureSnapshot(c, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	status, data, err := c.send(http.MethodPost,
+		"/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions", nil,
+		map[string]any{"build": build}, *idem)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusCreated && status != http.StatusOK {
+		return problemError(status, data)
+	}
+	var version snapshotVersionView
+	if err := json.Unmarshal(data, &version); err != nil {
+		return err
+	}
+	if *noFollow {
+		return c.print(data)
+	}
+	if version.BuildExecID != nil {
+		// The build log is a normal Exec log (api.md §3).
+		if _, err := c.followExec(*version.BuildExecID, 0, c.out, stderr); err != nil {
+			return err
+		}
+	}
+	final, raw, err := pollSnapshotVersion(c, snapshotID, version.ID)
+	if err != nil {
+		return err
+	}
+	if err := c.print(raw); err != nil {
+		return err
+	}
+	if final.State != "ready" {
+		cause := ""
+		if final.Cause != nil {
+			cause = ": " + *final.Cause
+		}
+		return fmt.Errorf("SnapshotVersion %s ended %s%s", final.ID, final.State, cause)
+	}
+	return nil
+}
+
+// pollSnapshotVersion waits for a terminal state and returns the final
+// version, with the raw response for printing.
+func pollSnapshotVersion(c *client, snapshotID, versionID string) (snapshotVersionView, []byte, error) {
+	deadline := time.Now().Add(time.Hour)
+	for {
+		status, data, err := c.send(http.MethodGet,
+			"/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions/"+url.PathEscape(versionID),
+			nil, nil, "")
+		if err != nil {
+			return snapshotVersionView{}, nil, err
+		}
+		if status != http.StatusOK {
+			return snapshotVersionView{}, nil, problemError(status, data)
+		}
+		var version snapshotVersionView
+		if err := json.Unmarshal(data, &version); err != nil {
+			return snapshotVersionView{}, nil, err
+		}
+		if version.State != "building" {
+			return version, data, nil
+		}
+		if time.Now().After(deadline) {
+			return snapshotVersionView{}, nil, fmt.Errorf("SnapshotVersion %s is still building", versionID)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 func runSnapshotImport(c *client, args []string) error {
 	authSecret := ""
 	var positional []string
@@ -149,10 +280,11 @@ type snapshotView struct {
 }
 
 type snapshotVersionView struct {
-	ID     string  `json:"id"`
-	State  string  `json:"state"`
-	Cause  *string `json:"cause"`
-	Digest *string `json:"digest"`
+	ID          string  `json:"id"`
+	State       string  `json:"state"`
+	Cause       *string `json:"cause"`
+	Digest      *string `json:"digest"`
+	BuildExecID *string `json:"build_exec_id"`
 }
 
 // ensureSnapshot finds the caller's Snapshot by name or creates it.
