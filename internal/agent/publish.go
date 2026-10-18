@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/castransfer"
 	"github.com/zibyn/stars-sandbox/internal/manifest"
 )
 
@@ -230,10 +230,6 @@ func (r *Runtime) uploadPublishObjects(ctx context.Context, root *os.Root, missi
 }
 
 func uploadRootObject(ctx context.Context, root *os.Root, local, url, digest string) error {
-	raw, err := hex.DecodeString(digest)
-	if err != nil || len(raw) != sha256.Size {
-		return fmt.Errorf("invalid sha256 %q", digest)
-	}
 	f, err := root.Open(local)
 	if err != nil {
 		return err
@@ -243,20 +239,5 @@ func uploadRootObject(ctx context.Context, root *os.Root, local, url, digest str
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, f)
-	if err != nil {
-		return err
-	}
-	req.ContentLength = info.Size()
-	req.Header.Set("x-amz-checksum-sha256", base64.StdEncoding.EncodeToString(raw))
-	resp, err := publishHTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("upload %s: HTTP %d: %s", digest, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return nil
+	return castransfer.Put(ctx, publishHTTP, url, f, info.Size(), digest)
 }

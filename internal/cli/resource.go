@@ -1,8 +1,8 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/zibyn/stars-sandbox/internal/castransfer"
 	"github.com/zibyn/stars-sandbox/internal/manifest"
 )
 
@@ -413,31 +414,12 @@ func pushResource(c *client, dir, name string) error {
 // putObject sends one CAS object through a presigned URL. The store verifies
 // x-amz-checksum-sha256 (ADR-0021).
 func putObject(url, path, digest string) error {
-	raw, err := hex.DecodeString(digest)
-	if err != nil || len(raw) != sha256.Size {
-		return fmt.Errorf("invalid sha256 %q", digest)
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	req, err := http.NewRequest(http.MethodPut, url, f)
-	if err != nil {
-		return err
-	}
-	req.ContentLength = fileSize(f)
-	req.Header.Set("x-amz-checksum-sha256", base64.StdEncoding.EncodeToString(raw))
-	resp, err := transferClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("upload %s: HTTP %d: %s", digest, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return nil
+	return castransfer.Put(context.Background(), transferClient, url, f, fileSize(f), digest)
 }
 
 func fileSize(f *os.File) int64 {
@@ -538,28 +520,16 @@ func pullResource(c *client, ref, dest string) error {
 }
 
 func downloadObject(path, url, digest string, mode os.FileMode) error {
-	resp, err := transferClient.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: HTTP %d", digest, resp.StatusCode)
-	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
-	sum := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, sum), resp.Body); err != nil {
-		f.Close()
+	if err := castransfer.Get(context.Background(), transferClient, url, f, digest, 0); err != nil {
+		f.Close() //nolint:errcheck // report the transfer error instead
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
-	}
-	if got := hex.EncodeToString(sum.Sum(nil)); got != digest {
-		return fmt.Errorf("%s downloaded with sha256 %s", path, got)
 	}
 	return os.Chmod(path, mode)
 }

@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +15,7 @@ import (
 	"time"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/castransfer"
 	"github.com/zibyn/stars-sandbox/internal/manifest"
 )
 
@@ -246,38 +245,18 @@ func downloadObject(ctx context.Context, url string, cache *resourceCache, diges
 // downloadVerified writes url to path and rejects bytes whose SHA-256 differs
 // from the manifest's digest.
 func downloadVerified(ctx context.Context, url, path, want string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	response, err := resourceHTTPClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch object: %s", response.Status)
-	}
 	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	hasher := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(out, hasher), io.LimitReader(response.Body, manifest.MaxFileSize+1))
-	closeErr := out.Close()
-	if copyErr != nil {
-		os.Remove(path) //nolint:errcheck // best effort
-		return copyErr
+	err = castransfer.Get(ctx, resourceHTTPClient, url, out, want, manifest.MaxFileSize)
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
 	}
-	if closeErr != nil {
+	if err != nil {
 		os.Remove(path) //nolint:errcheck // best effort
-		return closeErr
 	}
-	if got := hex.EncodeToString(hasher.Sum(nil)); got != want {
-		os.Remove(path) //nolint:errcheck // best effort
-		return fmt.Errorf("object %s has sha256 %s", want, got)
-	}
-	return nil
+	return err
 }
 
 func downloadResource(ctx context.Context, url string, limit int64) ([]byte, error) {
