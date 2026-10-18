@@ -1155,4 +1155,7 @@ FROM snapshot_versions v
 JOIN sandboxes s ON s.id = v.build_sandbox_id
 JOIN execs e ON e.id = v.build_exec_id
 WHERE v.source = 'build' AND s.kind = 'build'
+  -- A terminal version whose sandbox and Exec are already settled needs no
+  -- more work.
+  AND NOT (s.state = 'stopped' AND e.finished_at IS NOT NULL)
 ORDER BY v.id;
