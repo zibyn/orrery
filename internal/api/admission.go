@@ -146,6 +146,10 @@ func fitFor(node store.Node, used store.NodePlacementRow) (nodeFit, bool) {
 // has not reported yet) is not proof either way. A Sandbox bound to a Node can
 // only ever go there. gpus is each Node's reported inventory.
 func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb store.Sandbox, workspaceNode *uuid.UUID) bool {
+	if sb.Kind == "build" && len(nodes) == 0 {
+		// No Node can enforce snapshot_build (ADR-0021).
+		return true
+	}
 	known, unknown := false, false
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {

@@ -1,12 +1,14 @@
 package api
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/zibyn/stars-sandbox/internal/nodeproto"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -27,6 +29,8 @@ func TestValidateBuildDockerfile(t *testing.T) {
 		{"digest pinned", "FROM alpine@" + digest + "\n", nil, false, true},
 		{"floating tag", "FROM alpine:3.22\n", nil, false, false},
 		{"tag in copy from", "FROM base\nCOPY --from=alpine:3.22 /x /x\n", nil, true, false},
+		{"context in mount from", "FROM base\nRUN --mount=type=bind,from=ctx,target=/c cat /c/x\n", map[string]bool{"ctx": true}, true, true},
+		{"tag in mount from", "FROM base\nRUN --mount=type=bind,from=alpine:3.22,target=/c cat /c/x\n", nil, true, false},
 		{"unresolved arg", "FROM ${BASE}\n", nil, true, false},
 		{"scratch", "FROM scratch\n", nil, false, true},
 		{"continuation", "FROM \\\n  base\nRUN true\n", nil, true, true},
@@ -121,6 +125,38 @@ func TestValidBuildName(t *testing.T) {
 		if validBuildName(name) {
 			t.Errorf("validBuildName(%q) = true", name)
 		}
+	}
+}
+
+func TestAdmissionExhaustedRequiresSnapshotBuild(t *testing.T) {
+	now := time.Now()
+	node := readyNode(t, now)
+	node.Hardware = []byte(`{"cpu_cores":8,"memory_bytes":34359738368,"disk_free":1000,"disk_total":1000}`)
+	build := store.Sandbox{Kind: "build", Cpu: 4, Memory: 8 << 30}
+	if !admissionExhausted([]store.Node{node}, nil, build, nil) {
+		t.Fatal("a Node without snapshot_build must make the build unsatisfiable")
+	}
+	// A Node that has not reported capabilities is not proof either way.
+	unknown := node
+	unknown.Capabilities = nil
+	if admissionExhausted([]store.Node{unknown}, nil, build, nil) {
+		t.Fatal("an unreported capability must keep the build queued")
+	}
+	// Enforced and large enough: the build is feasible.
+	var report nodeproto.CapabilityReport
+	if err := json.Unmarshal(capabilityReport(t, false), &report); err != nil {
+		t.Fatal(err)
+	}
+	report.Entries = append(report.Entries, nodeproto.CapabilityEntry{
+		Name: nodeproto.CapSnapshotBuild, Value: nodeproto.ValueEnforced,
+	})
+	capable := node
+	capable.Capabilities, _ = json.Marshal(report)
+	if admissionExhausted([]store.Node{capable}, nil, build, nil) {
+		t.Fatal("a capable Node with room must not be exhausted")
+	}
+	if !admissionExhausted(nil, nil, build, nil) {
+		t.Fatal("no Nodes at all means the build can never be placed")
 	}
 }
 

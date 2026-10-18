@@ -61,7 +61,7 @@ func TestSnapshotBuildRun(t *testing.T) {
 	snapshot := createTestSnapshot(t, admin, fmt.Sprintf("e2e-build-%d", suffix))
 	dockerfile := "FROM base\n" +
 		"COPY --from=ctx probe.txt /ctxfile\n" +
-		"RUN cat /ctxfile > /probe; cat /run/secrets/token >> /probe; " +
+		"RUN cat /ctxfile > /probe; cat /run/secrets/token >> /probe; echo >> /probe; " +
 		"cat /proc/self/cgroup >> /probe; sleep 10\n"
 	version := startBuild(t, admin, snapshot.ID, map[string]any{
 		"dockerfile": dockerfile,

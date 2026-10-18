@@ -410,6 +410,12 @@ func (r *Runtime) reconcileRecords(ctx context.Context, report func(sandboxID st
 		if err != nil {
 			continue
 		}
+		// A build Sandbox has no container. Its build marker is resumed by
+		// resumeBuilds; treating the missing Runtime as lost would settle the
+		// build Exec with the wrong cause.
+		if _, err := os.Stat(filepath.Join(sandboxPath(r.dataRoot, sandboxID), "build")); err == nil {
+			continue
+		}
 		runDir := sandboxRunPath(r.dataRoot, sandboxID)
 		dirs, _ := filepath.Glob(filepath.Join(runDir, "*"))
 		alive, known := r.runtimeAlive(ctx, sandboxID)

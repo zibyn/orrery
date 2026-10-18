@@ -94,6 +94,14 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create build record: %w", err)
 	}
+	// A build Sandbox has no container; mark it so the startup record
+	// reconciliation does not mistake it for a lost Runtime.
+	if err := os.MkdirAll(sandboxPath(r.dataRoot, sandboxID), 0o755); err != nil {
+		return fmt.Errorf("create build sandbox directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(sandboxPath(r.dataRoot, sandboxID), "build"), []byte("build\n"), 0o644); err != nil {
+		return fmt.Errorf("mark build sandbox: %w", err)
+	}
 	record, err := newBuildRecord(filepath.Join(dir, "output"))
 	if err != nil {
 		return fmt.Errorf("create build output: %w", err)
@@ -136,23 +144,32 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 		cancel(context.Canceled)
 	}()
 
-	args, cleanup, err := r.prepareBuild(runCtx, cmd, work)
+	metadataPath := filepath.Join(work, "metadata.json")
+	args, cleanup, err := r.prepareBuild(runCtx, cmd, work, metadataPath)
 	defer cleanup()
 	if err != nil {
+		if ctx.Err() != nil {
+			// The Control stream ended while preparing; leave the marker for
+			// build_interrupted on the next connection.
+			return nil
+		}
+		cause := "build_failed"
+		exit := supervisor.Exit{Cause: "exited", ExitCode: i32(1)}
+		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
+			cause = "timed_out"
+			exit = supervisor.Exit{Cause: "timed_out"}
+		}
 		// Preparation failures cannot succeed by retrying the same command
-		// forever, but they are also not a build result: report build_failed.
+		// forever, but they are also not a build result: report the cause.
 		completed = true
-		r.finishBuildRecord(dir, supervisor.Exit{Cause: "exited", ExitCode: i32(1)})
+		r.finishBuildRecord(dir, exit)
 		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
-			BuildObserved: &nodev1.BuildObserved{VersionId: versionID.String(), Cause: "build_failed"},
+			BuildObserved: &nodev1.BuildObserved{VersionId: versionID.String(), Cause: cause},
 		}})
 		slog.Warn("prepare snapshot build", "version_id", versionID, "error", err)
 		return nil
 	}
-	metadataPath := filepath.Join(work, "metadata.json")
-	args = append(args, "--metadata-file", metadataPath)
-
-	process := exec.Command("docker", args...)
+	process := exec.CommandContext(runCtx, "docker", args...)
 	process.Env = append(os.Environ(),
 		"DOCKER_HOST="+dockerHost(r.socket),
 		"DOCKER_CONFIG="+filepath.Join(work, "docker"),
@@ -171,6 +188,9 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 	}
 	process.WaitDelay = 5 * time.Second
 	if err := process.Start(); err != nil {
+		if ctx.Err() != nil {
+			return nil // interrupted; the marker stays for the next startup
+		}
 		completed = true
 		r.finishBuildRecord(dir, supervisor.Exit{Cause: "start_failed"})
 		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
@@ -183,7 +203,7 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 		slog.Warn("record build pid", "version_id", versionID, "error", err)
 	}
 
-	runErr := process.Run()
+	runErr := process.Wait()
 	buildCause := context.Cause(runCtx)
 	switch {
 	case errors.Is(buildCause, errBuildCanceled):
@@ -244,7 +264,7 @@ func i32(v int32) *int32 { return &v }
 // prepareBuild writes the Dockerfile, the empty build context, Secret files
 // and the registry config, and returns the buildx arguments. cleanup removes
 // everything temporary.
-func (r *Runtime) prepareBuild(ctx context.Context, cmd *nodev1.BuildSnapshot, work string) ([]string, func(), error) {
+func (r *Runtime) prepareBuild(ctx context.Context, cmd *nodev1.BuildSnapshot, work, metadataPath string) ([]string, func(), error) {
 	cleanup := func() {}
 	if err := os.Chmod(work, 0o700); err != nil {
 		return nil, cleanup, err
@@ -262,6 +282,7 @@ func (r *Runtime) prepareBuild(ctx context.Context, cmd *nodev1.BuildSnapshot, w
 		"--file", dockerfile,
 		"--progress", "plain",
 		"--push",
+		"--metadata-file", metadataPath,
 	}
 	pushRepository := strings.TrimSuffix(cmd.GetPushRepository(), "/")
 	if pushRepository == "" {
@@ -577,10 +598,23 @@ func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64
 	return parent, func() { _ = runSystemctl(context.Background(), "--user", "stop", slice) }
 }
 
-// userSliceParent mirrors systemd's slice hierarchy: stars-build-<id>.slice
-// lives under stars-build.slice, under stars.slice, in the user manager.
+// userSliceParent mirrors systemd's slice hierarchy. systemd treats every '-'
+// in a slice name as a hierarchy separator, so stars-build-<uuid>.slice lives
+// under stars-build-<prefix>.slice for each prefix of its name.
 func userSliceParent(uid int, slice string) string {
-	return fmt.Sprintf("user.slice/user-%d.slice/user@%d.service/stars.slice/stars-build.slice/%s", uid, uid, slice)
+	base := strings.TrimSuffix(slice, ".slice")
+	parts := strings.Split(base, "-")
+	dirs := make([]string, 0, len(parts))
+	prefix := ""
+	for _, part := range parts {
+		if prefix == "" {
+			prefix = part
+		} else {
+			prefix += "-" + part
+		}
+		dirs = append(dirs, prefix+".slice")
+	}
+	return fmt.Sprintf("user.slice/user-%d.slice/user@%d.service/%s", uid, uid, strings.Join(dirs, "/"))
 }
 
 func runSystemctl(ctx context.Context, args ...string) error {

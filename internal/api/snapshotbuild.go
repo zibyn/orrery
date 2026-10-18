@@ -54,6 +54,8 @@ type buildProvenance struct {
 var (
 	buildNamePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	dockerfileFromFlag = regexp.MustCompile(`--from=([^,\s]+)`)
+	// RUN --mount=type=bind,from=<ref> can pull an external image too.
+	dockerfileMountFrom = regexp.MustCompile(`(?:^|[,\s])from=([^,\s]+)`)
 )
 
 // validBuildName is the Dockerfile name grammar shared by context names and
@@ -99,6 +101,11 @@ func validateBuildDockerfile(text string, contexts map[string]bool, hasBase bool
 			continue
 		}
 		for _, ref := range dockerfileFromFlag.FindAllStringSubmatch(line, -1) {
+			if err := validBuildBase(ref[1], contexts, stages, hasBase); err != nil {
+				return err
+			}
+		}
+		for _, ref := range dockerfileMountFrom.FindAllStringSubmatch(line, -1) {
 			if err := validBuildBase(ref[1], contexts, stages, hasBase); err != nil {
 				return err
 			}
@@ -522,6 +529,9 @@ func (r *reconciler) buildCommand(ctx context.Context, row store.ListBuildRunsRo
 	snapshot, err := r.s.q.GetSnapshot(ctx, version.SnapshotID)
 	if err != nil {
 		return nil, err
+	}
+	if r.s.cfg.RegistryAddr == "" {
+		return nil, errors.New("the platform registry is not configured")
 	}
 	timeout := int64(r.s.cfg.BuildTimeout / time.Second)
 	if row.ExecTimeoutSeconds != nil && *row.ExecTimeoutSeconds > 0 {
