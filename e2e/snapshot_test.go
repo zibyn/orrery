@@ -34,7 +34,7 @@ type snapshotVersionView struct {
 // Agent pulls from the platform registry with the HelloAck credential.
 func TestSnapshotImport(t *testing.T) {
 	admin := adminToken(t)
-	raiseSandboxQuota(t, admin, 10)
+	raiseSandboxQuota(t, admin, 100)
 	alpineRef := os.Getenv("STARS_E2E_ALPINE_REF")
 	if alpineRef == "" {
 		t.Fatal("STARS_E2E_ALPINE_REF is not set; run ./scripts/e2e.sh")
@@ -92,7 +92,7 @@ func TestSnapshotImport(t *testing.T) {
 // authorize source, copy, pull with the deployment credential.
 func TestSnapshotImportPrivateSource(t *testing.T) {
 	admin := adminToken(t)
-	raiseSandboxQuota(t, admin, 10)
+	raiseSandboxQuota(t, admin, 100)
 	addr := os.Getenv("STARS_E2E_REGISTRY_ADDR")
 	credential := os.Getenv("STARS_E2E_REGISTRY_CREDENTIAL")
 	if addr == "" || credential == "" {
@@ -156,7 +156,7 @@ func TestSnapshotImportPrivateSource(t *testing.T) {
 // Snapshot writes a tombstone and hides it.
 func TestSnapshotDeleteGuard(t *testing.T) {
 	admin := adminToken(t)
-	raiseSandboxQuota(t, admin, 10)
+	raiseSandboxQuota(t, admin, 100)
 	alpineRef := os.Getenv("STARS_E2E_ALPINE_REF")
 	if alpineRef == "" {
 		t.Fatal("STARS_E2E_ALPINE_REF is not set; run ./scripts/e2e.sh")
