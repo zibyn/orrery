@@ -319,7 +319,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	health := "healthy"
 	if probeErr != nil {
 		health = "unhealthy"
-		report = nodeproto.CapabilityReport{Runtime: "docker"}
+		report = nodeproto.CapabilityReport{RuntimeProvider: "docker"}
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
 	// The inventory is a hardware fact; placement still requires the CDI
@@ -423,7 +423,7 @@ func heartbeatMessage(health string, host hardware, opts RunOptions, gpuStates [
 }
 
 func capabilitiesMessage(snapshot nodeproto.CapabilityReport, gpus []gpuInfo) *nodev1.Capabilities {
-	caps := &nodev1.Capabilities{Runtime: snapshot.Runtime}
+	caps := &nodev1.Capabilities{RuntimeProvider: snapshot.RuntimeProvider}
 	for _, entry := range snapshot.Entries {
 		caps.Entries = append(caps.Entries, &nodev1.CapabilityEntry{
 			Name:  entry.Name,

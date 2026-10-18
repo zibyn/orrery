@@ -37,7 +37,7 @@ func TestCoreCapabilitiesEnforced(t *testing.T) {
 			}
 			list = append(list, CapabilityEntry{Name: name, Value: value})
 		}
-		raw, err := json.Marshal(CapabilityReport{Runtime: "docker", Entries: list})
+		raw, err := json.Marshal(CapabilityReport{RuntimeProvider: "docker", Entries: list})
 		if err != nil {
 			t.Fatal(err)
 		}
