@@ -1224,3 +1224,18 @@ SELECT count(*)::bigint FROM snapshot_versions WHERE snapshot_id = $1;
 -- name: DeleteDeletedSnapshot :exec
 DELETE FROM snapshots
 WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL;
+
+-- Manifest objects are content-addressed, so two versions (or a current and a
+-- non-current one) can share one manifest. The sweep only deletes it when no
+-- other version of the owner still names the address.
+-- name: CountResourceManifestReferences :one
+SELECT count(*)::bigint
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3;
+
+-- Snapshot digests are unique content too; deleting a version must not remove
+-- a manifest another version of the same Snapshot still uses.
+-- name: CountSnapshotVersionDigestReferences :one
+SELECT count(*)::bigint FROM snapshot_versions
+WHERE snapshot_id = $1 AND digest = $2 AND id <> $3;

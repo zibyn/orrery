@@ -288,6 +288,29 @@ func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.
 	return i, err
 }
 
+const countResourceManifestReferences = `-- name: CountResourceManifestReferences :one
+SELECT count(*)::bigint
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3
+`
+
+type CountResourceManifestReferencesParams struct {
+	OwnerID uuid.UUID
+	Address *string
+	ID      uuid.UUID
+}
+
+// Manifest objects are content-addressed, so two versions (or a current and a
+// non-current one) can share one manifest. The sweep only deletes it when no
+// other version of the owner still names the address.
+func (q *Queries) CountResourceManifestReferences(ctx context.Context, arg CountResourceManifestReferencesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countResourceManifestReferences, arg.OwnerID, arg.Address, arg.ID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countResourceUploads = `-- name: CountResourceUploads :one
 SELECT count(*)::bigint FROM uploads WHERE resource_id = $1
 `
@@ -356,6 +379,26 @@ SELECT count(*)::bigint FROM secrets WHERE owner_id = $1
 
 func (q *Queries) CountSecrets(ctx context.Context, ownerID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countSecrets, ownerID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countSnapshotVersionDigestReferences = `-- name: CountSnapshotVersionDigestReferences :one
+SELECT count(*)::bigint FROM snapshot_versions
+WHERE snapshot_id = $1 AND digest = $2 AND id <> $3
+`
+
+type CountSnapshotVersionDigestReferencesParams struct {
+	SnapshotID uuid.UUID
+	Digest     *string
+	ID         uuid.UUID
+}
+
+// Snapshot digests are unique content too; deleting a version must not remove
+// a manifest another version of the same Snapshot still uses.
+func (q *Queries) CountSnapshotVersionDigestReferences(ctx context.Context, arg CountSnapshotVersionDigestReferencesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countSnapshotVersionDigestReferences, arg.SnapshotID, arg.Digest, arg.ID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

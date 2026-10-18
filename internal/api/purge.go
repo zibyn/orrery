@@ -150,9 +150,20 @@ func (s *Server) purgeResourceVersions(ctx context.Context, q *store.Queries, no
 				continue
 			}
 			if row.Address != nil {
-				if err := s.objects.DeleteManifest(ctx, row.OwnerID.String(), *row.Address); err != nil {
-					s.logWarn(ctx, "delete ResourceVersion manifest", err)
+				// Manifests are content-addressed: an identical version that
+				// is still alive keeps the object.
+				others, err := q.CountResourceManifestReferences(ctx, store.CountResourceManifestReferencesParams{
+					OwnerID: row.OwnerID, Address: row.Address, ID: row.ID,
+				})
+				if err != nil {
+					s.logWarn(ctx, "count manifest references", err)
 					continue
+				}
+				if others == 0 {
+					if err := s.objects.DeleteManifest(ctx, row.OwnerID.String(), *row.Address); err != nil {
+						s.logWarn(ctx, "delete ResourceVersion manifest", err)
+						continue
+					}
 				}
 			}
 			if err := q.DeleteResourceVersionObjects(ctx, row.ID); err != nil {
@@ -239,9 +250,18 @@ func (s *Server) purgeResourceTombstones(ctx context.Context, q *store.Queries) 
 		}
 		for _, version := range versions {
 			if version.Address != nil {
-				if err := s.objects.DeleteManifest(ctx, version.OwnerID.String(), *version.Address); err != nil {
-					s.logWarn(ctx, "delete tombstoned manifest", err)
+				others, err := q.CountResourceManifestReferences(ctx, store.CountResourceManifestReferencesParams{
+					OwnerID: version.OwnerID, Address: version.Address, ID: version.ID,
+				})
+				if err != nil {
+					s.logWarn(ctx, "count tombstoned manifest references", err)
 					continue
+				}
+				if others == 0 {
+					if err := s.objects.DeleteManifest(ctx, version.OwnerID.String(), *version.Address); err != nil {
+						s.logWarn(ctx, "delete tombstoned manifest", err)
+						continue
+					}
 				}
 			}
 			if err := q.DeleteResourceVersionObjects(ctx, version.ID); err != nil {
@@ -311,10 +331,22 @@ func (s *Server) purgeSnapshotTombstones(ctx context.Context, q *store.Queries) 
 				if count > 0 {
 					continue
 				}
-				if err := registry.DeleteManifest(ctx, registry.Ref(s.cfg.RegistryPushAddr, repo, *version.Digest),
-					s.cfg.RegistryCredentialDoc); err != nil {
-					s.logWarn(ctx, "delete Snapshot manifest", err)
+				// Another version of this Snapshot may share the digest; the
+				// manifest is content-addressed and must outlive it.
+				shared, err := q.CountSnapshotVersionDigestReferences(ctx,
+					store.CountSnapshotVersionDigestReferencesParams{
+						SnapshotID: snap.ID, Digest: version.Digest, ID: version.ID,
+					})
+				if err != nil {
+					s.logWarn(ctx, "count Snapshot digest references", err)
 					continue
+				}
+				if shared == 0 {
+					if err := registry.DeleteManifest(ctx, registry.Ref(s.cfg.RegistryPushAddr, repo, *version.Digest),
+						s.cfg.RegistryCredentialDoc); err != nil {
+						s.logWarn(ctx, "delete Snapshot manifest", err)
+						continue
+					}
 				}
 			}
 			if err := q.DeleteSnapshotVersion(ctx, store.DeleteSnapshotVersionParams{
