@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
-import { api, apiVoid, type FileEntry } from '@/api'
+import { api, apiRaw, type FileEntry } from '@/api'
 import { Button } from '@/components/ui/button'
 import {
   downloadHref,
@@ -24,7 +24,7 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
 
   const upload = useMutation({
     mutationFn: (file: File) =>
-      apiVoid('PUT', fileContentPath(sandboxId, joinPath(path, file.name)), file),
+      apiRaw('PUT', fileContentPath(sandboxId, joinPath(path, file.name)), file),
     onSuccess: () => {
       setUploadError('')
       queryClient.invalidateQueries({ queryKey: ['files', sandboxId] })

@@ -254,27 +254,32 @@ async function problemError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, problem.code ?? 'internal', problem.detail ?? res.statusText)
 }
 
-export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function send(method: string, path: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(`/api/v1${path}`, {
     method,
     credentials: 'include',
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    ...init,
   })
   if (!res.ok) throw await problemError(res)
+  return res
+}
+
+export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await send(
+    method,
+    path,
+    body === undefined
+      ? undefined
+      : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+  )
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
 
-// File uploads send the File itself as the raw request body and the server
-// answers 204, which api() cannot parse (api.md §5).
-export async function apiVoid(method: string, path: string, body?: BodyInit): Promise<void> {
-  const res = await fetch(`/api/v1${path}`, {
-    method,
-    credentials: 'include',
-    body,
-  })
-  if (!res.ok) throw await problemError(res)
+// File uploads send the File itself as the raw request body; the server
+// answers 204, so the caller has no JSON to parse (api.md §5).
+export async function apiRaw(method: string, path: string, body?: BodyInit): Promise<void> {
+  await send(method, path, { body })
 }
 
 export function getMe(): Promise<User> {

@@ -8,14 +8,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { secretNameError } from '@/lib/secrets'
 import { formatTimestamp } from '@/lib/tokens'
+import { messageOf } from '@/lib/utils'
 
 export const Route = createFileRoute('/_authed/secrets')({
   component: SecretsPage,
 })
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
 
 function SecretsPage() {
   const queryClient = useQueryClient()

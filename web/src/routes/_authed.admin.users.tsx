@@ -8,13 +8,11 @@ import { api, type ListResponse, type QuotaUsage, type User } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { messageOf, selectClass } from '@/lib/utils'
 
 export const Route = createFileRoute('/_authed/admin/users')({
   component: UsersPage,
 })
-
-const selectClass =
-  'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50'
 
 const LOGIN_TYPES = ['password', 'oidc', 'none'] as const
 type LoginType = (typeof LOGIN_TYPES)[number]
@@ -31,10 +29,6 @@ const createUserSchema = z
     message: 'Password must be at least 12 characters',
     path: ['password'],
   })
-
-function apiMessage(error: unknown): string {
-  return error instanceof Error ? error.message : ''
-}
 
 function UsersPage() {
   const { user: me } = Route.useRouteContext()
@@ -196,7 +190,7 @@ function UsersPage() {
         </form.Field>
         {create.error && (
           <p className="text-sm text-destructive" data-testid="create-user-error">
-            {apiMessage(create.error)}
+            {messageOf(create.error)}
           </p>
         )}
         <div>
@@ -380,7 +374,7 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
 
       {error && (
         <p className="text-sm text-destructive" data-testid="user-row-error">
-          {apiMessage(error)}
+          {messageOf(error)}
         </p>
       )}
     </li>

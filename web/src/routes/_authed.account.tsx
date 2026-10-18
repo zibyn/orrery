@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { matchesCurrentSession, readCurrentSessionId, forgetCurrentSession } from '@/lib/current-session'
 import { expiresAtFromInput, formatTimestamp, scopeOptions } from '@/lib/tokens'
+import { messageOf } from '@/lib/utils'
 
 const tokenSchema = z.object({
   name: z.string().trim().min(1, 'Enter a name'),
@@ -27,10 +28,6 @@ type NewToken = {
   name: string
   scope: (typeof scopeOptions)[number]
   expires_at?: string
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 export const Route = createFileRoute('/_authed/account')({
