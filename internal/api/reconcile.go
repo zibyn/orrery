@@ -108,17 +108,14 @@ func (r *reconciler) once(ctx context.Context) {
 		return
 	}
 	for _, sb := range sandboxes {
-		switch SandboxDesiredState(sb.DesiredState) {
-		case SandboxDesiredRunning:
-			switch SandboxState(sb.State) {
-			case SandboxPending:
-				r.pending(ctx, sb)
-			case SandboxProvisioning:
-				r.create(ctx, sb)
-			}
-		case SandboxDesiredStopped:
+		switch sandboxStep(SandboxState(sb.State), SandboxDesiredState(sb.DesiredState)) {
+		case sandboxStepPending:
+			r.pending(ctx, sb)
+		case sandboxStepCreate:
+			r.create(ctx, sb)
+		case sandboxStepStop:
 			r.stop(ctx, sb)
-		case SandboxDesiredDeleted:
+		case sandboxStepDelete:
 			r.stopForDelete(ctx, sb)
 		}
 	}
@@ -154,40 +151,36 @@ func (r *reconciler) execs(ctx context.Context) {
 	for _, row := range rows {
 		e := row.Exec
 		connected := row.SandboxNodeID != nil && r.hub.connected(*row.SandboxNodeID)
-		state := SandboxState(row.SandboxState)
-		switch {
-		case state == SandboxStopped || state == SandboxDeleted || state == SandboxFailed:
+		delivered := row.SandboxNodeID != nil &&
+			r.hub.wasSent(*row.SandboxNodeID, commandID("start-exec", e.ID, e.Generation))
+		facts := execFacts{
+			sandboxState:    SandboxState(row.SandboxState),
+			desired:         SandboxDesiredState(row.SandboxDesiredState),
+			cancelRequested: e.CancelRequestedAt.Valid,
+			started:         e.StartedAt.Valid,
+		}
+		switch execStep(facts, connected, delivered) {
+		case execRuntimeLost:
 			// The Runtime is gone, so every remaining Exec failed with it.
-			r.finishExec(ctx, e.ID, "runtime_lost")
-		case e.CancelRequestedAt.Valid:
-			if !connected {
-				// Cancellation is a persistent intent: with the Agent away there
-				// is nobody to relay it to, so wait (runtime.md §5).
-				continue
-			}
-			delivered := row.SandboxNodeID != nil &&
-				r.hub.wasSent(*row.SandboxNodeID, commandID("start-exec", e.ID, e.Generation))
-			if !e.StartedAt.Valid && !delivered {
-				// The command never reached the Supervisor; there is nothing
-				// to signal.
-				r.finishExec(ctx, e.ID, "canceled")
-				continue
-			}
+			r.endExec(ctx, e.ID, ExecRuntimeLost)
+		case execFinishCanceled:
+			// The command never reached the Supervisor; there is nothing to
+			// signal.
+			r.endExec(ctx, e.ID, ExecCanceled)
+		case execSendCancel:
 			id := commandID("cancel-exec", e.ID, e.Generation)
 			r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
 				Message: &nodev1.ControlMessage_CancelExec{CancelExec: &nodev1.CancelExec{
 					CommandId: id, ExecId: e.ID.String(),
 				}},
 			})
-		case SandboxDesiredState(row.SandboxDesiredState) != SandboxDesiredRunning:
+		case execCancelSandbox:
 			// Stop and delete wait for the runtime to be gone; turn the active
 			// Execs into cancel intents first (api.md §3).
 			if _, err := r.s.q.CancelSandboxExecs(ctx, e.SandboxID); err != nil {
 				r.s.log.Warn("reconcile: cancel execs", "sandbox_id", e.SandboxID, "error", err)
 			}
-		case state != SandboxReady:
-			// The Sandbox is still provisioning; the Exec waits.
-		default:
+		case execStart:
 			r.startExec(ctx, row)
 		}
 	}
@@ -197,13 +190,13 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	e := row.Exec
 	var argv []string
 	if err := json.Unmarshal(e.Argv, &argv); err != nil || len(argv) == 0 {
-		r.finishExec(ctx, e.ID, "start_failed")
+		r.endExec(ctx, e.ID, ExecStartFailed)
 		return
 	}
 	env := map[string]string{}
 	if len(e.Env) > 0 {
 		if err := json.Unmarshal(e.Env, &env); err != nil {
-			r.finishExec(ctx, e.ID, "start_failed")
+			r.endExec(ctx, e.ID, ExecStartFailed)
 			return
 		}
 	}
@@ -212,7 +205,7 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	secretEnv, err := decryptSecretEnv(r.s.cfg.EncryptionKeys, row.SandboxOwnerID, row.SandboxSecretEnvCt)
 	if err != nil {
 		r.s.log.Warn("reconcile: decrypt Secrets", "exec_id", e.ID, "error", err)
-		r.finishExec(ctx, e.ID, "start_failed")
+		r.endExec(ctx, e.ID, ExecStartFailed)
 		return
 	}
 	// The Sandbox Token travels in secret_env, not in CreateSandbox, so a
@@ -221,7 +214,7 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 		row.SandboxTokenCt, row.SandboxTokenKeyID)
 	if err != nil {
 		r.s.log.Warn("reconcile: open Sandbox Token", "exec_id", e.ID, "error", err)
-		r.finishExec(ctx, e.ID, "start_failed")
+		r.endExec(ctx, e.ID, ExecStartFailed)
 		return
 	}
 	if secretEnv == nil {
@@ -241,7 +234,7 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	if hasPTY(e.Pty) {
 		var size ptySize
 		if err := json.Unmarshal(e.Pty, &size); err != nil {
-			r.finishExec(ctx, e.ID, "start_failed")
+			r.endExec(ctx, e.ID, ExecStartFailed)
 			return
 		}
 		pty = &nodev1.PtySpec{Rows: int32(size.Rows), Cols: int32(size.Cols)}
@@ -257,8 +250,10 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	})
 }
 
-func (r *reconciler) finishExec(ctx context.Context, id uuid.UUID, cause string) {
-	if _, err := r.s.q.FinishExec(ctx, store.FinishExecParams{ID: id, Cause: &cause}); err != nil {
+// endExec finishes one Exec from the Reconciler and logs a failed write; the
+// shared write is finishExec.
+func (r *reconciler) endExec(ctx context.Context, id uuid.UUID, cause ExecCause) {
+	if err := finishExec(ctx, r.s.q, id, cause, nil, nil); err != nil {
 		r.s.log.Warn("reconcile: finish Exec", "exec_id", id, "error", err)
 	}
 }
@@ -389,8 +384,8 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 		r.s.log.Warn("reconcile: mark stopped", "sandbox_id", sandboxID, "error", err)
 		return
 	}
-	if err := releaseCompute(ctx, q, sandboxID); err != nil {
-		r.s.log.Warn("reconcile: release compute", "sandbox_id", sandboxID, "error", err)
+	if err := releaseRuntime(ctx, q, sandboxID); err != nil {
+		r.s.log.Warn("reconcile: release runtime", "sandbox_id", sandboxID, "error", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -403,26 +398,11 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 // the deletion.
 func (r *reconciler) stopForDelete(ctx context.Context, sb store.Sandbox) {
 	if sb.NodeID == nil {
-		// Nothing ever ran. Release the Attachment, then either let the
-		// implicit Workspace's cleanup finish the Sandbox or keep a persistent
-		// Workspace and finish now (ADR-0018).
-		if err := r.s.q.DeleteAttachment(ctx, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: delete attachment", "sandbox_id", sb.ID, "error", err)
-		}
-		ws, err := r.s.q.GetSandboxWorkspace(ctx, sb.ID)
-		switch {
-		case err == nil && ws.Kind == "ephemeral":
-			if _, err := r.s.q.SetWorkspaceDeleting(ctx, ws.ID); err != nil {
-				r.s.log.Warn("reconcile: mark workspace deleting", "workspace_id", ws.ID, "error", err)
-			}
-			return
-		case err != nil && !errors.Is(err, pgx.ErrNoRows):
-			// A transient read error must not orphan an implicit Workspace.
-			r.s.log.Warn("reconcile: look up Workspace for teardown", "sandbox_id", sb.ID, "error", err)
-			return
-		}
-		if _, err := r.s.q.MarkSandboxDeleted(ctx, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: mark deleted", "sandbox_id", sb.ID, "error", err)
+		// Nothing ever ran. Release the Runtime and let the implicit
+		// Workspace's cleanup finish the Sandbox, or finish a persistent one
+		// now (ADR-0018).
+		if err := finalizeGone(ctx, r.s.q, sb.ID); err != nil {
+			r.s.log.Warn("reconcile: finalize deleted Sandbox", "sandbox_id", sb.ID, "error", err)
 		}
 		return
 	}
@@ -630,8 +610,13 @@ func (r *reconciler) finalizeWorkspace(ctx context.Context, ws store.Workspace) 
 		return
 	}
 	if ws.SandboxID != nil {
-		if _, err := r.s.q.MarkSandboxDeleted(ctx, *ws.SandboxID); err != nil {
-			r.s.log.Warn("reconcile: mark sandbox deleted", "sandbox_id", *ws.SandboxID, "error", err)
+		// A Workspace going away does not release a Sandbox that still runs
+		// (ADR-0018); only its own deletion finishes it.
+		if sb, err := r.s.q.GetSandbox(ctx, *ws.SandboxID); err == nil &&
+			SandboxDesiredState(sb.DesiredState) == SandboxDesiredDeleted {
+			if err := finalizeGone(ctx, r.s.q, *ws.SandboxID); err != nil {
+				r.s.log.Warn("reconcile: finalize Sandbox", "sandbox_id", *ws.SandboxID, "error", err)
+			}
 		}
 	}
 }
@@ -651,8 +636,8 @@ func (r *reconciler) fail(ctx context.Context, sb store.Sandbox, cause string) {
 		return
 	}
 	if rows > 0 {
-		if err := releaseCompute(ctx, q, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: release compute", "sandbox_id", sb.ID, "error", err)
+		if err := releaseRuntime(ctx, q, sb.ID); err != nil {
+			r.s.log.Warn("reconcile: release runtime", "sandbox_id", sb.ID, "error", err)
 			return
 		}
 	}
@@ -789,18 +774,4 @@ func (h *nodeHub) failed(nodeID uuid.UUID, commandID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.sent[nodeID], commandID)
-}
-
-// releaseCompute drops the Allocation and the Attachment, which exist only
-// while a runtime does. Both are attempted so one failure does not hide the
-// other.
-func releaseCompute(ctx context.Context, q *store.Queries, id uuid.UUID) error {
-	var errs []error
-	if err := q.ReleaseCompute(ctx, id); err != nil {
-		errs = append(errs, fmt.Errorf("release allocation: %w", err))
-	}
-	if err := q.DeleteAttachment(ctx, id); err != nil {
-		errs = append(errs, fmt.Errorf("release attachment: %w", err))
-	}
-	return errors.Join(errs...)
 }

@@ -370,7 +370,7 @@ func (s *Server) followExecOutput(w http.ResponseWriter, r *http.Request, execID
 					return
 				}
 				if e.FinishedAt.Valid && after >= e.StoredSeq {
-					cause := "exited"
+					cause := string(ExecExited)
 					if e.Cause != nil {
 						cause = *e.Cause
 					}

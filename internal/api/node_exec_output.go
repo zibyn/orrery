@@ -102,13 +102,11 @@ func (n *nodeService) ExecOutput(stream nodev1.Node_ExecOutputServer) error {
 			}
 		}
 		if exit != nil {
-			cause := exit.Cause
+			cause := ExecCause(exit.Cause)
 			if cause == "" {
-				cause = "exited"
+				cause = ExecExited
 			}
-			if _, err := n.s.q.FinishExec(ctx, store.FinishExecParams{
-				ID: execID, Cause: &cause, ExitCode: exit.ExitCode, Signal: exit.Signal,
-			}); err != nil {
+			if err := finishExec(ctx, n.s.q, execID, cause, exit.ExitCode, exit.Signal); err != nil {
 				n.s.log.Error("finish Exec", "exec_id", execID, "error", err)
 				return status.Error(codes.Internal, "store result")
 			}

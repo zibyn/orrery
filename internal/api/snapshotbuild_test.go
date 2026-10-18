@@ -81,9 +81,9 @@ func TestBuildCauseMapping(t *testing.T) {
 			t.Errorf("versionCauseForSandbox(%q) = %q, want %q", cause, got, want)
 		}
 	}
-	for cause, want := range map[string]string{
-		"timed_out": "timed_out", "build_interrupted": "runtime_lost",
-		"node_lost": "node_lost", "build_failed": "exited", "": "exited",
+	for cause, want := range map[string]ExecCause{
+		"timed_out": ExecTimedOut, "build_interrupted": ExecRuntimeLost,
+		"node_lost": ExecNodeLost, "build_failed": ExecExited, "": ExecExited,
 	} {
 		if got := execCauseForVersionCause(cause); got != want {
 			t.Errorf("execCauseForVersionCause(%q) = %q, want %q", cause, got, want)

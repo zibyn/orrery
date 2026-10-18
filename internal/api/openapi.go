@@ -741,10 +741,7 @@ func schemas() map[string]any {
 			"type":     "object",
 			"required": []string{"cause"},
 			"properties": map[string]any{
-				"cause": map[string]any{"type": "string", "enum": []string{
-					"exited", "canceled", "timed_out", "oom_killed", "runtime_lost",
-					"node_lost", "pty_idle", "start_failed",
-				}},
+				"cause":     map[string]any{"type": "string", "enum": execCauseNames},
 				"exit_code": map[string]any{"type": "integer"},
 				"signal":    map[string]any{"type": "integer"},
 			},
