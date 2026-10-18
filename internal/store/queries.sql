@@ -13,6 +13,32 @@ SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 -- name: GetUserByName :one
 SELECT * FROM users WHERE name = $1 AND deleted_at IS NULL;
 
+-- name: GetUserByOIDCIdentity :one
+SELECT * FROM users
+WHERE oidc_issuer = $1 AND oidc_subject = $2 AND deleted_at IS NULL;
+
+-- name: GetUserByEmail :one
+SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
+
+-- name: BindUserOIDCIdentity :one
+UPDATE users
+SET oidc_issuer = $2, oidc_subject = $3, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
+-- CreateOIDCUser creates an OIDC User; the first User in the table is the
+-- admin, even when allow_signups is off (ADR-0020).
+-- name: CreateOIDCUser :one
+INSERT INTO users (
+    id, name, email, is_admin, login_type, oidc_issuer, oidc_subject,
+    gpu_quota, sandbox_quota
+) VALUES (
+    $1, $2, $3,
+    NOT EXISTS (SELECT 1 FROM users),
+    'oidc', $4, $5, $6, $7
+)
+RETURNING *;
+
 -- LockUser serializes quota checks of one User: concurrent creates and starts
 -- cannot both observe the same usage (ADR-0015).
 -- name: LockUser :one

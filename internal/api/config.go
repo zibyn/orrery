@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zibyn/stars-sandbox/internal/keyring"
@@ -49,7 +50,22 @@ type Config struct {
 	// AccessURL is the externally reachable `api` address. It becomes
 	// STARS_URL in every Exec; empty leaves STARS_URL out (defaults.md).
 	AccessURL string
+	// OIDC is the single external issuer (ADR-0020). An empty IssuerURL turns
+	// OIDC off.
+	OIDC OIDCConfig
 }
+
+type OIDCConfig struct {
+	IssuerURL    string
+	ClientID     string
+	ClientSecret string
+	// AllowSignups defaults to false; the first User bypasses it.
+	AllowSignups bool
+	// EmailDomains, when non-empty, restricts logins to those email domains.
+	EmailDomains []string
+}
+
+func (c OIDCConfig) Enabled() bool { return c.IssuerURL != "" }
 
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
@@ -94,12 +110,50 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.AdmissionTimeout, err = envDuration("STARS_ADMISSION_TIMEOUT", time.Hour); err != nil {
 		return Config{}, err
 	}
+	if err := cfg.loadOIDC(); err != nil {
+		return Config{}, err
+	}
 	if path := os.Getenv("STARS_ENCRYPTION_KEYS_FILE"); path != "" {
 		if cfg.EncryptionKeys, err = keyring.LoadFile(path); err != nil {
 			return Config{}, err
 		}
 	}
 	return cfg, nil
+}
+
+// loadOIDC reads the deployment's one external issuer (defaults.md identity
+// section). A configured issuer needs a client id and a secret file.
+func (c *Config) loadOIDC() error {
+	c.OIDC.IssuerURL = os.Getenv("STARS_OIDC_ISSUER_URL")
+	c.OIDC.ClientID = os.Getenv("STARS_OIDC_CLIENT_ID")
+	if !c.OIDC.Enabled() {
+		return nil
+	}
+	if c.OIDC.ClientID == "" {
+		return fmt.Errorf("STARS_OIDC_CLIENT_ID is required when STARS_OIDC_ISSUER_URL is set")
+	}
+	path := os.Getenv("STARS_OIDC_CLIENT_SECRET_FILE")
+	if path == "" {
+		return fmt.Errorf("STARS_OIDC_CLIENT_SECRET_FILE is required when STARS_OIDC_ISSUER_URL is set")
+	}
+	secret, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read OIDC client secret: %w", err)
+	}
+	c.OIDC.ClientSecret = strings.TrimSpace(string(secret))
+	for _, domain := range strings.Split(os.Getenv("STARS_OIDC_EMAIL_DOMAINS"), ",") {
+		if domain = strings.ToLower(strings.TrimSpace(domain)); domain != "" {
+			c.OIDC.EmailDomains = append(c.OIDC.EmailDomains, domain)
+		}
+	}
+	if raw := os.Getenv("STARS_OIDC_ALLOW_SIGNUPS"); raw != "" {
+		allow, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("STARS_OIDC_ALLOW_SIGNUPS must be true or false")
+		}
+		c.OIDC.AllowSignups = allow
+	}
+	return nil
 }
 
 func envDuration(key string, fallback time.Duration) (time.Duration, error) {

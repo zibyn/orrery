@@ -353,12 +353,16 @@ func pathUUID(r *http.Request, name string) (uuid.UUID, bool) {
 	return id, true
 }
 
+func validEmail(email string) bool {
+	addr, err := mail.ParseAddress(email)
+	return err == nil && addr.Address == email
+}
+
 func normalizeEmail(w http.ResponseWriter, email *string) (*string, bool) {
 	if email == nil || *email == "" {
 		return nil, true
 	}
-	addr, err := mail.ParseAddress(*email)
-	if err != nil || addr.Address != *email {
+	if !validEmail(*email) {
 		writeProblem(w, "invalid_request", "invalid email address")
 		return nil, false
 	}

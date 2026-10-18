@@ -14,6 +14,8 @@ describe('safeReturn', () => {
     expect(safeReturn('https://evil.example')).toBe('/')
     expect(safeReturn('//evil.example')).toBe('/')
     expect(safeReturn('/\\evil.example')).toBe('/')
+    expect(safeReturn('/\tevil.example')).toBe('/')
+    expect(safeReturn('/\u007fevil.example')).toBe('/')
     expect(safeReturn('cli-auth')).toBe('/')
   })
 })

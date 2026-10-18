@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { z } from 'zod'
 
 import { api, ApiError } from '@/api'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { safeReturn } from '@/lib/return-path'
@@ -94,6 +94,17 @@ function LoginPage() {
           Sign in
         </Button>
       </form>
+      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+        <span className="h-px flex-1 bg-border" />
+        or
+        <span className="h-px flex-1 bg-border" />
+      </div>
+      <a
+        href={`/api/v1/oidc/login?return=${encodeURIComponent(safeReturn(returnTo))}`}
+        className={buttonVariants({ variant: 'outline' })}
+      >
+        Sign in with SSO
+      </a>
     </div>
   )
 }

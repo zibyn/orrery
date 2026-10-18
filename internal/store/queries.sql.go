@@ -73,6 +73,42 @@ func (q *Queries) AppendExecChunk(ctx context.Context, arg AppendExecChunkParams
 	return err
 }
 
+const bindUserOIDCIdentity = `-- name: BindUserOIDCIdentity :one
+UPDATE users
+SET oidc_issuer = $2, oidc_subject = $3, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at
+`
+
+type BindUserOIDCIdentityParams struct {
+	ID          uuid.UUID
+	OidcIssuer  *string
+	OidcSubject *string
+}
+
+func (q *Queries) BindUserOIDCIdentity(ctx context.Context, arg BindUserOIDCIdentityParams) (User, error) {
+	row := q.db.QueryRow(ctx, bindUserOIDCIdentity, arg.ID, arg.OidcIssuer, arg.OidcSubject)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.IsAdmin,
+		&i.LoginType,
+		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
+		&i.GpuQuota,
+		&i.SandboxQuota,
+		&i.IdempotencyKey,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const bootstrapAdmin = `-- name: BootstrapAdmin :one
 INSERT INTO users (
     id, name, email, is_admin, login_type, password_hash,
@@ -495,6 +531,61 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 		&i.ReservedMemory,
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
+	)
+	return i, err
+}
+
+const createOIDCUser = `-- name: CreateOIDCUser :one
+INSERT INTO users (
+    id, name, email, is_admin, login_type, oidc_issuer, oidc_subject,
+    gpu_quota, sandbox_quota
+) VALUES (
+    $1, $2, $3,
+    NOT EXISTS (SELECT 1 FROM users),
+    'oidc', $4, $5, $6, $7
+)
+RETURNING id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at
+`
+
+type CreateOIDCUserParams struct {
+	ID           uuid.UUID
+	Name         string
+	Email        *string
+	OidcIssuer   *string
+	OidcSubject  *string
+	GpuQuota     int32
+	SandboxQuota int32
+}
+
+// CreateOIDCUser creates an OIDC User; the first User in the table is the
+// admin, even when allow_signups is off (ADR-0020).
+func (q *Queries) CreateOIDCUser(ctx context.Context, arg CreateOIDCUserParams) (User, error) {
+	row := q.db.QueryRow(ctx, createOIDCUser,
+		arg.ID,
+		arg.Name,
+		arg.Email,
+		arg.OidcIssuer,
+		arg.OidcSubject,
+		arg.GpuQuota,
+		arg.SandboxQuota,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.IsAdmin,
+		&i.LoginType,
+		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
+		&i.GpuQuota,
+		&i.SandboxQuota,
+		&i.IdempotencyKey,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -1442,6 +1533,33 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const getUserByEmail = `-- name: GetUserByEmail :one
+SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at FROM users WHERE email = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) GetUserByEmail(ctx context.Context, email *string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByEmail, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.IsAdmin,
+		&i.LoginType,
+		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
+		&i.GpuQuota,
+		&i.SandboxQuota,
+		&i.IdempotencyKey,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const getUserByIdempotencyKey = `-- name: GetUserByIdempotencyKey :one
 SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at FROM users
 WHERE created_by = $1 AND idempotency_key = $2
@@ -1481,6 +1599,39 @@ SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_s
 
 func (q *Queries) GetUserByName(ctx context.Context, name string) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByName, name)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.IsAdmin,
+		&i.LoginType,
+		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
+		&i.GpuQuota,
+		&i.SandboxQuota,
+		&i.IdempotencyKey,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getUserByOIDCIdentity = `-- name: GetUserByOIDCIdentity :one
+SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at FROM users
+WHERE oidc_issuer = $1 AND oidc_subject = $2 AND deleted_at IS NULL
+`
+
+type GetUserByOIDCIdentityParams struct {
+	OidcIssuer  *string
+	OidcSubject *string
+}
+
+func (q *Queries) GetUserByOIDCIdentity(ctx context.Context, arg GetUserByOIDCIdentityParams) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByOIDCIdentity, arg.OidcIssuer, arg.OidcSubject)
 	var i User
 	err := row.Scan(
 		&i.ID,

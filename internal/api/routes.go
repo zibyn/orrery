@@ -43,6 +43,8 @@ func (s *Server) routes() []route {
 		{http.MethodPost, "/git/credential", "sandbox", "getGitCredential", "Fetch a Git credential", "", "", nil, http.StatusOK, s.handleGitCredential},
 		{http.MethodPost, "/sessions", "", "createSession", "Log in with a password", "SessionRequest", "LoginResponse", nil, http.StatusCreated, s.handleCreateSession},
 		{http.MethodDelete, "/sessions/current", "user", "deleteCurrentSession", "Log out the current Session", "", "Token", nil, http.StatusAccepted, s.handleDeleteCurrentSession},
+		{http.MethodGet, "/oidc/login", "", "oidcLogin", "Start an OIDC login", "", "", []string{"return"}, http.StatusFound, s.handleOIDCLogin},
+		{http.MethodGet, "/oidc/callback", "", "oidcCallback", "Finish an OIDC login", "", "", []string{"code", "state", "error"}, http.StatusFound, s.handleOIDCCallback},
 		{http.MethodGet, "/audit", "admin", "listAudit", "List Audit Records", "", "AuditList", []string{"actor", "action", "target", "target_type", "from", "to", "limit", "cursor"}, http.StatusOK, s.handleListAudit},
 		{http.MethodPost, "/enrollment-packets", "admin", "createEnrollmentPacket", "Issue an Enrollment Packet", "", "EnrollmentPacket", nil, http.StatusCreated, s.handleCreateEnrollmentPacket},
 		{http.MethodGet, "/nodes", "admin", "listNodes", "List Nodes", "", "NodeList", []string{"limit", "cursor"}, http.StatusOK, s.handleListNodes},

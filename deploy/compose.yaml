@@ -10,6 +10,18 @@ services:
       interval: 1s
       timeout: 5s
       retries: 60
+    volumes:
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  dex:
+    image: ghcr.io/dexidp/dex:v2.41.1
+    # The e2e-only profile keeps the reference deployment free of a test IdP.
+    profiles: ["oidc"]
+    command: ["dex", "serve", "/etc/dex/dex.yaml"]
+    volumes:
+      - "${STARS_DEX_DIR:-.}:/etc/dex:ro"
+    ports:
+      - "15556:5556"
 
   server:
     build:
@@ -32,12 +44,46 @@ services:
       STARS_PORT_TICKET_KEY: "${STARS_PORT_TICKET_KEY:-}"
       STARS_ENCRYPTION_KEYS_FILE: "${STARS_ENCRYPTION_KEYS_FILE:-}"
       STARS_ACCESS_URL: "${STARS_ACCESS_URL:-}"
+      STARS_OIDC_ISSUER_URL: "${STARS_OIDC_ISSUER_URL:-}"
+      STARS_OIDC_CLIENT_ID: "${STARS_OIDC_CLIENT_ID:-}"
+      STARS_OIDC_CLIENT_SECRET_FILE: "${STARS_OIDC_CLIENT_SECRET_FILE:-}"
+      STARS_OIDC_ALLOW_SIGNUPS: "${STARS_OIDC_ALLOW_SIGNUPS:-}"
+      STARS_OIDC_EMAIL_DOMAINS: "${STARS_OIDC_EMAIL_DOMAINS:-}"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
       - "${STARS_ENCRYPTION_KEYS_DIR:-./keys}:/keys:ro"
+      - "${STARS_OIDC_SECRET_DIR:-./oidc}:/oidc:ro"
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "18080:8080"
       - "18081:8081"
+
+  # An empty Control Plane for the "first OIDC login is the admin" scenario
+  # (ADR-0020). It has no Node Agent and serves nothing but the OIDC tests.
+  server-oidc:
+    profiles: ["oidc"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      STARS_DATABASE_URL: postgres://stars:stars@postgres:5432/stars_oidc?sslmode=disable
+      STARS_API_ADDR: ":8080"
+      STARS_NODE_ADDR: ":8081"
+      STARS_NODE_TLS_CERT: /tls/server.crt
+      STARS_NODE_TLS_KEY: /tls/server.key
+      STARS_ACCESS_URL: "${STARS_OIDC_ACCESS_URL:-}"
+      STARS_OIDC_ISSUER_URL: "${STARS_OIDC_ISSUER_URL:-}"
+      STARS_OIDC_CLIENT_ID: "${STARS_OIDC_CLIENT_ID:-}"
+      STARS_OIDC_CLIENT_SECRET_FILE: "${STARS_OIDC_CLIENT_SECRET_FILE:-}"
+      STARS_OIDC_ALLOW_SIGNUPS: "${STARS_OIDC_ALLOW_SIGNUPS:-}"
+      STARS_OIDC_EMAIL_DOMAINS: "${STARS_OIDC_EMAIL_DOMAINS:-}"
+    volumes:
+      - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
+      - "${STARS_OIDC_SECRET_DIR:-./oidc}:/oidc:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "18082:8080"

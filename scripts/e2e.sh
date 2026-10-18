@@ -28,7 +28,7 @@ API_URL="http://127.0.0.1:18080"
 NODE_URL="127.0.0.1:18081"
 COMPOSE_FILE="$PWD/deploy/compose.yaml"
 COMPOSE_PROJECT="stars-sandbox-e2e"
-COMPOSE=(docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
+COMPOSE=(docker compose --profile oidc -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
 
 # The node listener always uses TLS (ADR-0014); a throwaway self-signed cert is
 # enough for the black-box tests. Backdate it: a remote Node whose clock is a
@@ -75,10 +75,28 @@ export STARS_APPS_DOMAIN="${STARS_APPS_DOMAIN:-apps.test}"
 
 # STARS_URL inside a Sandbox must reach the Control Plane. Published ports bind
 # on the host, so the Docker bridge gateway is the address a Sandbox can use.
+HOST_GATEWAY="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+HOST_GATEWAY="${HOST_GATEWAY:-172.17.0.1}"
 if [ -z "${STARS_ACCESS_URL:-}" ]; then
-  HOST_GATEWAY="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
-  export STARS_ACCESS_URL="http://${HOST_GATEWAY:-172.17.0.1}:18080"
+  export STARS_ACCESS_URL="http://${HOST_GATEWAY}:18080"
 fi
+
+# OIDC e2e: Dex is the deployment's one external issuer (ADR-0020). Its issuer
+# is the Compose service name, which the Control Plane resolves; the redirect
+# URIs use the host gateway because STARS_ACCESS_URL also does (defaults.md).
+export STARS_OIDC_ISSUER_URL="${STARS_OIDC_ISSUER_URL:-http://dex:5556/dex}"
+export STARS_OIDC_CLIENT_ID="${STARS_OIDC_CLIENT_ID:-stars-sandbox}"
+export STARS_OIDC_ALLOW_SIGNUPS="${STARS_OIDC_ALLOW_SIGNUPS:-false}"
+export STARS_OIDC_ACCESS_URL="${STARS_OIDC_ACCESS_URL:-http://${HOST_GATEWAY}:18082}"
+mkdir -p .e2e/oidc .e2e/dex
+printf 'stars-sandbox-oidc-secret' > .e2e/oidc/client
+chmod 644 .e2e/oidc/client
+export STARS_OIDC_SECRET_DIR="$PWD/.e2e/oidc"
+export STARS_OIDC_CLIENT_SECRET_FILE=/oidc/client
+sed -e "s|__MAIN_CALLBACK__|${STARS_ACCESS_URL%/}/api/v1/oidc/callback|" \
+    -e "s|__OIDC_CALLBACK__|${STARS_OIDC_ACCESS_URL%/}/api/v1/oidc/callback|" \
+    deploy/dex.yaml > .e2e/dex/dex.yaml
+export STARS_DEX_DIR="$PWD/.e2e/dex"
 
 # Warm the cache; the Agent pulls the image itself if this misses.
 docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null
@@ -101,6 +119,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A killed previous run leaves a volume whose postgres-init.sql never ran, so
+# stars_oidc would be missing. Start from a clean volume every time.
+"${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 "${COMPOSE[@]}" up -d --build
 
 code=""
@@ -115,12 +136,38 @@ if [ "$code" != "401" ]; then
   exit 1
 fi
 
+# The OIDC-first-User scenario has its own Control Plane and database.
+for _ in $(seq 1 120); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18082/api/v1/users" || true)"
+  [ "$code" = "401" ] && break
+  sleep 1
+done
+if [ "$code" != "401" ]; then
+  echo "server-oidc did not become ready (last status: ${code:-none})" >&2
+  "${COMPOSE[@]}" logs --no-color >&2 || true
+  exit 1
+fi
+for _ in $(seq 1 60); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:15556/dex/.well-known/openid-configuration" || true)"
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+if [ "$code" != "200" ]; then
+  echo "dex did not become ready (last status: ${code:-none})" >&2
+  "${COMPOSE[@]}" logs --no-color >&2 || true
+  exit 1
+fi
+
 DOCKER_SOCKET=""
 case "${DOCKER_HOST:-}" in
   unix://*) DOCKER_SOCKET="${DOCKER_HOST#unix://}" ;;
 esac
 
 STARS_E2E_API_URL="$API_URL" \
+STARS_E2E_ACCESS_URL="$STARS_ACCESS_URL" \
+STARS_E2E_OIDC_ACCESS_URL="$STARS_OIDC_ACCESS_URL" \
+STARS_E2E_OIDC_ISSUER_URL="$STARS_OIDC_ISSUER_URL" \
+STARS_E2E_DEX_URL="http://127.0.0.1:15556/dex" \
 STARS_E2E_CLI="$PWD/.e2e/stars-sandbox" \
 STARS_E2E_AGENT="$PWD/.e2e/stars-sandbox-agent" \
 STARS_E2E_NODE_URL="$NODE_URL" \

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
@@ -15,15 +17,17 @@ import (
 )
 
 type Server struct {
-	cfg         Config
-	pool        *pgxpool.Pool
-	q           *store.Queries
-	log         *slog.Logger
-	logins      *loginLimiter
-	crossOrigin http.CrossOriginProtection
-	reconcile   *reconciler
-	tunnels     *tunnelRegistry
-	activity    *activityTracker
+	cfg          Config
+	pool         *pgxpool.Pool
+	q            *store.Queries
+	log          *slog.Logger
+	logins       *loginLimiter
+	crossOrigin  http.CrossOriginProtection
+	reconcile    *reconciler
+	tunnels      *tunnelRegistry
+	activity     *activityTracker
+	oidcMu       sync.Mutex
+	oidcProvider *oidc.Provider
 }
 
 func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {

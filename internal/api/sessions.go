@@ -82,14 +82,21 @@ func (s *Server) createLoginToken(w http.ResponseWriter, r *http.Request, user s
 }
 
 func (s *Server) createBrowserSession(w http.ResponseWriter, r *http.Request, user store.User) {
-	ctx := r.Context()
-	// No idempotency key: the cookie is the only copy of the secret, so a
-	// retried login cannot return the old one; a fresh Session is correct
-	// (api.md §1).
+	token, err := s.startBrowserSession(w, r.Context(), user, nil)
+	if err != nil {
+		s.internal(w, "create session", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, tokenToDTO(token))
+}
+
+// startBrowserSession mints a Session, sets its cookie and audits it. No
+// idempotency key: the cookie is the only copy of the secret, so a retried
+// login cannot return the old one (api.md §1).
+func (s *Server) startBrowserSession(w http.ResponseWriter, ctx context.Context, user store.User, detail any) (store.ApiToken, error) {
 	raw, id, hash, err := NewToken()
 	if err != nil {
-		s.internal(w, "generate session token", err)
-		return
+		return store.ApiToken{}, err
 	}
 	scope := "user"
 	if user.IsAdmin {
@@ -106,12 +113,11 @@ func (s *Server) createBrowserSession(w http.ResponseWriter, r *http.Request, us
 		ExpiresAt:  timestamptzPtr(&expires),
 	})
 	if err != nil {
-		s.internal(w, "create session", err)
-		return
+		return store.ApiToken{}, err
 	}
 	http.SetCookie(w, newSessionCookie(raw))
-	s.auditAs(ctx, &user.ID, &token.ID, "session.create", "session", token.ID.String(), nil)
-	writeJSON(w, http.StatusCreated, tokenToDTO(token))
+	s.auditAs(ctx, &user.ID, &token.ID, "session.create", "session", token.ID.String(), detail)
+	return token, nil
 }
 
 func (s *Server) handleDeleteCurrentSession(w http.ResponseWriter, r *http.Request, p *principal) {

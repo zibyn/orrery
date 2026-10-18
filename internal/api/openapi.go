@@ -99,6 +99,12 @@ func responsesFor(rt route) map[string]any {
 		success["content"] = map[string]any{"application/json": map[string]any{"schema": schemaRef(rt.Response)}}
 	}
 	responses := map[string]any{strconv.Itoa(rt.SuccessStatus): success}
+	if rt.SuccessStatus == http.StatusFound {
+		success["description"] = "Redirect"
+		success["headers"] = map[string]any{
+			"Location": map[string]any{"schema": map[string]any{"type": "string"}},
+		}
+	}
 	if rt.SuccessStatus == http.StatusSwitchingProtocols {
 		success["description"] = "Switching Protocols. The WebSocket subprotocol is sandbox.v1."
 		if rt.OperationID == "attachExecPTY" {
