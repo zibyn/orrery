@@ -116,6 +116,7 @@ func TestPublishFromWorkspace(t *testing.T) {
 	}
 	var sb sandboxView
 	mustJSON(t, data, &sb)
+	defer deleteSandbox(t, admin, sb.ID)
 	status, data = call(t, http.MethodGet, "/api/v1/sandboxes/"+sb.ID+"?wait_for=ready", admin, nil)
 	if status != http.StatusOK {
 		t.Fatalf("wait_for=ready: %d %s", status, data)

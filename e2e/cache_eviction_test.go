@@ -165,6 +165,17 @@ func TestCacheEviction(t *testing.T) {
 	if out, err := exec.Command("docker", "image", "inspect", "alpine:3.22").CombinedOutput(); err != nil {
 		t.Fatalf("a host-owned image was evicted: %v\n%s", err, out)
 	}
+
+	// The suite shares one User quota; a Sandbox this test leaves behind would
+	// starve later scenarios. The deferred deletes above run at return, but
+	// assert they complete while the eviction Agent is still up.
+	deleteSandbox(t, admin, a.ID)
+	deleteSandbox(t, admin, b.ID)
+	for _, id := range []string{a.ID, b.ID} {
+		if status, data := call(t, http.MethodGet, "/api/v1/sandboxes/"+id, admin, nil); status != http.StatusNotFound {
+			t.Fatalf("Sandbox %s survived cleanup: %d %s", id, status, data)
+		}
+	}
 }
 
 func createResourceSandboxVersion(t *testing.T, admin, name, resource, version string) sandboxView {
