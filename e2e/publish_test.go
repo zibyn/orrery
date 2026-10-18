@@ -106,6 +106,8 @@ func TestPublishFromWorkspace(t *testing.T) {
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
+	// The pinning Sandbox caches a read-only version tree.
+	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	ws := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
 	status, data := createSandboxWithWorkspace(t, admin, fmt.Sprintf("publish-%d", suffix), ws.ID, "rw", 0)

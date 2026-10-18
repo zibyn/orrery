@@ -1247,3 +1247,11 @@ WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3;
 -- name: CountSnapshotVersionDigestReferences :one
 SELECT count(*)::bigint FROM snapshot_versions
 WHERE snapshot_id = $1 AND digest = $2 AND id <> $3;
+
+-- A deleted Sandbox no longer retains versions, but its sandbox_resources
+-- rows outlive it (the row is kept for API idempotency). The sweep releases
+-- those references before the version/FK checks run.
+-- name: DeleteDeletedSandboxResources :execrows
+DELETE FROM sandbox_resources sr
+USING sandboxes sb
+WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted';

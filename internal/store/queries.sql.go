@@ -1274,6 +1274,23 @@ func (q *Queries) DeleteDeletedResource(ctx context.Context, id uuid.UUID) error
 	return err
 }
 
+const deleteDeletedSandboxResources = `-- name: DeleteDeletedSandboxResources :execrows
+DELETE FROM sandbox_resources sr
+USING sandboxes sb
+WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted'
+`
+
+// A deleted Sandbox no longer retains versions, but its sandbox_resources
+// rows outlive it (the row is kept for API idempotency). The sweep releases
+// those references before the version/FK checks run.
+func (q *Queries) DeleteDeletedSandboxResources(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeletedSandboxResources)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteDeletedSnapshot = `-- name: DeleteDeletedSnapshot :exec
 DELETE FROM snapshots
 WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL
