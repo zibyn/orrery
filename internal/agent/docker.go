@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -93,31 +92,30 @@ func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport
 	if probeErr != nil {
 		return nodeproto.CapabilityReport{}, probeErr
 	}
-	// A build runs on the host build API, not inside a container (ADR-0021).
-	// The CLI's presence is the self-check; a failed build still fails the
-	// version instead of the Node.
-	return capabilities(result, limitsEnforced, gpuVisible, buildxAvailable(ctx, socket)), nil
+	return capabilities(result, limitsEnforced, gpuVisible), nil
 }
 
-// buildxAvailable reports whether the host's Docker CLI can run buildx. A
-// missing CLI or plugin means the Node cannot build Snapshots.
-func buildxAvailable(ctx context.Context, socket string) bool {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "version")
-	cmd.Env = append(os.Environ(), "DOCKER_HOST="+dockerHost(socket))
-	return cmd.Run() == nil
-}
-
-// dockerHost turns an Agent socket path into the CLI's DOCKER_HOST form.
-func dockerHost(socket string) string {
-	if strings.HasPrefix(socket, "unix://") {
-		return socket
+// withSnapshotBuild adds the BuildKit endpoint self-check to a Runtime report.
+// It is independent of the Runtime type (runtime.md §12): a Local or Podman
+// Node with a reachable BuildKit endpoint builds too.
+func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.CapabilityReport {
+	value := nodeproto.ValueUnsupported
+	if ok {
+		value = nodeproto.ValueEnforced
 	}
-	return "unix://" + socket
+	for i := range report.Entries {
+		if report.Entries[i].Name == nodeproto.CapSnapshotBuild {
+			report.Entries[i].Value = value
+			return report
+		}
+	}
+	report.Entries = append(report.Entries, nodeproto.CapabilityEntry{
+		Name: nodeproto.CapSnapshotBuild, Value: value,
+	})
+	return report
 }
 
-func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, buildx bool) nodeproto.CapabilityReport {
+func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
 			return nodeproto.ValueEnforced
@@ -147,9 +145,8 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, buildx bool) 
 			// unsupported, which keeps the Scheduler from placing a Sandbox
 			// with Resources there.
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
-			// snapshot_build is the host build API self-check; a Local Node
-			// reports unsupported and takes no builds (ADR-0021).
-			{Name: nodeproto.CapSnapshotBuild, Value: value(buildx)},
+			// snapshot_build is added by the Agent from the BuildKit endpoint
+			// self-check, independent of the Runtime (runtime.md §12).
 		},
 	}
 }

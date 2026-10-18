@@ -12,9 +12,6 @@ import (
 // way to authenticate to the platform registry.
 type registryCredential struct {
 	auths map[string]string // registry host -> base64(user:password)
-	// raw is the original Docker config.json, written to a temporary
-	// DOCKER_CONFIG for the build CLI (buildx reads the standard document).
-	raw string
 }
 
 func parseRegistryCredential(raw string) (*registryCredential, error) {
@@ -29,7 +26,7 @@ func parseRegistryCredential(raw string) (*registryCredential, error) {
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		return nil, fmt.Errorf("parse registry credential: %w", err)
 	}
-	cred := &registryCredential{auths: make(map[string]string, len(doc.Auths)), raw: raw}
+	cred := &registryCredential{auths: make(map[string]string, len(doc.Auths))}
 	for host, entry := range doc.Auths {
 		cred.auths[host] = entry.Auth
 	}

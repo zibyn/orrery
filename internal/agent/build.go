@@ -12,24 +12,31 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/docker/cli/cli/config/types"
 	"github.com/google/uuid"
+	"github.com/moby/buildkit/client"
+	"github.com/moby/buildkit/exporter/containerimage/exptypes"
+	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/session/auth/authprovider"
+	"github.com/moby/buildkit/session/secrets/secretsprovider"
+	"github.com/moby/buildkit/util/progress/progressui"
+	"github.com/tonistiigi/fsutil"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
 	"github.com/zibyn/stars-sandbox/internal/supervisor"
 )
 
-// Snapshot builds run on the host build API (ADR-0021, runtime.md §12). The
-// Agent fetches each named context through the Node cache, writes the
-// Dockerfile and Secret files to a temporary directory, and runs
-// `docker buildx build` with the platform registry credential. Output is
-// written to the build Exec's record and delivered by the normal ExecOutput
-// machinery.
+// Snapshot builds run through BuildKit's Go client against a BuildKit endpoint
+// (ADR-0021, runtime.md §12). With no --buildkit address the endpoint is
+// dockerd's built-in BuildKit, reached through the Docker socket's /grpc h2c
+// upgrade. Named contexts are session LocalMounts, base is a named
+// docker-image context, Secrets come from the session's secrets provider, and
+// push credentials from its auth provider. Output is written to the build
+// Exec's record and delivered by the normal ExecOutput machinery.
 
 const (
 	// buildLogCap mirrors defaults.md's Execution Log cap. BuildSnapshot has
@@ -44,6 +51,12 @@ var (
 	buildTokenPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	// errBuildCanceled distinguishes CancelExec from a lost Control stream.
 	errBuildCanceled = errors.New("build canceled")
+	// fromDigestPattern captures the BuildKit-resolved FROM digest from the
+	// progress vertex name (e.g. "[1/2] FROM repo@sha256:…").
+	fromDigestPattern = regexp.MustCompile(`(?i)\bFROM\s+\S*@(sha256:[0-9a-f]{64})`)
+	// pinnedDigestPattern finds digest-pinned image references in FROM and
+	// --from= positions, for the provenance fallback.
+	pinnedDigestPattern = regexp.MustCompile(`@(sha256:[0-9a-f]{64})`)
 )
 
 // buildMarker is the on-disk record of an in-flight build, so a restarted
@@ -52,7 +65,6 @@ type buildMarker struct {
 	VersionID string `json:"version_id"`
 	SandboxID string `json:"sandbox_id"`
 	ExecID    string `json:"exec_id"`
-	PID       int    `json:"pid"`
 }
 
 func (r *Runtime) buildMarkerPath(versionID string) string {
@@ -94,12 +106,13 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create build record: %w", err)
 	}
-	// A build Sandbox has no container; mark it so the startup record
-	// reconciliation does not mistake it for a lost Runtime.
-	if err := os.MkdirAll(sandboxPath(r.dataRoot, sandboxID), 0o755); err != nil {
+	sandboxDir := sandboxPath(r.dataRoot, sandboxID)
+	if err := os.MkdirAll(sandboxDir, 0o755); err != nil {
 		return fmt.Errorf("create build sandbox directory: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(sandboxPath(r.dataRoot, sandboxID), "build"), []byte("build\n"), 0o644); err != nil {
+	// A build Sandbox has no container; mark it so the startup record
+	// reconciliation does not mistake it for a lost Runtime.
+	if err := os.WriteFile(filepath.Join(sandboxDir, "build"), []byte("build\n"), 0o644); err != nil {
 		return fmt.Errorf("mark build sandbox: %w", err)
 	}
 	record, err := newBuildRecord(filepath.Join(dir, "output"))
@@ -114,6 +127,16 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 	}
 	defer os.RemoveAll(work) //nolint:errcheck // best effort
 
+	// Pin the build's inputs for cache eviction (runtime.md §11). The pin is
+	// released when the build ends, and by resumeBuilds after an interruption.
+	pins := sandboxPins{ImageDigest: cmd.GetBaseDigest()}
+	for _, buildCtx := range cmd.GetContexts() {
+		pins.Resources = append(pins.Resources, buildCtx.GetAddress())
+	}
+	if err := writeSandboxPins(sandboxDir, pins); err != nil {
+		return fmt.Errorf("pin build inputs: %w", err)
+	}
+
 	marker := buildMarker{
 		VersionID: versionID.String(), SandboxID: sandboxID.String(), ExecID: execID.String(),
 	}
@@ -124,6 +147,7 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 	defer func() {
 		if completed {
 			_ = os.Remove(r.buildMarkerPath(versionID.String()))
+			_ = os.Remove(pinsPath(sandboxDir))
 		}
 	}()
 
@@ -144,76 +168,33 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 		cancel(context.Canceled)
 	}()
 
-	metadataPath := filepath.Join(work, "metadata.json")
-	args, cleanup, err := r.prepareBuild(runCtx, cmd, work, metadataPath)
-	defer cleanup()
-	if err != nil {
-		if ctx.Err() != nil {
-			// The Control stream ended while preparing; leave the marker for
-			// build_interrupted on the next connection.
-			return nil
+	result, err := r.solveBuild(runCtx, cmd, work, buildStreamWriter{record: record, stream: supervisor.FrameStdout})
+	writeExit := func(exit supervisor.Exit) {
+		if _, statErr := os.Stat(filepath.Join(dir, "exit")); statErr != nil {
+			if writeErr := supervisor.WriteExit(dir, exit); writeErr != nil {
+				slog.Warn("write build exit record", "dir", dir, "error", writeErr)
+			}
 		}
-		cause := "build_failed"
-		exit := supervisor.Exit{Cause: "exited", ExitCode: i32(1)}
-		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
-			cause = "timed_out"
-			exit = supervisor.Exit{Cause: "timed_out"}
-		}
-		// Preparation failures cannot succeed by retrying the same command
-		// forever, but they are also not a build result: report the cause.
-		completed = true
-		r.finishBuildRecord(dir, exit)
-		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
-			BuildObserved: &nodev1.BuildObserved{VersionId: versionID.String(), Cause: cause},
-		}})
-		slog.Warn("prepare snapshot build", "version_id", versionID, "error", err)
-		return nil
 	}
-	process := exec.CommandContext(runCtx, "docker", args...)
-	process.Env = append(os.Environ(),
-		"DOCKER_HOST="+dockerHost(r.socket),
-		"DOCKER_CONFIG="+filepath.Join(work, "docker"),
-	)
-	process.Stdout = buildStreamWriter{record: record, stream: supervisor.FrameStdout}
-	process.Stderr = buildStreamWriter{record: record, stream: supervisor.FrameStderr}
-	// A canceled build must take the whole process group with it: buildx
-	// spawns a BuildKit client and, with the docker driver, build jobs of its
-	// own.
-	process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	process.Cancel = func() error {
-		if process.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-process.Process.Pid, syscall.SIGKILL)
-	}
-	process.WaitDelay = 5 * time.Second
-	if err := process.Start(); err != nil {
-		if ctx.Err() != nil {
-			return nil // interrupted; the marker stays for the next startup
-		}
-		completed = true
-		r.finishBuildRecord(dir, supervisor.Exit{Cause: "start_failed"})
-		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
-			BuildObserved: &nodev1.BuildObserved{VersionId: versionID.String(), Cause: "build_failed"},
-		}})
-		return fmt.Errorf("start build: %w", err)
-	}
-	marker.PID = process.Process.Pid
-	if err := writeBuildMarker(r.buildMarkerPath(versionID.String()), marker); err != nil {
-		slog.Warn("record build pid", "version_id", versionID, "error", err)
-	}
-
-	runErr := process.Wait()
-	buildCause := context.Cause(runCtx)
 	switch {
-	case errors.Is(buildCause, errBuildCanceled):
+	case err == nil:
+		completed = true
+		writeExit(supervisor.Exit{Cause: "exited", ExitCode: i32(0)})
+		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
+			BuildObserved: &nodev1.BuildObserved{
+				VersionId: versionID.String(), Digest: result.Digest, FromDigests: result.FromDigests,
+			},
+		}})
+		r.markBuildCompleted(versionID.String())
+		return nil
+	case errors.Is(context.Cause(runCtx), errBuildCanceled):
 		// The Control Plane already moved the version to cancelled.
 		completed = true
-		r.finishBuildRecord(dir, supervisor.Exit{Cause: "canceled"})
+		writeExit(supervisor.Exit{Cause: "canceled"})
 		return nil
-	case errors.Is(buildCause, context.DeadlineExceeded):
+	case errors.Is(context.Cause(runCtx), context.DeadlineExceeded):
 		completed = true
-		r.finishBuildRecord(dir, supervisor.Exit{Cause: "timed_out"})
+		writeExit(supervisor.Exit{Cause: "timed_out"})
 		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
 			BuildObserved: &nodev1.BuildObserved{VersionId: versionID.String(), Cause: "timed_out"},
 		}})
@@ -225,136 +206,275 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 		slog.Info("snapshot build interrupted by a lost connection", "version_id", versionID)
 		return nil
 	}
-	if runErr != nil {
-		completed = true
-		exitCode := int32(-1)
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			exitCode = int32(exitErr.ExitCode())
-		}
-		r.finishBuildRecord(dir, supervisor.Exit{Cause: "exited", ExitCode: &exitCode})
-		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
-			BuildObserved: &nodev1.BuildObserved{VersionId: versionID.String(), Cause: "build_failed"},
-		}})
-		slog.Warn("snapshot build failed", "version_id", versionID, "error", runErr)
-		return nil
-	}
-	metadata, err := readBuildMetadata(metadataPath)
-	if err != nil || metadata.Digest == "" {
-		completed = true
-		r.finishBuildRecord(dir, supervisor.Exit{Cause: "exited", ExitCode: i32(1)})
-		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
-			BuildObserved: &nodev1.BuildObserved{VersionId: versionID.String(), Cause: "build_failed"},
-		}})
-		return nil
-	}
 	completed = true
-	r.finishBuildRecord(dir, supervisor.Exit{Cause: "exited", ExitCode: i32(0)})
+	writeExit(supervisor.Exit{Cause: "exited", ExitCode: i32(1)})
 	r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_BuildObserved{
-		BuildObserved: &nodev1.BuildObserved{
-			VersionId: versionID.String(), Digest: metadata.Digest, FromDigests: metadata.FromDigests,
-		},
+		BuildObserved: &nodev1.BuildObserved{VersionId: versionID.String(), Cause: "build_failed"},
 	}})
-	r.markBuildCompleted(versionID.String())
+	slog.Warn("snapshot build failed", "version_id", versionID, "error", err)
 	return nil
 }
 
 func i32(v int32) *int32 { return &v }
 
-// prepareBuild writes the Dockerfile, the empty build context, Secret files
-// and the registry config, and returns the buildx arguments. cleanup removes
-// everything temporary.
-func (r *Runtime) prepareBuild(ctx context.Context, cmd *nodev1.BuildSnapshot, work, metadataPath string) ([]string, func(), error) {
-	cleanup := func() {}
-	if err := os.Chmod(work, 0o700); err != nil {
-		return nil, cleanup, err
-	}
+// solveResult is what a successful BuildKit Solve reports.
+type solveResult struct {
+	Digest      string
+	FromDigests []string
+}
+
+// solveBuild prepares the session inputs and runs the dockerfile frontend.
+func (r *Runtime) solveBuild(ctx context.Context, cmd *nodev1.BuildSnapshot, work string, output io.Writer) (solveResult, error) {
+	dockerfileDir := filepath.Join(work, "dockerfile")
 	emptyContext := filepath.Join(work, "context")
-	if err := os.Mkdir(emptyContext, 0o700); err != nil {
-		return nil, cleanup, err
+	for _, dir := range []string{dockerfileDir, emptyContext} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return solveResult{}, err
+		}
 	}
-	dockerfile := filepath.Join(work, "Dockerfile")
-	if err := os.WriteFile(dockerfile, []byte(cmd.GetDockerfile()), 0o600); err != nil {
-		return nil, cleanup, err
+	if err := os.WriteFile(filepath.Join(dockerfileDir, "Dockerfile"), []byte(cmd.GetDockerfile()), 0o600); err != nil {
+		return solveResult{}, err
 	}
-	args := []string{
-		"buildx", "build",
-		"--file", dockerfile,
-		"--progress", "plain",
-		"--push",
-		"--metadata-file", metadataPath,
+	mounts := map[string]fsutil.FS{}
+	for name, dir := range map[string]string{"dockerfile": dockerfileDir, "context": emptyContext} {
+		mount, err := fsutil.NewFS(dir)
+		if err != nil {
+			return solveResult{}, err
+		}
+		mounts[name] = mount
 	}
-	pushRepository := strings.TrimSuffix(cmd.GetPushRepository(), "/")
-	if pushRepository == "" {
-		return nil, cleanup, errors.New("push_repository is required")
-	}
-	args = append(args, "-t", pushRepository+":build-"+cmd.GetVersionId())
-	if cmd.GetBaseDigest() != "" {
-		args = append(args, "--build-context", "base=docker-image://"+cmd.GetBaseDigest())
+	attrs := map[string]string{
+		"filename":      "Dockerfile",
+		"frontend.caps": "moby.buildkit.frontend.contexts+forward",
 	}
 	for _, buildCtx := range cmd.GetContexts() {
 		if !buildTokenPattern.MatchString(buildCtx.GetName()) {
-			return nil, cleanup, fmt.Errorf("invalid context name %q", buildCtx.GetName())
+			return solveResult{}, fmt.Errorf("invalid context name %q", buildCtx.GetName())
 		}
 		tree, err := r.ensureResourceVersion(ctx, buildCtx.GetAddress())
 		if err != nil {
-			return nil, cleanup, fmt.Errorf("fetch context %s: %w", buildCtx.GetName(), err)
+			return solveResult{}, fmt.Errorf("fetch context %s: %w", buildCtx.GetName(), err)
 		}
-		args = append(args, "--build-context", buildCtx.GetName()+"="+tree)
+		mount, err := fsutil.NewFS(tree)
+		if err != nil {
+			return solveResult{}, err
+		}
+		// `context` and `dockerfile` name the frontend's own mounts; a user
+		// context with either name needs a distinct local name (as buildx does).
+		localName := buildCtx.GetName()
+		if localName == "context" || localName == "dockerfile" {
+			localName = "_" + localName
+		}
+		mounts[localName] = mount
+		attrs["context:"+buildCtx.GetName()] = "local:" + localName
 	}
-	if len(cmd.GetSecrets()) > 0 {
-		// A secret mount never enters the cache key, so a cached layer could
-		// leak another User's secret-derived output (runtime.md §12).
-		args = append(args, "--no-cache")
+	if cmd.GetBaseDigest() != "" {
+		attrs["context:base"] = "docker-image://" + cmd.GetBaseDigest()
 	}
+	secretMap := map[string][]byte{}
 	for _, secret := range cmd.GetSecrets() {
 		if !buildTokenPattern.MatchString(secret.GetId()) {
-			return nil, cleanup, fmt.Errorf("invalid secret id %q", secret.GetId())
+			return solveResult{}, fmt.Errorf("invalid secret id %q", secret.GetId())
 		}
-		path := filepath.Join(work, "secret-"+secret.GetId())
-		if err := os.WriteFile(path, []byte(secret.GetValue()), 0o600); err != nil {
-			return nil, cleanup, err
-		}
-		args = append(args, "--secret", "id="+secret.GetId()+",src="+path)
+		secretMap[secret.GetId()] = []byte(secret.GetValue())
 	}
-	// buildx reads the deployment credential from a standard Docker config.
-	auth := r.registryDocument()
-	if auth != "" {
-		configDir := filepath.Join(work, "docker")
-		if err := os.Mkdir(configDir, 0o700); err != nil {
-			return nil, cleanup, err
-		}
-		if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(auth), 0o600); err != nil {
-			return nil, cleanup, err
-		}
+	if len(secretMap) > 0 {
+		// Secrets are not part of the cache key and buildkitd's cache is
+		// shared by all its clients (runtime.md §12).
+		attrs["no-cache"] = ""
 	}
 	if parent, stop := r.buildCgroup(ctx, cmd.GetVersionId(), cmd.GetLimits().GetCpu(), cmd.GetLimits().GetMemory()); parent != "" {
-		args = append(args, "--cgroup-parent", parent)
-		cleanup = stop
+		attrs["cgroup-parent"] = parent
+		defer stop()
 	}
-	args = append(args, emptyContext)
-	return args, cleanup, nil
+	pushRepository := strings.TrimSuffix(cmd.GetPushRepository(), "/")
+	if pushRepository == "" {
+		return solveResult{}, errors.New("push_repository is required")
+	}
+
+	c, err := r.buildkitClient(ctx)
+	if err != nil {
+		return solveResult{}, err
+	}
+	defer c.Close() //nolint:errcheck // the solve is done
+	attachments := []session.Attachable{r.authProvider()}
+	if len(secretMap) > 0 {
+		attachments = append(attachments, secretsprovider.FromMap(secretMap))
+	}
+
+	statusCh := make(chan *client.SolveStatus)
+	displayCh := make(chan *client.SolveStatus)
+	digests := map[string]struct{}{}
+	var mu sync.Mutex
+	go func() {
+		for status := range statusCh {
+			mu.Lock()
+			collectFromDigests(status, digests)
+			mu.Unlock()
+			select {
+			case displayCh <- status:
+			case <-ctx.Done():
+			}
+		}
+		close(displayCh)
+	}()
+	display, err := progressui.NewDisplay(output, progressui.PlainMode)
+	if err != nil {
+		return solveResult{}, err
+	}
+	displayDone := make(chan struct{})
+	go func() {
+		defer close(displayDone)
+		_, _ = display.UpdateFrom(ctx, displayCh)
+	}()
+
+	response, err := c.Solve(ctx, nil, client.SolveOpt{
+		Frontend:      "dockerfile.v0",
+		FrontendAttrs: attrs,
+		LocalMounts:   mounts,
+		Session:       attachments,
+		Exports: []client.ExportEntry{{
+			Type: client.ExporterImage,
+			Attrs: map[string]string{
+				"name":   pushRepository + ":build-" + cmd.GetVersionId(),
+				"push":   "true",
+				"unpack": "false",
+			},
+		}},
+	}, statusCh)
+	<-displayDone
+	if err != nil {
+		return solveResult{}, err
+	}
+	digest := response.ExporterResponse[exptypes.ExporterImageDigestKey]
+	mu.Lock()
+	fromDigests := mergeDigests(digests, digestSet(pinnedFromDigests(cmd.GetDockerfile(), cmd.GetBaseDigest())))
+	mu.Unlock()
+	return solveResult{Digest: digest, FromDigests: fromDigests}, nil
 }
 
-// finishBuildRecord writes the exit record the ExecOutput stream delivers. It
-// is a no-op once the record already has one.
-func (r *Runtime) finishBuildRecord(dir string, exit supervisor.Exit) {
-	if _, err := os.Stat(filepath.Join(dir, "exit")); err == nil {
-		return
+// authProvider supplies the platform registry credential to BuildKit for the
+// base pull and the push (node-protocol.md "构建").
+func (r *Runtime) authProvider() session.Attachable {
+	return authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{
+		AuthConfigProvider: func(_ context.Context, host string, _ []string, _ authprovider.ExpireCachedAuthCheck) (types.AuthConfig, error) {
+			r.registryMu.Lock()
+			defer r.registryMu.Unlock()
+			if r.registry == nil {
+				return types.AuthConfig{}, nil
+			}
+			host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+			encoded, ok := r.registry.auths[host]
+			if !ok {
+				return types.AuthConfig{}, nil
+			}
+			user, pass, ok := strings.Cut(decodeBase64(encoded), ":")
+			if !ok {
+				return types.AuthConfig{}, nil
+			}
+			return types.AuthConfig{Username: user, Password: pass, ServerAddress: host}, nil
+		},
+	})
+}
+
+// collectFromDigests records the FROM digests BuildKit actually resolved from
+// the progress stream (the plain line names the resolved ref).
+func collectFromDigests(status *client.SolveStatus, set map[string]struct{}) {
+	scan := func(text string) {
+		for _, match := range fromDigestPattern.FindAllStringSubmatch(text, -1) {
+			set[match[1]] = struct{}{}
+		}
 	}
-	if err := supervisor.WriteExit(dir, exit); err != nil {
-		slog.Warn("write build exit record", "dir", dir, "error", err)
+	for _, vertex := range status.Vertexes {
+		scan(vertex.Name)
+	}
+	for _, log := range status.Logs {
+		scan(string(log.Data))
 	}
 }
 
-// registryDocument returns the HelloAck credential document for DOCKER_CONFIG.
-func (r *Runtime) registryDocument() string {
-	r.registryMu.Lock()
-	defer r.registryMu.Unlock()
-	if r.registry == nil {
-		return ""
+// pinnedFromDigests is the provenance fallback: every external FROM and
+// --from= reference was validated as digest-pinned at create time, and the
+// base Snapshot is pinned too.
+func pinnedFromDigests(dockerfile, baseDigest string) []string {
+	set := map[string]struct{}{}
+	add := func(ref string) {
+		if match := pinnedDigestPattern.FindStringSubmatch(ref); match != nil {
+			set[match[1]] = struct{}{}
+		}
 	}
-	return r.registry.raw
+	add(baseDigest)
+	// Every external image reference in a Dockerfile is a FROM or --from=
+	// source and was validated as digest-pinned at create time. Scanning the
+	// logical lines captures both forms (including RUN --mount=...,from=).
+	for _, line := range dockerfileLogicalLines(dockerfile) {
+		for _, match := range pinnedDigestPattern.FindAllStringSubmatch(line, -1) {
+			set[match[1]] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for digest := range set {
+		out = append(out, digest)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dockerfileLogicalLines handles continuations and full-line comments for the
+// provenance fallback.
+func dockerfileLogicalLines(text string) []string {
+	var out []string
+	var current strings.Builder
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSuffix(raw, "\r")
+		if current.Len() == 0 {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+		}
+		trimmed := strings.TrimRight(line, " \t")
+		continuation := strings.HasSuffix(trimmed, "\\")
+		if continuation {
+			trimmed = strings.TrimRight(strings.TrimSuffix(trimmed, "\\"), " \t")
+		}
+		if current.Len() > 0 {
+			current.WriteByte(' ')
+		}
+		current.WriteString(strings.TrimSpace(trimmed))
+		if !continuation {
+			out = append(out, current.String())
+			current.Reset()
+		}
+	}
+	if current.Len() > 0 {
+		out = append(out, current.String())
+	}
+	return out
+}
+
+func digestSet(digests []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(digests))
+	for _, digest := range digests {
+		set[digest] = struct{}{}
+	}
+	return set
+}
+
+// mergeDigests unions the Solve-resolved digests with the pinned fallback.
+func mergeDigests(sets ...map[string]struct{}) []string {
+	merged := map[string]struct{}{}
+	for _, set := range sets {
+		for digest := range set {
+			merged[digest] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(merged))
+	for digest := range merged {
+		out = append(out, digest)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // --- output record ------------------------------------------------------
@@ -423,49 +543,6 @@ func (w buildStreamWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// --- build metadata -----------------------------------------------------
-
-type buildMetadata struct {
-	Digest      string
-	FromDigests []string
-}
-
-// readBuildMetadata parses buildx's metadata file. BuildKit reports the FROM
-// materials with the digests it actually resolved.
-func readBuildMetadata(path string) (buildMetadata, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return buildMetadata{}, err
-	}
-	var doc struct {
-		Digest string `json:"containerimage.digest"`
-		Prov   struct {
-			Materials []struct {
-				Digest struct {
-					SHA256 string `json:"sha256"`
-				} `json:"digest"`
-			} `json:"materials"`
-		} `json:"buildx.build.provenance"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return buildMetadata{}, err
-	}
-	seen := map[string]bool{}
-	var from []string
-	for _, material := range doc.Prov.Materials {
-		if material.Digest.SHA256 == "" {
-			continue
-		}
-		digest := "sha256:" + material.Digest.SHA256
-		if !seen[digest] {
-			seen[digest] = true
-			from = append(from, digest)
-		}
-	}
-	sort.Strings(from)
-	return buildMetadata{Digest: doc.Digest, FromDigests: from}, nil
-}
-
 // --- cancellation and restart ------------------------------------------
 
 func (r *Runtime) registerBuildCancel(execID string, cancel context.CancelCauseFunc) {
@@ -480,7 +557,7 @@ func (r *Runtime) unregisterBuildCancel(execID string) {
 	delete(r.buildCancels, execID)
 }
 
-// cancelBuild aborts a buildx process when the Exec names a build.
+// cancelBuild aborts a Solve when the Exec names a build.
 func (r *Runtime) cancelBuild(execID string) bool {
 	r.buildMu.Lock()
 	cancel, ok := r.buildCancels[execID]
@@ -525,8 +602,9 @@ func (r *Runtime) resumeBuilds(ctx context.Context) {
 			_ = os.Remove(path)
 			continue
 		}
-		killBuildPID(marker.PID)
 		if sandboxID, err := uuid.Parse(marker.SandboxID); err == nil {
+			sandboxDir := sandboxPath(r.dataRoot, sandboxID)
+			_ = os.Remove(pinsPath(sandboxDir))
 			if execID, err := uuid.Parse(marker.ExecID); err == nil {
 				_ = os.RemoveAll(filepath.Join(sandboxRunPath(r.dataRoot, sandboxID), execID.String()))
 			}
@@ -539,19 +617,6 @@ func (r *Runtime) resumeBuilds(ctx context.Context) {
 		_ = os.Remove(path)
 		slog.Info("reported interrupted snapshot build", "version_id", marker.VersionID)
 	}
-}
-
-// killBuildPID ends a buildx process a previous Agent left running. The
-// command line is checked so a reused PID is never killed blindly.
-func killBuildPID(pid int) {
-	if pid <= 0 {
-		return
-	}
-	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err != nil || !strings.Contains(string(raw), "buildx") {
-		return
-	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 func writeBuildMarker(path string, marker buildMarker) error {
@@ -569,19 +634,18 @@ func writeBuildMarker(path string, marker buildMarker) error {
 // --- cgroup slice -------------------------------------------------------
 
 // buildCgroup creates a CPU- and memory-limited slice and returns the value
-// for `--cgroup-parent`. A root Agent uses the system manager and the slice
-// name; an unprivileged Agent uses its user manager and the cgroupfs path,
-// because the Docker daemon (root) cannot see the user manager's unit.
-// An empty parent means the Agent could not create the slice; the build then
-// runs without a per-build ceiling and the deployment must bound builds
-// Node-wide (runtime.md §12's documented fallback).
+// for the frontend's cgroup-parent attribute. A root Agent uses the system
+// manager and the slice name; an unprivileged Agent uses its user manager and
+// the cgroupfs path, because the Docker daemon (root) cannot see the user
+// manager's unit. An empty parent means the Node cannot bound a single build;
+// the deployment must bound builds Node-wide (runtime.md §12).
 func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64, memory int64) (string, func()) {
 	if cpu <= 0 || memory <= 0 {
 		return "", func() {}
 	}
 	slice := "stars-build-" + versionID + ".slice"
-	quota := "CPUQuota=" + strconv.FormatInt(int64(cpu*100), 10) + "%"
-	memoryMax := "MemoryMax=" + strconv.FormatInt(memory, 10)
+	quota := "CPUQuota=" + fmt.Sprint(int64(cpu*100)) + "%"
+	memoryMax := "MemoryMax=" + fmt.Sprint(memory)
 	if os.Geteuid() == 0 {
 		if runSystemctl(ctx, "set-property", "--runtime", slice, quota, memoryMax) == nil {
 			return slice, func() { _ = runSystemctl(context.Background(), "stop", slice) }
@@ -621,7 +685,7 @@ func runSystemctl(ctx context.Context, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "systemctl", args...)
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR=/run/user/"+strconv.Itoa(os.Getuid()))
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR=/run/user/"+fmt.Sprint(os.Getuid()))
 	return cmd.Run()
 }
 
@@ -633,5 +697,3 @@ func stopBuildSlice(ctx context.Context, versionID string) {
 	}
 	_ = runSystemctl(ctx, "--user", "stop", slice)
 }
-
-var _ io.Writer = buildStreamWriter{}

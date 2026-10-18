@@ -40,8 +40,12 @@ const (
 type Runtime struct {
 	d        *dockerClient
 	dataRoot string
-	// socket is the Docker Engine socket, for host CLI calls (buildx).
+	// socket is the Docker Engine socket. It is also the default BuildKit
+	// endpoint (dockerd's built-in BuildKit via /grpc).
 	socket string
+	// buildkit is the Agent-configured BuildKit endpoint. Empty means the
+	// Docker daemon's built-in BuildKit.
+	buildkit string
 
 	// Execs are launched from the Control stream; the output stream is opened
 	// per Exec against the same connection.
@@ -52,8 +56,8 @@ type Runtime struct {
 	execs          map[string]struct{} // exec id -> output delivery in flight
 	ptyAttachments map[string]int      // exec id -> live tunnel attachments
 
-	// buildCancels aborts a running buildx process by Exec id. CancelExec
-	// reaches builds here instead of a Supervisor socket.
+	// buildCancels aborts a running build by Exec id. CancelExec reaches
+	// builds here instead of a Supervisor socket.
 	buildMu      sync.Mutex
 	buildCancels map[string]context.CancelCauseFunc
 	buildDone    map[string]struct{}

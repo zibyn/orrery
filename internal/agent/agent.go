@@ -141,10 +141,13 @@ func SaveIdentity(path string, id Identity) error {
 }
 
 type RunOptions struct {
-	CAPath        string
-	Server        string // overrides the address stored at enroll time
-	State         string
-	Docker        string
+	CAPath string
+	Server string // overrides the address stored at enroll time
+	State  string
+	Docker string
+	// Buildkit is the BuildKit endpoint. Empty means the Docker daemon's
+	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
+	Buildkit      string
 	DataRoot      string
 	ReserveCPU    float64
 	ReserveMemory int64
@@ -242,6 +245,7 @@ func isIncompatible(err error) bool {
 
 func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
 	rt := NewRuntime(opts.Docker, opts.DataRoot)
+	rt.buildkit = opts.Buildkit
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
 		return false, err
@@ -315,6 +319,10 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		}})
 	}
 
+	// snapshot_build is the BuildKit endpoint self-check, independent of the
+	// Runtime (runtime.md §12). It is reported even when the Runtime probe
+	// fails; the Node's status already keeps it out of placement then.
+	buildOK := rt.buildkitAvailable(streamCtx)
 	report, probeErr := dockerProbe(streamCtx, opts.Docker)
 	health := "healthy"
 	if probeErr != nil {
@@ -322,6 +330,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		report = nodeproto.CapabilityReport{RuntimeProvider: "docker"}
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
+	report = withSnapshotBuild(report, buildOK)
 	// The inventory is a hardware fact; placement still requires the CDI
 	// capability above, so an old Docker's GPUs are visible but not usable.
 	gpus := enumerateGPUs(streamCtx)

@@ -6,38 +6,42 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/moby/buildkit/client"
+
 	"github.com/zibyn/stars-sandbox/internal/supervisor"
 )
 
-func TestReadBuildMetadata(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "metadata.json")
-	raw := `{
-	  "containerimage.digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-	  "buildx.build.provenance": {
-	    "materials": [
-	      {"uri": "pkg:docker/alpine@3.22", "digest": {"sha256": "2222222222222222222222222222222222222222222222222222222222222222"}},
-	      {"uri": "pkg:docker/alpine@3.22", "digest": {"sha256": "2222222222222222222222222222222222222222222222222222222222222222"}},
-	      {"uri": "pkg:docker/busybox@1", "digest": {"sha256": "3333333333333333333333333333333333333333333333333333333333333333"}}
-	    ]
-	  }
-	}`
-	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
-		t.Fatal(err)
+func TestCollectFromDigests(t *testing.T) {
+	from := "sha256:" + strings.Repeat("2", 64)
+	set := map[string]struct{}{}
+	collectFromDigests(&client.SolveStatus{
+		Vertexes: []*client.Vertex{
+			{Name: "[1/2] FROM docker.io/library/alpine:3.22@" + from},
+			{Name: "[2/2] RUN echo probe"},
+		},
+		Logs: []*client.VertexLog{
+			{Data: []byte("# resolve docker.io/library/alpine:3.22 0.0s done")},
+		},
+	}, set)
+	if len(set) != 1 {
+		t.Fatalf("digests = %v, want the resolved FROM digest", set)
 	}
-	meta, err := readBuildMetadata(path)
-	if err != nil {
-		t.Fatal(err)
+	if _, ok := set[from]; !ok {
+		t.Fatalf("digests = %v, want %s", set, from)
 	}
-	if meta.Digest != "sha256:"+strings.Repeat("1", 64) {
-		t.Fatalf("digest = %q", meta.Digest)
-	}
-	if len(meta.FromDigests) != 2 {
-		t.Fatalf("from digests = %v, want two unique entries", meta.FromDigests)
-	}
-	if meta.FromDigests[0] != "sha256:"+strings.Repeat("2", 64) ||
-		meta.FromDigests[1] != "sha256:"+strings.Repeat("3", 64) {
-		t.Fatalf("from digests = %v", meta.FromDigests)
+}
+
+func TestPinnedFromDigests(t *testing.T) {
+	base := "sha256:" + strings.Repeat("1", 64)
+	alpine := "sha256:" + strings.Repeat("2", 64)
+	busybox := "sha256:" + strings.Repeat("3", 64)
+	dockerfile := "FROM base\n" +
+		"COPY --from=ctx /x /x\n" +
+		"FROM alpine@" + alpine + "\n" +
+		"RUN --mount=type=bind,from=busybox@" + busybox + ",target=/c true\n"
+	got := pinnedFromDigests(dockerfile, "127.0.0.1:15000/platform/default@"+base)
+	if len(got) != 3 || got[0] != base || got[1] != alpine || got[2] != busybox {
+		t.Fatalf("pinnedFromDigests = %v, want base, alpine and busybox", got)
 	}
 }
 
