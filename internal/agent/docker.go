@@ -120,6 +120,11 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeprot
 			// honestly instead of guessing.
 			{Name: nodeproto.CapDiskCapacityQuota, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapArbitraryMounts, Value: nodeproto.ValueUnsupported},
+			// The Docker adapter mounts Resource version trees as extra
+			// read-only binds (runtime.md §2, §11). The Local Runtime reports
+			// unsupported, which keeps the Scheduler from placing a Sandbox
+			// with Resources there.
+			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
 		},
 	}
 }

@@ -28,6 +28,11 @@ const (
 	CapDiskCapacityQuota     = "disk_capacity_quota"
 	CapExecSupervisor        = "exec_supervisor"
 	CapArbitraryMounts       = "arbitrary_mounts_privileged_mode"
+	// CapResourceMount is the Runtime's ability to bind-mount Resource version
+	// trees read-only. It is optional: a Sandbox without Resources does not
+	// need it, and the Scheduler filters Nodes that do not enforce it when the
+	// Sandbox has Resources (runtime.md §10-11).
+	CapResourceMount = "resource_mount"
 )
 
 // Required lists the capabilities the Scheduler needs before it can place a
@@ -44,9 +49,10 @@ var Required = []string{
 type SandboxPhase string
 
 const (
-	SandboxPhaseRunning      SandboxPhase = "running"
-	SandboxPhaseGone         SandboxPhase = "gone"
-	SandboxPhaseCreateFailed SandboxPhase = "create_failed"
+	SandboxPhaseRunning           SandboxPhase = "running"
+	SandboxPhaseFetchingResources SandboxPhase = "fetching_resources"
+	SandboxPhaseGone              SandboxPhase = "gone"
+	SandboxPhaseCreateFailed      SandboxPhase = "create_failed"
 )
 
 // WorkspacePhase is what a Node observes about a Workspace's storage.

@@ -316,6 +316,20 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 		r.s.log.Warn("reconcile: list sandbox GPUs", "sandbox_id", sb.ID, "error", err)
 		return
 	}
+	mounts, err := r.s.q.ListSandboxResourceMounts(ctx, sb.ID)
+	if err != nil {
+		r.s.log.Warn("reconcile: list sandbox Resource mounts", "sandbox_id", sb.ID, "error", err)
+		return
+	}
+	resources := make([]*nodev1.ResourceMount, 0, len(mounts))
+	for _, mount := range mounts {
+		if mount.Address == nil {
+			// A version without a manifest cannot be mounted; creation already
+			// rejects non-ready versions, so this is defensive.
+			continue
+		}
+		resources = append(resources, &nodev1.ResourceMount{Address: *mount.Address, Mount: mount.Mount})
+	}
 	id := commandID("create-sandbox", sb.ID, sb.Generation)
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{
 		CreateSandbox: &nodev1.CreateSandbox{
@@ -326,6 +340,7 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 			Limits:      &nodev1.Limits{Cpu: sb.Cpu, Memory: sb.Memory},
 			Workspace:   &nodev1.WorkspaceMount{WorkspaceId: att.WorkspaceID.String(), Mode: att.Mode},
 			GpuUuids:    gpus,
+			Resources:   resources,
 		},
 	}})
 }
