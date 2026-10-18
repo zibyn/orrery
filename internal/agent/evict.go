@@ -164,7 +164,7 @@ func (r *Runtime) evictLoop(ctx context.Context, watermark float64) {
 // Sandbox record pins them; BuildKit cache is pruned last because the daemon
 // exposes it as one all-or-nothing operation.
 func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
-	if watermark <= 0 || !belowWatermark(r.dataRoot, watermark) {
+	if watermark <= 0 || !belowWatermark("/", watermark) {
 		return
 	}
 	if err := r.d.negotiate(ctx); err != nil {
@@ -175,7 +175,9 @@ func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 	sortEvictionCandidates(candidates)
 	cache := newResourceCache(r.dataRoot)
 	for _, candidate := range candidates {
-		if !belowWatermark(r.dataRoot, watermark) {
+		// The heartbeat and admission use the root filesystem's watermark
+		// (runtime.md §11); eviction reacts to the same number.
+		if !belowWatermark("/", watermark) {
 			return
 		}
 		switch candidate.kind {
