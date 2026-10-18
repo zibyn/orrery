@@ -34,6 +34,9 @@ func TestResourceUploadMount(t *testing.T) {
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
+	// The version trees are read-only by design; let TempDir's cleanup remove
+	// them.
+	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	cli := newCLIRunner(t, admin)
 	name := fmt.Sprintf("mounted-%d", suffix)
@@ -163,9 +166,10 @@ func TestObjectStoreOutage(t *testing.T) {
 	raiseSandboxQuota(t, admin, 100)
 	suffix := time.Now().UnixNano()
 	nodeName := fmt.Sprintf("e2e-outage-node-%d", suffix)
-	state, _ := enrollAgent(t, admin, nodeName)
-	startAgent(t, state, nodeName)
+	state, dataRoot := enrollAgent(t, admin, nodeName)
+	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
+	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	// Warm the Node image with a plain Sandbox, then remove it. The outage
 	// must not turn into an image pull failure.
@@ -250,4 +254,15 @@ func writeTestFile(t *testing.T, path, content string, mode os.FileMode) {
 	if err := os.WriteFile(path, []byte(content), mode); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// makeTreeRemovable restores write permission on the Agent's read-only cache
+// trees so the test's TempDir cleanup can delete them.
+func makeTreeRemovable(root string) {
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && entry.IsDir() {
+			_ = os.Chmod(path, 0o755)
+		}
+		return nil
+	})
 }
