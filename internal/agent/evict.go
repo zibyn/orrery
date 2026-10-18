@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -132,6 +133,72 @@ func imageDigestKey(ref string) string {
 	return ref
 }
 
+// imageUsagePath is the Node's persisted last-used clock for local images.
+// Docker's Created timestamp is an image's build time, not its use time, so
+// LRU eviction needs a touch record of its own (runtime.md §11).
+func imageUsagePath(dataRoot string) string {
+	return filepath.Join(dataRoot, "cache", "image-usage.json")
+}
+
+// imageUsageMu serializes the read-modify-write of the usage file.
+var imageUsageMu sync.Mutex
+
+// touchImageUsage records that a Sandbox on this Node uses the image. It is
+// best effort: a failed write only weakens eviction order, so it must never
+// fail a Sandbox.
+func touchImageUsage(dataRoot, ref string) {
+	key := imageDigestKey(ref)
+	if key == "" {
+		return
+	}
+	imageUsageMu.Lock()
+	defer imageUsageMu.Unlock()
+	usage := loadImageUsage(dataRoot)
+	usage[key] = time.Now().UTC()
+	raw, err := json.Marshal(usage)
+	if err != nil {
+		return
+	}
+	path := imageUsagePath(dataRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+// loadImageUsage reads the touch record; a missing or torn file means "no
+// known use", and eviction falls back to Created.
+func loadImageUsage(dataRoot string) map[string]time.Time {
+	raw, err := os.ReadFile(imageUsagePath(dataRoot))
+	if err != nil {
+		return map[string]time.Time{}
+	}
+	usage := map[string]time.Time{}
+	if json.Unmarshal(raw, &usage) != nil {
+		return map[string]time.Time{}
+	}
+	return usage
+}
+
+// imageLastUsed is the LRU clock for an image: the latest touch of any of its
+// references, else its Created time.
+func imageLastUsed(usage map[string]time.Time, image dockerImage) time.Time {
+	var latest time.Time
+	for _, key := range append([]string{imageDigestKey(image.ID)}, image.RepoDigests...) {
+		if used := usage[imageDigestKey(key)]; used.After(latest) {
+			latest = used
+		}
+	}
+	if latest.IsZero() {
+		return time.Unix(image.Created, 0)
+	}
+	return latest
+}
+
 func imagePinned(pins map[string]bool, image dockerImage) bool {
 	if pins[imageDigestKey(image.ID)] {
 		return true
@@ -235,12 +302,13 @@ func (r *Runtime) evictionCandidates(ctx context.Context, treePins, imagePins ma
 		}
 	}
 	if images, err := r.d.listImages(ctx); err == nil {
+		usage := loadImageUsage(r.dataRoot)
 		for _, image := range images {
 			if imagePinned(imagePins, image) || !r.managesImage(image) {
 				continue
 			}
 			candidates = append(candidates, evictionCandidate{
-				kind: evictImage, key: image.ID, size: image.Size, lastUsed: time.Unix(image.Created, 0),
+				kind: evictImage, key: image.ID, size: image.Size, lastUsed: imageLastUsed(usage, image),
 			})
 		}
 	}

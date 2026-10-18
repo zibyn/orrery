@@ -53,6 +53,33 @@ func TestSandboxPinsSurviveStop(t *testing.T) {
 	}
 }
 
+// TestImageEvictionUsesLastUsed is the image half of LRU eviction
+// (runtime.md §11): a touch recorded when a Sandbox uses an image beats both
+// another image's newer Created time and an untouched image.
+func TestImageEvictionUsesLastUsed(t *testing.T) {
+	root := t.TempDir()
+	used := dockerImage{
+		ID:          "sha256:used",
+		RepoDigests: []string{"registry.example/snapshots/x@sha256:used"},
+		Created:     1000,
+	}
+	untouched := dockerImage{ID: "sha256:untouched", Created: 2000}
+
+	touchImageUsage(root, "registry.example/snapshots/x@sha256:used")
+	usage := loadImageUsage(root)
+	if got := imageLastUsed(usage, untouched); !got.Equal(time.Unix(2000, 0)) {
+		t.Fatalf("untouched image clock = %v, want Created", got)
+	}
+	candidates := []evictionCandidate{
+		{kind: evictImage, key: used.ID, lastUsed: imageLastUsed(usage, used)},
+		{kind: evictImage, key: untouched.ID, lastUsed: imageLastUsed(usage, untouched)},
+	}
+	sortEvictionCandidates(candidates)
+	if candidates[0].key != untouched.ID {
+		t.Fatalf("eviction order = %+v, want the untouched image first", candidates)
+	}
+}
+
 func TestImagePinnedByDigest(t *testing.T) {
 	split := "sha256:" + "0123456789"
 	pins := map[string]bool{split: true}

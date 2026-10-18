@@ -244,6 +244,9 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	if err := writeSandboxPins(sandboxPath(r.dataRoot, id), pins); err != nil {
 		return "runtime_create_failed", err
 	}
+	// Any create or adopt counts as a use of the image for LRU eviction
+	// (runtime.md §11).
+	touchImageUsage(r.dataRoot, cmd.imageDigest)
 	name := containerName(id)
 
 	if running, exists, err := r.d.inspectContainer(ctx, name); err == nil && exists {
