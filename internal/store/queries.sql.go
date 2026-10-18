@@ -4599,6 +4599,44 @@ func (q *Queries) ListTokens(ctx context.Context, arg ListTokensParams) ([]ApiTo
 	return items, nil
 }
 
+const listUnavailableVersionsReferencing = `-- name: ListUnavailableVersionsReferencing :many
+SELECT DISTINCT rv.id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+JOIN resource_version_objects rvo ON rvo.version_id = rv.id
+WHERE r.owner_id = $1
+  AND rv.state = 'unavailable'
+  AND rvo.sha256 = ANY($2::text[])
+`
+
+type ListUnavailableVersionsReferencingParams struct {
+	OwnerID uuid.UUID
+	Sha256  []string
+}
+
+// A successful publish validation proves the uploaded objects are present, so
+// the owner's unavailable versions that reference them are re-checked and may
+// return to ready (api.md §3).
+func (q *Queries) ListUnavailableVersionsReferencing(ctx context.Context, arg ListUnavailableVersionsReferencingParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listUnavailableVersionsReferencing, arg.OwnerID, arg.Sha256)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsers = `-- name: ListUsers :many
 SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at FROM users
 WHERE deleted_at IS NULL
@@ -4757,6 +4795,22 @@ WHERE id = $1 AND kind = 'build' AND state <> 'stopped'
 // sweeps once its version is terminal. It has no Runtime to stop.
 func (q *Queries) MarkBuildSandboxDone(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, markBuildSandboxDone, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markResourceVersionAvailable = `-- name: MarkResourceVersionAvailable :execrows
+UPDATE resource_versions
+SET state = 'ready'
+WHERE id = $1 AND state = 'unavailable'
+`
+
+// MarkResourceVersionAvailable is conditional on unavailable so a concurrent
+// state change is not overwritten.
+func (q *Queries) MarkResourceVersionAvailable(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markResourceVersionAvailable, id)
 	if err != nil {
 		return 0, err
 	}

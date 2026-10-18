@@ -981,6 +981,25 @@ ON CONFLICT (version_id, sha256) DO NOTHING;
 -- name: ListResourceVersionObjects :many
 SELECT sha256 FROM resource_version_objects WHERE version_id = $1 ORDER BY sha256;
 
+-- A successful publish validation proves the uploaded objects are present, so
+-- the owner's unavailable versions that reference them are re-checked and may
+-- return to ready (api.md §3).
+-- name: ListUnavailableVersionsReferencing :many
+SELECT DISTINCT rv.id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+JOIN resource_version_objects rvo ON rvo.version_id = rv.id
+WHERE r.owner_id = sqlc.arg('owner_id')
+  AND rv.state = 'unavailable'
+  AND rvo.sha256 = ANY(sqlc.arg('sha256')::text[]);
+
+-- MarkResourceVersionAvailable is conditional on unavailable so a concurrent
+-- state change is not overwritten.
+-- name: MarkResourceVersionAvailable :execrows
+UPDATE resource_versions
+SET state = 'ready'
+WHERE id = $1 AND state = 'unavailable';
+
 -- CAS objects (owner-scoped, ADR-0021)
 
 -- name: UpsertCASObject :exec
