@@ -214,7 +214,7 @@ func (q *Queries) CancelSandboxExecs(ctx context.Context, sandboxID uuid.UUID) (
 const cancelSnapshotVersion = `-- name: CancelSnapshotVersion :one
 UPDATE snapshot_versions SET state = 'cancelled'
 WHERE id = $1 AND state = 'building'
-RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
 `
 
 func (q *Queries) CancelSnapshotVersion(ctx context.Context, id uuid.UUID) (SnapshotVersion, error) {
@@ -232,6 +232,7 @@ func (q *Queries) CancelSnapshotVersion(ctx context.Context, id uuid.UUID) (Snap
 		&i.Provenance,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
@@ -251,7 +252,8 @@ const countActiveSandboxResources = `-- name: CountActiveSandboxResources :one
 SELECT count(*)::bigint AS sandboxes,
        COALESCE(SUM(gpu_count), 0)::bigint AS gpus
 FROM sandboxes
-WHERE owner_id = $1 AND state IN ('pending', 'provisioning', 'ready', 'stopping')
+WHERE owner_id = $1 AND kind = 'user'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping')
 `
 
 type CountActiveSandboxResourcesRow struct {
@@ -260,7 +262,7 @@ type CountActiveSandboxResourcesRow struct {
 }
 
 // An open admission request is part of active usage, so the pending state is
-// the quota hold (ADR-0015).
+// the quota hold (ADR-0015). Builds are system work and never count (ADR-0021).
 func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.UUID) (CountActiveSandboxResourcesRow, error) {
 	row := q.db.QueryRow(ctx, countActiveSandboxResources, ownerID)
 	var i CountActiveSandboxResourcesRow
@@ -295,7 +297,7 @@ func (q *Queries) CountSandboxResources(ctx context.Context, sandboxID uuid.UUID
 
 const countSandboxSnapshotReferences = `-- name: CountSandboxSnapshotReferences :one
 SELECT count(*)::bigint FROM sandboxes
-WHERE deleted_at IS NULL
+WHERE kind = 'user' AND deleted_at IS NULL
   AND right(snapshot_digest, length($1::text)) = $1::text
 `
 
@@ -421,6 +423,70 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 		&i.Mode,
 		&i.Generation,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createBuildSandbox = `-- name: CreateBuildSandbox :one
+INSERT INTO sandboxes (
+    id, owner_id, kind, name, labels, desired_state, state, snapshot_digest,
+    cpu, memory, gpu_count, idle_stop_seconds, generation, secret_env_ct
+) VALUES ($1, $2, 'build', $3, '{}', 'running', 'pending', $4, $5, $6, 0, 0, 1, $7)
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
+`
+
+type CreateBuildSandboxParams struct {
+	ID             uuid.UUID
+	OwnerID        uuid.UUID
+	Name           string
+	SnapshotDigest string
+	Cpu            float64
+	Memory         int64
+	SecretEnvCt    []byte
+}
+
+// CreateBuildSandbox is the internal row that carries a Snapshot build's
+// Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no
+// Workspace and no Runtime; secret_env_ct holds the build's Secret snapshot.
+func (q *Queries) CreateBuildSandbox(ctx context.Context, arg CreateBuildSandboxParams) (Sandbox, error) {
+	row := q.db.QueryRow(ctx, createBuildSandbox,
+		arg.ID,
+		arg.OwnerID,
+		arg.Name,
+		arg.SnapshotDigest,
+		arg.Cpu,
+		arg.Memory,
+		arg.SecretEnvCt,
+	)
+	var i Sandbox
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Labels,
+		&i.DesiredState,
+		&i.State,
+		&i.Cause,
+		&i.NodeID,
+		&i.SnapshotDigest,
+		&i.Cpu,
+		&i.Memory,
+		&i.GpuCount,
+		&i.IdleStopSeconds,
+		&i.LastActivityAt,
+		&i.TokenCt,
+		&i.SecretEnvCt,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
+		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -778,7 +844,7 @@ INSERT INTO sandboxes (
     cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation,
     idempotency_key, secret_env_ct, token_ct, token_key_id
 ) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11, $12, $13, $14)
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
 `
 
 type CreateSandboxParams struct {
@@ -844,6 +910,7 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -898,13 +965,14 @@ func (q *Queries) CreateSnapshot(ctx context.Context, arg CreateSnapshotParams) 
 const createSnapshotVersion = `-- name: CreateSnapshotVersion :one
 INSERT INTO snapshot_versions (
     id, snapshot_id, digest, state, cause, source,
-    build_sandbox_id, build_exec_id, provenance, idempotency_key
+    build_sandbox_id, build_exec_id, provenance, idempotency_key, build_request
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
-    $8, $9, $10
+    $8, $9, $10,
+    $11
 )
-RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
 `
 
 type CreateSnapshotVersionParams struct {
@@ -918,6 +986,7 @@ type CreateSnapshotVersionParams struct {
 	BuildExecID    *uuid.UUID
 	Provenance     json.RawMessage
 	IdempotencyKey *string
+	BuildRequest   json.RawMessage
 }
 
 func (q *Queries) CreateSnapshotVersion(ctx context.Context, arg CreateSnapshotVersionParams) (SnapshotVersion, error) {
@@ -932,6 +1001,7 @@ func (q *Queries) CreateSnapshotVersion(ctx context.Context, arg CreateSnapshotV
 		arg.BuildExecID,
 		arg.Provenance,
 		arg.IdempotencyKey,
+		arg.BuildRequest,
 	)
 	var i SnapshotVersion
 	err := row.Scan(
@@ -946,6 +1016,7 @@ func (q *Queries) CreateSnapshotVersion(ctx context.Context, arg CreateSnapshotV
 		&i.Provenance,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
@@ -1225,7 +1296,7 @@ UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
 `
 
 func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -1258,6 +1329,7 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -2026,7 +2098,7 @@ func (q *Queries) GetResourceVersionByPublishIdempotencyKey(ctx context.Context,
 }
 
 const getSandbox = `-- name: GetSandbox :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions FROM sandboxes WHERE id = $1 AND state <> 'deleted'
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes WHERE id = $1 AND kind = 'user' AND state <> 'deleted'
 `
 
 func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -2059,13 +2131,14 @@ func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error)
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
 
 const getSandboxByIdempotencyKey = `-- name: GetSandboxByIdempotencyKey :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions FROM sandboxes
-WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted'
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
+WHERE owner_id = $1 AND kind = 'user' AND idempotency_key = $2 AND state <> 'deleted'
 `
 
 type GetSandboxByIdempotencyKeyParams struct {
@@ -2103,14 +2176,17 @@ func (q *Queries) GetSandboxByIdempotencyKey(ctx context.Context, arg GetSandbox
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
 
 const getSandboxIncludingDeleted = `-- name: GetSandboxIncludingDeleted :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions FROM sandboxes WHERE id = $1
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes WHERE id = $1
 `
 
+// GetSandboxIncludingDeleted does not filter kind: a build Exec's log is
+// readable through its owner, and the build row carries that ownership.
 func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) (Sandbox, error) {
 	row := q.db.QueryRow(ctx, getSandboxIncludingDeleted, id)
 	var i Sandbox
@@ -2141,6 +2217,7 @@ func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) 
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -2245,7 +2322,7 @@ func (q *Queries) GetSnapshotByName(ctx context.Context, arg GetSnapshotByNamePa
 }
 
 const getSnapshotVersion = `-- name: GetSnapshotVersion :one
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2
 `
 
 type GetSnapshotVersionParams struct {
@@ -2268,12 +2345,13 @@ func (q *Queries) GetSnapshotVersion(ctx context.Context, arg GetSnapshotVersion
 		&i.Provenance,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
 
 const getSnapshotVersionByID = `-- name: GetSnapshotVersionByID :one
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at FROM snapshot_versions WHERE id = $1
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions WHERE id = $1
 `
 
 func (q *Queries) GetSnapshotVersionByID(ctx context.Context, id uuid.UUID) (SnapshotVersion, error) {
@@ -2291,12 +2369,13 @@ func (q *Queries) GetSnapshotVersionByID(ctx context.Context, id uuid.UUID) (Sna
 		&i.Provenance,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
 
 const getSnapshotVersionByIdempotencyKey = `-- name: GetSnapshotVersionByIdempotencyKey :one
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at FROM snapshot_versions
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
 WHERE snapshot_id = $1 AND idempotency_key = $2
 `
 
@@ -2320,6 +2399,7 @@ func (q *Queries) GetSnapshotVersionByIdempotencyKey(ctx context.Context, arg Ge
 		&i.Provenance,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
@@ -2708,7 +2788,7 @@ SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_secon
        s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
 FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id
-WHERE e.finished_at IS NULL
+WHERE e.finished_at IS NULL AND s.kind = 'user'
 ORDER BY e.id
 `
 
@@ -2893,6 +2973,104 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 	return items, nil
 }
 
+const listBuildRuns = `-- name: ListBuildRuns :many
+SELECT v.id, v.snapshot_id, v.digest, v.state, v.cause, v.source, v.build_sandbox_id, v.build_exec_id, v.provenance, v.idempotency_key, v.created_at, v.build_request, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind,
+       e.id AS exec_id, e.accepted_at AS exec_accepted_at,
+       e.started_at AS exec_started_at, e.deadline_at AS exec_deadline_at,
+       e.cancel_requested_at AS exec_cancel_requested_at,
+       e.finished_at AS exec_finished_at, e.timeout_seconds AS exec_timeout_seconds,
+       e.generation AS exec_generation
+FROM snapshot_versions v
+JOIN sandboxes s ON s.id = v.build_sandbox_id
+JOIN execs e ON e.id = v.build_exec_id
+WHERE v.source = 'build' AND s.kind = 'build'
+ORDER BY v.id
+`
+
+type ListBuildRunsRow struct {
+	SnapshotVersion       SnapshotVersion
+	Sandbox               Sandbox
+	ExecID                uuid.UUID
+	ExecAcceptedAt        pgtype.Timestamptz
+	ExecStartedAt         pgtype.Timestamptz
+	ExecDeadlineAt        pgtype.Timestamptz
+	ExecCancelRequestedAt pgtype.Timestamptz
+	ExecFinishedAt        pgtype.Timestamptz
+	ExecTimeoutSeconds    *int32
+	ExecGeneration        int64
+}
+
+// ListBuildRuns is the build sweep's queue: every build version still tied to
+// a live build sandbox or Exec, terminal versions included, so cleanup is
+// retried until it succeeds (ADR-0014: desired state is the queue).
+func (q *Queries) ListBuildRuns(ctx context.Context) ([]ListBuildRunsRow, error) {
+	rows, err := q.db.Query(ctx, listBuildRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBuildRunsRow{}
+	for rows.Next() {
+		var i ListBuildRunsRow
+		if err := rows.Scan(
+			&i.SnapshotVersion.ID,
+			&i.SnapshotVersion.SnapshotID,
+			&i.SnapshotVersion.Digest,
+			&i.SnapshotVersion.State,
+			&i.SnapshotVersion.Cause,
+			&i.SnapshotVersion.Source,
+			&i.SnapshotVersion.BuildSandboxID,
+			&i.SnapshotVersion.BuildExecID,
+			&i.SnapshotVersion.Provenance,
+			&i.SnapshotVersion.IdempotencyKey,
+			&i.SnapshotVersion.CreatedAt,
+			&i.SnapshotVersion.BuildRequest,
+			&i.Sandbox.ID,
+			&i.Sandbox.OwnerID,
+			&i.Sandbox.Name,
+			&i.Sandbox.Labels,
+			&i.Sandbox.DesiredState,
+			&i.Sandbox.State,
+			&i.Sandbox.Cause,
+			&i.Sandbox.NodeID,
+			&i.Sandbox.SnapshotDigest,
+			&i.Sandbox.Cpu,
+			&i.Sandbox.Memory,
+			&i.Sandbox.GpuCount,
+			&i.Sandbox.IdleStopSeconds,
+			&i.Sandbox.LastActivityAt,
+			&i.Sandbox.TokenCt,
+			&i.Sandbox.SecretEnvCt,
+			&i.Sandbox.Generation,
+			&i.Sandbox.IdempotencyKey,
+			&i.Sandbox.CreatedAt,
+			&i.Sandbox.UpdatedAt,
+			&i.Sandbox.DeletedAt,
+			&i.Sandbox.GpuModel,
+			&i.Sandbox.WorkspaceID,
+			&i.Sandbox.WorkspaceMode,
+			&i.Sandbox.TokenKeyID,
+			&i.Sandbox.Conditions,
+			&i.Sandbox.Kind,
+			&i.ExecID,
+			&i.ExecAcceptedAt,
+			&i.ExecStartedAt,
+			&i.ExecDeadlineAt,
+			&i.ExecCancelRequestedAt,
+			&i.ExecFinishedAt,
+			&i.ExecTimeoutSeconds,
+			&i.ExecGeneration,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeletingWorkspaces = `-- name: ListDeletingWorkspaces :many
 SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE state = 'deleting' ORDER BY id
 `
@@ -3060,8 +3238,8 @@ func (q *Queries) ListGitLinks(ctx context.Context, userID uuid.UUID) ([]GitLink
 }
 
 const listIdleSandboxes = `-- name: ListIdleSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions FROM sandboxes
-WHERE state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
+WHERE kind = 'user' AND state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
 ORDER BY id
 `
 
@@ -3103,6 +3281,7 @@ func (q *Queries) ListIdleSandboxes(ctx context.Context) ([]Sandbox, error) {
 			&i.WorkspaceMode,
 			&i.TokenKeyID,
 			&i.Conditions,
+			&i.Kind,
 		); err != nil {
 			return nil, err
 		}
@@ -3325,7 +3504,7 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 }
 
 const listOpenAdmissionRequests = `-- name: ListOpenAdmissionRequests :many
-SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions
+SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind
 FROM admission_requests a
 JOIN sandboxes s ON s.id = a.sandbox_id
 WHERE a.ended_at IS NULL
@@ -3382,6 +3561,7 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 			&i.Sandbox.WorkspaceMode,
 			&i.Sandbox.TokenKeyID,
 			&i.Sandbox.Conditions,
+			&i.Sandbox.Kind,
 		); err != nil {
 			return nil, err
 		}
@@ -3478,8 +3658,9 @@ func (q *Queries) ListProvisioningWorkspaces(ctx context.Context) ([]Workspace, 
 
 const listReconcilableSandboxes = `-- name: ListReconcilableSandboxes :many
 
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions FROM sandboxes
-WHERE state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
+WHERE kind = 'user'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
 ORDER BY id
 `
 
@@ -3521,6 +3702,7 @@ func (q *Queries) ListReconcilableSandboxes(ctx context.Context) ([]Sandbox, err
 			&i.WorkspaceMode,
 			&i.TokenKeyID,
 			&i.Conditions,
+			&i.Kind,
 		); err != nil {
 			return nil, err
 		}
@@ -3705,8 +3887,9 @@ func (q *Queries) ListSandboxResourceMounts(ctx context.Context, sandboxID uuid.
 }
 
 const listSandboxes = `-- name: ListSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
 WHERE owner_id = $1
+  AND kind = 'user'
   AND state <> 'deleted'
   AND ($2::text IS NULL OR state = $2)
   AND ($3::uuid IS NULL OR node_id = $3)
@@ -3775,6 +3958,7 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 			&i.WorkspaceMode,
 			&i.TokenKeyID,
 			&i.Conditions,
+			&i.Kind,
 		); err != nil {
 			return nil, err
 		}
@@ -3830,7 +4014,7 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Sec
 }
 
 const listSnapshotVersions = `-- name: ListSnapshotVersions :many
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at FROM snapshot_versions
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
 WHERE snapshot_id = $1
   AND ($2::uuid IS NULL OR id > $2)
 ORDER BY id
@@ -3864,6 +4048,7 @@ func (q *Queries) ListSnapshotVersions(ctx context.Context, arg ListSnapshotVers
 			&i.Provenance,
 			&i.IdempotencyKey,
 			&i.CreatedAt,
+			&i.BuildRequest,
 		); err != nil {
 			return nil, err
 		}
@@ -4110,6 +4295,22 @@ func (q *Queries) LockUser(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const markBuildSandboxDone = `-- name: MarkBuildSandboxDone :execrows
+UPDATE sandboxes
+SET state = 'stopped', desired_state = 'stopped', updated_at = now()
+WHERE id = $1 AND kind = 'build' AND state <> 'stopped'
+`
+
+// MarkBuildSandboxDone takes a build row out of the admission and reconcile
+// sweeps once its version is terminal. It has no Runtime to stop.
+func (q *Queries) MarkBuildSandboxDone(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markBuildSandboxDone, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markResourceVersionFailed = `-- name: MarkResourceVersionFailed :execrows
 UPDATE resource_versions
 SET state = 'failed', cause = $2
@@ -4260,7 +4461,7 @@ func (q *Queries) MarkSandboxStopped(ctx context.Context, arg MarkSandboxStopped
 const markSnapshotVersionFailed = `-- name: MarkSnapshotVersionFailed :one
 UPDATE snapshot_versions SET state = 'failed', cause = $1
 WHERE id = $2 AND state = 'building'
-RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
 `
 
 type MarkSnapshotVersionFailedParams struct {
@@ -4283,23 +4484,26 @@ func (q *Queries) MarkSnapshotVersionFailed(ctx context.Context, arg MarkSnapsho
 		&i.Provenance,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
 
 const markSnapshotVersionReady = `-- name: MarkSnapshotVersionReady :one
-UPDATE snapshot_versions SET state = 'ready', digest = $1
-WHERE id = $2 AND state = 'building'
-RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at
+UPDATE snapshot_versions
+SET state = 'ready', digest = $1, provenance = $2
+WHERE id = $3 AND state = 'building'
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
 `
 
 type MarkSnapshotVersionReadyParams struct {
-	Digest *string
-	ID     uuid.UUID
+	Digest     *string
+	Provenance json.RawMessage
+	ID         uuid.UUID
 }
 
 func (q *Queries) MarkSnapshotVersionReady(ctx context.Context, arg MarkSnapshotVersionReadyParams) (SnapshotVersion, error) {
-	row := q.db.QueryRow(ctx, markSnapshotVersionReady, arg.Digest, arg.ID)
+	row := q.db.QueryRow(ctx, markSnapshotVersionReady, arg.Digest, arg.Provenance, arg.ID)
 	var i SnapshotVersion
 	err := row.Scan(
 		&i.ID,
@@ -4313,6 +4517,7 @@ func (q *Queries) MarkSnapshotVersionReady(ctx context.Context, arg MarkSnapshot
 		&i.Provenance,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
@@ -5047,7 +5252,7 @@ UPDATE sandboxes
 SET desired_state = 'running', state = 'pending', cause = NULL,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state = 'stopped'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
 `
 
 func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -5080,6 +5285,7 @@ func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, erro
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -5089,7 +5295,7 @@ UPDATE sandboxes
 SET desired_state = 'stopped', state = 'stopping',
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state IN ('pending', 'provisioning', 'ready')
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
 `
 
 func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -5122,6 +5328,7 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }

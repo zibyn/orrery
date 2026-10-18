@@ -213,6 +213,7 @@ type Sandbox struct {
 	WorkspaceMode   string
 	TokenKeyID      *string
 	Conditions      json.RawMessage
+	Kind            string
 }
 
 type SandboxResource struct {
@@ -253,6 +254,7 @@ type SnapshotVersion struct {
 	Provenance     json.RawMessage
 	IdempotencyKey *string
 	CreatedAt      pgtype.Timestamptz
+	BuildRequest   json.RawMessage
 }
 
 type Upload struct {
