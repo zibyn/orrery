@@ -5,10 +5,10 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -157,11 +157,11 @@ func TestSnapshotBuildRun(t *testing.T) {
 	}
 
 	// The image config and history must not carry the Secret. (The probe
-	// layer deliberately contains it; that is what the RUN wrote.)
-	imageID := dockerContainerImage(t, "stars-sandbox-"+sb.ID)
-	config := dockerInspect(t, imageID, "{{json .Config}}")
-	history := dockerInspect(t, imageID, "{{json .History}}")
-	if strings.Contains(config, secretValue) || strings.Contains(history, secretValue) {
+	// layer deliberately contains it; that is what the RUN wrote.) Read the
+	// config blob through the platform registry, independent of the local
+	// Docker image store.
+	config := registryImageConfig(t, sb.Snapshot)
+	if strings.Contains(config, secretValue) {
 		t.Fatal("the built image config or history leaks the Secret value")
 	}
 
@@ -271,33 +271,97 @@ func readCgroupFile(dir, name string) string {
 	return strings.TrimSpace(string(raw))
 }
 
-func dockerInspect(t *testing.T, ref, format string) string {
+// registryImageConfig fetches the built image's config blob (including its
+// history) through the platform registry. It does not depend on the local
+// Docker image store.
+func registryImageConfig(t *testing.T, ref string) string {
 	t.Helper()
-	var diagnostics []string
-	for attempt := 0; attempt < 20; attempt++ {
-		cmd := exec.Command("docker", "image", "inspect", ref, "--format", format)
-		var stdout, stderr strings.Builder
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		err := cmd.Run()
-		if err == nil {
-			return stdout.String()
-		}
-		diagnostics = append(diagnostics,
-			fmt.Sprintf("attempt %d: %v stdout=%q stderr=%q", attempt, err, stdout.String(), stderr.String()))
-		time.Sleep(500 * time.Millisecond)
+	name, digest, ok := strings.Cut(ref, "@")
+	if !ok {
+		t.Fatalf("%q is not a digest reference", ref)
 	}
-	images, _ := exec.Command("docker", "images", "--no-trunc", "--digests").CombinedOutput()
-	t.Fatalf("docker image inspect %s failed:\n%s\nimages:\n%s", ref, strings.Join(diagnostics, "\n"), images)
-	return ""
+	host, repo, ok := strings.Cut(name, "/")
+	if !ok {
+		t.Fatalf("%q has no repository", ref)
+	}
+	auth := registryAuthHeader(host)
+	manifest := registryGet(t, host, "/v2/"+repo+"/manifests/"+digest, auth,
+		"application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json")
+	var index struct {
+		Manifests []struct {
+			Digest   string `json:"digest"`
+			Platform struct {
+				OS           string `json:"os"`
+				Architecture string `json:"architecture"`
+			} `json:"platform"`
+		} `json:"manifests"`
+	}
+	if json.Unmarshal([]byte(manifest), &index) == nil && len(index.Manifests) > 0 {
+		chosen := ""
+		for _, entry := range index.Manifests {
+			if entry.Platform.OS == "linux" && entry.Platform.Architecture == "amd64" {
+				chosen = entry.Digest
+				break
+			}
+		}
+		if chosen == "" {
+			t.Fatalf("image index has no linux/amd64 manifest: %s", manifest)
+		}
+		manifest = registryGet(t, host, "/v2/"+repo+"/manifests/"+chosen, auth,
+			"application/vnd.oci.image.manifest.v1+json")
+	}
+	var image struct {
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal([]byte(manifest), &image); err != nil || image.Config.Digest == "" {
+		t.Fatalf("decode image manifest: %v\n%s", err, manifest)
+	}
+	return registryGet(t, host, "/v2/"+repo+"/blobs/"+image.Config.Digest, auth, "*/*")
 }
 
-// dockerContainerImage resolves a running Sandbox container's image id, which
-// is more robust than a registry digest reference for `docker image inspect`.
-func dockerContainerImage(t *testing.T, container string) string {
-	t.Helper()
-	out, err := exec.Command("docker", "inspect", container, "--format", "{{.Image}}").CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker inspect %s: %v\n%s", container, err, out)
+func registryAuthHeader(host string) string {
+	raw := os.Getenv("STARS_E2E_REGISTRY_CREDENTIAL")
+	if raw == "" {
+		return ""
 	}
-	return strings.TrimSpace(string(out))
+	var doc struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if json.Unmarshal([]byte(raw), &doc) != nil {
+		return ""
+	}
+	entry, ok := doc.Auths[host]
+	if !ok || entry.Auth == "" {
+		return ""
+	}
+	return "Basic " + entry.Auth
+}
+
+func registryGet(t *testing.T, host, path, auth, accept string) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://"+host+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", accept)
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: %s: %s", path, resp.Status, body)
+	}
+	return string(body)
 }
