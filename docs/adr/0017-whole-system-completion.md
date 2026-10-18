@@ -89,7 +89,7 @@ A Web console is part of the system as a separate module, implemented later. It 
 
 - Every failure has a terminal state and every hold is released by an event; nothing waits on a timer that the design forbids.
 - A dev server, TensorBoard or Jupyter in a Sandbox is reachable by its owner without opening a port on the Sandbox.
-- Deleting a Node is the whole revocation story; a leaked registry credential needs an operator rotation.
+- Deleting a Node or declaring it lost is the whole revocation story; a leaked registry credential needs an operator rotation.
 - Sandbox Tokens and port-forward tickets mean `api` must be reachable from Sandboxes and browsers alike.
 
 ## Rejected alternatives

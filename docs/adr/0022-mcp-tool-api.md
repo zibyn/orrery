@@ -1,6 +1,6 @@
 # ADR-0022: MCP Tool API: a hand-picked tool set, handles instead of Tasks, no PTY tool
 
-- Status: accepted; supersedes ADR-0017's MCP entry
+- Status: accepted; amends ADR-0017's MCP and SDK entries in place
 - Date: 2026-10-18
 
 ## Context
@@ -30,7 +30,6 @@ Generated tools include Resource upload, manifest and presign operations that an
 - An agent sees 17 tools whose descriptions it can afford to read.
 - Every REST change that an agent needs is a deliberate tool change, not a free side effect of the OpenAPI document.
 - An agent cannot drive an interactive program; it runs a non-interactive command instead.
-- Supporting Tasks later means adding the extension to the server, not changing the tools.
 
 ## Rejected alternatives
 

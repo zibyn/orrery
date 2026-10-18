@@ -86,7 +86,7 @@ Agent 只接管带本 Node `stars.node=<node_id>` 标签的 Runtime 实例；其
 
 ## 9. Docker 与 Podman
 
-两者共用同一个 Docker Engine API 客户端，区别只是 socket 不同。Podman 的兼容 API 支持 detach exec 和 CDI。
+两者共用同一个 Docker Engine API 客户端，除 socket 外的区别见下面 Podman 一条。Podman 的兼容 API 支持 detach exec 和 CDI。
 
 - **Podman 只支持 rootless**。Agent 仍以 root 运行，连接 `/run/user/<uid>/podman/podman.sock`。`/.stars/run` 和 Workspace 在宿主上的属主按 rootless 的 uid 映射设置。端口转发进入网络命名空间时用 inspect 里的 `NetworkSettings.SandboxKey`，不用 PID。
 - **Create**：先用 Node 的 registry 凭据按 digest 拉取镜像（失败时为 `image_pull_failed`）。然后创建容器，配置如下：
@@ -112,7 +112,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 - **路径**：没有 §2 的挂载。cwd 是 Workspace 在宿主上的路径，同时设置 `STARS_WORKSPACE` 为这个路径；`PATH` 追加和 credential helper 用 Agent 自己的 bin 目录（`node-protocol.md`）；Supervisor 的记录目录是 `<data-root>/sandboxes/<id>/run`，`<data-root>` 即 Agent 的 `--data-root`。
 - **Inspect**：看占位 unit 是否 active。
 - **Stop**：`systemctl stop stars-sb-<id>.slice`，停掉 slice 里的所有单元。
-- **GPU**：瞬态单元带 `DevicePolicy=closed` 和 `DeviceAllow`（所分配卡的 `/dev/nvidia<N>`，以及 `/dev/nvidiactl`、`/dev/nvidia-uvm`），同时设置 `CUDA_VISIBLE_DEVICES`。注册时由能力自检验证：通过就报 `enforced`，否则报 `best_effort`。`runtime: local` 的请求接受 `best_effort`（ADR-0009）。
+- **GPU**：每个 `stars-exec-<exec_id>` 瞬态 service 带 `DevicePolicy=closed` 和 `DeviceAllow`（所分配卡的 `/dev/nvidia<N>`，以及 `/dev/nvidiactl`、`/dev/nvidia-uvm`），同时设置 `CUDA_VISIBLE_DEVICES`。注册时由能力自检验证：通过就报 `enforced`，否则报 `best_effort`。`runtime: local` 的请求接受 `best_effort`（ADR-0009）。
 - **Resource 与构建**：`resource_mount` 报 `unsupported`；`snapshot_build` 由 §12 的自检决定。
 
 ## 11. Node 的 Resource 缓存

@@ -24,7 +24,7 @@ Grilling M5 (`#92`, primary sources read on 2026-10-18) found that binding build
 - Build Secrets defeat the build cache, so builds with them are slower.
 - Whether `cgroup-parent` actually confines `RUN` processes to the slice must be verified during implementation; if it does not, builds fall back to a Node-wide build limit.
 - Whether the Go client can drive dockerd's built-in BuildKit through dockerd's `/grpc` must be verified during implementation; if it cannot, Docker Nodes use `ImageBuild` with a session instead, as Daytona does.
-- A Node that builds also runs Sandboxes; a build-only Node is a later switch.
+- A Node that builds also runs Sandboxes; there is no build-only Node.
 - A Node needs no egress to public registries, and an upstream image deleted after import keeps running.
 
 ## Rejected alternatives

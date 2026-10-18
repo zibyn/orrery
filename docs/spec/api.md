@@ -37,7 +37,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
-生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`workspace_lost`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
+生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`workspace_lost`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`；ResourceVersion 的 `node_lost`）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
 
 ## 3. 资源与路径
 
@@ -99,7 +99,7 @@ cpu, memory, gpu?: {count, model?}
 idle_stop?: 秒数，默认 900，0 表示关闭
 ```
 
-每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009）。响应字段另有 `runtime`、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
+每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
 
 `runtime`（ADR-0009）：
 
@@ -203,7 +203,7 @@ Git Provider 来自部署配置 `STARS_GIT_PROVIDERS_FILE`（`defaults.md`）。
 ```
 argv: [string]        # 不经过 shell
 env?: {k: v}
-cwd?: 相对 /workspace 的路径
+cwd?: 相对 /workspace 的路径（Local 上相对 Workspace 的宿主路径）
 timeout?: 秒数
 stdin?: string        # 一次性写入后关闭；PTY 模式下忽略
 pty?: {rows, cols}    # 带上就是 PTY 模式
@@ -219,7 +219,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 ## 5. 文件
 
-挂在 Sandbox 下。路径参数 `path` 相对于 `/workspace`，只能访问 Workspace：Resource 挂载点和 rootfs 要通过 Exec 访问。前提条件：Sandbox 必须是 `ready`，否则 `409`；只读挂载下写入返回 `409`；Node 不可达返回 `503`。
+挂在 Sandbox 下。路径参数 `path` 相对于 `/workspace`（Local 上相对 Workspace 的宿主路径），只能访问 Workspace：Resource 挂载点和 rootfs 要通过 Exec 访问。前提条件：Sandbox 必须是 `ready`，否则 `409`；只读挂载下写入返回 `409`；Node 不可达返回 `503`。
 
 | 方法与路径 | 说明 |
 |---|---|
