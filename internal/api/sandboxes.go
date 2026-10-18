@@ -24,6 +24,7 @@ const maxMemoryBytes = 1 << 50 // 1 PiB, a sanity bound only
 type createSandboxRequest struct {
 	Name      *string                  `json:"name"`
 	Labels    map[string]string        `json:"labels"`
+	Runtime   *string                  `json:"runtime"`
 	Workspace *sandboxWorkspaceRequest `json:"workspace"`
 	Snapshot  *string                  `json:"snapshot"`
 	Resources []sandboxResourceRequest `json:"resources"`
@@ -32,6 +33,39 @@ type createSandboxRequest struct {
 	Memory    *int64                   `json:"memory"`
 	GPU       *sandboxGPURequest       `json:"gpu"`
 	IdleStop  *int32                   `json:"idle_stop"`
+}
+
+// sandboxRuntime resolves the requested Runtime (ADR-0009). `container` is the
+// default and the only choice that accepts a Snapshot or Resources; `local`
+// has neither, so naming one is `unsupported` (api.md §3).
+func sandboxRuntime(req createSandboxRequest) (runtime, code, detail string) {
+	runtime = "container"
+	if req.Runtime != nil && *req.Runtime != "" {
+		runtime = *req.Runtime
+	}
+	switch runtime {
+	case "container":
+		return runtime, "", ""
+	case "local":
+		if req.Snapshot != nil && *req.Snapshot != "" {
+			return "", "unsupported", "runtime: local has no Snapshot"
+		}
+		if len(req.Resources) > 0 {
+			return "", "unsupported", "runtime: local has no Resources"
+		}
+		return runtime, "", ""
+	default:
+		return "", "invalid_request", "runtime must be container or local"
+	}
+}
+
+// sandboxRuntimeValue normalizes a stored Runtime for the DTO and placement.
+// A pre-#97 row (or an in-memory test row) is a container Sandbox.
+func sandboxRuntimeValue(runtime string) string {
+	if runtime == "local" {
+		return "local"
+	}
+	return "container"
 }
 
 // sandboxResourceRequest pins one Resource version at create time (api.md §3).
@@ -69,6 +103,7 @@ type sandboxDTO struct {
 	ID            string               `json:"id"`
 	Name          string               `json:"name"`
 	Labels        map[string]string    `json:"labels"`
+	Runtime       string               `json:"runtime"`
 	State         string               `json:"state"`
 	Cause         *string              `json:"cause"`
 	NodeID        *string              `json:"node_id"`
@@ -114,6 +149,11 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	if !s.requireSandboxTokens(w) {
+		return
+	}
+	runtime, runtimeCode, runtimeDetail := sandboxRuntime(req)
+	if runtimeCode != "" {
+		writeProblem(w, runtimeCode, runtimeDetail)
 		return
 	}
 	if req.CPU == nil || *req.CPU <= 0 {
@@ -206,11 +246,17 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
 	// Resolve the Snapshot inside the transaction: the pinned version cannot
-	// be deleted between the check and the row that references it.
-	snapshot, pinCode, pinDetail := resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Snapshot)
-	if pinCode != "" {
-		writeProblem(w, pinCode, pinDetail)
-		return
+	// be deleted between the check and the row that references it. Local has
+	// no Snapshot at all, so the deployment default never applies to it
+	// (ADR-0009).
+	snapshot := ""
+	if runtime == "container" {
+		var pinCode, pinDetail string
+		snapshot, pinCode, pinDetail = resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Snapshot)
+		if pinCode != "" {
+			writeProblem(w, pinCode, pinDetail)
+			return
+		}
 	}
 	// Quota is checked at admission, under the User's row lock, so concurrent
 	// creates cannot both take the last slot (ADR-0015).
@@ -278,7 +324,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	sandbox, err := q.CreateSandbox(ctx, store.CreateSandboxParams{
-		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels,
+		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels, Runtime: runtime,
 		SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
 		GpuCount: gpuCount, GpuModel: gpuModel,
 		IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
@@ -349,7 +395,8 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	detail := map[string]any{
-		"name": name, "cpu": *req.CPU, "memory": *req.Memory, "gpu": gpuCount, "snapshot": snapshot,
+		"name": name, "runtime": runtime, "cpu": *req.CPU, "memory": *req.Memory,
+		"gpu": gpuCount, "snapshot": snapshot,
 	}
 	// The names a Sandbox was created with; never a value (ADR-0013).
 	if names := referencedSecretNames(secretEnv); len(names) > 0 {
@@ -858,7 +905,8 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 	}
 	dto := sandboxDTO{
 		ID: sb.ID.String(), Name: sb.Name, Labels: labels,
-		State: sb.State, Cause: sb.Cause, NodeID: uuidPtr(sb.NodeID),
+		Runtime: sandboxRuntimeValue(sb.Runtime),
+		State:   sb.State, Cause: sb.Cause, NodeID: uuidPtr(sb.NodeID),
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
 		Conditions: parseSandboxConditions(sb.Conditions).names(),

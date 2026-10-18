@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/zibyn/stars-sandbox/internal/nodeproto"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -378,4 +379,108 @@ func mustHardware(t *testing.T, hw nodeHardware) json.RawMessage {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// capabilitySnapshot builds a stored Capabilities report for a Provider.
+func capabilitySnapshot(t *testing.T, provider string, values map[string]string) json.RawMessage {
+	t.Helper()
+	entries := make([]nodeproto.CapabilityEntry, 0, len(values))
+	for name, value := range values {
+		entries = append(entries, nodeproto.CapabilityEntry{Name: name, Value: value})
+	}
+	raw, err := json.Marshal(nodeproto.CapabilityReport{RuntimeProvider: provider, Entries: entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// api.md §3 / ADR-0009: a container request only goes to Docker or Podman, a
+// local request only to a Local Node. Build rows are filtered elsewhere.
+func TestRuntimeMatching(t *testing.T) {
+	container := capabilitySnapshot(t, "docker", nil)
+	podman := capabilitySnapshot(t, "podman", nil)
+	local := capabilitySnapshot(t, "local", nil)
+	for _, tt := range []struct {
+		caps    json.RawMessage
+		runtime string
+		want    bool
+	}{
+		{container, "", true},
+		{container, "container", true},
+		{container, "local", false},
+		{podman, "container", true},
+		{local, "container", false},
+		{local, "local", true},
+		{podman, "local", false},
+		{nil, "container", false},
+		{nil, "local", false},
+	} {
+		if got := runtimeMatches(tt.caps, tt.runtime); got != tt.want {
+			t.Errorf("runtimeMatches(provider %q, %q) = %v, want %v",
+				nodeproto.RuntimeProvider(tt.caps), tt.runtime, got, tt.want)
+		}
+	}
+}
+
+// ADR-0009's single exception: Local GPU visibility may be best_effort.
+func TestGPUVisibilityAccepted(t *testing.T) {
+	for _, tt := range []struct {
+		runtime string
+		value   string
+		want    bool
+	}{
+		{"container", nodeproto.ValueEnforced, true},
+		{"container", nodeproto.ValueBestEffort, false},
+		{"local", nodeproto.ValueEnforced, true},
+		{"local", nodeproto.ValueBestEffort, true},
+		{"local", nodeproto.ValueUnsupported, false},
+		{"local", "", false},
+	} {
+		caps := capabilitySnapshot(t, "local", map[string]string{
+			nodeproto.CapGPUDeviceVisibility: tt.value,
+		})
+		if got := gpuVisibilityAccepted(caps, tt.runtime); got != tt.want {
+			t.Errorf("gpuVisibilityAccepted(%q, %q) = %v, want %v", tt.runtime, tt.value, got, tt.want)
+		}
+	}
+}
+
+// A local Sandbox with no Local Node can never be admitted; the queue must end
+// it `unsatisfiable` instead of waiting for the deadline.
+func TestAdmissionExhaustedRuntime(t *testing.T) {
+	const gib = int64(1) << 30
+	hw := mustHardware(t, nodeHardware{
+		CPUCores: 8, MemoryBytes: 32 * gib, DiskFree: 50, DiskTotal: 100,
+	})
+	caps := func(provider string) json.RawMessage {
+		values := map[string]string{}
+		for _, name := range nodeproto.RequiredFor(provider) {
+			values[name] = nodeproto.ValueEnforced
+		}
+		return capabilitySnapshot(t, provider, values)
+	}
+	dockerNode := store.Node{
+		ID: uuid.New(), Hardware: hw, Capabilities: caps("docker"),
+		ReservedCpu: 1, ReservedMemory: 2 * gib,
+	}
+	localNode := store.Node{
+		ID: uuid.New(), Hardware: hw, Capabilities: caps("local"),
+		ReservedCpu: 1, ReservedMemory: 2 * gib,
+	}
+	localSB := store.Sandbox{Cpu: 1, Memory: gib, Runtime: "local"}
+	containerSB := store.Sandbox{Cpu: 1, Memory: gib, Runtime: "container"}
+
+	if !admissionExhausted([]store.Node{dockerNode}, nil, localSB, nil) {
+		t.Fatal("a local Sandbox among Docker Nodes is not provably unsatisfiable")
+	}
+	if admissionExhausted([]store.Node{dockerNode, localNode}, nil, localSB, nil) {
+		t.Fatal("a local Sandbox with a Local Node is not exhausted")
+	}
+	if !admissionExhausted([]store.Node{localNode}, nil, containerSB, nil) {
+		t.Fatal("a container Sandbox among Local Nodes is not provably unsatisfiable")
+	}
+	if admissionExhausted([]store.Node{dockerNode, localNode}, nil, containerSB, nil) {
+		t.Fatal("a container Sandbox with a Docker Node is not exhausted")
+	}
 }

@@ -39,13 +39,24 @@ const (
 	CapSnapshotBuild = "snapshot_build"
 )
 
-// Required lists the capabilities the Scheduler needs before it can place a
-// Sandbox on a Node (ADR-0009).
+// Required lists the capabilities a container Runtime must enforce before the
+// Scheduler places work there (ADR-0009).
 var Required = []string{
 	CapProcessMountNamespace,
 	CapCPUMemoryPIDLimits,
 	CapWorkspaceRWMount,
 	CapExecSupervisor,
+}
+
+// RequiredFor is the capability set a Node's Provider must enforce. Local
+// Runtime reports process/mount namespace unsupported by design, and a caller
+// accepts that by requesting runtime: local, so that one capability is not
+// required of it (ADR-0009). Everything else still is.
+func RequiredFor(provider string) []string {
+	if provider == "local" {
+		return []string{CapCPUMemoryPIDLimits, CapWorkspaceRWMount, CapExecSupervisor}
+	}
+	return Required
 }
 
 // SandboxPhase is what a Node observes about a Sandbox's Runtime. Phases are
@@ -92,11 +103,11 @@ type CapabilityEntry struct {
 	Value string `json:"value"`
 }
 
-// CoreEnforced reports whether every Required capability is enforced in the
-// stored report.
+// CoreEnforced reports whether every capability the Node's Provider requires
+// is enforced in the stored report.
 func CoreEnforced(raw json.RawMessage) bool {
 	values := storedValues(raw)
-	for _, name := range Required {
+	for _, name := range RequiredFor(RuntimeProvider(raw)) {
 		if values[name] != ValueEnforced {
 			return false
 		}
@@ -108,6 +119,22 @@ func CoreEnforced(raw json.RawMessage) bool {
 // report. An absent capability is not enforced.
 func CapabilityEnforced(raw json.RawMessage, name string) bool {
 	return storedValues(raw)[name] == ValueEnforced
+}
+
+// CapabilityValue returns a stored capability's value, or "" when the Node
+// never reported it.
+func CapabilityValue(raw json.RawMessage, name string) string {
+	return storedValues(raw)[name]
+}
+
+// RuntimeProvider is the Node's one Runtime Provider (docker, podman or
+// local), or "" when the Node has not reported Capabilities.
+func RuntimeProvider(raw json.RawMessage) string {
+	var report CapabilityReport
+	if len(raw) == 0 || json.Unmarshal(raw, &report) != nil {
+		return ""
+	}
+	return report.RuntimeProvider
 }
 
 func storedValues(raw json.RawMessage) map[string]string {

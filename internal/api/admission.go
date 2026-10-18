@@ -102,11 +102,32 @@ func takeGPUs(free []store.Gpu, count int32, model *string) ([]string, bool) {
 	return nil, false
 }
 
+// runtimeMatches reports whether a Node's Provider can run a Sandbox's
+// requested Runtime (api.md §3, ADR-0009). A container request goes to Docker
+// or Podman; a local request only to a Local Node.
+func runtimeMatches(capabilities json.RawMessage, runtime string) bool {
+	provider := nodeproto.RuntimeProvider(capabilities)
+	if runtime == "local" {
+		return provider == "local"
+	}
+	return provider == "docker" || provider == "podman"
+}
+
+// gpuVisibilityAccepted applies ADR-0009's one exception: a local request
+// accepts best-effort GPU visibility, because the caller accepted the Local
+// Runtime's low isolation. Everything else and every container request
+// requires `enforced`.
+func gpuVisibilityAccepted(capabilities json.RawMessage, runtime string) bool {
+	value := nodeproto.CapabilityValue(capabilities, nodeproto.CapGPUDeviceVisibility)
+	return value == nodeproto.ValueEnforced ||
+		(runtime == "local" && value == nodeproto.ValueBestEffort)
+}
+
 // gpuFit reports whether a GPU Sandbox fits this Node and which cards it
 // takes. free is the Node's whole inventory for the exhaust check and its free
 // cards for placement.
 func gpuFit(node store.Node, fit nodeFit, free []store.Gpu, sb store.Sandbox) ([]string, bool) {
-	if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapGPUDeviceVisibility) ||
+	if !gpuVisibilityAccepted(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) ||
 		!fit.admitsGPU(sb.Cpu, sb.Memory, sb.GpuCount) {
 		return nil, false
 	}
@@ -158,6 +179,14 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		}
 		// A Workspace never moves: its Sandbox can only ever run there.
 		if workspaceNode != nil && node.ID != *workspaceNode {
+			continue
+		}
+		// A non-build request can only run on a Node with a matching Runtime
+		// Provider (api.md §3). A Node that has not reported Capabilities is
+		// treated as potentially matching, so it is not proof of exhaustion.
+		if sb.Kind != string(SandboxKindBuild) && len(node.Capabilities) > 0 &&
+			!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) {
+			known = true
 			continue
 		}
 		if sb.Kind == string(SandboxKindBuild) {
@@ -373,12 +402,21 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			continue
 		}
 		if isBuild {
-			// Builds run on the host build API only (ADR-0021).
+			// Builds run on the host build API only (ADR-0021), independent of
+			// the Node's Runtime.
 			if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapSnapshotBuild) {
 				continue
 			}
-		} else if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
-			continue
+		} else {
+			// The request's Runtime is an admission constraint (api.md §3): a
+			// container Sandbox only goes to Docker or Podman, a local one only
+			// to a Local Node.
+			if !runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) {
+				continue
+			}
+			if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
+				continue
+			}
 		}
 		if !nodeSchedulable(node, now, !isBuild && ws.NodeID != nil) || !r.hub.connected(node.ID) {
 			continue

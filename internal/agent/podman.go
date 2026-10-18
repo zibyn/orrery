@@ -8,13 +8,6 @@ import (
 	"strconv"
 )
 
-// Runtime Provider names reported in Capabilities (node-protocol.md). One Node
-// has exactly one Provider, chosen by Agent configuration (ADR-0014).
-const (
-	ProviderDocker = "docker"
-	ProviderPodman = "podman"
-)
-
 // podmanRootlessSocket is the rootless Podman compat API socket for a user
 // (runtime.md §9). Podman is supported rootless only.
 func podmanRootlessSocket(uid int) string {

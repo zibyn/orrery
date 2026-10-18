@@ -95,8 +95,14 @@ func (r *Runtime) dialTunnel(ctx context.Context, tunnelID string) (*tunnel.Conn
 }
 
 // dialSandboxPort starts a forwarder inside the Sandbox and connects to it.
-// An already running forwarder for the same port is reused.
+// An already running forwarder for the same port is reused. Local Runtime has
+// no network namespace: its processes share the host loopback, so the Agent
+// dials it directly (ADR-0009).
 func (r *Runtime) dialSandboxPort(ctx context.Context, sandboxID uuid.UUID, port int) (net.Conn, error) {
+	if r.provider == ProviderLocal {
+		return (&net.Dialer{}).DialContext(ctx, "tcp",
+			net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	}
 	dir := filepath.Join(sandboxRunPath(r.dataRoot, sandboxID), "ports")
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return nil, err

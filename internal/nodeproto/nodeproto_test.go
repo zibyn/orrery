@@ -65,3 +65,58 @@ func TestCoreCapabilitiesEnforced(t *testing.T) {
 		t.Fatal("missing or malformed capabilities must not be schedulable")
 	}
 }
+
+// ADR-0009: Local Runtime reports process/mount namespace unsupported and the
+// caller accepts that by requesting runtime: local, so that fact must not make
+// the Node unavailable. Every other required capability still applies.
+func TestCoreEnforcedByProvider(t *testing.T) {
+	report := func(provider string, values map[string]string) json.RawMessage {
+		var entries []CapabilityEntry
+		for name, value := range values {
+			entries = append(entries, CapabilityEntry{Name: name, Value: value})
+		}
+		raw, err := json.Marshal(CapabilityReport{RuntimeProvider: provider, Entries: entries})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	local := map[string]string{
+		CapProcessMountNamespace: ValueUnsupported,
+		CapCPUMemoryPIDLimits:    ValueEnforced,
+		CapWorkspaceRWMount:      ValueEnforced,
+		CapExecSupervisor:        ValueEnforced,
+	}
+	if !CoreEnforced(report("local", local)) {
+		t.Fatal("a Local Node without namespaces must still be schedulable for local requests")
+	}
+	if CoreEnforced(report("docker", local)) {
+		t.Fatal("a Docker Node without process/mount namespaces must not be schedulable")
+	}
+	local[CapCPUMemoryPIDLimits] = ValueUnsupported
+	if CoreEnforced(report("local", local)) {
+		t.Fatal("a Local Node without CPU/memory/PID limits must not be schedulable")
+	}
+}
+
+func TestRuntimeProviderAndCapabilityValue(t *testing.T) {
+	raw, err := json.Marshal(CapabilityReport{
+		RuntimeProvider: "local",
+		Entries:         []CapabilityEntry{{Name: CapGPUDeviceVisibility, Value: ValueBestEffort}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := RuntimeProvider(raw); got != "local" {
+		t.Fatalf("RuntimeProvider = %q, want local", got)
+	}
+	if got := CapabilityValue(raw, CapGPUDeviceVisibility); got != ValueBestEffort {
+		t.Fatalf("CapabilityValue = %q, want best_effort", got)
+	}
+	if got := CapabilityValue(raw, CapResourceMount); got != "" {
+		t.Fatalf("CapabilityValue for an absent entry = %q, want empty", got)
+	}
+	if RuntimeProvider(nil) != "" || CapabilityValue(nil, CapResourceMount) != "" {
+		t.Fatal("missing capabilities must have no provider or values")
+	}
+}

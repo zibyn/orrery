@@ -53,7 +53,7 @@ func Probe(workspace string) (Result, error) {
 	result := Result{
 		CPUMax:            cpuMax(),
 		MemoryMax:         readTrimmed(memoryMaxPath()),
-		PidsMax:           readTrimmed("/sys/fs/cgroup/pids.max"),
+		PidsMax:           readTrimmed(cgroupFile("pids.max")),
 		PIDNamespace:      NamespaceID("/proc/self/ns/pid"),
 		MountNamespace:    NamespaceID("/proc/self/ns/mnt"),
 		WorkspaceWritable: workspaceWritable(workspace),
@@ -74,11 +74,11 @@ func WriteProbeJSON(workspace string) error {
 }
 
 func cpuMax() string {
-	if quota := readTrimmed("/sys/fs/cgroup/cpu.max"); quota != "" {
+	if quota := readTrimmed(cgroupFile("cpu.max")); quota != "" {
 		return quota
 	}
-	quota := readTrimmed("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
-	period := readTrimmed("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+	quota := readTrimmed(cgroupFile("cpu/cpu.cfs_quota_us"))
+	period := readTrimmed(cgroupFile("cpu/cpu.cfs_period_us"))
 	if quota == "" {
 		return ""
 	}
@@ -86,10 +86,35 @@ func cpuMax() string {
 }
 
 func memoryMaxPath() string {
-	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
-		return "/sys/fs/cgroup/memory.max"
+	if _, err := os.Stat(cgroupFile("cgroup.controllers")); err == nil {
+		return cgroupFile("memory.max")
 	}
-	return "/sys/fs/cgroup/memory/memory.limit_in_bytes"
+	return cgroupFile("memory/memory.limit_in_bytes")
+}
+
+// cgroupV2Dir is this process's own cgroup under the cgroup v2 mount. Inside a
+// container with a private cgroup namespace /proc/self/cgroup reports "/", so
+// the result is the fixed /sys/fs/cgroup; a host service reports its slice
+// path, which is where Local Runtime limits live (runtime.md §10).
+func cgroupV2Dir() string {
+	raw, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "/sys/fs/cgroup"
+	}
+	return cgroupPathFrom(string(raw))
+}
+
+func cgroupPathFrom(data string) string {
+	for _, line := range strings.Split(data, "\n") {
+		if path, ok := strings.CutPrefix(line, "0::"); ok {
+			return filepath.Join("/sys/fs/cgroup", strings.TrimSpace(path))
+		}
+	}
+	return "/sys/fs/cgroup"
+}
+
+func cgroupFile(name string) string {
+	return filepath.Join(cgroupV2Dir(), name)
 }
 
 func readTrimmed(path string) string {
