@@ -599,7 +599,11 @@ func writeBuildMarker(path string, marker buildMarker) error {
 // manager and the slice name; an unprivileged Agent uses its user manager and
 // the cgroupfs path, because the Docker daemon (root) cannot see the user
 // manager's unit. An empty parent means the Node cannot bound a single build;
-// the deployment must bound builds Node-wide (runtime.md §12).
+// the deployment must bound builds Node-wide (runtime.md §12). The e2e
+// snapshot-build scenario asserts that a RUN process lands in
+// stars-build-<version_id>.slice when the slice can be created; when it cannot
+// (no systemd, no permission, no cgroupfs entry) the build deliberately falls
+// back to the Node-wide limit instead of failing.
 func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64, memory int64) (string, func()) {
 	if cpu <= 0 || memory <= 0 {
 		return "", func() {}
