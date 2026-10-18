@@ -27,8 +27,9 @@ type sandboxView struct {
 	GPU      *struct {
 		Count int32 `json:"count"`
 	} `json:"gpu"`
-	QueuePosition *int64  `json:"queue_position"`
-	BlockedBy     *string `json:"blocked_reason"`
+	QueuePosition *int64   `json:"queue_position"`
+	BlockedBy     *string  `json:"blocked_reason"`
+	Conditions    []string `json:"conditions"`
 	Workspace     *struct {
 		ID   string `json:"id"`
 		Mode string `json:"mode"`
