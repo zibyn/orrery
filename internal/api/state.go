@@ -66,4 +66,3 @@ var resourceVersionStateNames = []string{
 	string(ResourceVersionPending), string(ResourceVersionReady),
 	string(ResourceVersionFailed), string(ResourceVersionUnavailable),
 }
-

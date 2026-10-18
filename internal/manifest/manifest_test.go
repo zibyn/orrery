@@ -119,12 +119,12 @@ func TestSymlinkAndDirRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := []Entry{
-		{Path: "d", Type: TypeSymlink},                                  // missing target
-		{Path: "d", Type: TypeSymlink, Target: ""},                      // empty target
-		{Path: "d", Type: TypeSymlink, Target: "x", SHA256: digestA},    // file fields
-		{Path: "d", Type: TypeDir, Executable: true},                    // executable on dir
+		{Path: "d", Type: TypeSymlink},                               // missing target
+		{Path: "d", Type: TypeSymlink, Target: ""},                   // empty target
+		{Path: "d", Type: TypeSymlink, Target: "x", SHA256: digestA}, // file fields
+		{Path: "d", Type: TypeDir, Executable: true},                 // executable on dir
 		{Path: "d", Type: TypeFile, Size: size(1), SHA256: digestA, Target: "x"},
-		{Path: "d", Type: "socket"},                                     // unknown type
+		{Path: "d", Type: "socket"}, // unknown type
 	}
 	for i, entry := range bad {
 		if err := Validate(Manifest{Entries: []Entry{entry}}); !errors.Is(err, ErrInvalid) {
