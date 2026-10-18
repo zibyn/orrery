@@ -213,7 +213,7 @@ func (n *nodeService) handlePublishCommandResult(ctx context.Context, node store
 	// Verify every object with HeadObject checksum mode (ADR-0012). Any error
 	// fails the version rather than leaving it stuck pending: the Reconciler
 	// would not redeliver a command the Node already reported.
-	if pending.Address == nil {
+	if n.s.objects == nil || pending.Address == nil {
 		n.markPublishFailed(ctx, versionID)
 		return
 	}

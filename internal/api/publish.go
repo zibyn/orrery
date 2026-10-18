@@ -155,7 +155,10 @@ func (s *Server) handlePublishWorkspace(w http.ResponseWriter, r *http.Request, 
 		writeProblem(w, "invalid_request", "resource must be a non-empty, trimmed name of at most 255 characters")
 		return
 	}
-	resource, err := s.ensureOwnedResource(ctx, p.user.ID, request.Resource)
+	// The Resource belongs to the Workspace's owner, which is the caller
+	// except when an admin publishes on someone else's Workspace (api.md §1:
+	// admins may act on all resources).
+	resource, err := s.ensureOwnedResource(ctx, ws.OwnerID, request.Resource)
 	if err != nil {
 		s.internal(w, "resolve Resource", err)
 		return
