@@ -156,7 +156,8 @@ func (r *Runtime) tunnelMux() http.Handler {
 // frames are terminal bytes; text frames are controls.
 func (r *Runtime) handlePTY(w http.ResponseWriter, req *http.Request) {
 	execID := req.PathValue("id")
-	if _, err := uuid.Parse(execID); err != nil {
+	execUUID, err := uuid.Parse(execID)
+	if err != nil {
 		http.NotFound(w, req)
 		return
 	}
@@ -168,7 +169,7 @@ func (r *Runtime) handlePTY(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	dir := matches[0]
-	ctl, dialErr := dialSocket(filepath.Join(dir, "ctl.sock"))
+	ctl, dialErr := dialSocket(r.ctlSocket(dir, execUUID))
 	if dialErr != nil {
 		// A finished Exec still answers: the client learns the exit result.
 		if _, err := os.Stat(filepath.Join(dir, "exit")); err != nil {
