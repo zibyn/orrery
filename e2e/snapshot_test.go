@@ -157,14 +157,33 @@ func TestSnapshotImportPrivateSource(t *testing.T) {
 func TestSnapshotDeleteGuard(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
-	alpineRef := os.Getenv("STARS_E2E_ALPINE_REF")
-	if alpineRef == "" {
-		t.Fatal("STARS_E2E_ALPINE_REF is not set; run ./scripts/e2e.sh")
+	addr := os.Getenv("STARS_E2E_REGISTRY_ADDR")
+	credential := os.Getenv("STARS_E2E_REGISTRY_CREDENTIAL")
+	platformName := os.Getenv("STARS_E2E_PLATFORM_SNAPSHOT")
+	if addr == "" || credential == "" || platformName == "" {
+		t.Fatal("the registry and platform Snapshot environment is not set; run ./scripts/e2e.sh")
 	}
 	suffix := time.Now().UnixNano()
 	snapshot := createTestSnapshot(t, admin, fmt.Sprintf("e2e-guard-%d", suffix))
 
-	first := importIntoSnapshot(t, admin, snapshot.ID, alpineRef, "")
+	// Import from the platform registry rather than Docker Hub: the second
+	// import must not depend on an upstream pull rate limit.
+	secretName := fmt.Sprintf("e2e-guard-auth-%d", suffix)
+	if status, data := call(t, http.MethodPut, "/api/v1/secrets/"+secretName, admin,
+		map[string]string{"value": credential}); status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("create auth Secret: %d %s", status, data)
+	}
+	platform := findSnapshot(t, admin, platformName)
+	if platform.CurrentVersionID == nil {
+		t.Fatalf("platform Snapshot %q has no current version", platformName)
+	}
+	platformVersion := getSnapshotVersion(t, admin, platform.ID, *platform.CurrentVersionID)
+	if platformVersion.Digest == nil {
+		t.Fatalf("platform SnapshotVersion %s has no digest", platformVersion.ID)
+	}
+	sourceRef := fmt.Sprintf("%s/platform/%s@%s", addr, platformName, *platformVersion.Digest)
+
+	first := importIntoSnapshot(t, admin, snapshot.ID, sourceRef, secretName)
 	first = waitForSnapshotVersion(t, admin, snapshot.ID, first.ID, "ready", 2*time.Minute)
 	if status, data := call(t, http.MethodDelete,
 		"/api/v1/snapshots/"+snapshot.ID+"/versions/"+first.ID, admin, nil); status != http.StatusConflict {
@@ -190,7 +209,7 @@ func TestSnapshotDeleteGuard(t *testing.T) {
 
 	// A new import takes the current pointer, so the pinned version is no
 	// longer current but is still referenced by the stopped Sandbox.
-	second := importIntoSnapshot(t, admin, snapshot.ID, alpineRef, "")
+	second := importIntoSnapshot(t, admin, snapshot.ID, sourceRef, secretName)
 	waitForSnapshotVersion(t, admin, snapshot.ID, second.ID, "ready", 2*time.Minute)
 	if status, data := call(t, http.MethodDelete,
 		"/api/v1/snapshots/"+snapshot.ID+"/versions/"+first.ID, admin, nil); status != http.StatusConflict {
@@ -260,7 +279,11 @@ func waitForSnapshotVersion(t *testing.T, token, snapshotID, versionID, want str
 			return version
 		}
 		if version.State == "failed" || version.State == "cancelled" {
-			t.Fatalf("SnapshotVersion ended %s (cause %v), want %s", version.State, version.Cause, want)
+			cause := ""
+			if version.Cause != nil {
+				cause = *version.Cause
+			}
+			t.Fatalf("SnapshotVersion ended %s (cause %s), want %s", version.State, cause, want)
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("SnapshotVersion %s never became %s (state %q)", versionID, want, version.State)
