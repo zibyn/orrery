@@ -183,12 +183,8 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request, p *pr
 		writeProblem(w, "invalid_request", "id must be a UUID")
 		return
 	}
-	resource, ok := s.getOwnedResource(w, r.Context(), p, id)
+	resource, ok := s.getLiveResource(w, r.Context(), p, id)
 	if !ok {
-		return
-	}
-	if resource.DeletedAt.Valid {
-		writeProblem(w, "not_found", "no such Resource")
 		return
 	}
 	writeJSON(w, http.StatusOK, resourceToDTO(resource))

@@ -422,7 +422,7 @@ func (s *Server) resolveSandboxResource(w http.ResponseWriter, ctx context.Conte
 	if id, parseErr := uuid.Parse(reference); parseErr == nil {
 		resource, err = q.GetResource(ctx, id)
 	} else {
-		resource, err = q.GetResourceByName(ctx, store.GetResourceByNameParams{OwnerID: ownerID, Name: reference})
+		resource, err = q.GetLiveResourceByName(ctx, store.GetLiveResourceByNameParams{OwnerID: ownerID, Name: reference})
 	}
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (resource.OwnerID != ownerID || resource.DeletedAt.Valid)) {
 		writeProblem(w, "not_found", "no such Resource")

@@ -2140,31 +2140,6 @@ func (q *Queries) GetResourceByIdempotencyKey(ctx context.Context, arg GetResour
 	return i, err
 }
 
-const getResourceByName = `-- name: GetResourceByName :one
-SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources
-WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL
-`
-
-type GetResourceByNameParams struct {
-	OwnerID uuid.UUID
-	Name    string
-}
-
-func (q *Queries) GetResourceByName(ctx context.Context, arg GetResourceByNameParams) (Resource, error) {
-	row := q.db.QueryRow(ctx, getResourceByName, arg.OwnerID, arg.Name)
-	var i Resource
-	err := row.Scan(
-		&i.ID,
-		&i.OwnerID,
-		&i.Name,
-		&i.CurrentVersionID,
-		&i.IdempotencyKey,
-		&i.DeletedAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getResourceVersion = `-- name: GetResourceVersion :one
 SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE id = $1
 `

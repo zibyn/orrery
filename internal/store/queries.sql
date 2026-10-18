@@ -828,10 +828,6 @@ RETURNING *;
 -- name: GetResource :one
 SELECT * FROM resources WHERE id = $1;
 
--- name: GetResourceByName :one
-SELECT * FROM resources
-WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL;
-
 -- name: GetResourceByIdempotencyKey :one
 SELECT * FROM resources
 WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
