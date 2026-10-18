@@ -1,11 +1,69 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+func TestDeleteObjectsThenRows(t *testing.T) {
+	t.Run("every object goes before any row", func(t *testing.T) {
+		var events []string
+		err := deleteObjectsThenRows(context.Background(), []int{1, 2, 3},
+			func(_ context.Context, item int) error {
+				events = append(events, "object")
+				return nil
+			},
+			func(context.Context) error {
+				events = append(events, "rows")
+				return nil
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"object", "object", "object", "rows"}; !slices.Equal(events, want) {
+			t.Fatalf("events = %v, want %v", events, want)
+		}
+	})
+
+	t.Run("a failed object delete leaves the rows for the next tick", func(t *testing.T) {
+		rowsDeleted := false
+		boom := errors.New("object store down")
+		items := []int{1, 2, 3}
+		err := deleteObjectsThenRows(context.Background(), items,
+			func(_ context.Context, item int) error {
+				if item == 2 {
+					return boom
+				}
+				return nil
+			},
+			func(context.Context) error {
+				rowsDeleted = true
+				return nil
+			})
+		if !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want %v", err, boom)
+		}
+		if rowsDeleted {
+			t.Fatal("rows were deleted after an object delete failed")
+		}
+
+		// The retry starts from the top; deleting an already-gone object is a
+		// no-op, so the batch completes.
+		if err := deleteObjectsThenRows(context.Background(), items,
+			func(context.Context, int) error { return nil },
+			func(context.Context) error { rowsDeleted = true; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if !rowsDeleted {
+			t.Fatal("the retry did not delete the rows")
+		}
+	})
+}
 
 func TestResourceVersionExpired(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
