@@ -50,6 +50,12 @@ type Runtime struct {
 	execs          map[string]struct{} // exec id -> output delivery in flight
 	ptyAttachments map[string]int      // exec id -> live tunnel attachments
 
+	// client makes one-shot Node RPCs outside the Control stream (Presign).
+	client nodev1.NodeClient
+
+	registryMu sync.Mutex
+	registry   *registryCredential
+
 	mu      sync.Mutex
 	managed map[string]int64 // sandbox id -> generation known to run
 }
@@ -67,6 +73,7 @@ func NewRuntime(socket, dataRoot string) *Runtime {
 // connect attaches the Runtime to the live Control stream. Commands arrive only
 // after this call, so both callbacks are set together.
 func (r *Runtime) connect(client nodev1.NodeClient, send func(*nodev1.AgentMessage)) {
+	r.client = client
 	r.send = send
 	r.execStream = func(ctx context.Context) (nodev1.Node_ExecOutputClient, error) {
 		return client.ExecOutput(ctx)
@@ -74,6 +81,32 @@ func (r *Runtime) connect(client nodev1.NodeClient, send func(*nodev1.AgentMessa
 	r.tunnelStream = func(ctx context.Context) (nodev1.Node_TunnelClient, error) {
 		return client.Tunnel(ctx)
 	}
+}
+
+// setRegistryCredential stores the deployment credential from HelloAck. A
+// malformed document leaves the Runtime unauthenticated and is logged.
+func (r *Runtime) setRegistryCredential(raw string) {
+	cred, err := parseRegistryCredential(raw)
+	if err != nil {
+		slog.Warn("registry credential from HelloAck is invalid", "error", err)
+	}
+	r.registryMu.Lock()
+	r.registry = cred
+	r.registryMu.Unlock()
+}
+
+func (r *Runtime) registryAuthHeader(ref string) string {
+	r.registryMu.Lock()
+	defer r.registryMu.Unlock()
+	return r.registry.authHeader(ref)
+}
+
+// presign asks the Control Plane for object URLs (node-protocol.md "Presign").
+func (r *Runtime) presign(ctx context.Context, req *nodev1.PresignRequest) (*nodev1.PresignResponse, error) {
+	if r.client == nil {
+		return nil, errors.New("the Node is not connected")
+	}
+	return r.client.Presign(ctx, req)
 }
 
 // PrepareDataRoot creates the directories the mount table needs and stages the
@@ -156,7 +189,7 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	if err := r.d.negotiate(ctx); err != nil {
 		return "runtime_create_failed", err
 	}
-	if err := r.d.ensureImageRef(ctx, cmd.imageDigest); err != nil {
+	if err := r.d.ensureImageRef(ctx, cmd.imageDigest, r.registryAuthHeader(cmd.imageDigest)); err != nil {
 		return "image_pull_failed", err
 	}
 	workspace := workspacePath(r.dataRoot, workspaceID)
@@ -657,8 +690,9 @@ func (d *dockerClient) execProbe(ctx context.Context, containerID string) (super
 	return result, nil
 }
 
-// ensureImageRef pulls by the pinned reference when it is not local.
-func (d *dockerClient) ensureImageRef(ctx context.Context, ref string) error {
+// ensureImageRef pulls by the pinned reference when it is not local. auth is
+// the X-Registry-Auth value for the image's registry, or "" for Docker Hub.
+func (d *dockerClient) ensureImageRef(ctx context.Context, ref, auth string) error {
 	resp, err := d.request(ctx, http.MethodGet, d.api("/images/"+url.PathEscape(ref)+"/json"), nil)
 	if err == nil {
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
@@ -670,8 +704,12 @@ func (d *dockerClient) ensureImageRef(ctx context.Context, ref string) error {
 			return fmt.Errorf("inspect image: %s", resp.Status)
 		}
 	}
+	headers := map[string]string{}
+	if auth != "" {
+		headers["X-Registry-Auth"] = auth
+	}
 	query := url.Values{"fromImage": {ref}}
-	resp, err = d.request(ctx, http.MethodPost, d.api("/images/create")+"?"+query.Encode(), nil)
+	resp, err = d.requestHeaders(ctx, http.MethodPost, d.api("/images/create")+"?"+query.Encode(), nil, headers)
 	if err != nil {
 		return fmt.Errorf("pull image: %w", err)
 	}

@@ -181,7 +181,7 @@ func (d *dockerClient) negotiate(ctx context.Context) error {
 func (d *dockerClient) api(path string) string { return "/v" + d.version + path }
 
 func (d *dockerClient) ensureImage(ctx context.Context) error {
-	return d.ensureImageRef(ctx, probeImage)
+	return d.ensureImageRef(ctx, probeImage, "")
 }
 
 // probe creates, starts and reads back one container. limitsEnforced is true
@@ -295,6 +295,10 @@ func (d *dockerClient) do(ctx context.Context, method, path string, body, out an
 }
 
 func (d *dockerClient) request(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return d.requestHeaders(ctx, method, path, body, nil)
+}
+
+func (d *dockerClient) requestHeaders(ctx context.Context, method, path string, body any, headers map[string]string) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -309,6 +313,9 @@ func (d *dockerClient) request(ctx context.Context, method, path string, body an
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 	return d.http.Do(req)
 }
