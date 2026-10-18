@@ -133,9 +133,7 @@ services:
       STARS_S3_SECRET_KEY: "${STARS_S3_SECRET_KEY:-stars-secret}"
       STARS_REGISTRY_ADDR: "${STARS_REGISTRY_ADDR:-127.0.0.1:15000}"
       # Docker config.json auth document; matches deploy/registry/htpasswd.
-      # scripts/e2e.sh exports it, because inlining JSON in an interpolation
-      # default upsets Compose's parser.
-      STARS_REGISTRY_CREDENTIAL: "${STARS_REGISTRY_CREDENTIAL:-}"
+      STARS_REGISTRY_CREDENTIAL: "${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"}}}}"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
       - "${STARS_ENCRYPTION_KEYS_DIR:-./keys}:/keys:ro"
