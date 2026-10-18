@@ -245,18 +245,13 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 			SnapshotID: snap.ID, IdempotencyKey: key,
 		})
 	}
-	// The idempotent answer is the version, not the Sandbox DTO the shared
-	// helper would need; keep the lookup local.
-	if key != nil {
-		existing, err := lookup()
-		if err == nil {
-			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-			return
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			s.internal(w, "look up idempotent SnapshotVersion", err)
-			return
-		}
+	// The idempotent answer is the version DTO.
+	if existing, replayed, err := replayExisting(key, lookup); err != nil {
+		s.internal(w, "look up idempotent SnapshotVersion", err)
+		return
+	} else if replayed {
+		writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
+		return
 	}
 	var req createSnapshotVersionRequest
 	if !decodeJSON(w, r, &req) {
@@ -301,11 +296,9 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		Source: "import", IdempotencyKey: key,
 	})
 	if err != nil {
-		if key != nil && uniqueViolation(err) == "snapshot_versions_idempotency" {
-			if existing, lookupErr := lookup(); lookupErr == nil {
-				writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-				return
-			}
+		if existing, replayed := replayConflict(key, err, "snapshot_versions_idempotency", lookup); replayed {
+			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
+			return
 		}
 		s.internal(w, "create SnapshotVersion", err)
 		return

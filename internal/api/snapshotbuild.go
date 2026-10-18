@@ -309,15 +309,13 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 		IdempotencyKey: key, BuildRequest: data,
 	})
 	if err != nil {
-		if key != nil && uniqueViolation(err) == "snapshot_versions_idempotency" {
-			existing, lookupErr := s.q.GetSnapshotVersionByIdempotencyKey(ctx, store.GetSnapshotVersionByIdempotencyKeyParams{
+		lookup := func() (store.SnapshotVersion, error) {
+			return s.q.GetSnapshotVersionByIdempotencyKey(ctx, store.GetSnapshotVersionByIdempotencyKeyParams{
 				SnapshotID: snap.ID, IdempotencyKey: key,
 			})
-			if lookupErr == nil {
-				writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-				return
-			}
-			s.internal(w, "look up idempotent SnapshotVersion", lookupErr)
+		}
+		if existing, replayed := replayConflict(key, err, "snapshot_versions_idempotency", lookup); replayed {
+			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
 			return
 		}
 		s.internal(w, "create build SnapshotVersion", err)
@@ -389,13 +387,7 @@ func (r *reconciler) build(ctx context.Context, row store.ListBuildRunsRow, now 
 		return
 	}
 	if sb.State == string(SandboxFailed) || sb.State == string(SandboxStopped) || sb.State == string(SandboxDeleted) {
-		cause := versionCauseForSandbox(sb)
-		if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: fail build version", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, execCauseForVersionCause(cause))
+		r.failBuild(ctx, row, versionCauseForSandbox(sb))
 		return
 	}
 	if sb.NodeID == nil {
@@ -403,13 +395,7 @@ func (r *reconciler) build(ctx context.Context, row store.ListBuildRunsRow, now 
 	}
 	node, err := r.s.q.GetNode(ctx, *sb.NodeID)
 	if err == nil && node.LostAt.Valid {
-		cause := "node_lost"
-		if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: fail lost build", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, "node_lost")
+		r.failBuild(ctx, row, "node_lost")
 		return
 	}
 	if row.ExecCancelRequestedAt.Valid {
@@ -420,25 +406,13 @@ func (r *reconciler) build(ctx context.Context, row store.ListBuildRunsRow, now 
 		return
 	}
 	if buildExpired(row, now) {
-		cause := "timed_out"
-		if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: time out build", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, "timed_out")
+		r.failBuild(ctx, row, "timed_out")
 		return
 	}
 	cmd, err := r.buildCommand(ctx, row)
 	if err != nil {
-		cause := "build_failed"
 		r.s.log.Warn("reconcile: derive build command", "version_id", version.ID, "error", err)
-		if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
-			ID: version.ID, Cause: &cause,
-		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			r.s.log.Warn("reconcile: fail build", "version_id", version.ID, "error", err)
-		}
-		r.cleanupBuild(ctx, row, execCauseForVersionCause(cause))
+		r.failBuild(ctx, row, "build_failed")
 		return
 	}
 	if !row.ExecStartedAt.Valid {
@@ -457,6 +431,19 @@ func (r *reconciler) build(ctx context.Context, row store.ListBuildRunsRow, now 
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{
 		Message: &nodev1.ControlMessage_BuildSnapshot{BuildSnapshot: cmd},
 	})
+}
+
+// failBuild moves a still-building version to failed with cause and releases
+// the build. MarkSnapshotVersionFailed is conditional on building, so a cancel
+// or observation that won the race is left alone.
+func (r *reconciler) failBuild(ctx context.Context, row store.ListBuildRunsRow, cause string) {
+	version := row.SnapshotVersion
+	if _, err := r.s.q.MarkSnapshotVersionFailed(ctx, store.MarkSnapshotVersionFailedParams{
+		ID: version.ID, Cause: &cause,
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		r.s.log.Warn("reconcile: fail build version", "version_id", version.ID, "error", err)
+	}
+	r.cleanupBuild(ctx, row, execCauseForVersionCause(cause))
 }
 
 // buildCommand assembles the wire command from the rows. Every field is
