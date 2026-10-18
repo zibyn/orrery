@@ -5,10 +5,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/zibyn/stars-sandbox/internal/registry"
+	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
 // purgeInterval is the periodic cleanup cadence (defaults.md, 10 minutes).
 const purgeInterval = 10 * time.Minute
+
+// gcBatch bounds every sweep query so one tick's transaction and object
+// deletions stay short; a backlog drains over several ticks (ADR-0012).
+const gcBatch = 100
 
 // purgeLockID guards the purge across replicas (ADR-0017).
 const purgeLockID = 724002
@@ -105,7 +113,233 @@ func (s *Server) purgeOnce(ctx context.Context) {
 	if s.cfg.AuditRetention > 0 {
 		check("Audit Records", q.PurgeAuditRecords(ctx, int64(s.cfg.AuditRetention/time.Second)))
 	}
+	now := time.Now()
+	if _, err := q.DeleteExpiredUploads(ctx); err != nil {
+		s.logWarn(ctx, "purge expired uploads", err)
+	}
+	s.purgeResourceVersions(ctx, q, now)
+	s.purgeCASObjects(ctx, q, now)
+	s.purgeResourceTombstones(ctx, q)
+	s.purgeSnapshotTombstones(ctx, q)
 	if err := tx.Commit(ctx); err != nil && ctx.Err() == nil {
 		s.log.Warn("purge: commit", "error", err)
+	}
+}
+
+// purgeResourceVersions expires non-current versions with no Sandbox
+// reference. The manifest object goes before the rows, so a retry after a
+// partial failure is safe: deleting a missing manifest is a no-op.
+func (s *Server) purgeResourceVersions(ctx context.Context, q *store.Queries, now time.Time) {
+	if s.cfg.ResourceVersionTTL <= 0 || s.objects == nil {
+		return
+	}
+	cutoff := pgtype.Timestamptz{Time: now.Add(-s.cfg.ResourceVersionTTL), Valid: true}
+	for {
+		rows, err := q.ListExpiredResourceVersions(ctx, store.ListExpiredResourceVersionsParams{
+			Cutoff: cutoff, Limit: gcBatch,
+		})
+		if err != nil {
+			s.logWarn(ctx, "purge ResourceVersions", err)
+			return
+		}
+		progress := 0
+		for _, row := range rows {
+			if !resourceVersionExpired(now, s.cfg.ResourceVersionTTL, resourceVersionRetention{
+				State: row.State, CreatedAt: row.CreatedAt.Time, Current: row.Current,
+			}) {
+				continue
+			}
+			if row.Address != nil {
+				if err := s.objects.DeleteManifest(ctx, row.OwnerID.String(), *row.Address); err != nil {
+					s.logWarn(ctx, "delete ResourceVersion manifest", err)
+					continue
+				}
+			}
+			if err := q.DeleteResourceVersionObjects(ctx, row.ID); err != nil {
+				s.logWarn(ctx, "delete ResourceVersion objects", err)
+				continue
+			}
+			if err := q.DeleteResourceVersion(ctx, row.ID); err != nil {
+				s.logWarn(ctx, "delete ResourceVersion", err)
+				continue
+			}
+			progress++
+		}
+		if len(rows) < gcBatch || progress == 0 {
+			return
+		}
+	}
+}
+
+// purgeCASObjects removes unreferenced objects past the grace window, object
+// first and then the row (ADR-0021). The owner-scoped reference query is what
+// keeps one owner's version from protecting another owner's identical hash.
+func (s *Server) purgeCASObjects(ctx context.Context, q *store.Queries, now time.Time) {
+	if s.cfg.CASGrace <= 0 || s.objects == nil {
+		return
+	}
+	cutoff := pgtype.Timestamptz{Time: now.Add(-s.cfg.CASGrace), Valid: true}
+	for {
+		rows, err := q.ListSweepableCASObjects(ctx, store.ListSweepableCASObjectsParams{
+			Cutoff: cutoff, Limit: gcBatch,
+		})
+		if err != nil {
+			s.logWarn(ctx, "list sweepable CAS objects", err)
+			return
+		}
+		progress := 0
+		for _, row := range rows {
+			key := casObjectKey{owner: row.OwnerID, sha256: row.Sha256}
+			if !casSweepable(now, s.cfg.CASGrace, key, row.CreatedAt.Time, nil) {
+				continue
+			}
+			if err := s.objects.DeleteCASObject(ctx, key.owner.String(), key.sha256); err != nil {
+				s.logWarn(ctx, "delete CAS object", err)
+				continue
+			}
+			if err := q.DeleteCASObject(ctx, store.DeleteCASObjectParams{
+				OwnerID: key.owner, Sha256: key.sha256,
+			}); err != nil {
+				s.logWarn(ctx, "delete CAS row", err)
+				continue
+			}
+			progress++
+		}
+		if len(rows) < gcBatch || progress == 0 {
+			return
+		}
+	}
+}
+
+// purgeResourceTombstones physically removes a deleted Resource's versions
+// once no Sandbox references them, then the row. Versions that are still
+// referenced stay (schema.md: the reference retains them).
+func (s *Server) purgeResourceTombstones(ctx context.Context, q *store.Queries) {
+	if s.objects == nil {
+		return
+	}
+	resources, err := q.ListDeletedResources(ctx, gcBatch)
+	if err != nil {
+		s.logWarn(ctx, "list deleted Resources", err)
+		return
+	}
+	for _, resource := range resources {
+		// Resource-level tombstone: the current pointer no longer retains
+		// anything once the Resource is gone.
+		if err := q.ClearResourceCurrent(ctx, resource.ID); err != nil {
+			s.logWarn(ctx, "clear Resource current", err)
+			continue
+		}
+		versions, err := q.ListResourceVersionsForCleanup(ctx, store.ListResourceVersionsForCleanupParams{
+			ResourceID: resource.ID, Limit: gcBatch,
+		})
+		if err != nil {
+			s.logWarn(ctx, "list Resource versions for cleanup", err)
+			continue
+		}
+		for _, version := range versions {
+			if version.Address != nil {
+				if err := s.objects.DeleteManifest(ctx, version.OwnerID.String(), *version.Address); err != nil {
+					s.logWarn(ctx, "delete tombstoned manifest", err)
+					continue
+				}
+			}
+			if err := q.DeleteResourceVersionObjects(ctx, version.ID); err != nil {
+				s.logWarn(ctx, "delete tombstoned version objects", err)
+				continue
+			}
+			if err := q.DeleteResourceVersion(ctx, version.ID); err != nil {
+				s.logWarn(ctx, "delete tombstoned version", err)
+				continue
+			}
+		}
+		remaining, err := q.CountResourceVersions(ctx, resource.ID)
+		if err != nil {
+			s.logWarn(ctx, "count Resource versions", err)
+			continue
+		}
+		if remaining > 0 {
+			continue
+		}
+		uploads, err := q.CountResourceUploads(ctx, resource.ID)
+		if err != nil {
+			s.logWarn(ctx, "count Resource uploads", err)
+			continue
+		}
+		if uploads > 0 {
+			continue // expired uploads are removed by the sweep above
+		}
+		if err := q.DeleteDeletedResource(ctx, resource.ID); err != nil {
+			s.logWarn(ctx, "delete Resource row", err)
+		}
+	}
+}
+
+// purgeSnapshotTombstones removes each version of a deleted Snapshot once the
+// last Sandbox reference is gone: the registry manifest first, then the row,
+// and finally the Snapshot. Blob GC stays an operator procedure (ADR-0014).
+func (s *Server) purgeSnapshotTombstones(ctx context.Context, q *store.Queries) {
+	if s.cfg.RegistryPushAddr == "" {
+		return
+	}
+	snapshots, err := q.ListDeletedSnapshots(ctx, gcBatch)
+	if err != nil {
+		s.logWarn(ctx, "list deleted Snapshots", err)
+		return
+	}
+	for _, snap := range snapshots {
+		if err := q.ClearSnapshotCurrent(ctx, snap.ID); err != nil {
+			s.logWarn(ctx, "clear Snapshot current", err)
+			continue
+		}
+		repo := registry.Repo(snap.ID, platformName(snap))
+		versions, err := q.ListSnapshotVersionsForCleanup(ctx, store.ListSnapshotVersionsForCleanupParams{
+			SnapshotID: snap.ID, Limit: gcBatch,
+		})
+		if err != nil {
+			s.logWarn(ctx, "list Snapshot versions for cleanup", err)
+			continue
+		}
+		for _, version := range versions {
+			if version.Digest != nil {
+				ref := repo + "@" + *version.Digest
+				count, err := q.CountSandboxSnapshotReferences(ctx, ref)
+				if err != nil {
+					s.logWarn(ctx, "count Snapshot references", err)
+					continue
+				}
+				if count > 0 {
+					continue
+				}
+				if err := registry.DeleteManifest(ctx, registry.Ref(s.cfg.RegistryPushAddr, repo, *version.Digest),
+					s.cfg.RegistryCredentialDoc); err != nil {
+					s.logWarn(ctx, "delete Snapshot manifest", err)
+					continue
+				}
+			}
+			if err := q.DeleteSnapshotVersion(ctx, store.DeleteSnapshotVersionParams{
+				ID: version.ID, SnapshotID: snap.ID,
+			}); err != nil {
+				s.logWarn(ctx, "delete Snapshot version", err)
+			}
+		}
+		remaining, err := q.CountSnapshotVersions(ctx, snap.ID)
+		if err != nil {
+			s.logWarn(ctx, "count Snapshot versions", err)
+			continue
+		}
+		if remaining > 0 {
+			continue
+		}
+		if err := q.DeleteDeletedSnapshot(ctx, snap.ID); err != nil {
+			s.logWarn(ctx, "delete Snapshot row", err)
+		}
+	}
+}
+
+// logWarn reports a sweep error unless the process is shutting down.
+func (s *Server) logWarn(ctx context.Context, what string, err error) {
+	if ctx.Err() == nil {
+		s.log.Warn(what, "error", err)
 	}
 }

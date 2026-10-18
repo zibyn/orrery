@@ -8,13 +8,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/uuid"
 )
 
@@ -160,6 +163,26 @@ func (k keychain) Resolve(res authn.Resource) (authn.Authenticator, error) {
 		return authn.Anonymous, nil
 	}
 	return authn.FromConfig(cfg), nil
+}
+
+// DeleteManifest removes one manifest from the platform registry (ADR-0012:
+// a deleted Snapshot's versions go once the last Sandbox reference is gone).
+// A manifest that is already absent is the desired end state.
+func DeleteManifest(ctx context.Context, ref string, auth *Credential) error {
+	parsed, err := name.NewDigest(ref)
+	if err != nil {
+		return err
+	}
+	opts := []remote.Option{remote.WithContext(ctx)}
+	if auth != nil {
+		opts = append(opts, remote.WithAuthFromKeychain(auth.Keychain()))
+	}
+	err = remote.Delete(parsed, opts...)
+	var transportErr *transport.Error
+	if errors.As(err, &transportErr) && transportErr.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return err
 }
 
 // Import copies a source image or the whole index to target, preserving the
