@@ -227,14 +227,15 @@ INSERT INTO nodes (
 RETURNING *;
 
 -- name: GetNode :one
-SELECT * FROM nodes WHERE id = $1;
+SELECT * FROM nodes WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: GetNodeByName :one
 SELECT * FROM nodes WHERE name = $1;
 
 -- name: ListNodes :many
 SELECT * FROM nodes
-WHERE (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+WHERE deleted_at IS NULL
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
 ORDER BY id
 LIMIT sqlc.arg('limit');
 
@@ -651,7 +652,7 @@ INSERT INTO gpu_allocations (gpu_uuid, sandbox_id) VALUES ($1, $2);
 SELECT gpu_uuid FROM gpu_allocations WHERE sandbox_id = $1 ORDER BY gpu_uuid;
 
 -- name: ListAllNodes :many
-SELECT * FROM nodes ORDER BY id;
+SELECT * FROM nodes WHERE deleted_at IS NULL ORDER BY id;
 
 -- Execs
 
@@ -1316,3 +1317,31 @@ WHERE snapshot_id = $1 AND digest = $2 AND id <> $3;
 DELETE FROM sandbox_resources sr
 USING sandboxes sb
 WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted';
+
+-- Node pause/resume/delete (#94)
+
+-- A tombstoned Node is hidden everywhere GetNode is used, so a second delete
+-- or an Agent reconnect after deletion is not found.
+-- name: PauseNode :one
+UPDATE nodes SET paused = true WHERE id = $1 AND deleted_at IS NULL RETURNING *;
+
+-- name: ResumeNode :one
+UPDATE nodes SET paused = false WHERE id = $1 AND deleted_at IS NULL RETURNING *;
+
+-- Deleting a Node clears its token (bytea NOT NULL, so an empty value, which
+-- no token hash matches) and keeps the row as a tombstone (ADR-0014).
+-- name: TombstoneNode :execrows
+UPDATE nodes SET deleted_at = now(), token_hash = ''
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- Deletion requires no non-terminal Workspace (deleted, failed and lost are
+-- terminal) and no non-terminal Sandbox, build rows included (only deleted and
+-- failed are terminal; a stopped Sandbox still blocks) (api.md §3).
+-- name: CountNodeNonTerminalWorkspaces :one
+SELECT count(*)::bigint FROM workspaces
+WHERE node_id = $1 AND state NOT IN ('deleted', 'failed', 'lost');
+
+-- name: CountNodeNonTerminalSandboxes :one
+SELECT count(*)::bigint FROM sandboxes
+WHERE node_id = $1 AND state NOT IN ('deleted', 'failed');
+

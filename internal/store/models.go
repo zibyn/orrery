@@ -153,6 +153,7 @@ type Node struct {
 	ReservedMemory int64
 	CpuPerGpu      float64
 	MemoryPerGpu   int64
+	DeletedAt      pgtype.Timestamptz
 }
 
 type Resource struct {

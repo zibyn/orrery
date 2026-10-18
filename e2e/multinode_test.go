@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -239,4 +240,187 @@ func sandboxContainerLabel(t *testing.T, sandboxID, key string) string {
 		t.Fatalf("docker inspect label %s: %v\n%s", key, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// TestRetireNode is #94's "retire-node" scenario (#39, ADR-0014). There is no
+// migration or eviction: a Workspace leaves a Node the way a caller moves data
+// — archive it, publish the archive to a Resource, restore it into a Workspace
+// on another Node. Only a paused Node with no non-terminal Workspace and no
+// non-terminal Sandbox can be deleted; the row stays as a tombstone.
+func TestRetireNode(t *testing.T) {
+	admin := adminToken(t)
+	raiseSandboxQuota(t, admin, 10)
+	suffix := time.Now().UnixNano()
+	oldName := fmt.Sprintf("e2e-retire-old-%d", suffix)
+	newName := fmt.Sprintf("e2e-retire-new-%d", suffix)
+
+	// The retiring Node is enrolled and started first, so placement prefers it.
+	oldState, oldRoot := enrollAgent(t, admin, oldName)
+	startAgentWith(t, oldState, oldRoot, "--runtime", "docker")
+	waitForNodeReady(t, admin, oldName)
+	old := findNode(t, admin, oldName)
+
+	newState, newRoot := enrollAgent(t, admin, newName)
+	startAgentWith(t, newState, newRoot, "--runtime", "docker")
+	waitForNodeReady(t, admin, newName)
+	replacement := findNode(t, admin, newName)
+
+	wsOld := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
+	if wsOld.NodeID == nil || *wsOld.NodeID != old.ID {
+		t.Fatalf("Workspace node_id = %v, want the older Node %s (the other is %s)",
+			wsOld.NodeID, old.ID, replacement.ID)
+	}
+	status, data := createSandboxWithWorkspace(t, admin, fmt.Sprintf("retire-%d", suffix), wsOld.ID, "rw", 0)
+	if status != http.StatusCreated {
+		t.Fatalf("create Sandbox: %d %s", status, data)
+	}
+	var sbOld sandboxView
+	mustJSON(t, data, &sbOld)
+	sbOld = waitForSandboxReady(t, admin, sbOld.ID)
+	runExecScript(t, admin, sbOld.ID,
+		"printf 'retire me\\n' > /workspace/data.txt\nchmod -R a+rwX /workspace")
+
+	cli := newCLIRunner(t, admin)
+	// Pause and resume are the admin switch (ADR-0017). A paused Node takes no
+	// new Workspace but keeps running Sandboxes.
+	cli.run(t, "", "node", "pause", old.ID)
+	if got := getNode(t, admin, old.ID); got.Status != "paused" {
+		t.Fatalf("Node status after pause = %q, want paused", got.Status)
+	}
+	cli.run(t, "", "node", "resume", old.ID)
+	if got := getNode(t, admin, old.ID); got.Status != "ready" {
+		t.Fatalf("Node status after resume = %q, want ready", got.Status)
+	}
+	cli.run(t, "", "node", "pause", old.ID)
+
+	// A non-terminal Sandbox and Workspace both block deletion.
+	status, data = call(t, http.MethodDelete, "/api/v1/nodes/"+old.ID, admin, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("delete a Node with work = %d %s, want 409", status, data)
+	}
+	requireProblemCode(t, data, "conflict")
+
+	// The archive: a paused Node still publishes because the Workspace is
+	// bound there.
+	resourceName := fmt.Sprintf("retire-%d", suffix)
+	var version publishedVersion
+	mustJSON(t, cli.run(t, "", "workspace", "publish", wsOld.ID, "/workspace", resourceName), &version)
+	if version.State != "ready" || version.Address == nil {
+		t.Fatalf("published version = %+v, want a ready version with an address", version)
+	}
+
+	// With the Sandbox gone the Workspace alone still blocks the Node.
+	deleteSandbox(t, admin, sbOld.ID)
+	status, data = call(t, http.MethodDelete, "/api/v1/nodes/"+old.ID, admin, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("delete a Node with a non-terminal Workspace = %d %s, want 409", status, data)
+	}
+	requireProblemCode(t, data, "conflict")
+
+	// A Workspace already bound to the paused Node can still start a Sandbox
+	// (ADR-0017), and a stopped Sandbox is still non-terminal.
+	status, data = createSandboxWithWorkspace(t, admin, fmt.Sprintf("retire-stop-%d", suffix), wsOld.ID, "rw", 0)
+	if status != http.StatusCreated {
+		t.Fatalf("create second Sandbox: %d %s", status, data)
+	}
+	var sbStopped sandboxView
+	mustJSON(t, data, &sbStopped)
+	sbStopped = waitForSandboxReady(t, admin, sbStopped.ID)
+	if status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+sbStopped.ID+"/stop", admin, nil); status != http.StatusAccepted {
+		t.Fatalf("stop second Sandbox: %d %s", status, data)
+	}
+	waitForSandboxState(t, admin, sbStopped.ID, "stopped", 60*time.Second)
+	if status, data := call(t, http.MethodDelete, "/api/v1/workspaces/"+wsOld.ID, admin, nil); status != http.StatusAccepted {
+		t.Fatalf("delete Workspace: %d %s", status, data)
+	}
+	waitForWorkspaceState(t, admin, wsOld.ID, "deleted", 60*time.Second)
+	status, data = call(t, http.MethodDelete, "/api/v1/nodes/"+old.ID, admin, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("delete a Node with a stopped Sandbox = %d %s, want 409", status, data)
+	}
+	requireProblemCode(t, data, "conflict")
+
+	// Restore into a Workspace on the other Node; the paused Node takes no new
+	// Workspace, so placement has to choose the other one.
+	wsNew := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
+	if wsNew.NodeID == nil || *wsNew.NodeID != replacement.ID {
+		t.Fatalf("restored Workspace node_id = %v, want %s", wsNew.NodeID, replacement.ID)
+	}
+	status, data = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
+		"name":      fmt.Sprintf("restore-%d", suffix),
+		"cpu":       0.5,
+		"memory":    128 << 20,
+		"idle_stop": 0,
+		"workspace": map[string]string{"id": wsNew.ID, "mode": "rw"},
+		"resources": []map[string]any{{"resource": resourceName, "version": version.ID, "mount": "archive"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create restoring Sandbox: %d %s", status, data)
+	}
+	var sbNew sandboxView
+	mustJSON(t, data, &sbNew)
+	sbNew = waitForSandboxReady(t, admin, sbNew.ID)
+	runExecScript(t, admin, sbNew.ID,
+		`cp -a /resources/archive/. /workspace/ && test "$(cat /workspace/data.txt)" = "retire me"`)
+
+	// The stopped Sandbox is the last blocker.
+	deleteSandbox(t, admin, sbStopped.ID)
+	cli.run(t, "", "node", "delete", old.ID)
+
+	// Tombstone: hidden from the Node and capacity views, token cleared, GPU
+	// rows removed, row kept.
+	status, data = call(t, http.MethodGet, "/api/v1/nodes/"+old.ID, admin, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("get a deleted Node = %d %s, want 404", status, data)
+	}
+	requireProblemCode(t, data, "not_found")
+	if status, data := call(t, http.MethodGet, "/api/v1/nodes?limit=100", admin, nil); status != http.StatusOK {
+		t.Fatalf("list Nodes: %d %s", status, data)
+	} else if bytes.Contains(data, []byte(old.ID)) {
+		t.Fatalf("deleted Node %s still appears in GET /nodes", old.ID)
+	}
+	if status, data := call(t, http.MethodGet, "/api/v1/capacity", admin, nil); status != http.StatusOK {
+		t.Fatalf("get capacity: %d %s", status, data)
+	} else if bytes.Contains(data, []byte(old.ID)) {
+		t.Fatalf("deleted Node %s still appears in GET /capacity", old.ID)
+	}
+	if n := psqlCount(t, fmt.Sprintf(
+		"SELECT count(*) FROM nodes WHERE id = '%s' AND deleted_at IS NOT NULL AND token_hash = ''::bytea",
+		old.ID)); n != "1" {
+		t.Fatalf("Node tombstone rows = %s, want 1 with a cleared token", n)
+	}
+	if n := psqlCount(t, fmt.Sprintf("SELECT count(*) FROM gpus WHERE node_id = '%s'", old.ID)); n != "0" {
+		t.Fatalf("deleted Node kept %s GPU rows", n)
+	}
+	// The connected Agent sees UNAUTHENTICATED and clears its identity.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(oldState); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the deleted Node's Agent kept its identity file")
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	// Every admin act is audited.
+	for _, action := range []string{"node.pause", "node.resume", "node.delete"} {
+		status, data := call(t, http.MethodGet,
+			"/api/v1/audit?action="+action+"&target="+old.ID, admin, nil)
+		if status != http.StatusOK {
+			t.Fatalf("list audit %s: %d %s", action, status, data)
+		}
+		var list struct {
+			Items []struct {
+				Action string `json:"action"`
+			} `json:"items"`
+		}
+		mustJSON(t, data, &list)
+		if len(list.Items) == 0 {
+			t.Fatalf("no audit record for %s on %s", action, old.ID)
+		}
+	}
+
+	deleteSandbox(t, admin, sbNew.ID)
 }

@@ -29,6 +29,12 @@ func (s *Server) authenticateNode(ctx context.Context) (store.Node, error) {
 		s.log.Error("look up node", "error", err)
 		return store.Node{}, status.Error(codes.Internal, "look up Node")
 	}
+	// GetNode already hides tombstones; both a deleted Node and a cleared
+	// token (lost or deleted Nodes) must read as an unknown Token rather than
+	// a comparison that happens to fail.
+	if node.DeletedAt.Valid || len(node.TokenHash) == 0 {
+		return store.Node{}, status.Error(codes.Unauthenticated, "unknown Node Token")
+	}
 	if subtle.ConstantTimeCompare(node.TokenHash, HashSecret(parts.Secret)) != 1 {
 		return store.Node{}, status.Error(codes.Unauthenticated, "unknown Node Token")
 	}

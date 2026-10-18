@@ -688,6 +688,9 @@ type nodeHub struct {
 type agentConn struct {
 	nodeID uuid.UUID
 	send   chan *nodev1.ControlMessage
+	// done ends the Control handler when the Node is deleted, so the stream
+	// closes with UNAUTHENTICATED and the Agent clears its identity (ADR-0014).
+	done chan struct{}
 }
 
 func newNodeHub() *nodeHub {
@@ -713,6 +716,20 @@ func (h *nodeHub) unregister(c *agentConn) {
 	if h.conns[c.nodeID] == c {
 		delete(h.conns, c.nodeID)
 	}
+}
+
+// disconnect ends a Node's live Control stream. The handler closes the stream
+// when it returns. A second disconnect is a no-op: the connection is already
+// gone from the map.
+func (h *nodeHub) disconnect(nodeID uuid.UUID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	conn := h.conns[nodeID]
+	if conn == nil {
+		return
+	}
+	delete(h.conns, nodeID)
+	close(conn.done)
 }
 
 func (h *nodeHub) connected(nodeID uuid.UUID) bool {

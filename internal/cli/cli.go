@@ -95,6 +95,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runResource(c, rest[1:], stderr)
 	case "workspace":
 		err = runWorkspace(c, rest[1:], stderr)
+	case "node":
+		err = runNode(c, rest[1:])
 	case "port-forward":
 		err = runPortForward(c, rest[1:])
 	case "git-credential":
@@ -150,6 +152,7 @@ commands:
                                     download a version into a directory
   workspace publish <id> <path> <name>
                                     publish a Workspace path as a Resource version
+  node pause|resume|delete <id>     admin: pause, resume or delete a Node
   port-forward <sandbox-id> [LOCAL:]REMOTE
                                     tunnel a local TCP port to a Sandbox port
 

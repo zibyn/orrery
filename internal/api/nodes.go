@@ -130,6 +130,124 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request, p *princi
 	writeJSON(w, http.StatusOK, dto)
 }
 
+func (s *Server) handlePauseNode(w http.ResponseWriter, r *http.Request, p *principal) {
+	s.setNodePaused(w, r, p, true)
+}
+
+func (s *Server) handleResumeNode(w http.ResponseWriter, r *http.Request, p *principal) {
+	s.setNodePaused(w, r, p, false)
+}
+
+// setNodePaused flips the server-side flag (ADR-0017). A paused Node takes no
+// new Workspace and no build; Workspaces already bound to it can still start
+// Sandboxes so their owners can move data out.
+func (s *Server) setNodePaused(w http.ResponseWriter, r *http.Request, p *principal, paused bool) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "not_found", "")
+		return
+	}
+	var node store.Node
+	var err error
+	action := "node.resume"
+	if paused {
+		action = "node.pause"
+		node, err = s.q.PauseNode(r.Context(), id)
+	} else {
+		node, err = s.q.ResumeNode(r.Context(), id)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "not_found", "")
+		return
+	}
+	if err != nil {
+		s.internal(w, action, err)
+		return
+	}
+	s.audit(r.Context(), p, action, "node", id.String(), nil)
+	dto, err := s.nodeToDTO(r.Context(), node, time.Now())
+	if err != nil {
+		s.internal(w, "read node GPUs", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dto)
+}
+
+// handleDeleteNode leaves a tombstone (api.md §3, ADR-0014): the Node must be
+// paused with no non-terminal Workspace and no non-terminal Sandbox, build
+// rows included. The token is cleared and the GPU rows are removed; the row
+// stays because Workspaces and Sandboxes still reference it.
+func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "not_found", "")
+		return
+	}
+	ctx := r.Context()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.internal(w, "begin node delete", err)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	node, err := q.GetNode(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "not_found", "")
+		return
+	}
+	if err != nil {
+		s.internal(w, "get node", err)
+		return
+	}
+	if !node.Paused {
+		writeProblem(w, "conflict", "the Node must be paused before it can be deleted")
+		return
+	}
+	workspaces, err := q.CountNodeNonTerminalWorkspaces(ctx, &id)
+	if err != nil {
+		s.internal(w, "count Node Workspaces", err)
+		return
+	}
+	sandboxes, err := q.CountNodeNonTerminalSandboxes(ctx, &id)
+	if err != nil {
+		s.internal(w, "count Node Sandboxes", err)
+		return
+	}
+	if workspaces > 0 || sandboxes > 0 {
+		writeProblem(w, "conflict", "the Node still has non-terminal Workspaces or Sandboxes")
+		return
+	}
+	rows, err := q.TombstoneNode(ctx, id)
+	if err != nil {
+		s.internal(w, "tombstone Node", err)
+		return
+	}
+	if rows == 0 {
+		// A concurrent delete won; the Node is already a tombstone.
+		writeProblem(w, "not_found", "")
+		return
+	}
+	if err := q.DeleteNodeGPUs(ctx, id); err != nil {
+		s.internal(w, "delete Node GPUs", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.internal(w, "commit node delete", err)
+		return
+	}
+	// A still-connected Agent gets UNAUTHENTICATED and drops its identity
+	// (ADR-0014).
+	s.reconcile.hub.disconnect(id)
+	s.audit(ctx, p, "node.delete", "node", id.String(), nil)
+	dto, err := s.nodeToDTO(ctx, node, time.Now())
+	if err != nil {
+		s.internal(w, "read node GPUs", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dto)
+}
+
 func (s *Server) nodeToDTO(ctx context.Context, node store.Node, now time.Time) (nodeDTO, error) {
 	gpus, err := s.q.ListNodeGPUs(ctx, node.ID)
 	if err != nil {

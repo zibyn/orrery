@@ -60,13 +60,15 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 
 	// Commands are sent from this one goroutine; the handler below only
 	// receives. A send error ends the goroutine and the stream soon after.
-	conn := &agentConn{nodeID: node.ID, send: make(chan *nodev1.ControlMessage, 64)}
+	conn := &agentConn{nodeID: node.ID, send: make(chan *nodev1.ControlMessage, 64), done: make(chan struct{})}
 	n.s.reconcile.hub.register(conn)
 	defer n.s.reconcile.hub.unregister(conn)
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-conn.done:
 				return
 			case msg := <-conn.send:
 				if err := stream.Send(msg); err != nil {
@@ -76,6 +78,23 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 		}
 	}()
 
+	// Recv blocks, so it runs in its own goroutine: returning from this
+	// handler is what closes the stream, and deleting the Node must be able to
+	// do that while the Agent is idle.
+	recv := make(chan error, 1)
+	go func() { recv <- n.receive(ctx, stream, node) }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-conn.done:
+		return status.Error(codes.Unauthenticated, "this Node was deleted")
+	case err := <-recv:
+		return err
+	}
+}
+
+// receive dispatches one Control stream's messages until the stream ends.
+func (n *nodeService) receive(ctx context.Context, stream nodev1.Node_ControlServer, node store.Node) error {
 	for {
 		msg, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
