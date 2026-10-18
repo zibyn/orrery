@@ -70,6 +70,38 @@ class ExecOutputTest(unittest.TestCase):
 
 
 class FilesTest(unittest.TestCase):
+    def test_list_and_stat_files_decode_entries(self) -> None:
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen[(request.method, request.url.path)] = request.url.params.get("path")
+            if request.url.path.endswith("/files/stat"):
+                return httpx.Response(200, json={
+                    "path": "src/a.txt", "name": "a.txt", "type": "file", "size": 6,
+                    "mode": 420, "mod_time": "2026-10-18T00:00:00Z", "link_target": None,
+                })
+            return httpx.Response(200, json={"items": [
+                {"path": "src/a.txt", "name": "a.txt", "type": "file", "size": 6,
+                 "mode": 420, "mod_time": "2026-10-18T00:00:00Z"},
+                {"path": "src/link", "name": "link", "type": "symlink", "size": 0,
+                 "mode": 511, "link_target": "a.txt"},
+            ]})
+
+        c = client(handler)
+        entries = c.list_files("sb", "src")
+        self.assertEqual(
+            [(e.path, e.type, e.size) for e in entries],
+            [("src/a.txt", "file", 6), ("src/link", "symlink", 0)],
+        )
+        self.assertEqual(entries[1].link_target, "a.txt")
+        entry = c.stat_file("sb", "src/a.txt")
+        self.assertEqual((entry.path, entry.type, entry.size, entry.mode),
+                         ("src/a.txt", "file", 6, 420))
+        self.assertEqual(seen, {
+            ("GET", "/api/v1/sandboxes/sb/files"): "src",
+            ("GET", "/api/v1/sandboxes/sb/files/stat"): "src/a.txt",
+        })
+
     def test_content_and_archive_round_trip(self) -> None:
         seen = {}
 

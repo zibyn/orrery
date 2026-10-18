@@ -163,6 +163,10 @@ class FileEntry:
     mod_time: str | None = None
     link_target: str | None = None
 
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "FileEntry":
+        return _fit(cls, data)
+
 
 @dataclass
 class Secret:
