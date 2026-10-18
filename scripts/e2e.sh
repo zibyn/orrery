@@ -134,7 +134,12 @@ export STARS_DEX_DIR="$PWD/.e2e/dex"
 if ! docker pull alpine:3.22 >/dev/null 2>&1; then
   echo "warning: could not pull alpine:3.22; using the local image" >&2
 fi
-STARS_E2E_ALPINE_REF="$(docker image inspect alpine:3.22 --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+# The Agent pulls platform images as 127.0.0.1:15000/platform/...@digest, and
+# Docker attaches every pulled RepoDigest to the matching image id. Select the
+# Docker Hub digest explicitly instead of taking index 0.
+STARS_E2E_ALPINE_REF="$(docker image inspect alpine:3.22 \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
+  grep -E '^(docker\.io/)?(library/)?alpine@sha256:' | head -n1 || true)"
 if [ -z "$STARS_E2E_ALPINE_REF" ] || [ "$STARS_E2E_ALPINE_REF" = "<no value>" ]; then
   echo "alpine:3.22 has no RepoDigest; platform Snapshot import needs ref@sha256:…" >&2
   exit 1

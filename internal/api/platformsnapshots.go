@@ -37,6 +37,12 @@ func (s *Server) importPlatformSnapshot(ctx context.Context, configured Platform
 	if err != nil {
 		return err
 	}
+	// A configuration that names the platform registry by its Node-reachable
+	// address must still be readable from the Control Plane.
+	source, err = registry.RewriteRegistry(source, s.cfg.RegistryAddr, s.cfg.RegistryPushAddr)
+	if err != nil {
+		return err
+	}
 	digest := source.DigestStr()
 	// Idempotent across restarts: a ready version already carrying this
 	// digest is the import.
