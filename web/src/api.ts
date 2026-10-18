@@ -167,7 +167,24 @@ export type CapacityNode = {
   gpus: CapacityGPU[]
 }
 
+export type FileEntry = {
+  path: string
+  name: string
+  type: 'file' | 'dir' | 'symlink' | 'other'
+  size: number
+  mode: number
+  mod_time: string
+  link_target?: string
+}
+
+export type PortTicket = { url: string }
+
 type Problem = { code?: string; detail?: string }
+
+async function problemError(res: Response): Promise<ApiError> {
+  const problem: Problem = await res.json().catch(() => ({}))
+  return new ApiError(res.status, problem.code ?? 'internal', problem.detail ?? res.statusText)
+}
 
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
@@ -176,11 +193,20 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (!res.ok) {
-    const problem: Problem = await res.json().catch(() => ({}))
-    throw new ApiError(res.status, problem.code ?? 'internal', problem.detail ?? res.statusText)
-  }
+  if (!res.ok) throw await problemError(res)
+  if (res.status === 204) return undefined as T
   return (await res.json()) as T
+}
+
+// File uploads send the File itself as the raw request body and the server
+// answers 204, which api() cannot parse (api.md §5).
+export async function apiVoid(method: string, path: string, body?: BodyInit): Promise<void> {
+  const res = await fetch(`/api/v1${path}`, {
+    method,
+    credentials: 'include',
+    body,
+  })
+  if (!res.ok) throw await problemError(res)
 }
 
 export function getMe(): Promise<User> {

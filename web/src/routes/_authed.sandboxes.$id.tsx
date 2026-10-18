@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 
 import { api, type Sandbox } from '@/api'
+import { SandboxFiles } from '@/components/sandbox-files'
+import { SandboxPorts } from '@/components/sandbox-ports'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { sandboxPollInterval } from '@/lib/sandbox'
 
@@ -136,6 +138,13 @@ function SandboxDetailPage() {
           <dt className="text-muted-foreground">Created</dt>
           <dd>{current.created_at}</dd>
         </dl>
+      )}
+
+      {current?.state === 'ready' && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <SandboxFiles sandboxId={id} />
+          <SandboxPorts sandboxId={id} />
+        </div>
       )}
     </div>
   )
