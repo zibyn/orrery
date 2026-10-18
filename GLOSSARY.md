@@ -32,9 +32,9 @@ _Avoid_: Workspace checkpoint, process checkpoint
 An immutable image of a Snapshot, built from a base and declared build inputs or imported by digest. Its inputs are traceable; rebuilding them is not promised to yield the same result.
 _Avoid_: Workspace snapshot, running Sandbox
 
-**Platform Base Image**:
-A software environment the platform recommends as the starting point of a Snapshot. It is given by deployment configuration and readable by every User. It is a default, not a restriction.
-_Avoid_: base layer, approved image
+**Platform Snapshot**:
+A Snapshot given by deployment configuration and readable by every User. It is a recommended starting point for Sandboxes and builds, not a restriction.
+_Avoid_: platform base image, base layer, approved image
 
 **Content Address**:
 A stable identifier derived from immutable content, used to refer to that content independently of a Resource name or provenance record.
