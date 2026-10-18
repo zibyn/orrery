@@ -50,8 +50,14 @@ type Runtime struct {
 	socket string
 	// provider is the Node's single Runtime Provider (node-protocol.md).
 	provider string
-	// owner maps host paths to the rootless Podman user (runtime.md §9); nil
-	// for rootful Docker, whose container root maps to host root.
+	// driver is the Provider-specific half of the Runtime contract (ADR-0009):
+	// container lifecycle/Exec/self-check for Docker and Podman, systemd for
+	// Local. Host-path work (Workspaces, records, files, publish, resources,
+	// tunnels) stays on Runtime and is shared.
+	driver runtimeDriver
+	// owner maps host paths to the rootless Podman user (runtime.md §9) or the
+	// Local Runtime user; nil for rootful Docker, whose container root maps to
+	// host root.
 	owner *rootlessOwner
 	// buildkit is the Agent-configured BuildKit endpoint. Empty means the
 	// Docker daemon's built-in BuildKit.
@@ -89,7 +95,7 @@ func NewRuntime(socket, dataRoot, nodeID string) *Runtime {
 }
 
 func newRuntime(cfg runtimeConfig, dataRoot, nodeID string) *Runtime {
-	return &Runtime{
+	rt := &Runtime{
 		d:              &dockerClient{http: unixHTTPClient(cfg.socket)},
 		dataRoot:       dataRoot,
 		nodeID:         nodeID,
@@ -102,6 +108,8 @@ func newRuntime(cfg runtimeConfig, dataRoot, nodeID string) *Runtime {
 		buildDone:      make(map[string]struct{}),
 		managed:        make(map[string]int64),
 	}
+	rt.driver = containerDriver{rt}
+	return rt
 }
 
 // connect attaches the Runtime to the live Control stream. Commands arrive only
@@ -230,7 +238,7 @@ func (r *Runtime) deleteWorkspace(workspaceID uuid.UUID) error {
 
 // createSandbox is idempotent: an existing running container is adopted, a
 // stopped one is replaced. It returns a Sandbox lifecycle cause on failure.
-func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (string, error) {
+func (r *Runtime) createContainerSandbox(ctx context.Context, cmd *createSandboxSpec) (string, error) {
 	id, err := uuid.Parse(cmd.sandboxID)
 	if err != nil {
 		return "runtime_create_failed", err
@@ -380,7 +388,7 @@ func limitsMatch(r supervisor.Result, nanoCPUs, memory int64, gpus int, workspac
 		workspaceOK
 }
 
-func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
+func (r *Runtime) stopContainerSandbox(ctx context.Context, sandboxID uuid.UUID) error {
 	if err := r.d.negotiate(ctx); err != nil {
 		return err
 	}
@@ -400,7 +408,7 @@ func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
 }
 
 // scan reports a Sandbox whose runtime died while the Node stayed up.
-func (r *Runtime) scan(ctx context.Context, report func(sandboxID string, generation int64)) {
+func (r *Runtime) scanContainers(ctx context.Context, report func(sandboxID string, generation int64)) {
 	if err := r.d.negotiate(ctx); err != nil {
 		return
 	}
@@ -430,7 +438,7 @@ func (r *Runtime) scan(ctx context.Context, report func(sandboxID string, genera
 
 // adopt picks up containers from a previous Agent process. The Control Plane
 // also re-derives every command, so this only avoids false "gone" reports.
-func (r *Runtime) adopt(ctx context.Context, report func(sandboxID string, generation int64)) {
+func (r *Runtime) adoptContainers(ctx context.Context, report func(sandboxID string, generation int64)) {
 	if err := r.d.negotiate(ctx); err != nil {
 		return
 	}
@@ -529,7 +537,7 @@ func (r *Runtime) reconcileRecord(ctx context.Context, sandboxID, execID uuid.UU
 	}
 	if runtimeAlive {
 		if _, err := os.Stat(filepath.Join(dir, "exit")); err != nil {
-			if !socketUp(dir) && !waitSocket(ctx, dir) {
+			if !r.supervisorSocketUp(dir, execID) && !r.waitSupervisorSocket(ctx, dir, execID) {
 				// A canceled context means this connection is going away, not
 				// that the Supervisor died: settle on the next one.
 				if ctx.Err() != nil {
@@ -567,7 +575,7 @@ func writeRuntimeLost(dir string) {
 
 // runtimeAlive reports the container's state. known is false when the daemon
 // cannot be asked; that is not evidence the Runtime is gone.
-func (r *Runtime) runtimeAlive(ctx context.Context, id uuid.UUID) (alive, known bool) {
+func (r *Runtime) containerAlive(ctx context.Context, id uuid.UUID) (alive, known bool) {
 	if err := r.d.negotiate(ctx); err != nil {
 		return false, false
 	}
@@ -578,8 +586,20 @@ func (r *Runtime) runtimeAlive(ctx context.Context, id uuid.UUID) (alive, known 
 	return exists && running, true
 }
 
-func socketUp(dir string) bool {
-	conn, err := dialSocket(filepath.Join(dir, "ctl.sock"))
+// ctlSocket is where the Supervisor listens. A container mounts the record
+// directory at /.stars/run, so its socket is short; Local Runtime keeps the
+// record on the host, where <data-root>/sandboxes/<id>/run/<exec>/ctl.sock can
+// exceed unix sockets' 108-byte sun_path, so it uses an abstract name
+// (runtime.md §10).
+func (r *Runtime) ctlSocket(dir string, execID uuid.UUID) string {
+	if r.provider == ProviderLocal {
+		return localCtlSocket(execID)
+	}
+	return filepath.Join(dir, "ctl.sock")
+}
+
+func (r *Runtime) supervisorSocketUp(dir string, execID uuid.UUID) bool {
+	conn, err := dialSocket(r.ctlSocket(dir, execID))
 	if err != nil {
 		return false
 	}
@@ -587,12 +607,12 @@ func socketUp(dir string) bool {
 	return true
 }
 
-// waitSocket gives a just-created Supervisor time to listen, and stops early
-// when it exits instead.
-func waitSocket(ctx context.Context, dir string) bool {
+// waitSupervisorSocket gives a just-created Supervisor time to listen, and
+// stops early when it exits instead.
+func (r *Runtime) waitSupervisorSocket(ctx context.Context, dir string, execID uuid.UUID) bool {
 	deadline := time.Now().Add(recordSettle)
 	for {
-		if socketUp(dir) {
+		if r.supervisorSocketUp(dir, execID) {
 			return true
 		}
 		if _, err := os.Stat(filepath.Join(dir, "exit")); err == nil {
@@ -632,7 +652,7 @@ func readGeneration(dir string) (int64, bool) {
 
 // watchEvents reports a Sandbox whose container died without a Stop command
 // (runtime.md §9); the periodic scan is the fallback when the stream breaks.
-func (r *Runtime) watchEvents(ctx context.Context, report func(sandboxID string, generation int64)) {
+func (r *Runtime) watchContainerEvents(ctx context.Context, report func(sandboxID string, generation int64)) {
 	filters := url.QueryEscape(fmt.Sprintf(
 		`{"type":["container"],"event":["die"],"label":["stars.managed=true","stars.node=%s"]}`,
 		r.nodeID))

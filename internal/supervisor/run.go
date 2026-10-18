@@ -69,9 +69,15 @@ type Exit struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
-// Run is `supervisor run <exec_id>` against the standard mount.
+// Run is `supervisor run <exec_id>`. A container mounts the record directory
+// at RunMount; Local Runtime has no mounts, so its transient service names the
+// host path in STARS_RUN_ROOT (runtime.md §10).
 func Run(execID string) error {
-	return RunIn(RunMount, execID)
+	root := RunMount
+	if dir := os.Getenv("STARS_RUN_ROOT"); dir != "" {
+		root = dir
+	}
+	return RunIn(root, execID)
 }
 
 // RunIn runs one Exec under root/<exec_id>. The atomic mkdir is the dedupe:
@@ -91,19 +97,33 @@ func RunIn(root, execID string) error {
 	return runIn(dir)
 }
 
+// ctlSocketAddress is where the Supervisor listens. Local Runtime sets an
+// abstract name because the host record path can exceed sun_path's 108-byte
+// limit (runtime.md §10); a container keeps the filesystem socket.
+func ctlSocketAddress(dir string) (string, bool) {
+	if socket := os.Getenv("STARS_CTL_SOCKET"); socket != "" {
+		return socket, true
+	}
+	return filepath.Join(dir, "ctl.sock"), false
+}
+
 func runIn(dir string) error {
-	socket := filepath.Join(dir, "ctl.sock")
+	socket, abstract := ctlSocketAddress(dir)
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		return fmt.Errorf("listen on ctl.sock: %w", err)
 	}
-	// Connecting to a unix socket needs write permission on it. The container
-	// runs this process as root and the Agent may not be, so the umask's 0755
-	// would make the socket unreachable for the Agent.
-	_ = os.Chmod(socket, 0o777)
+	if !abstract {
+		// Connecting to a unix socket needs write permission on it. The container
+		// runs this process as root and the Agent may not be, so the umask's 0755
+		// would make the socket unreachable for the Agent.
+		_ = os.Chmod(socket, 0o777)
+	}
 	defer func() {
 		_ = listener.Close()
-		_ = os.Remove(socket)
+		if !abstract {
+			_ = os.Remove(socket)
+		}
 	}()
 
 	ctl := newControlServer(listener)

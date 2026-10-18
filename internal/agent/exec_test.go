@@ -79,7 +79,7 @@ func TestStartExecReplaysFinishedRecord(t *testing.T) {
 			return stream, nil
 		},
 	}
-	if err := r.startExec(context.Background(), &nodev1.StartExec{
+	if err := r.startContainerExec(context.Background(), &nodev1.StartExec{
 		SandboxId: sandboxID.String(), ExecId: execID.String(),
 	}); err != nil {
 		t.Fatalf("startExec replay: %v", err)
@@ -277,7 +277,7 @@ func TestExecEnv(t *testing.T) {
 		"GIT_CONFIG_KEY_0": "credential.helper",
 		"KEEP":             "kept",
 	}
-	env := execEnv(caller, "/image/bin")
+	env := execEnv(caller, "/image/bin", binaryDir)
 
 	if got := env["PATH"]; got != "/usr/local/bin:/usr/bin:/.stars/bin" {
 		t.Fatalf("PATH = %q, want the caller PATH plus /.stars/bin", got)
@@ -302,11 +302,11 @@ func TestExecEnv(t *testing.T) {
 	}
 
 	// Without a caller PATH the image's PATH is the base.
-	if got := execEnv(map[string]string{}, "/image/bin")["PATH"]; got != "/image/bin:/.stars/bin" {
+	if got := execEnv(map[string]string{}, "/image/bin", binaryDir)["PATH"]; got != "/image/bin:/.stars/bin" {
 		t.Fatalf("image PATH base = %q", got)
 	}
 	// No base at all still exposes the platform binaries.
-	if got := execEnv(nil, "")["PATH"]; got != "/.stars/bin" {
+	if got := execEnv(nil, "", binaryDir)["PATH"]; got != "/.stars/bin" {
 		t.Fatalf("empty PATH base = %q", got)
 	}
 }

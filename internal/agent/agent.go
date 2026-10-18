@@ -145,9 +145,14 @@ type RunOptions struct {
 	Server string // overrides the address stored at enroll time
 	State  string
 	Docker string
-	// Runtime is the Node's one Runtime Provider (ADR-0014): docker or
-	// podman. local is not implemented yet (#97).
+	// Runtime is the Node's one Runtime Provider (ADR-0014): docker, podman
+	// or local.
 	Runtime string
+	// LocalUser is the unprivileged user every Local Runtime Exec runs as
+	// (runtime.md §10). Required for --runtime local.
+	LocalUser string
+	// localUser is the resolved LocalUser, filled by Run.
+	localUser *localUser
 	// Buildkit is the BuildKit endpoint. Empty means the Docker daemon's
 	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
 	Buildkit      string
@@ -165,8 +170,8 @@ func resolveRuntime(name string) (string, error) {
 		return ProviderDocker, nil
 	case ProviderPodman:
 		return ProviderPodman, nil
-	case "local":
-		return "", fmt.Errorf("runtime %q not implemented", name)
+	case ProviderLocal:
+		return ProviderLocal, nil
 	default:
 		return "", fmt.Errorf("unknown runtime %q", name)
 	}
@@ -181,6 +186,18 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 	opts.Runtime = provider
+	if provider == ProviderLocal {
+		// Local Runtime uses the system manager and systemd-run, so the Agent
+		// must be root; commands never run as root (runtime.md §10).
+		if os.Geteuid() != 0 {
+			return errors.New("runtime local requires the Agent to run as root (system manager)")
+		}
+		user, err := lookupLocalUser(opts.LocalUser)
+		if err != nil {
+			return err
+		}
+		opts.localUser = &user
+	}
 	id, err := LoadIdentity(opts.State)
 	if err != nil {
 		return err
@@ -278,6 +295,12 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 			return false, err
 		}
 	}
+	if opts.Runtime == ProviderLocal {
+		if opts.localUser == nil {
+			return false, errors.New("runtime local needs --local-user")
+		}
+		rt = newLocalRuntime(opts.DataRoot, id.NodeID, *opts.localUser, agentBinDir())
+	}
 	rt.buildkit = opts.Buildkit
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
@@ -356,7 +379,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// Runtime (runtime.md §12). It is reported even when the Runtime probe
 	// fails; the Node's status already keeps it out of placement then.
 	buildOK := rt.buildkitAvailable(streamCtx)
-	report, probeErr := dockerProbe(streamCtx, rt.config())
+	report, probeErr := rt.probe(streamCtx)
 	health := "healthy"
 	if probeErr != nil {
 		health = "unhealthy"
@@ -426,7 +449,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 			// Runtime health is live: a daemon that dies mid-stream must stop
 			// receiving placements, not keep its startup verdict.
 			hctx, hcancel := context.WithTimeout(streamCtx, 5*time.Second)
-			if dockerHealthy(hctx, opts.Docker) {
+			if rt.healthy(hctx) {
 				health = "healthy"
 			} else {
 				health = "unhealthy"

@@ -30,7 +30,7 @@ const (
 
 // startExec launches `supervisor run` detached and starts delivering its
 // record. The Supervisor's atomic mkdir makes a repeated command harmless.
-func (r *Runtime) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
+func (r *Runtime) startContainerExec(ctx context.Context, cmd *nodev1.StartExec) error {
 	sandboxID, err := uuid.Parse(cmd.SandboxId)
 	if err != nil {
 		return errors.New("invalid sandbox id")
@@ -68,13 +68,22 @@ func (r *Runtime) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 		return fmt.Errorf("start exec: %w", err)
 	}
 
+	return r.deliverExecSpec(ctx, sandboxID, execID, dir, cmd,
+		r.commandEnv(ctx, sandboxID, cmd.Env), cmd.Cwd)
+}
+
+// deliverExecSpec starts delivering the record and sends the spec over the
+// Supervisor socket. env and cwd are Provider-specific (the container path
+// gets the image's PATH and a /workspace-relative cwd); the rest of the Exec
+// is shared (runtime.md §4).
+func (r *Runtime) deliverExecSpec(ctx context.Context, sandboxID, execID uuid.UUID, dir string, cmd *nodev1.StartExec, env map[string]string, cwd string) error {
 	// The record outlives the control socket: the Supervisor writes `exit` and
 	// removes ctl.sock before the Agent can reconnect. Delivery therefore never
 	// waits for the spec dial; both goroutines poll the record instead.
 	go r.observeStarted(ctx, execID.String(), dir)
 	go r.streamExec(ctx, sandboxID, execID, dir)
 
-	socket := filepath.Join(dir, "ctl.sock")
+	socket := r.ctlSocket(dir, execID)
 	conn, err := dialUnix(ctx, socket, execDial)
 	if err != nil {
 		// A Supervisor that finished while we dialed has already removed the
@@ -86,9 +95,9 @@ func (r *Runtime) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 	}
 	spec := supervisor.Spec{
 		Argv:           cmd.Argv,
-		Env:            r.commandEnv(ctx, sandboxID, cmd.Env),
+		Env:            env,
 		SecretEnv:      cmd.SecretEnv,
-		Cwd:            cmd.Cwd,
+		Cwd:            cwd,
 		GraceSeconds:   execGrace,
 		LogCap:         cmd.LogCap,
 		Stdin:          cmd.Stdin,
@@ -123,27 +132,29 @@ func timeoutPtr(seconds int64) *int64 {
 }
 
 // execEnv merges the platform's values last: the caller's variables first,
-// then PATH with /.stars/bin appended, then the Git config that clears the
-// image's helpers and installs ours (node-protocol.md).
-func execEnv(caller map[string]string, imagePath string) map[string]string {
+// then PATH with binDir appended, then the Git config that clears the image's
+// helpers and installs ours (node-protocol.md). binDir is /.stars/bin for a
+// container Runtime and the Agent's own bin directory for Local (runtime.md
+// §10).
+func execEnv(caller map[string]string, basePath, binDir string) map[string]string {
 	env := make(map[string]string, len(caller)+7)
 	for key, value := range caller {
 		env[key] = value
 	}
 	path := env["PATH"]
 	if path == "" {
-		path = imagePath
+		path = basePath
 	}
 	if path == "" {
-		env["PATH"] = binaryDir
+		env["PATH"] = binDir
 	} else {
-		env["PATH"] = path + ":" + binaryDir
+		env["PATH"] = path + ":" + binDir
 	}
 	env["GIT_CONFIG_COUNT"] = "2"
 	env["GIT_CONFIG_KEY_0"] = "credential.helper"
 	env["GIT_CONFIG_VALUE_0"] = ""
 	env["GIT_CONFIG_KEY_1"] = "credential.helper"
-	env["GIT_CONFIG_VALUE_1"] = binaryDir + "/stars-sandbox git-credential"
+	env["GIT_CONFIG_VALUE_1"] = binDir + "/stars-sandbox git-credential"
 	return env
 }
 
@@ -154,7 +165,7 @@ func (r *Runtime) commandEnv(ctx context.Context, sandboxID uuid.UUID, caller ma
 	if caller["PATH"] == "" {
 		imagePath = r.imagePath(ctx, sandboxID)
 	}
-	return execEnv(caller, imagePath)
+	return execEnv(caller, imagePath, binaryDir)
 }
 
 // imagePath reads the container's PATH, which the Runtime filled from the
@@ -191,7 +202,7 @@ func (r *Runtime) cancelExec(ctx context.Context, execID uuid.UUID) error {
 	for {
 		matches, _ := filepath.Glob(pattern)
 		if len(matches) > 0 {
-			conn, err := dialSocket(filepath.Join(matches[0], "ctl.sock"))
+			conn, err := dialSocket(r.ctlSocket(matches[0], execID))
 			if err == nil {
 				_, writeErr := conn.Write([]byte("cancel\n"))
 				conn.Close() //nolint:errcheck // one line
