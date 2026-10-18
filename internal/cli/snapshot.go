@@ -102,39 +102,76 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 }
 
 func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
-	fs := flag.NewFlagSet("snapshot build", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	file := fs.String("f", "", "Dockerfile path, or - for stdin")
-	fs.StringVar(file, "file", "", "Dockerfile path, or - for stdin")
-	base := fs.String("base", "", "platform Snapshot reference injected as the base context")
-	noFollow := fs.Bool("no-follow", false, "create the build and return without following its log")
-	idem := fs.String("idempotency-key", "", "idempotency key")
+	// The command takes the name first (`snapshot build <name> -f …`), so the
+	// standard flag package would stop at the first positional. Parse the
+	// small option set by hand, as `snapshot import` does.
+	var file, base, idem string
+	var noFollow bool
 	var contextFlags, secretFlags stringList
-	fs.Var(&contextFlags, "context", "name=resource[@version]; may repeat")
-	fs.Var(&secretFlags, "secret", "id=secret_name; may repeat")
-	if err := fs.Parse(args); err != nil {
-		return err
+	var positional []string
+	value := func(i *int, inline, name string) (string, error) {
+		if inline != "" {
+			return inline, nil
+		}
+		if *i+1 >= len(args) {
+			return "", fmt.Errorf("%s needs a value", name)
+		}
+		*i++
+		return args[*i], nil
 	}
-	if fs.NArg() != 1 || *file == "" {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		var inline string
+		if key, val, ok := strings.Cut(arg, "="); ok && strings.HasPrefix(key, "--") {
+			arg, inline = key, val
+		}
+		var err error
+		switch arg {
+		case "-f", "--file":
+			file, err = value(&i, inline, arg)
+		case "--base":
+			base, err = value(&i, inline, arg)
+		case "--context":
+			var v string
+			if v, err = value(&i, inline, arg); err == nil {
+				contextFlags = append(contextFlags, v)
+			}
+		case "--secret":
+			var v string
+			if v, err = value(&i, inline, arg); err == nil {
+				secretFlags = append(secretFlags, v)
+			}
+		case "--idempotency-key":
+			idem, err = value(&i, inline, arg)
+		case "--no-follow":
+			noFollow = true
+		default:
+			positional = append(positional, args[i])
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if len(positional) != 1 || file == "" {
 		return fmt.Errorf("usage: stars-sandbox snapshot build <name> -f Dockerfile [--base SNAPSHOT] [--context name=resource[@version] ...] [--secret id=secret ...]")
 	}
 	dockerfile := []byte(nil)
-	if *file == "-" {
+	if file == "-" {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
 		}
 		dockerfile = data
 	} else {
-		data, err := os.ReadFile(*file)
+		data, err := os.ReadFile(file)
 		if err != nil {
 			return err
 		}
 		dockerfile = data
 	}
 	build := map[string]any{"dockerfile": string(dockerfile)}
-	if *base != "" {
-		build["base"] = *base
+	if base != "" {
+		build["base"] = base
 	}
 	contexts := map[string]string{}
 	for _, raw := range contextFlags {
@@ -158,13 +195,13 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 	if len(secrets) > 0 {
 		build["secrets"] = secrets
 	}
-	snapshotID, err := ensureSnapshot(c, fs.Arg(0))
+	snapshotID, err := ensureSnapshot(c, positional[0])
 	if err != nil {
 		return err
 	}
 	status, data, err := c.send(http.MethodPost,
 		"/api/v1/snapshots/"+url.PathEscape(snapshotID)+"/versions", nil,
-		map[string]any{"build": build}, *idem)
+		map[string]any{"build": build}, idem)
 	if err != nil {
 		return err
 	}
@@ -175,7 +212,7 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 	if err := json.Unmarshal(data, &version); err != nil {
 		return err
 	}
-	if *noFollow {
+	if noFollow {
 		return c.print(data)
 	}
 	if version.BuildExecID != nil {

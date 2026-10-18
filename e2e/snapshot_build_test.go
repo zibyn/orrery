@@ -61,8 +61,9 @@ func TestSnapshotBuildRun(t *testing.T) {
 	snapshot := createTestSnapshot(t, admin, fmt.Sprintf("e2e-build-%d", suffix))
 	dockerfile := "FROM base\n" +
 		"COPY --from=ctx probe.txt /ctxfile\n" +
-		"RUN cat /ctxfile > /probe; cat /run/secrets/token >> /probe; echo >> /probe; " +
-		"cat /proc/self/cgroup >> /probe; sleep 10\n"
+		"RUN --mount=type=secret,id=token cat /ctxfile > /probe && " +
+		"cat /run/secrets/token >> /probe && echo >> /probe && " +
+		"cat /proc/self/cgroup >> /probe && sleep 10\n"
 	version := startBuild(t, admin, snapshot.ID, map[string]any{
 		"dockerfile": dockerfile,
 		"base":       platformName,
@@ -76,10 +77,18 @@ func TestSnapshotBuildRun(t *testing.T) {
 	// runtime.md §12: the RUN must land in the build's limited slice. The
 	// build's own /proc/self/cgroup is namespaced (cgroupns=private), so the
 	// proof is the host cgroup tree while the RUN is alive.
-	if path, ok := waitForBuildCgroup(t, version.ID, 2*time.Minute); !ok {
+	if path, cpuMax, memoryMax, ok := waitForBuildCgroup(t, version.ID, 2*time.Minute); !ok {
 		t.Fatalf("no live process under stars-build-%s.slice", version.ID)
 	} else {
 		t.Logf("build RUN observed in %s", path)
+		// The slice carries the deployment build limits (defaults.md: 4 CPU +
+		// 8 GiB), so a RUN cannot exceed them.
+		if cpuMax != "400000 100000" {
+			t.Fatalf("build slice cpu.max = %q, want 400000 100000", cpuMax)
+		}
+		if memoryMax != "8589934592" {
+			t.Fatalf("build slice memory.max = %q, want 8589934592", memoryMax)
+		}
 	}
 
 	stdout, stderr, _, result := followExec(t, admin, *version.BuildExecID, 5*time.Minute)
@@ -149,8 +158,9 @@ func TestSnapshotBuildRun(t *testing.T) {
 
 	// The image config and history must not carry the Secret. (The probe
 	// layer deliberately contains it; that is what the RUN wrote.)
-	config := dockerInspect(t, sb.Snapshot, "{{json .Config}}")
-	history := dockerInspect(t, sb.Snapshot, "{{json .History}}")
+	imageID := dockerContainerImage(t, "stars-sandbox-"+sb.ID)
+	config := dockerInspect(t, imageID, "{{json .Config}}")
+	history := dockerInspect(t, imageID, "{{json .History}}")
 	if strings.Contains(config, secretValue) || strings.Contains(history, secretValue) {
 		t.Fatal("the built image config or history leaks the Secret value")
 	}
@@ -203,36 +213,24 @@ func waitForSnapshotTerminal(t *testing.T, admin, snapshotID, versionID string, 
 // waitForBuildCgroup reports a non-empty cgroup.procs under the build's slice.
 // The Docker daemon may nest it under the system root or, for an unprivileged
 // Agent, under the user manager's hierarchy.
-func waitForBuildCgroup(t *testing.T, versionID string, timeout time.Duration) (string, bool) {
+func waitForBuildCgroup(t *testing.T, versionID string, timeout time.Duration) (path, cpuMax, memoryMax string, ok bool) {
 	t.Helper()
 	name := "stars-build-" + versionID + ".slice"
 	deadline := time.Now().Add(timeout)
 	for {
-		if path, ok := findBuildCgroupProcess(name); ok {
-			return path, true
+		if root := findBuildSliceRoot(name); root != "" {
+			if path, live := findBuildCgroupProcess(root); live {
+				return path, readCgroupFile(root, "cpu.max"), readCgroupFile(root, "memory.max"), true
+			}
 		}
 		if time.Now().After(deadline) {
-			return "", false
+			return "", "", "", false
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-func findBuildCgroupProcess(name string) (string, bool) {
-	var root string
-	_ = filepath.WalkDir("/sys/fs/cgroup", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() && d.Name() == name {
-			root = path
-			return fs.SkipAll
-		}
-		return nil
-	})
-	if root == "" {
-		return "", false
-	}
+func findBuildCgroupProcess(root string) (string, bool) {
 	var hit string
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "cgroup.procs" {
@@ -248,11 +246,54 @@ func findBuildCgroupProcess(name string) (string, bool) {
 	return hit, hit != ""
 }
 
+// findBuildSliceRoot locates the unit's cgroup root. An unprivileged Agent
+// uses the user manager, whose slice hierarchy nests at every '-'.
+func findBuildSliceRoot(name string) string {
+	var root string
+	_ = filepath.WalkDir("/sys/fs/cgroup", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && d.Name() == name {
+			root = path
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return root
+}
+
+func readCgroupFile(dir, name string) string {
+	raw, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 func dockerInspect(t *testing.T, ref, format string) string {
 	t.Helper()
-	out, err := exec.Command("docker", "image", "inspect", ref, "--format", format).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker image inspect %s: %v\n%s", ref, err, out)
+	var last []byte
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		out, err := exec.Command("docker", "image", "inspect", ref, "--format", format).CombinedOutput()
+		if err == nil {
+			return string(out)
+		}
+		last, lastErr = out, err
+		time.Sleep(200 * time.Millisecond)
 	}
-	return string(out)
+	t.Fatalf("docker image inspect %s: %v\n%s", ref, lastErr, last)
+	return ""
+}
+
+// dockerContainerImage resolves a running Sandbox container's image id, which
+// is more robust than a registry digest reference for `docker image inspect`.
+func dockerContainerImage(t *testing.T, container string) string {
+	t.Helper()
+	out, err := exec.Command("docker", "inspect", container, "--format", "{{.Image}}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker inspect %s: %v\n%s", container, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
