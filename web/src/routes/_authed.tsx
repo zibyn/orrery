@@ -24,12 +24,12 @@ export const Route = createFileRoute('/_authed')({
   component: AuthedShell,
 })
 
-// Only pages that exist today; each later M6 ticket adds its own entry. Admin
-// pages are gated on is_admin when they land (api.md §8).
+// The console pages of api.md §8. Admin pages are UI-gated on is_admin; the
+// server still enforces scope.
 const NAV = [
   { to: '/sandboxes', label: 'Sandboxes' },
   { to: '/snapshots', label: 'Snapshots' },
-  { to: '/git', label: 'Git accounts' },
+  { to: '/git', label: 'Git account links' },
   { to: '/cli-auth', label: 'CLI authorization' },
   { to: '/secrets', label: 'Secrets' },
   { to: '/account', label: 'Account' },
