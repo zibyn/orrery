@@ -169,10 +169,10 @@ func startLocalHost(t *testing.T, name string) *localHost {
 			h.user = h.sshUser
 		}
 	}
-	h.trySSHRoot(t, "mkdir", "-p", h.dir)
-	// The unprivileged user must traverse the Agent directory to reach the
-	// staged supervisor and the Workspace.
-	h.trySSHRoot(t, "chmod", "755", h.dir)
+	// Create the directory as the SSH user so scp can write the binaries; the
+	// root Agent and the unprivileged Local user only need to traverse it.
+	h.trySSH(t, "mkdir", "-p", h.dir)
+	h.trySSH(t, "chmod", "755", h.dir)
 
 	h.scp(t, agentPath(t), h.dir+"/agent")
 	h.scp(t, cliPath(t), h.dir+"/stars-sandbox")
@@ -237,13 +237,6 @@ func (h *localHost) trySSH(t *testing.T, args ...string) string {
 func (h *localHost) sshRoot(t *testing.T, args ...string) string {
 	t.Helper()
 	return h.trySSH(t, append(h.rootPrefix(), args...)...)
-}
-
-func (h *localHost) trySSHRoot(t *testing.T, args ...string) {
-	t.Helper()
-	if _, err := exec.Command("ssh", append(append([]string{h.target}, h.rootPrefix()...), args...)...).CombinedOutput(); err != nil {
-		t.Fatalf("ssh %s %s: %v", h.target, strings.Join(args, " "), err)
-	}
 }
 
 func (h *localHost) scp(t *testing.T, src, dst string) {
