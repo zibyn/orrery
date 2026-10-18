@@ -14,6 +14,33 @@ func (c *Client) ReadFile(ctx context.Context, sandboxID, path string, dst io.Wr
 	return c.stream(ctx, http.MethodGet, c.fileURL(sandboxID, "/content", path), nil, nil, byteRange, dst)
 }
 
+// ReadFileRange reads part of a Workspace file and returns the bytes with the
+// response's Content-Type. byteRange, when non-empty, is sent as the Range
+// header (api.md §5).
+func (c *Client) ReadFileRange(ctx context.Context, sandboxID, path, byteRange string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.fileURL(sandboxID, "/content", path), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if byteRange != "" {
+		req.Header.Set("Range", byteRange)
+	}
+	resp, err := c.transfers.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, "", parseError(resp.StatusCode, data)
+	}
+	data, err := io.ReadAll(resp.Body)
+	return data, resp.Header.Get("Content-Type"), err
+}
+
 // WriteFile uploads a Workspace file in one request.
 func (c *Client) WriteFile(ctx context.Context, sandboxID, path string, src io.Reader, size int64) error {
 	return c.stream(ctx, http.MethodPut, c.fileURL(sandboxID, "/content", path), src, &size, "", nil)
