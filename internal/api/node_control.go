@@ -60,13 +60,17 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 
 	// Commands are sent from this one goroutine; the handler below only
 	// receives. A send error ends the goroutine and the stream soon after.
-	conn := &agentConn{nodeID: node.ID, send: make(chan *nodev1.ControlMessage, 64)}
+	// done is closed when an admin declares the Node lost or deletes it, so the
+	// handler can return UNAUTHENTICATED even while Recv blocks.
+	conn := &agentConn{nodeID: node.ID, send: make(chan *nodev1.ControlMessage, 64), done: make(chan struct{})}
 	n.s.reconcile.hub.register(conn)
 	defer n.s.reconcile.hub.unregister(conn)
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-conn.done:
 				return
 			case msg := <-conn.send:
 				if err := stream.Send(msg); err != nil {
@@ -76,45 +80,71 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 		}
 	}()
 
+	// Recv runs in its own goroutine so the handler can return from done while
+	// it would otherwise block waiting for the Agent.
+	recv := make(chan *nodev1.AgentMessage)
+	recvErr := make(chan error, 1)
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			if err != nil {
+				recvErr <- err
+				return
+			}
+			select {
+			case recv <- msg:
+			case <-ctx.Done():
+				return
+			case <-conn.done:
+				return
+			}
+		}
+	}()
+
 	for {
-		msg, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
+		select {
+		case <-ctx.Done():
 			return nil
-		}
-		if err != nil {
+		case <-conn.done:
+			return status.Error(codes.Unauthenticated, "the Node is no longer authorized")
+		case err := <-recvErr:
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			return err
-		}
-		switch m := msg.Message.(type) {
-		case *nodev1.AgentMessage_Heartbeat:
-			if err := n.recordHeartbeat(ctx, node.ID, m.Heartbeat); err != nil {
-				return status.Error(codes.Internal, "record Heartbeat")
+		case msg := <-recv:
+			switch m := msg.Message.(type) {
+			case *nodev1.AgentMessage_Heartbeat:
+				if err := n.recordHeartbeat(ctx, node.ID, m.Heartbeat); err != nil {
+					return status.Error(codes.Internal, "record Heartbeat")
+				}
+			case *nodev1.AgentMessage_Capabilities:
+				if err := n.recordCapabilities(ctx, node.ID, m.Capabilities); err != nil {
+					return status.Error(codes.Internal, "record Capabilities")
+				}
+			case *nodev1.AgentMessage_SandboxObserved:
+				n.recordSandboxObserved(ctx, node.ID, m.SandboxObserved)
+			case *nodev1.AgentMessage_WorkspaceObserved:
+				n.recordWorkspaceObserved(ctx, node.ID, m.WorkspaceObserved)
+			case *nodev1.AgentMessage_ExecObserved:
+				n.recordExecObserved(ctx, node.ID, m.ExecObserved)
+			case *nodev1.AgentMessage_BuildObserved:
+				n.recordBuildObserved(ctx, node.ID, m.BuildObserved)
+			case *nodev1.AgentMessage_CommandResult:
+				// A Workspace publish is finalized from its CommandResult: success
+				// verifies the objects, failure ends the version (node-protocol.md).
+				n.handlePublishCommandResult(ctx, node, m.CommandResult)
+				if m.CommandResult.Error != "" {
+					n.s.log.Warn("command failed on Agent",
+						"node_id", node.ID, "command_id", m.CommandResult.CommandId, "error", m.CommandResult.Error)
+					// A failed command is not lost: the next sweep derives it again.
+					n.s.reconcile.hub.failed(node.ID, m.CommandResult.CommandId)
+					n.recordWorkspaceCommandFailure(ctx, m.CommandResult.CommandId)
+					n.s.reconcile.notify()
+				}
+			default:
+				return status.Error(codes.InvalidArgument, "unsupported AgentMessage")
 			}
-		case *nodev1.AgentMessage_Capabilities:
-			if err := n.recordCapabilities(ctx, node.ID, m.Capabilities); err != nil {
-				return status.Error(codes.Internal, "record Capabilities")
-			}
-		case *nodev1.AgentMessage_SandboxObserved:
-			n.recordSandboxObserved(ctx, node.ID, m.SandboxObserved)
-		case *nodev1.AgentMessage_WorkspaceObserved:
-			n.recordWorkspaceObserved(ctx, node.ID, m.WorkspaceObserved)
-		case *nodev1.AgentMessage_ExecObserved:
-			n.recordExecObserved(ctx, node.ID, m.ExecObserved)
-		case *nodev1.AgentMessage_BuildObserved:
-			n.recordBuildObserved(ctx, node.ID, m.BuildObserved)
-		case *nodev1.AgentMessage_CommandResult:
-			// A Workspace publish is finalized from its CommandResult: success
-			// verifies the objects, failure ends the version (node-protocol.md).
-			n.handlePublishCommandResult(ctx, node, m.CommandResult)
-			if m.CommandResult.Error != "" {
-				n.s.log.Warn("command failed on Agent",
-					"node_id", node.ID, "command_id", m.CommandResult.CommandId, "error", m.CommandResult.Error)
-				// A failed command is not lost: the next sweep derives it again.
-				n.s.reconcile.hub.failed(node.ID, m.CommandResult.CommandId)
-				n.recordWorkspaceCommandFailure(ctx, m.CommandResult.CommandId)
-				n.s.reconcile.notify()
-			}
-		default:
-			return status.Error(codes.InvalidArgument, "unsupported AgentMessage")
 		}
 	}
 }

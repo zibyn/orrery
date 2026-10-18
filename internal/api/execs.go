@@ -35,6 +35,17 @@ type createExecRequest struct {
 	Pty     json.RawMessage   `json:"pty"`
 }
 
+// validExecCwd reports whether cwd names a path inside /workspace (api.md §4).
+// It accepts a relative path that cleans back inside the root and refuses an
+// absolute path or traversal.
+func validExecCwd(cwd string) bool {
+	if cwd == "" {
+		return true
+	}
+	clean := path.Clean(cwd)
+	return !path.IsAbs(clean) && clean != ".." && !strings.HasPrefix(clean, "../")
+}
+
 type execResultDTO struct {
 	Cause    string `json:"cause"`
 	ExitCode *int32 `json:"exit_code,omitempty"`
@@ -177,12 +188,9 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 			return
 		}
 	}
-	if req.Cwd != "" {
-		clean := path.Clean(req.Cwd)
-		if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
-			writeProblem(w, "invalid_request", "cwd must be a path inside /workspace")
-			return
-		}
+	if !validExecCwd(req.Cwd) {
+		writeProblem(w, "invalid_request", "cwd must be a path inside /workspace")
+		return
 	}
 	for k, v := range req.Env {
 		if k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, 0) {

@@ -41,9 +41,24 @@ const (
 type Runtime struct {
 	d        *dockerClient
 	dataRoot string
-	// socket is the Docker Engine socket. It is also the default BuildKit
-	// endpoint (dockerd's built-in BuildKit via /grpc).
+	// nodeID is this Agent's Node identity. Every Runtime instance carries it
+	// as stars.node so two Agents sharing a daemon never touch each other's
+	// containers (runtime.md §8).
+	nodeID string
+	// socket is the Engine API socket. It is also the default BuildKit
+	// endpoint for Docker (dockerd's built-in BuildKit via /grpc).
 	socket string
+	// provider is the Node's single Runtime Provider (node-protocol.md).
+	provider string
+	// driver is the Provider-specific half of the Runtime contract (ADR-0009):
+	// container lifecycle/Exec/self-check for Docker and Podman, systemd for
+	// Local. Host-path work (Workspaces, records, files, publish, resources,
+	// tunnels) stays on Runtime and is shared.
+	driver runtimeDriver
+	// owner maps host paths to the rootless Podman user (runtime.md §9) or the
+	// Local Runtime user; nil for rootful Docker, whose container root maps to
+	// host root.
+	owner *rootlessOwner
 	// buildkit is the Agent-configured BuildKit endpoint. Empty means the
 	// Docker daemon's built-in BuildKit.
 	buildkit string
@@ -73,17 +88,28 @@ type Runtime struct {
 	managed map[string]int64 // sandbox id -> generation known to run
 }
 
-func NewRuntime(socket, dataRoot string) *Runtime {
-	return &Runtime{
-		d:              &dockerClient{http: unixHTTPClient(socket)},
+// NewRuntime is the explicit Docker Provider constructor. The Provider comes
+// from --runtime, never from the socket path, so this never turns into Podman.
+func NewRuntime(socket, dataRoot, nodeID string) *Runtime {
+	return newRuntime(runtimeConfig{provider: ProviderDocker, socket: socket}, dataRoot, nodeID)
+}
+
+func newRuntime(cfg runtimeConfig, dataRoot, nodeID string) *Runtime {
+	rt := &Runtime{
+		d:              &dockerClient{http: unixHTTPClient(cfg.socket)},
 		dataRoot:       dataRoot,
-		socket:         socket,
+		nodeID:         nodeID,
+		socket:         cfg.socket,
+		provider:       cfg.provider,
+		owner:          cfg.owner,
 		execs:          make(map[string]struct{}),
 		ptyAttachments: make(map[string]int),
 		buildCancels:   make(map[string]context.CancelCauseFunc),
 		buildDone:      make(map[string]struct{}),
 		managed:        make(map[string]int64),
 	}
+	rt.driver = containerDriver{rt}
+	return rt
 }
 
 // connect attaches the Runtime to the live Control stream. Commands arrive only
@@ -182,13 +208,26 @@ func sandboxRunPath(root string, id uuid.UUID) string {
 
 func containerName(id uuid.UUID) string { return "stars-sandbox-" + id.String() }
 
+// containerOwnedBy reports whether a container belongs to this Node. A
+// container carrying stars.managed without this Node's label was left by a
+// previous identity (or another Node on the same daemon) and must not be
+// adopted (runtime.md §8).
+func containerOwnedBy(labels map[string]string, nodeID string) bool {
+	return labels["stars.managed"] == "true" && nodeID != "" && labels["stars.node"] == nodeID
+}
+
 func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {
 	path := workspacePath(r.dataRoot, workspaceID)
 	if err := os.MkdirAll(path, 0o777); err != nil {
 		return err
 	}
 	// MkdirAll is subject to umask; the Sandbox user must be able to write.
-	return os.Chmod(path, 0o777)
+	if err := os.Chmod(path, 0o777); err != nil {
+		return err
+	}
+	// Rootless Podman maps container root to the invoking user, so the host
+	// directory must belong to that user (runtime.md §9).
+	return r.owner.own(path)
 }
 
 func (r *Runtime) deleteWorkspace(workspaceID uuid.UUID) error {
@@ -199,7 +238,7 @@ func (r *Runtime) deleteWorkspace(workspaceID uuid.UUID) error {
 
 // createSandbox is idempotent: an existing running container is adopted, a
 // stopped one is replaced. It returns a Sandbox lifecycle cause on failure.
-func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (string, error) {
+func (r *Runtime) createContainerSandbox(ctx context.Context, cmd *createSandboxSpec) (string, error) {
 	id, err := uuid.Parse(cmd.sandboxID)
 	if err != nil {
 		return "runtime_create_failed", err
@@ -221,6 +260,11 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	if err := os.Chmod(workspace, 0o777); err != nil {
 		return "runtime_create_failed", err
 	}
+	// Rootless Podman maps container root to the invoking user, so the host
+	// directory must belong to that user (runtime.md §9).
+	if err := r.owner.own(workspace); err != nil {
+		return "runtime_create_failed", err
+	}
 	// The image's default USER writes here; rootful and rootless map that uid
 	// differently, so the Agent cannot chown it correctly without knowing the
 	// image. ponytail: world-writable, per-uid chown when USERs become common.
@@ -229,6 +273,9 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 		return "runtime_create_failed", err
 	}
 	if err := os.Chmod(runDir, 0o777); err != nil {
+		return "runtime_create_failed", err
+	}
+	if err := r.owner.own(runDir); err != nil {
 		return "runtime_create_failed", err
 	}
 	mode := cmd.workspaceMode
@@ -255,7 +302,7 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	touchImageUsage(r.dataRoot, cmd.imageDigest)
 	name := containerName(id)
 
-	if running, exists, err := r.d.inspectContainer(ctx, name); err == nil && exists {
+	if running, exists, _, err := r.d.inspectContainer(ctx, name); err == nil && exists {
 		if running {
 			r.track(id, cmd.generation)
 			return "", nil // adopted after an Agent restart or a lost reply
@@ -301,6 +348,7 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 			"stars.sandbox_id": id.String(),
 			"stars.generation": strconv.FormatInt(cmd.generation, 10),
 			"stars.managed":    "true",
+			"stars.node":       r.nodeID,
 		},
 		"HostConfig": hostConfig,
 	}
@@ -340,7 +388,7 @@ func limitsMatch(r supervisor.Result, nanoCPUs, memory int64, gpus int, workspac
 		workspaceOK
 }
 
-func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
+func (r *Runtime) stopContainerSandbox(ctx context.Context, sandboxID uuid.UUID) error {
 	if err := r.d.negotiate(ctx); err != nil {
 		return err
 	}
@@ -360,26 +408,23 @@ func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
 }
 
 // scan reports a Sandbox whose runtime died while the Node stayed up.
-func (r *Runtime) scan(ctx context.Context, report func(sandboxID string, generation int64)) {
+func (r *Runtime) scanContainers(ctx context.Context, report func(sandboxID string, generation int64)) {
 	if err := r.d.negotiate(ctx); err != nil {
 		return
 	}
-	r.mu.Lock()
-	known := make(map[string]int64, len(r.managed))
-	for id, gen := range r.managed {
-		known[id] = gen
-	}
-	r.mu.Unlock()
+	known := r.managedSnapshot()
 	for id, gen := range known {
 		sandboxID, err := uuid.Parse(id)
 		if err != nil {
 			continue
 		}
-		running, exists, err := r.d.inspectContainer(ctx, containerName(sandboxID))
+		running, exists, labels, err := r.d.inspectContainer(ctx, containerName(sandboxID))
 		if err != nil {
 			continue
 		}
-		if !exists || !running {
+		// Only a Runtime this Node still owns counts as alive. A same-named
+		// container from another identity is not ours (runtime.md §8).
+		if !exists || !running || !containerOwnedBy(labels, r.nodeID) {
 			r.forget(id)
 			report(id, gen)
 		}
@@ -388,11 +433,12 @@ func (r *Runtime) scan(ctx context.Context, report func(sandboxID string, genera
 
 // adopt picks up containers from a previous Agent process. The Control Plane
 // also re-derives every command, so this only avoids false "gone" reports.
-func (r *Runtime) adopt(ctx context.Context, report func(sandboxID string, generation int64)) {
+func (r *Runtime) adoptContainers(ctx context.Context, report func(sandboxID string, generation int64)) {
 	if err := r.d.negotiate(ctx); err != nil {
 		return
 	}
 	var containers []struct {
+		ID     string            `json:"Id"`
 		Labels map[string]string `json:"Labels"`
 	}
 	filters := url.QueryEscape(`{"label":["stars.managed=true"]}`)
@@ -400,6 +446,17 @@ func (r *Runtime) adopt(ctx context.Context, report func(sandboxID string, gener
 		return
 	}
 	for _, c := range containers {
+		if !containerOwnedBy(c.Labels, r.nodeID) {
+			// A previous identity's Runtime is never adopted. Its Workspace
+			// directory stays untouched: declaring it lost may be wrong, and
+			// the data may have no other copy (runtime.md §8).
+			slog.Info("removing a Runtime left by another Node",
+				"sandbox_id", c.Labels["stars.sandbox_id"], "node", c.Labels["stars.node"])
+			if err := r.d.removeContainer(ctx, c.ID); err != nil {
+				slog.Warn("remove foreign Runtime", "container_id", c.ID, "error", err)
+			}
+			continue
+		}
 		id := c.Labels["stars.sandbox_id"]
 		gen, err := strconv.ParseInt(c.Labels["stars.generation"], 10, 64)
 		if err != nil {
@@ -409,7 +466,7 @@ func (r *Runtime) adopt(ctx context.Context, report func(sandboxID string, gener
 		if err != nil {
 			continue
 		}
-		running, exists, err := r.d.inspectContainer(ctx, containerName(sandboxID))
+		running, exists, _, err := r.d.inspectContainer(ctx, containerName(sandboxID))
 		if err != nil || !exists || !running {
 			continue
 		}
@@ -475,7 +532,7 @@ func (r *Runtime) reconcileRecord(ctx context.Context, sandboxID, execID uuid.UU
 	}
 	if runtimeAlive {
 		if _, err := os.Stat(filepath.Join(dir, "exit")); err != nil {
-			if !socketUp(dir) && !waitSocket(ctx, dir) {
+			if !r.supervisorSocketUp(dir, execID) && !r.waitSupervisorSocket(ctx, dir, execID) {
 				// A canceled context means this connection is going away, not
 				// that the Supervisor died: settle on the next one.
 				if ctx.Err() != nil {
@@ -513,19 +570,31 @@ func writeRuntimeLost(dir string) {
 
 // runtimeAlive reports the container's state. known is false when the daemon
 // cannot be asked; that is not evidence the Runtime is gone.
-func (r *Runtime) runtimeAlive(ctx context.Context, id uuid.UUID) (alive, known bool) {
+func (r *Runtime) containerAlive(ctx context.Context, id uuid.UUID) (alive, known bool) {
 	if err := r.d.negotiate(ctx); err != nil {
 		return false, false
 	}
-	running, exists, err := r.d.inspectContainer(ctx, containerName(id))
+	running, exists, _, err := r.d.inspectContainer(ctx, containerName(id))
 	if err != nil {
 		return false, false
 	}
 	return exists && running, true
 }
 
-func socketUp(dir string) bool {
-	conn, err := dialSocket(filepath.Join(dir, "ctl.sock"))
+// ctlSocket is where the Supervisor listens. A container mounts the record
+// directory at /.stars/run, so its socket is short; Local Runtime keeps the
+// record on the host, where <data-root>/sandboxes/<id>/run/<exec>/ctl.sock can
+// exceed unix sockets' 108-byte sun_path, so it uses an abstract name
+// (runtime.md §10).
+func (r *Runtime) ctlSocket(dir string, execID uuid.UUID) string {
+	if r.provider == ProviderLocal {
+		return localCtlSocket(execID)
+	}
+	return filepath.Join(dir, "ctl.sock")
+}
+
+func (r *Runtime) supervisorSocketUp(dir string, execID uuid.UUID) bool {
+	conn, err := dialSocket(r.ctlSocket(dir, execID))
 	if err != nil {
 		return false
 	}
@@ -533,12 +602,12 @@ func socketUp(dir string) bool {
 	return true
 }
 
-// waitSocket gives a just-created Supervisor time to listen, and stops early
-// when it exits instead.
-func waitSocket(ctx context.Context, dir string) bool {
+// waitSupervisorSocket gives a just-created Supervisor time to listen, and
+// stops early when it exits instead.
+func (r *Runtime) waitSupervisorSocket(ctx context.Context, dir string, execID uuid.UUID) bool {
 	deadline := time.Now().Add(recordSettle)
 	for {
-		if socketUp(dir) {
+		if r.supervisorSocketUp(dir, execID) {
 			return true
 		}
 		if _, err := os.Stat(filepath.Join(dir, "exit")); err == nil {
@@ -578,8 +647,10 @@ func readGeneration(dir string) (int64, bool) {
 
 // watchEvents reports a Sandbox whose container died without a Stop command
 // (runtime.md §9); the periodic scan is the fallback when the stream breaks.
-func (r *Runtime) watchEvents(ctx context.Context, report func(sandboxID string, generation int64)) {
-	filters := url.QueryEscape(`{"type":["container"],"event":["die"],"label":["stars.managed=true"]}`)
+func (r *Runtime) watchContainerEvents(ctx context.Context, report func(sandboxID string, generation int64)) {
+	filters := url.QueryEscape(fmt.Sprintf(
+		`{"type":["container"],"event":["die"],"label":["stars.managed=true","stars.node=%s"]}`,
+		r.nodeID))
 	for ctx.Err() == nil {
 		if err := r.d.negotiate(ctx); err != nil {
 			select {
@@ -655,28 +726,43 @@ func (r *Runtime) forget(id string) {
 	delete(r.managed, id)
 }
 
-func (d *dockerClient) inspectContainer(ctx context.Context, name string) (running, exists bool, err error) {
+// managedSnapshot copies the tracked Sandboxes so a liveness scan can call out
+// without holding the lock.
+func (r *Runtime) managedSnapshot() map[string]int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	known := make(map[string]int64, len(r.managed))
+	for id, generation := range r.managed {
+		known[id] = generation
+	}
+	return known
+}
+
+func (d *dockerClient) inspectContainer(ctx context.Context, name string) (running, exists bool, labels map[string]string, err error) {
 	resp, err := d.request(ctx, http.MethodGet, d.api("/containers/"+name+"/json"), nil)
 	if err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
-		return false, false, nil
+		return false, false, nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, false, fmt.Errorf("inspect container: %s", resp.Status)
+		return false, false, nil, fmt.Errorf("inspect container: %s", resp.Status)
 	}
 	var info struct {
 		State struct {
 			Running bool `json:"Running"`
 		} `json:"State"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
-	return info.State.Running, true, nil
+	return info.State.Running, true, info.Config.Labels, nil
 }
 
 func (d *dockerClient) removeContainer(ctx context.Context, idOrName string) error {

@@ -169,14 +169,18 @@ func agentCommand(t *testing.T, args ...string) *exec.Cmd {
 func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
 	args = append([]string{"run"}, args...)
-	if socket := os.Getenv("STARS_E2E_DOCKER_SOCKET"); socket != "" {
-		args = append(args, "--docker", socket)
-	}
+	hasDocker := false
 	hasRoot := false
 	for _, arg := range args {
+		if arg == "--docker" {
+			hasDocker = true
+		}
 		if arg == "--data-root" {
 			hasRoot = true
 		}
+	}
+	if socket := os.Getenv("STARS_E2E_DOCKER_SOCKET"); socket != "" && !hasDocker {
+		args = append(args, "--docker", socket)
 	}
 	if !hasRoot {
 		args = append(args, "--data-root", t.TempDir())

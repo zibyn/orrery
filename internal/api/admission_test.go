@@ -3,9 +3,12 @@ package api
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/zibyn/stars-sandbox/internal/nodeproto"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -256,6 +259,119 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 	}
 }
 
+// orderPlacementNodes implements ADR-0015's placement policy among feasible
+// Nodes: GPU requests pack onto the Node with the fewest free cards of the
+// requested model, GPU-less requests prefer Nodes without cards, and ties
+// break by created_at and then id. The fixtures are store.Node values; no
+// database is involved.
+func TestOrderPlacementNodes(t *testing.T) {
+	at := func(unix int64) pgtype.Timestamptz {
+		return pgtype.Timestamptz{Time: time.Unix(unix, 0).UTC(), Valid: true}
+	}
+	mk := func(id byte, createdAt int64, cards int, free []store.Gpu) placementNode {
+		return placementNode{
+			node: store.Node{
+				ID:        uuid.UUID{id},
+				CreatedAt: at(createdAt),
+			},
+			gpus: cards,
+			free: free,
+		}
+	}
+	h100 := func(n int) []store.Gpu {
+		free := make([]store.Gpu, n)
+		for i := range free {
+			free[i] = store.Gpu{Model: "H100"}
+		}
+		return free
+	}
+	names := func(nodes []placementNode) []byte {
+		ids := make([]byte, len(nodes))
+		for i, node := range nodes {
+			ids[i] = node.node.ID[0]
+		}
+		return ids
+	}
+	order := func(nodes []placementNode, sb store.Sandbox) []byte {
+		orderPlacementNodes(nodes, sb)
+		return names(nodes)
+	}
+
+	model := "H100"
+	for name, tt := range map[string]struct {
+		sb    store.Sandbox
+		nodes []placementNode
+		want  []byte
+	}{
+		"GPU request packs onto the fewest free cards of the model": {
+			sb: store.Sandbox{GpuCount: 1, GpuModel: &model},
+			nodes: []placementNode{
+				mk(1, 10, 3, h100(3)),
+				mk(2, 20, 1, h100(1)),
+				mk(3, 30, 2, h100(2)),
+			},
+			want: []byte{2, 3, 1},
+		},
+		"an empty model counts free cards of any model": {
+			sb: store.Sandbox{GpuCount: 1},
+			nodes: []placementNode{
+				mk(1, 10, 3, []store.Gpu{{Model: "A100"}, {Model: "H100"}, {Model: "H100"}}),
+				mk(2, 20, 3, []store.Gpu{{Model: "A100"}}),
+				mk(3, 30, 3, []store.Gpu{{Model: "A100"}, {Model: "A100"}}),
+			},
+			want: []byte{2, 3, 1},
+		},
+		"GPU packing ties break by created_at": {
+			sb: store.Sandbox{GpuCount: 1, GpuModel: &model},
+			nodes: []placementNode{
+				mk(1, 20, 2, h100(2)),
+				mk(2, 10, 2, h100(2)),
+			},
+			want: []byte{2, 1},
+		},
+		"GPU-less request prefers a Node without cards": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 10, 4, nil),
+				mk(2, 20, 0, nil),
+			},
+			want: []byte{2, 1},
+		},
+		"GPU-less requests tie break by created_at": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 20, 4, nil),
+				mk(2, 30, 8, nil),
+				mk(3, 10, 4, nil),
+			},
+			want: []byte{3, 1, 2},
+		},
+		"fully allocated cards still count as a GPU Node": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 10, 4, nil),
+				mk(2, 20, 0, nil),
+			},
+			want: []byte{2, 1},
+		},
+		"a complete created_at tie breaks by id": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(3, 10, 0, nil),
+				mk(1, 10, 0, nil),
+				mk(2, 10, 0, nil),
+			},
+			want: []byte{1, 2, 3},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := order(tt.nodes, tt.sb); string(got) != string(tt.want) {
+				t.Fatalf("order = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func mustHardware(t *testing.T, hw nodeHardware) json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(hw)
@@ -263,4 +379,108 @@ func mustHardware(t *testing.T, hw nodeHardware) json.RawMessage {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// capabilitySnapshot builds a stored Capabilities report for a Provider.
+func capabilitySnapshot(t *testing.T, provider string, values map[string]string) json.RawMessage {
+	t.Helper()
+	entries := make([]nodeproto.CapabilityEntry, 0, len(values))
+	for name, value := range values {
+		entries = append(entries, nodeproto.CapabilityEntry{Name: name, Value: value})
+	}
+	raw, err := json.Marshal(nodeproto.CapabilityReport{RuntimeProvider: provider, Entries: entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// api.md §3 / ADR-0009: a container request only goes to Docker or Podman, a
+// local request only to a Local Node. Build rows are filtered elsewhere.
+func TestRuntimeMatching(t *testing.T) {
+	container := capabilitySnapshot(t, "docker", nil)
+	podman := capabilitySnapshot(t, "podman", nil)
+	local := capabilitySnapshot(t, "local", nil)
+	for _, tt := range []struct {
+		caps    json.RawMessage
+		runtime string
+		want    bool
+	}{
+		{container, "", true},
+		{container, "container", true},
+		{container, "local", false},
+		{podman, "container", true},
+		{local, "container", false},
+		{local, "local", true},
+		{podman, "local", false},
+		{nil, "container", false},
+		{nil, "local", false},
+	} {
+		if got := runtimeMatches(tt.caps, tt.runtime); got != tt.want {
+			t.Errorf("runtimeMatches(provider %q, %q) = %v, want %v",
+				nodeproto.RuntimeProvider(tt.caps), tt.runtime, got, tt.want)
+		}
+	}
+}
+
+// ADR-0009's single exception: Local GPU visibility may be best_effort.
+func TestGPUVisibilityAccepted(t *testing.T) {
+	for _, tt := range []struct {
+		runtime string
+		value   string
+		want    bool
+	}{
+		{"container", nodeproto.ValueEnforced, true},
+		{"container", nodeproto.ValueBestEffort, false},
+		{"local", nodeproto.ValueEnforced, true},
+		{"local", nodeproto.ValueBestEffort, true},
+		{"local", nodeproto.ValueUnsupported, false},
+		{"local", "", false},
+	} {
+		caps := capabilitySnapshot(t, "local", map[string]string{
+			nodeproto.CapGPUDeviceVisibility: tt.value,
+		})
+		if got := gpuVisibilityAccepted(caps, tt.runtime); got != tt.want {
+			t.Errorf("gpuVisibilityAccepted(%q, %q) = %v, want %v", tt.runtime, tt.value, got, tt.want)
+		}
+	}
+}
+
+// A local Sandbox with no Local Node can never be admitted; the queue must end
+// it `unsatisfiable` instead of waiting for the deadline.
+func TestAdmissionExhaustedRuntime(t *testing.T) {
+	const gib = int64(1) << 30
+	hw := mustHardware(t, nodeHardware{
+		CPUCores: 8, MemoryBytes: 32 * gib, DiskFree: 50, DiskTotal: 100,
+	})
+	caps := func(provider string) json.RawMessage {
+		values := map[string]string{}
+		for _, name := range nodeproto.RequiredFor(provider) {
+			values[name] = nodeproto.ValueEnforced
+		}
+		return capabilitySnapshot(t, provider, values)
+	}
+	dockerNode := store.Node{
+		ID: uuid.New(), Hardware: hw, Capabilities: caps("docker"),
+		ReservedCpu: 1, ReservedMemory: 2 * gib,
+	}
+	localNode := store.Node{
+		ID: uuid.New(), Hardware: hw, Capabilities: caps("local"),
+		ReservedCpu: 1, ReservedMemory: 2 * gib,
+	}
+	localSB := store.Sandbox{Cpu: 1, Memory: gib, Runtime: "local"}
+	containerSB := store.Sandbox{Cpu: 1, Memory: gib, Runtime: "container"}
+
+	if !admissionExhausted([]store.Node{dockerNode}, nil, localSB, nil) {
+		t.Fatal("a local Sandbox among Docker Nodes is not provably unsatisfiable")
+	}
+	if admissionExhausted([]store.Node{dockerNode, localNode}, nil, localSB, nil) {
+		t.Fatal("a local Sandbox with a Local Node is not exhausted")
+	}
+	if !admissionExhausted([]store.Node{localNode}, nil, containerSB, nil) {
+		t.Fatal("a container Sandbox among Local Nodes is not provably unsatisfiable")
+	}
+	if admissionExhausted([]store.Node{dockerNode, localNode}, nil, containerSB, nil) {
+		t.Fatal("a container Sandbox with a Docker Node is not exhausted")
+	}
 }

@@ -633,6 +633,12 @@ func schemas() map[string]any {
 			"properties": map[string]any{
 				"name":   map[string]any{"type": "string", "description": "Unique per User; defaults to the Sandbox id."},
 				"labels": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"runtime": map[string]any{
+					"type":        "string",
+					"enum":        []string{"container", "local"},
+					"default":     "container",
+					"description": "container places on Docker or Podman; local places on a Local Runtime Node and accepts no Snapshot or Resources.",
+				},
 				"workspace": map[string]any{
 					"type":        "object",
 					"description": "Attach an existing Workspace; omit to create an implicit ephemeral one.",
@@ -676,11 +682,12 @@ func schemas() map[string]any {
 		},
 		"Sandbox": map[string]any{
 			"type":     "object",
-			"required": []string{"id", "name", "labels", "state", "snapshot", "conditions", "cpu", "memory", "idle_stop", "created_at"},
+			"required": []string{"id", "name", "labels", "runtime", "state", "snapshot", "conditions", "cpu", "memory", "idle_stop", "created_at"},
 			"properties": map[string]any{
 				"id":       map[string]any{"type": "string", "format": "uuid"},
 				"name":     map[string]any{"type": "string"},
 				"labels":   map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"runtime":  map[string]any{"type": "string", "enum": []string{"container", "local"}},
 				"state":    map[string]any{"type": "string", "enum": sandboxStateNames},
 				"cause":    nullableString,
 				"node_id":  nullableString,

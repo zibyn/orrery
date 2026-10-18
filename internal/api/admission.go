@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -101,11 +102,32 @@ func takeGPUs(free []store.Gpu, count int32, model *string) ([]string, bool) {
 	return nil, false
 }
 
+// runtimeMatches reports whether a Node's Provider can run a Sandbox's
+// requested Runtime (api.md §3, ADR-0009). A container request goes to Docker
+// or Podman; a local request only to a Local Node.
+func runtimeMatches(capabilities json.RawMessage, runtime string) bool {
+	provider := nodeproto.RuntimeProvider(capabilities)
+	if runtime == "local" {
+		return provider == "local"
+	}
+	return provider == "docker" || provider == "podman"
+}
+
+// gpuVisibilityAccepted applies ADR-0009's one exception: a local request
+// accepts best-effort GPU visibility, because the caller accepted the Local
+// Runtime's low isolation. Everything else and every container request
+// requires `enforced`.
+func gpuVisibilityAccepted(capabilities json.RawMessage, runtime string) bool {
+	value := nodeproto.CapabilityValue(capabilities, nodeproto.CapGPUDeviceVisibility)
+	return value == nodeproto.ValueEnforced ||
+		(runtime == "local" && value == nodeproto.ValueBestEffort)
+}
+
 // gpuFit reports whether a GPU Sandbox fits this Node and which cards it
 // takes. free is the Node's whole inventory for the exhaust check and its free
 // cards for placement.
 func gpuFit(node store.Node, fit nodeFit, free []store.Gpu, sb store.Sandbox) ([]string, bool) {
-	if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapGPUDeviceVisibility) ||
+	if !gpuVisibilityAccepted(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) ||
 		!fit.admitsGPU(sb.Cpu, sb.Memory, sb.GpuCount) {
 		return nil, false
 	}
@@ -157,6 +179,14 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		}
 		// A Workspace never moves: its Sandbox can only ever run there.
 		if workspaceNode != nil && node.ID != *workspaceNode {
+			continue
+		}
+		// A non-build request can only run on a Node with a matching Runtime
+		// Provider (api.md §3). A Node that has not reported Capabilities is
+		// treated as potentially matching, so it is not proof of exhaustion.
+		if sb.Kind != string(SandboxKindBuild) && len(node.Capabilities) > 0 &&
+			!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) {
+			known = true
 			continue
 		}
 		if sb.Kind == string(SandboxKindBuild) {
@@ -297,10 +327,57 @@ func nodeSchedulable(node store.Node, now time.Time, workspaceHere bool) bool {
 	return deriveNodeStatus(node, now) == "ready"
 }
 
-// tryAdmit places a Sandbox on the first Node that fits. A Sandbox bound to a
-// Node stays there (a Workspace never moves), and so does one whose Workspace
-// is already bound (ADR-0015 locality). A GPU Sandbox claims whole cards;
-// their primary key keeps the cards exclusive (ADR-0015).
+// placementNode is a feasible Node and the cards it offers. gpus is the
+// reported card count, used for the GPU-less preference, and free is the cards
+// still available for packing.
+type placementNode struct {
+	node   store.Node
+	gpus   int
+	free   []store.Gpu
+	gpuIDs []string
+}
+
+// freeGPUs counts free cards of the requested model; an empty model counts
+// every free card (ADR-0015).
+func freeGPUs(free []store.Gpu, model *string) int {
+	if model == nil || *model == "" {
+		return len(free)
+	}
+	n := 0
+	for _, gpu := range free {
+		if gpu.Model == *model {
+			n++
+		}
+	}
+	return n
+}
+
+// orderPlacementNodes sorts feasible Nodes in place (ADR-0015): a GPU request
+// is packed onto the Node left with the fewest free cards of the requested
+// model; a GPU-less request prefers Nodes without cards, then the first
+// feasible one. Ties break by created_at and then id, so placement is
+// deterministic. The policy is not configurable.
+func orderPlacementNodes(nodes []placementNode, sb store.Sandbox) {
+	sort.Slice(nodes, func(i, j int) bool {
+		a, b := nodes[i], nodes[j]
+		if sb.GpuCount > 0 {
+			if fa, fb := freeGPUs(a.free, sb.GpuModel), freeGPUs(b.free, sb.GpuModel); fa != fb {
+				return fa < fb
+			}
+		} else if (a.gpus == 0) != (b.gpus == 0) {
+			return a.gpus == 0
+		}
+		if !a.node.CreatedAt.Time.Equal(b.node.CreatedAt.Time) {
+			return a.node.CreatedAt.Time.Before(b.node.CreatedAt.Time)
+		}
+		return a.node.ID.String() < b.node.ID.String()
+	})
+}
+
+// tryAdmit places a Sandbox on the best feasible Node (ADR-0015). A Sandbox
+// bound to a Node stays there (a Workspace never moves), and so does one whose
+// Workspace is already bound (locality). A GPU Sandbox claims whole cards;
+// their primary key keeps the cards exclusive.
 func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sandbox, ws store.Workspace, nodes []store.Node, now time.Time) (bool, error) {
 	// A Sandbox with Resources can only run where the Runtime can bind-mount
 	// them (runtime.md §10-11). Filtering placement rather than rejecting the
@@ -316,6 +393,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			return false, err
 		}
 	}
+	var candidates []placementNode
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
 			continue
@@ -324,12 +402,21 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			continue
 		}
 		if isBuild {
-			// Builds run on the host build API only (ADR-0021).
+			// Builds run on the host build API only (ADR-0021), independent of
+			// the Node's Runtime.
 			if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapSnapshotBuild) {
 				continue
 			}
-		} else if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
-			continue
+		} else {
+			// The request's Runtime is an admission constraint (api.md §3): a
+			// container Sandbox only goes to Docker or Podman, a local one only
+			// to a Local Node.
+			if !runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) {
+				continue
+			}
+			if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
+				continue
+			}
 		}
 		if !nodeSchedulable(node, now, !isBuild && ws.NodeID != nil) || !r.hub.connected(node.ID) {
 			continue
@@ -342,18 +429,24 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		if !ok {
 			continue
 		}
-		var gpuIDs []string
+		candidate := placementNode{node: node, gpus: fit.gpuTotal}
 		if sb.GpuCount > 0 {
 			free, err := q.ListNodeFreeGPUs(ctx, node.ID)
 			if err != nil {
 				return false, err
 			}
-			if gpuIDs, ok = gpuFit(node, fit, free, sb); !ok {
+			if candidate.gpuIDs, ok = gpuFit(node, fit, free, sb); !ok {
 				continue
 			}
+			candidate.free = free
 		} else if !fit.admitsNonGPU(sb.Cpu, sb.Memory) {
 			continue
 		}
+		candidates = append(candidates, candidate)
+	}
+	orderPlacementNodes(candidates, sb)
+	for _, candidate := range candidates {
+		node := candidate.node
 		// Lock and re-check the state read above: a concurrent stop or delete
 		// must not be handed an Allocation.
 		rows, err := q.TouchPendingSandbox(ctx, store.TouchPendingSandboxParams{
@@ -387,7 +480,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		}); err != nil {
 			return false, err
 		}
-		for _, gpuUUID := range gpuIDs {
+		for _, gpuUUID := range candidate.gpuIDs {
 			if err := q.CreateGPUAllocation(ctx, store.CreateGPUAllocationParams{
 				GpuUuid: gpuUUID, SandboxID: sb.ID,
 			}); err != nil {

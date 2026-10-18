@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
 	"github.com/zibyn/stars-sandbox/internal/nodeproto"
@@ -47,6 +48,57 @@ func TestDeriveNodeStatus(t *testing.T) {
 	}
 }
 
+// Declaring a Node lost is irreversible (api.md §3): a lost Node can never be
+// resumed, so the resume handler refuses it.
+func TestNodeLost(t *testing.T) {
+	now := time.Now()
+	lost := mutate(readyNode(t, now), func(n *store.Node) {
+		n.LostAt = pgtype.Timestamptz{Time: now, Valid: true}
+	})
+	if !nodeLost(lost) {
+		t.Fatal("a Node with lost_at was not reported lost")
+	}
+	if nodeLost(readyNode(t, now)) {
+		t.Fatal("a live Node was reported lost")
+	}
+}
+
+// Reachable is liveness only: a fresh heartbeat or an open stream. An
+// unhealthy Runtime is still reachable, so declaring that Node lost is refused
+// (ADR-0014).
+func TestNodeReachable(t *testing.T) {
+	now := time.Now()
+	unhealthy := "unhealthy"
+	fresh := mutate(readyNode(t, now), func(n *store.Node) { n.RuntimeHealth = &unhealthy })
+	stale := mutate(fresh, func(n *store.Node) {
+		n.LastSeenAt = pgtype.Timestamptz{Time: now.Add(-31 * time.Second), Valid: true}
+	})
+	lost := mutate(readyNode(t, now), func(n *store.Node) {
+		n.LostAt = pgtype.Timestamptz{Time: now, Valid: true}
+	})
+
+	tests := []struct {
+		name      string
+		node      store.Node
+		connected bool
+		want      bool
+	}{
+		{"fresh heartbeat", fresh, false, true},
+		{"open stream without a heartbeat yet", mutate(stale, func(n *store.Node) {
+			n.LastSeenAt = pgtype.Timestamptz{}
+		}), true, true},
+		{"stale heartbeat and no stream", stale, false, false},
+		{"already declared lost", lost, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nodeReachable(tt.node, tt.connected, now); got != tt.want {
+				t.Fatalf("nodeReachable = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // A paused Node takes no new Workspace, but a Sandbox whose Workspace is
 // already bound there can still start (ADR-0017).
 func TestNodeSchedulable(t *testing.T) {
@@ -66,7 +118,7 @@ func TestNodeSchedulable(t *testing.T) {
 		want          bool
 	}{
 		{"ready takes a new Workspace", ready, false, true},
-		{"paused refuses a new Workspace", paused, false, false},
+		{"paused refuses a new Workspace or a build (no bound Workspace)", paused, false, false},
 		{"paused runs a Sandbox for its bound Workspace", paused, true, true},
 		{"unavailable takes nothing", unavailable, true, false},
 		{"paused does not bypass an unhealthy Runtime", pausedUnavailable, true, false},
@@ -78,6 +130,25 @@ func TestNodeSchedulable(t *testing.T) {
 				t.Fatalf("nodeSchedulable = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// Deleting a Node has to end its live Control stream: close fires the
+// connection's done channel exactly once, so Control returns UNAUTHENTICATED
+// (ADR-0014, api.md §3).
+func TestNodeHubClose(t *testing.T) {
+	hub := newNodeHub()
+	id := uuid.New()
+	conn := &agentConn{nodeID: id, send: make(chan *nodev1.ControlMessage, 1), done: make(chan struct{})}
+	hub.register(conn)
+
+	hub.close(id)
+	hub.close(id) // idempotent: a second close must not panic
+
+	select {
+	case <-conn.done:
+	default:
+		t.Fatal("close did not end the connection")
 	}
 }
 

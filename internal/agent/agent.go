@@ -145,6 +145,14 @@ type RunOptions struct {
 	Server string // overrides the address stored at enroll time
 	State  string
 	Docker string
+	// Runtime is the Node's one Runtime Provider (ADR-0014): docker, podman
+	// or local.
+	Runtime string
+	// LocalUser is the unprivileged user every Local Runtime Exec runs as
+	// (runtime.md §10). Required for --runtime local.
+	LocalUser string
+	// localUser is the resolved LocalUser, filled by Run.
+	localUser *localUser
 	// Buildkit is the BuildKit endpoint. Empty means the Docker daemon's
 	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
 	Buildkit      string
@@ -154,10 +162,42 @@ type RunOptions struct {
 	DiskWatermark float64
 }
 
+// resolveRuntime picks the one Runtime Provider this Node runs (ADR-0014).
+// Unimplemented providers fail loudly rather than silently running Docker.
+func resolveRuntime(name string) (string, error) {
+	switch name {
+	case "", ProviderDocker:
+		return ProviderDocker, nil
+	case ProviderPodman:
+		return ProviderPodman, nil
+	case ProviderLocal:
+		return ProviderLocal, nil
+	default:
+		return "", fmt.Errorf("unknown runtime %q", name)
+	}
+}
+
 // Run keeps one Control stream alive, probing capabilities once per
 // connection. NOT_FOUND/UNAUTHENTICATED clears local identity; anything else
 // keeps it and backs off (ADR-0010's asymmetric rule).
 func Run(ctx context.Context, opts RunOptions) error {
+	provider, err := resolveRuntime(opts.Runtime)
+	if err != nil {
+		return err
+	}
+	opts.Runtime = provider
+	if provider == ProviderLocal {
+		// Local Runtime uses the system manager and systemd-run, so the Agent
+		// must be root; commands never run as root (runtime.md §10).
+		if os.Geteuid() != 0 {
+			return errors.New("runtime local requires the Agent to run as root (system manager)")
+		}
+		user, err := lookupLocalUser(opts.LocalUser)
+		if err != nil {
+			return err
+		}
+		opts.localUser = &user
+	}
 	id, err := LoadIdentity(opts.State)
 	if err != nil {
 		return err
@@ -244,7 +284,23 @@ func isIncompatible(err error) bool {
 }
 
 func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
-	rt := NewRuntime(opts.Docker, opts.DataRoot)
+	// The --runtime flag is the single source of truth: an explicit Provider
+	// wins over any path heuristic, so a Docker Node pointing at an unusual
+	// socket never silently becomes Podman.
+	rt := NewRuntime(opts.Docker, opts.DataRoot, id.NodeID)
+	if opts.Runtime == ProviderPodman {
+		var err error
+		rt, err = newPodmanRuntime(opts.Docker, opts.DataRoot, id.NodeID)
+		if err != nil {
+			return false, err
+		}
+	}
+	if opts.Runtime == ProviderLocal {
+		if opts.localUser == nil {
+			return false, errors.New("runtime local needs --local-user")
+		}
+		rt = newLocalRuntime(opts.DataRoot, id.NodeID, *opts.localUser, agentBinDir())
+	}
 	rt.buildkit = opts.Buildkit
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
@@ -323,11 +379,11 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// Runtime (runtime.md §12). It is reported even when the Runtime probe
 	// fails; the Node's status already keeps it out of placement then.
 	buildOK := rt.buildkitAvailable(streamCtx)
-	report, probeErr := dockerProbe(streamCtx, opts.Docker)
+	report, probeErr := rt.probe(streamCtx)
 	health := "healthy"
 	if probeErr != nil {
 		health = "unhealthy"
-		report = nodeproto.CapabilityReport{RuntimeProvider: "docker"}
+		report = nodeproto.CapabilityReport{RuntimeProvider: rt.provider}
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
 	report = withSnapshotBuild(report, buildOK)
@@ -393,7 +449,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 			// Runtime health is live: a daemon that dies mid-stream must stop
 			// receiving placements, not keep its startup verdict.
 			hctx, hcancel := context.WithTimeout(streamCtx, 5*time.Second)
-			if dockerHealthy(hctx, opts.Docker) {
+			if rt.healthy(hctx) {
 				health = "healthy"
 			} else {
 				health = "unhealthy"
