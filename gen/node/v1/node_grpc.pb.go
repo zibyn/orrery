@@ -23,6 +23,7 @@ const (
 	Node_Control_FullMethodName    = "/stars.node.v1.Node/Control"
 	Node_ExecOutput_FullMethodName = "/stars.node.v1.Node/ExecOutput"
 	Node_Tunnel_FullMethodName     = "/stars.node.v1.Node/Tunnel"
+	Node_Presign_FullMethodName    = "/stars.node.v1.Node/Presign"
 )
 
 // NodeClient is the client API for Node service.
@@ -42,6 +43,9 @@ type NodeClient interface {
 	// Tunnel is a reverse-dialled raw byte stream, opened when Control sends
 	// OpenTunnel (ADR-0018).
 	Tunnel(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[TunnelFrame, TunnelFrame], error)
+	// Presign issues object store URLs for this Node (node-protocol.md
+	// "Presign"). It is authenticated by the Node Token.
+	Presign(ctx context.Context, in *PresignRequest, opts ...grpc.CallOption) (*PresignResponse, error)
 }
 
 type nodeClient struct {
@@ -101,6 +105,16 @@ func (c *nodeClient) Tunnel(ctx context.Context, opts ...grpc.CallOption) (grpc.
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Node_TunnelClient = grpc.BidiStreamingClient[TunnelFrame, TunnelFrame]
 
+func (c *nodeClient) Presign(ctx context.Context, in *PresignRequest, opts ...grpc.CallOption) (*PresignResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PresignResponse)
+	err := c.cc.Invoke(ctx, Node_Presign_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeServer is the server API for Node service.
 // All implementations must embed UnimplementedNodeServer
 // for forward compatibility.
@@ -118,6 +132,9 @@ type NodeServer interface {
 	// Tunnel is a reverse-dialled raw byte stream, opened when Control sends
 	// OpenTunnel (ADR-0018).
 	Tunnel(grpc.BidiStreamingServer[TunnelFrame, TunnelFrame]) error
+	// Presign issues object store URLs for this Node (node-protocol.md
+	// "Presign"). It is authenticated by the Node Token.
+	Presign(context.Context, *PresignRequest) (*PresignResponse, error)
 	mustEmbedUnimplementedNodeServer()
 }
 
@@ -139,6 +156,9 @@ func (UnimplementedNodeServer) ExecOutput(grpc.BidiStreamingServer[OutputBatch, 
 }
 func (UnimplementedNodeServer) Tunnel(grpc.BidiStreamingServer[TunnelFrame, TunnelFrame]) error {
 	return status.Errorf(codes.Unimplemented, "method Tunnel not implemented")
+}
+func (UnimplementedNodeServer) Presign(context.Context, *PresignRequest) (*PresignResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Presign not implemented")
 }
 func (UnimplementedNodeServer) mustEmbedUnimplementedNodeServer() {}
 func (UnimplementedNodeServer) testEmbeddedByValue()              {}
@@ -200,6 +220,24 @@ func _Node_Tunnel_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Node_TunnelServer = grpc.BidiStreamingServer[TunnelFrame, TunnelFrame]
 
+func _Node_Presign_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PresignRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServer).Presign(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Node_Presign_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServer).Presign(ctx, req.(*PresignRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Node_ServiceDesc is the grpc.ServiceDesc for Node service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -210,6 +248,10 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Redeem",
 			Handler:    _Node_Redeem_Handler,
+		},
+		{
+			MethodName: "Presign",
+			Handler:    _Node_Presign_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
