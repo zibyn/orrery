@@ -79,30 +79,42 @@ function ExecsPage() {
       {execs.data && execs.data.items.length > 0 && (
         <ul className="divide-y divide-border rounded-md border border-border">
           {execs.data.items.map((exec) => (
-            <li key={exec.id}>
+            <li
+              key={exec.id}
+              className={cn(
+                'flex flex-wrap items-center justify-between gap-3 p-4',
+                selectedId === exec.id && 'bg-muted',
+              )}
+            >
               <Link
                 to="/sandboxes/$id/execs"
                 params={{ id }}
                 search={{ exec: exec.id }}
-                className={cn(
-                  'flex flex-wrap items-center justify-between gap-3 p-4 hover:bg-muted',
-                  selectedId === exec.id && 'bg-muted',
-                )}
                 aria-current={selectedId === exec.id ? 'true' : undefined}
+                className="flex flex-col gap-1 hover:underline"
               >
-                <span className="flex flex-col gap-1">
-                  <span className="font-mono text-sm">{exec.argv.join(' ')}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {exec.id} · {exec.accepted_at}
-                  </span>
+                <span className="font-mono text-sm">{exec.argv.join(' ')}</span>
+                <span className="text-xs text-muted-foreground">
+                  {exec.id} · {exec.accepted_at}
                 </span>
+              </Link>
+              <span className="flex items-center gap-2">
                 <span
                   className="rounded-full border border-border px-2 py-0.5 text-xs font-medium"
                   data-testid={`exec-state-${exec.id}`}
                 >
                   {exec.state}
                 </span>
-              </Link>
+                <Link
+                  to="/sandboxes/$id/terminal"
+                  params={{ id }}
+                  search={{ exec: exec.id }}
+                  data-testid={`exec-attach-${exec.id}`}
+                  className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                >
+                  Attach
+                </Link>
+              </span>
             </li>
           ))}
         </ul>

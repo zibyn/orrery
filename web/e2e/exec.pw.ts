@@ -60,6 +60,13 @@ test('console-parity: follow an Exec log, use a PTY terminal and delete the Sand
   await page.keyboard.press('Enter')
   await expect(page.locator('.xterm-rows')).toContainText(terminalMarker, { timeout: 60_000 })
 
+  // A PTY Exec already in the Exec list can be attached again.
+  const execLabel = await page.getByText(/^Exec [0-9a-f-]{36}$/).textContent()
+  const ptyExecId = execLabel!.replace('Exec ', '')
+  await page.goto(`/sandboxes/${sandboxId}/execs`)
+  await page.getByTestId(`exec-attach-${ptyExecId}`).click()
+  await expect(page.getByTestId('terminal-status')).toHaveText('connected', { timeout: 60_000 })
+
   await page.goto(`/sandboxes/${sandboxId}`)
   await page.getByRole('button', { name: 'Delete' }).click()
   await expect(page).toHaveURL(/\/sandboxes$/)
