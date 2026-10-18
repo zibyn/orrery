@@ -47,6 +47,42 @@ func TestDeriveNodeStatus(t *testing.T) {
 	}
 }
 
+// Reachable is liveness only: a fresh heartbeat or an open stream. An
+// unhealthy Runtime is still reachable, so declaring that Node lost is refused
+// (ADR-0014).
+func TestNodeReachable(t *testing.T) {
+	now := time.Now()
+	unhealthy := "unhealthy"
+	fresh := mutate(readyNode(t, now), func(n *store.Node) { n.RuntimeHealth = &unhealthy })
+	stale := mutate(fresh, func(n *store.Node) {
+		n.LastSeenAt = pgtype.Timestamptz{Time: now.Add(-31 * time.Second), Valid: true}
+	})
+	lost := mutate(readyNode(t, now), func(n *store.Node) {
+		n.LostAt = pgtype.Timestamptz{Time: now, Valid: true}
+	})
+
+	tests := []struct {
+		name      string
+		node      store.Node
+		connected bool
+		want      bool
+	}{
+		{"fresh heartbeat", fresh, false, true},
+		{"open stream without a heartbeat yet", mutate(stale, func(n *store.Node) {
+			n.LastSeenAt = pgtype.Timestamptz{}
+		}), true, true},
+		{"stale heartbeat and no stream", stale, false, false},
+		{"already declared lost", lost, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nodeReachable(tt.node, tt.connected, now); got != tt.want {
+				t.Fatalf("nodeReachable = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // A paused Node takes no new Workspace, but a Sandbox whose Workspace is
 // already bound there can still start (ADR-0017).
 func TestNodeSchedulable(t *testing.T) {

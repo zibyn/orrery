@@ -20,7 +20,7 @@ type workspacePublishVersion struct {
 
 func runWorkspace(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox workspace publish <id> <path> <name>")
+		return fmt.Errorf("usage: stars-sandbox workspace publish|declare-lost|abandon ...")
 	}
 	switch args[0] {
 	case "publish":
@@ -28,6 +28,16 @@ func runWorkspace(c *client, args []string, stderr io.Writer) error {
 			return fmt.Errorf("usage: stars-sandbox workspace publish <id> <path> <name>")
 		}
 		return publishWorkspace(c, args[1], args[2], args[3])
+	case "declare-lost":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: stars-sandbox workspace declare-lost <id>")
+		}
+		return c.sendAndPrint(http.MethodPost, "/api/v1/workspaces/"+args[1]+"/declare-lost", nil, "")
+	case "abandon":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: stars-sandbox workspace abandon <id>")
+		}
+		return c.sendAndPrint(http.MethodPost, "/api/v1/workspaces/"+args[1]+"/abandon", nil, "")
 	default:
 		return fmt.Errorf("unknown workspace command %q", args[0])
 	}

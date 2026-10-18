@@ -398,7 +398,12 @@ RETURNING *;
 -- name: ListReconcilableSandboxes :many
 SELECT * FROM sandboxes
 WHERE kind = 'user'
-  AND state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+  AND (state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+       -- A failed Sandbox can still hold a Runtime (workspace_lost); the stop
+       -- command runs until the Node observes it gone and the compute is
+       -- released (ADR-0017).
+       OR (state = 'failed'
+           AND EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = sandboxes.id)))
 ORDER BY id;
 
 -- name: SetSandboxNode :execrows
@@ -1316,3 +1321,100 @@ WHERE snapshot_id = $1 AND digest = $2 AND id <> $3;
 DELETE FROM sandbox_resources sr
 USING sandboxes sb
 WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted';
+
+-- Lost cascades (#95)
+
+-- Declaring a Node lost is irreversible: the Token is cleared, the Node is
+-- paused, and lost_at is what deriveNodeStatus reads (ADR-0014).
+-- name: MarkNodeLost :execrows
+UPDATE nodes
+SET token_hash = '', paused = true, lost_at = now()
+WHERE id = $1;
+
+-- Every non-deleted Sandbox on the Node, including stopped and bound pending
+-- ones and build rows, becomes failed/node_lost (api.md §3).
+-- name: FailSandboxesOnNodeLost :execrows
+UPDATE sandboxes
+SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
+    conditions = NULL, updated_at = now()
+WHERE node_id = $1 AND state <> 'deleted';
+
+-- name: DeleteSandboxAttachmentsOnNodeLost :execrows
+DELETE FROM attachments
+WHERE sandbox_id IN (
+    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
+);
+
+-- name: DeleteGPUAllocationsOnNodeLost :execrows
+DELETE FROM gpu_allocations
+WHERE sandbox_id IN (
+    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
+);
+
+-- name: DeleteAllocationsOnNodeLost :execrows
+DELETE FROM allocations
+WHERE sandbox_id IN (
+    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
+);
+
+-- name: FinishExecsOnNodeLost :execrows
+UPDATE execs
+SET finished_at = now(), cause = 'node_lost'
+WHERE finished_at IS NULL
+  AND sandbox_id IN (
+      SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
+  );
+
+-- A Workspace being deleted on a lost Node reaches deleted without a command;
+-- every other non-terminal one becomes lost (ADR-0014).
+-- name: MarkDeletingWorkspacesDeletedOnNodeLost :execrows
+UPDATE workspaces
+SET state = 'deleted', deleted_at = now(), updated_at = now()
+WHERE node_id = $1 AND state = 'deleting';
+
+-- name: MarkWorkspacesLostOnNodeLost :execrows
+UPDATE workspaces
+SET state = 'lost', updated_at = now()
+WHERE node_id = $1 AND state IN ('provisioning', 'ready');
+
+-- name: FailBuildsOnNodeLost :execrows
+UPDATE snapshot_versions
+SET state = 'failed', cause = 'node_lost'
+WHERE state = 'building'
+  AND build_sandbox_id IN (SELECT id FROM sandboxes WHERE node_id = $1);
+
+-- name: FailPublishesOnNodeLost :execrows
+UPDATE resource_versions
+SET state = 'failed', cause = 'node_lost'
+WHERE state = 'pending'
+  AND publish_workspace_id IN (SELECT id FROM workspaces WHERE node_id = $1);
+
+-- A Workspace declared lost on a live Node: its attached Sandboxes become
+-- failed/workspace_lost and their Execs end runtime_lost (ADR-0017). A row
+-- already deleting keeps its own teardown.
+-- name: MarkWorkspaceLost :execrows
+UPDATE workspaces
+SET state = 'lost', updated_at = now()
+WHERE id = $1 AND state IN ('provisioning', 'ready');
+
+-- name: FailSandboxesOnWorkspaceLost :execrows
+UPDATE sandboxes
+SET state = 'failed', cause = 'workspace_lost', desired_state = 'stopped',
+    conditions = NULL, updated_at = now()
+WHERE workspace_id = $1 AND state NOT IN ('deleted', 'deleting');
+
+-- name: FinishExecsOnWorkspaceLost :execrows
+UPDATE execs
+SET finished_at = now(), cause = 'runtime_lost'
+WHERE finished_at IS NULL
+  AND sandbox_id IN (
+      SELECT id FROM sandboxes
+      WHERE workspace_id = $1 AND state = 'failed' AND cause = 'workspace_lost'
+  );
+
+-- Abandoning a Workspace stuck in deleting reaches deleted with no Node
+-- command (api.md §3).
+-- name: MarkWorkspaceAbandoned :execrows
+UPDATE workspaces
+SET state = 'deleted', deleted_at = now(), updated_at = now()
+WHERE id = $1 AND state = 'deleting';
