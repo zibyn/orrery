@@ -2,8 +2,39 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
+
+// loadVisible resolves one owned row and writes the same 404 for a missing row
+// and a row the caller may not see (api.md §1). The getter returns the row's
+// owner alongside the row so a two-step lookup (an Exec's Sandbox) stays
+// inside the closure.
+func loadVisible[T any](s *Server, w http.ResponseWriter, ctx context.Context, p *principal,
+	id uuid.UUID, noun string,
+	get func(context.Context, uuid.UUID) (T, uuid.UUID, error),
+) (T, bool) {
+	row, owner, err := get(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !ownerOrAdmin(p, owner)) {
+		var zero T
+		writeProblem(w, "not_found", "no such "+noun)
+		return zero, false
+	}
+	if err != nil {
+		var zero T
+		s.internal(w, "get "+noun, err)
+		return zero, false
+	}
+	return row, true
+}
+
+// ownerOrAdmin is the visibility rule for every owned resource.
+func ownerOrAdmin(p *principal, owner uuid.UUID) bool {
+	return p.isAdmin() || p.user.ID == owner
+}
 
 // readPage parses limit and cursor, writes the standard 400s, fetches one row
 // past the page (the caller receives limit+1 and must pass it to the query),

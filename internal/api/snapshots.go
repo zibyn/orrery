@@ -101,7 +101,7 @@ func snapshotVisible(p *principal, snap store.Snapshot) bool {
 	if snap.OwnerID == nil {
 		return true
 	}
-	return p != nil && (*snap.OwnerID == p.user.ID || p.isAdmin())
+	return p != nil && ownerOrAdmin(p, *snap.OwnerID)
 }
 
 // loadSnapshot resolves a path id and writes not_found for a missing or
@@ -131,7 +131,7 @@ func (s *Server) requireWritableSnapshot(w http.ResponseWriter, p *principal, sn
 		writeProblem(w, "permission_denied", "platform Snapshots cannot be changed")
 		return false
 	}
-	if *snap.OwnerID != p.user.ID && !p.isAdmin() {
+	if !ownerOrAdmin(p, *snap.OwnerID) {
 		writeProblem(w, "not_found", "no such Snapshot")
 		return false
 	}

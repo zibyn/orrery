@@ -297,7 +297,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			s.internal(w, "get Workspace", err)
 			return
 		}
-		if !s.ownerOrAdmin(p, ws.OwnerID) {
+		if !ownerOrAdmin(p, ws.OwnerID) {
 			writeProblem(w, "not_found", "no such Workspace")
 			return
 		}
@@ -864,20 +864,11 @@ func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request, p *
 }
 
 func (s *Server) getOwnedSandbox(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Sandbox, bool) {
-	sb, err := s.q.GetSandbox(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, sb.OwnerID)) {
-		writeProblem(w, "not_found", "no such Sandbox")
-		return store.Sandbox{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Sandbox", err)
-		return store.Sandbox{}, false
-	}
-	return sb, true
-}
-
-func (s *Server) ownerOrAdmin(p *principal, owner uuid.UUID) bool {
-	return p.isAdmin() || p.user.ID == owner
+	return loadVisible(s, w, ctx, p, id, "Sandbox",
+		func(ctx context.Context, id uuid.UUID) (store.Sandbox, uuid.UUID, error) {
+			sb, err := s.q.GetSandbox(ctx, id)
+			return sb, sb.OwnerID, err
+		})
 }
 
 // waitForSandbox polls until the wanted state, a terminal state, or the

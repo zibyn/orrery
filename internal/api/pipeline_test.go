@@ -9,7 +9,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
 func TestCreateIdempotent(t *testing.T) {
@@ -114,6 +118,42 @@ func TestReadPage(t *testing.T) {
 			t.Fatalf("readPage ok=%v status=%d", ok, rec.Code)
 		}
 	})
+}
+
+func TestLoadVisible(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	owner, other := uuid.New(), uuid.New()
+	user := &principal{user: store.User{ID: owner}}
+	admin := &principal{user: store.User{ID: owner}, token: store.GetTokenWithUserRow{Scope: "admin", UserIsAdmin: true}}
+	row := func(rowOwner uuid.UUID, err error) func(context.Context, uuid.UUID) (string, uuid.UUID, error) {
+		return func(context.Context, uuid.UUID) (string, uuid.UUID, error) {
+			return "row", rowOwner, err
+		}
+	}
+
+	cases := []struct {
+		name string
+		p    *principal
+		get  func(context.Context, uuid.UUID) (string, uuid.UUID, error)
+		want bool
+	}{
+		{"own row", user, row(owner, nil), true},
+		{"admin sees another owner", admin, row(other, nil), true},
+		{"another owner is hidden", user, row(other, nil), false},
+		{"missing row", user, row(uuid.Nil, pgx.ErrNoRows), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			_, ok := loadVisible(s, rec, context.Background(), tc.p, uuid.New(), "Widget", tc.get)
+			if ok != tc.want {
+				t.Fatalf("loadVisible ok=%v, want %v", ok, tc.want)
+			}
+			if !tc.want && rec.Code != http.StatusNotFound {
+				t.Fatalf("hidden row status=%d, want 404", rec.Code)
+			}
+		})
+	}
 }
 
 func TestReplayOr(t *testing.T) {

@@ -299,16 +299,11 @@ func (s *Server) handleAbandonWorkspace(w http.ResponseWriter, r *http.Request, 
 
 // getOwnedWorkspace hides another User's Workspace behind 404 (api.md §1).
 func (s *Server) getOwnedWorkspace(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Workspace, bool) {
-	ws, err := s.q.GetWorkspace(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, ws.OwnerID)) {
-		writeProblem(w, "not_found", "no such Workspace")
-		return store.Workspace{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Workspace", err)
-		return store.Workspace{}, false
-	}
-	return ws, true
+	return loadVisible(s, w, ctx, p, id, "Workspace",
+		func(ctx context.Context, id uuid.UUID) (store.Workspace, uuid.UUID, error) {
+			ws, err := s.q.GetWorkspace(ctx, id)
+			return ws, ws.OwnerID, err
+		})
 }
 
 func (s *Server) workspaceToDTO(ctx context.Context, ws store.Workspace) workspaceDTO {

@@ -210,16 +210,11 @@ func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request, p 
 // getOwnedResource hides another User's Resource behind 404 (api.md §1). It
 // includes tombstones; callers decide whether one is visible.
 func (s *Server) getOwnedResource(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Resource, bool) {
-	resource, err := s.q.GetResource(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, resource.OwnerID)) {
-		writeProblem(w, "not_found", "no such Resource")
-		return store.Resource{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Resource", err)
-		return store.Resource{}, false
-	}
-	return resource, true
+	return loadVisible(s, w, ctx, p, id, "Resource",
+		func(ctx context.Context, id uuid.UUID) (store.Resource, uuid.UUID, error) {
+			resource, err := s.q.GetResource(ctx, id)
+			return resource, resource.OwnerID, err
+		})
 }
 
 // getLiveResource is the read/upload path: a tombstoned Resource is gone.

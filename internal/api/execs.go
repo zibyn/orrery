@@ -433,27 +433,20 @@ func (s *Server) getOwnedExec(w http.ResponseWriter, r *http.Request, p *princip
 		return store.Exec{}, false
 	}
 	ctx := r.Context()
-	e, err := s.q.GetExec(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeProblem(w, "not_found", "no such Exec")
-		return store.Exec{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Exec", err)
-		return store.Exec{}, false
-	}
-	// An Exec outlives its Sandbox: the log is durable, so ownership is read from
-	// the row even after the Sandbox is deleted.
-	sb, err := s.q.GetSandboxIncludingDeleted(ctx, e.SandboxID)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, sb.OwnerID)) {
-		writeProblem(w, "not_found", "no such Exec")
-		return store.Exec{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Exec Sandbox", err)
-		return store.Exec{}, false
-	}
-	return e, true
+	return loadVisible(s, w, ctx, p, id, "Exec",
+		func(ctx context.Context, id uuid.UUID) (store.Exec, uuid.UUID, error) {
+			e, err := s.q.GetExec(ctx, id)
+			if err != nil {
+				return store.Exec{}, uuid.Nil, err
+			}
+			// An Exec outlives its Sandbox: the log is durable, so ownership is
+			// read from the row even after the Sandbox is deleted.
+			sb, err := s.q.GetSandboxIncludingDeleted(ctx, e.SandboxID)
+			if err != nil {
+				return store.Exec{}, uuid.Nil, err
+			}
+			return e, sb.OwnerID, nil
+		})
 }
 
 func parseAfter(r *http.Request) (int64, bool) {
