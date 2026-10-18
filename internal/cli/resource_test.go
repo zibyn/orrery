@@ -86,3 +86,21 @@ func TestBuildManifestRejectsSpecialFiles(t *testing.T) {
 		t.Fatal("buildManifest accepted a FIFO")
 	}
 }
+
+func TestSplitResourceVersion(t *testing.T) {
+	version := "0192f3a4-0000-7000-8000-000000000001"
+	cases := []struct {
+		arg, name, version string
+	}{
+		{"data", "data", ""},
+		{"data@" + version, "data", version},
+		{"data@not-a-version", "data@not-a-version", ""},
+		{"@" + version, "@" + version, ""},
+	}
+	for _, tc := range cases {
+		name, got := splitResourceVersion(tc.arg)
+		if name != tc.name || got != tc.version {
+			t.Fatalf("splitResourceVersion(%q) = (%q, %q), want (%q, %q)", tc.arg, name, got, tc.name, tc.version)
+		}
+	}
+}
