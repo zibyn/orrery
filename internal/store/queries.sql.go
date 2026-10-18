@@ -590,6 +590,52 @@ func (q *Queries) CreateOIDCUser(ctx context.Context, arg CreateOIDCUserParams) 
 	return i, err
 }
 
+const createPendingResourceVersion = `-- name: CreatePendingResourceVersion :one
+INSERT INTO resource_versions (
+    id, resource_id, provenance, state, publish_workspace_id,
+    publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5)
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+`
+
+type CreatePendingResourceVersionParams struct {
+	ID                    uuid.UUID
+	ResourceID            uuid.UUID
+	Provenance            json.RawMessage
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
+}
+
+// CreatePendingResourceVersion is the Workspace publish path: the version
+// starts pending and the Agent fills in the manifest (node-protocol.md
+// "Workspace publish").
+func (q *Queries) CreatePendingResourceVersion(ctx context.Context, arg CreatePendingResourceVersionParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, createPendingResourceVersion,
+		arg.ID,
+		arg.ResourceID,
+		arg.Provenance,
+		arg.PublishWorkspaceID,
+		arg.PublishIdempotencyKey,
+	)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+	)
+	return i, err
+}
+
 const createResource = `-- name: CreateResource :one
 
 INSERT INTO resources (id, owner_id, name, idempotency_key)
@@ -631,7 +677,7 @@ INSERT INTO resource_versions (
     id, resource_id, address, manifest_key, size, provenance,
     state, idempotency_key
 ) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
-RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
 `
 
 type CreateResourceVersionParams struct {
@@ -668,6 +714,8 @@ func (q *Queries) CreateResourceVersion(ctx context.Context, arg CreateResourceV
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
 	)
 	return i, err
 }
@@ -1009,6 +1057,15 @@ func (q *Queries) DeleteNodeGPUs(ctx context.Context, nodeID uuid.UUID) error {
 	return err
 }
 
+const deleteResourceVersionObjects = `-- name: DeleteResourceVersionObjects :exec
+DELETE FROM resource_version_objects WHERE version_id = $1
+`
+
+func (q *Queries) DeleteResourceVersionObjects(ctx context.Context, versionID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteResourceVersionObjects, versionID)
+	return err
+}
+
 const deleteSandbox = `-- name: DeleteSandbox :one
 UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
@@ -1153,6 +1210,34 @@ func (q *Queries) FailPendingSandbox(ctx context.Context, arg FailPendingSandbox
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const findPublishObjectOwner = `-- name: FindPublishObjectOwner :one
+SELECT r.owner_id
+FROM resource_version_objects rvo
+JOIN resource_versions rv ON rv.id = rvo.version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL
+  AND w.node_id = $1
+  AND rvo.sha256 = $2
+LIMIT 1
+`
+
+type FindPublishObjectOwnerParams struct {
+	NodeID *uuid.UUID
+	Sha256 string
+}
+
+// FindPublishObjectOwner answers the Presign PUT question: is sha256 one of
+// the objects of a pending publish assigned to this Node, and which owner's
+// CAS key addresses it (ADR-0021)?
+func (q *Queries) FindPublishObjectOwner(ctx context.Context, arg FindPublishObjectOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findPublishObjectOwner, arg.NodeID, arg.Sha256)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
 }
 
 const finishExec = `-- name: FinishExec :execrows
@@ -1420,6 +1505,33 @@ func (q *Queries) GetGitLinkForUpdate(ctx context.Context, arg GetGitLinkForUpda
 	return i, err
 }
 
+const getLiveResourceByName = `-- name: GetLiveResourceByName :one
+SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL
+`
+
+type GetLiveResourceByNameParams struct {
+	OwnerID uuid.UUID
+	Name    string
+}
+
+// GetLiveResourceByName resolves a publish's Resource name without creating
+// it (api.md §3: a name is unique among live Resources of one owner).
+func (q *Queries) GetLiveResourceByName(ctx context.Context, arg GetLiveResourceByNameParams) (Resource, error) {
+	row := q.db.QueryRow(ctx, getLiveResourceByName, arg.OwnerID, arg.Name)
+	var i Resource
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.IdempotencyKey,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getNode = `-- name: GetNode :one
 SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes WHERE id = $1
 `
@@ -1478,6 +1590,59 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 	return i, err
 }
 
+const getPendingWorkspacePublish = `-- name: GetPendingWorkspacePublish :one
+SELECT rv.id, rv.resource_id, rv.address, rv.manifest_key, rv.size, rv.provenance, rv.state, rv.cause, rv.idempotency_key, rv.expires_at, rv.created_at, rv.publish_workspace_id, rv.publish_idempotency_key, w.node_id, r.owner_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.id = $1
+  AND rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL
+`
+
+type GetPendingWorkspacePublishRow struct {
+	ID                    uuid.UUID
+	ResourceID            uuid.UUID
+	Address               *string
+	ManifestKey           *string
+	Size                  int64
+	Provenance            json.RawMessage
+	State                 string
+	Cause                 *string
+	IdempotencyKey        *string
+	ExpiresAt             pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
+	NodeID                *uuid.UUID
+	OwnerID               uuid.UUID
+}
+
+// GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
+// version must still be pending and its Workspace bound to the calling Node.
+func (q *Queries) GetPendingWorkspacePublish(ctx context.Context, id uuid.UUID) (GetPendingWorkspacePublishRow, error) {
+	row := q.db.QueryRow(ctx, getPendingWorkspacePublish, id)
+	var i GetPendingWorkspacePublishRow
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+		&i.NodeID,
+		&i.OwnerID,
+	)
+	return i, err
+}
+
 const getResource = `-- name: GetResource :one
 SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources WHERE id = $1
 `
@@ -1525,7 +1690,7 @@ func (q *Queries) GetResourceByIdempotencyKey(ctx context.Context, arg GetResour
 }
 
 const getResourceVersion = `-- name: GetResourceVersion :one
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at FROM resource_versions WHERE id = $1
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE id = $1
 `
 
 func (q *Queries) GetResourceVersion(ctx context.Context, id uuid.UUID) (ResourceVersion, error) {
@@ -1543,12 +1708,14 @@ func (q *Queries) GetResourceVersion(ctx context.Context, id uuid.UUID) (Resourc
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
 	)
 	return i, err
 }
 
 const getResourceVersionByIdempotencyKey = `-- name: GetResourceVersionByIdempotencyKey :one
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2
 `
 
 type GetResourceVersionByIdempotencyKeyParams struct {
@@ -1571,6 +1738,39 @@ func (q *Queries) GetResourceVersionByIdempotencyKey(ctx context.Context, arg Ge
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+	)
+	return i, err
+}
+
+const getResourceVersionByPublishIdempotencyKey = `-- name: GetResourceVersionByPublishIdempotencyKey :one
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions
+WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2
+`
+
+type GetResourceVersionByPublishIdempotencyKeyParams struct {
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
+}
+
+func (q *Queries) GetResourceVersionByPublishIdempotencyKey(ctx context.Context, arg GetResourceVersionByPublishIdempotencyKeyParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, getResourceVersionByPublishIdempotencyKey, arg.PublishWorkspaceID, arg.PublishIdempotencyKey)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
 	)
 	return i, err
 }
@@ -2748,6 +2948,50 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 	return items, nil
 }
 
+const listPendingWorkspacePublishes = `-- name: ListPendingWorkspacePublishes :many
+SELECT rv.id, rv.resource_id, rv.provenance, rv.publish_workspace_id, w.node_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending' AND rv.publish_workspace_id IS NOT NULL
+ORDER BY rv.id
+`
+
+type ListPendingWorkspacePublishesRow struct {
+	ID                 uuid.UUID
+	ResourceID         uuid.UUID
+	Provenance         json.RawMessage
+	PublishWorkspaceID *uuid.UUID
+	NodeID             *uuid.UUID
+}
+
+// ListPendingWorkspacePublishes is the Reconciler's desired-state query. The
+// path lives in provenance (schema.md).
+func (q *Queries) ListPendingWorkspacePublishes(ctx context.Context) ([]ListPendingWorkspacePublishesRow, error) {
+	rows, err := q.db.Query(ctx, listPendingWorkspacePublishes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPendingWorkspacePublishesRow{}
+	for rows.Next() {
+		var i ListPendingWorkspacePublishesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ResourceID,
+			&i.Provenance,
+			&i.PublishWorkspaceID,
+			&i.NodeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProvisioningWorkspaces = `-- name: ListProvisioningWorkspaces :many
 SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE state = 'provisioning' ORDER BY id
 `
@@ -2867,7 +3111,7 @@ func (q *Queries) ListResourceVersionObjects(ctx context.Context, versionID uuid
 }
 
 const listResourceVersions = `-- name: ListResourceVersions :many
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at FROM resource_versions
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions
 WHERE resource_id = $1
   AND ($2::uuid IS NULL OR id < $2)
 ORDER BY id DESC
@@ -2901,6 +3145,8 @@ func (q *Queries) ListResourceVersions(ctx context.Context, arg ListResourceVers
 			&i.IdempotencyKey,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.PublishWorkspaceID,
+			&i.PublishIdempotencyKey,
 		); err != nil {
 			return nil, err
 		}
@@ -3296,6 +3542,42 @@ func (q *Queries) LockUser(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const markResourceVersionFailed = `-- name: MarkResourceVersionFailed :execrows
+UPDATE resource_versions
+SET state = 'failed', cause = $2
+WHERE id = $1 AND state = 'pending'
+`
+
+type MarkResourceVersionFailedParams struct {
+	ID    uuid.UUID
+	Cause *string
+}
+
+func (q *Queries) MarkResourceVersionFailed(ctx context.Context, arg MarkResourceVersionFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markResourceVersionFailed, arg.ID, arg.Cause)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markResourceVersionReady = `-- name: MarkResourceVersionReady :execrows
+UPDATE resource_versions
+SET state = 'ready', cause = NULL
+WHERE id = $1 AND state = 'pending'
+`
+
+// MarkResourceVersionReady and MarkResourceVersionFailed are conditional on
+// pending so a redelivered command after a restart cannot overwrite a
+// terminal state.
+func (q *Queries) MarkResourceVersionReady(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markResourceVersionReady, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markSandboxDeleted = `-- name: MarkSandboxDeleted :execrows
 UPDATE sandboxes
 SET state = 'deleted', updated_at = now()
@@ -3621,8 +3903,10 @@ func (q *Queries) PurgeResourceIdempotencyKeys(ctx context.Context) error {
 }
 
 const purgeResourceVersionIdempotencyKeys = `-- name: PurgeResourceVersionIdempotencyKeys :exec
-UPDATE resource_versions SET idempotency_key = NULL
-WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
+UPDATE resource_versions
+SET idempotency_key = NULL, publish_idempotency_key = NULL
+WHERE (idempotency_key IS NOT NULL OR publish_idempotency_key IS NOT NULL)
+  AND created_at < now() - interval '24 hours'
 `
 
 func (q *Queries) PurgeResourceVersionIdempotencyKeys(ctx context.Context) error {
@@ -3793,6 +4077,48 @@ func (q *Queries) SetResourceCurrent(ctx context.Context, arg SetResourceCurrent
 		&i.IdempotencyKey,
 		&i.DeletedAt,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const setResourceVersionManifest = `-- name: SetResourceVersionManifest :one
+UPDATE resource_versions
+SET address = $2, manifest_key = $3, size = $4
+WHERE id = $1 AND state = 'pending'
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+`
+
+type SetResourceVersionManifestParams struct {
+	ID          uuid.UUID
+	Address     *string
+	ManifestKey *string
+	Size        int64
+}
+
+// SetResourceVersionManifest records what SubmitManifest normalized. Only a
+// pending version can accept a manifest: a terminal one must not be revived.
+func (q *Queries) SetResourceVersionManifest(ctx context.Context, arg SetResourceVersionManifestParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, setResourceVersionManifest,
+		arg.ID,
+		arg.Address,
+		arg.ManifestKey,
+		arg.Size,
+	)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
 	)
 	return i, err
 }

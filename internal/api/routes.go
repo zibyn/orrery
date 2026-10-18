@@ -70,6 +70,7 @@ func (s *Server) routes() []route {
 		{http.MethodGet, "/workspaces", "user", "listWorkspaces", "List Workspaces", "", "WorkspaceList", []string{"limit", "cursor"}, http.StatusOK, s.handleListWorkspaces},
 		{http.MethodGet, "/workspaces/{id}", "user", "getWorkspace", "Get a Workspace", "", "Workspace", nil, http.StatusOK, s.handleGetWorkspace},
 		{http.MethodDelete, "/workspaces/{id}", "user", "deleteWorkspace", "Delete a Workspace", "", "Workspace", nil, http.StatusAccepted, s.handleDeleteWorkspace},
+		{http.MethodPost, "/workspaces/{id}/publish", "user", "publishWorkspace", "Publish a Workspace path as a Resource version", "PublishWorkspaceRequest", "ResourceVersion", nil, http.StatusAccepted, s.handlePublishWorkspace},
 		{http.MethodPost, "/sandboxes", "user", "createSandbox", "Create a Sandbox", "CreateSandboxRequest", "Sandbox", nil, http.StatusCreated, s.handleCreateSandbox},
 		{http.MethodGet, "/sandboxes", "user", "listSandboxes", "List Sandboxes", "", "SandboxList", []string{"owner", "state", "label", "node", "has_gpu", "limit", "cursor"}, http.StatusOK, s.handleListSandboxes},
 		{http.MethodGet, "/sandboxes/{id}", "user", "getSandbox", "Get a Sandbox", "", "Sandbox", []string{"wait_for"}, http.StatusOK, s.handleGetSandbox},

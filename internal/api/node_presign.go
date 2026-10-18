@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/objectstore"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -110,13 +113,34 @@ func (s *Server) authorizeSandboxObject(ctx context.Context, node store.Node, sh
 	return uuid.Nil, false, nil
 }
 
-// authorizePublishObject reports whether sha256 is missing from an upload for
-// a publish in progress on this Node.
-//
-// TODO(#87): implement against uploads and resource_versions.
+// authorizePublishObject reports whether sha256 is one of the objects of a
+// pending Workspace publish assigned to this Node and is still missing from
+// the store (node-protocol.md "Presign"). It returns the Resource owner whose
+// CAS key the URL addresses (ADR-0021: keys are owner-scoped).
 func (s *Server) authorizePublishObject(ctx context.Context, node store.Node, sha256 string) (uuid.UUID, bool, error) {
-	_, _, _ = ctx, node, sha256
-	return uuid.Nil, false, nil
+	if s.objects == nil {
+		return uuid.Nil, false, nil
+	}
+	nodeID := node.ID
+	owner, err := s.q.FindPublishObjectOwner(ctx, store.FindPublishObjectOwnerParams{
+		NodeID: &nodeID, Sha256: sha256,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	// The Agent receives the missing set from SubmitManifest, but verify it:
+	// an object that is already stored and correct needs no PUT.
+	stored, err := s.objects.HeadSHA256(ctx, owner.String(), sha256)
+	if err == nil && stored == sha256 {
+		return uuid.Nil, false, nil
+	}
+	if err != nil && !errors.Is(err, objectstore.ErrNotFound) {
+		return uuid.Nil, false, err
+	}
+	return owner, true, nil
 }
 
 // authorizeSandboxManifest reports whether address is the manifest of a
