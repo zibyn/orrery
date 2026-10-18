@@ -261,17 +261,22 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 - 纯 SPA，不引入 TanStack Start 运行时；目录结构参考 Start 模板。
 - 源码在 `web/`，产物经 `go:embed` 嵌入，未命中静态文件的路径回退到 `index.html`。仓库提交一个占位 `index.html`，不装 node 也能 `go build`；真正的构建放在 Makefile 和 Dockerfile 的多阶段构建里，`dist` 不进仓库。
 
+约定：
+
+- **刷新**：没有推送，控制台轮询。资源处于非终态时，详情 2 秒、列表 5 秒刷新一次；进入终态后停止。
+- **终端与日志**：用同一个终端模拟器渲染，日志用只读实例。`base64` 帧解码后显示，`truncated` 帧显式标出；超出 scrollback 的部分用 CLI 看。
+
 | 页面 | 用到的接口 |
 |---|---|
 | 登录 `/login?return=` | `POST /sessions`、`GET /oidc/login` |
 | CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `stars-sandbox login` |
 | Git 关联 `/git` | `GET /git-providers`、`/users/me/git-links`、`authorize`；`authorize_url` 指向这里 |
-| Sandbox 列表与详情 | 创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions` |
-| Exec | 列表、`output?follow=true` 跟随 |
-| 终端 | `GET /execs/{id}/pty` |
-| 文件 | §5 的列目录、上传、下载 |
-| 端口 | `POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
+| Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、workspace（默认临时；或从 `GET /workspaces` 选一个持久的，并选 rw/ro）、idle_stop。resources、secrets、labels 用 CLI |
+| Exec | `GET /sandboxes/{id}/execs`、`output?follow=true` 跟随、`POST /execs/{id}/cancel` |
+| 终端 | `POST /sandboxes/{id}/execs` 带 `pty`，argv 默认 `["/bin/sh", "-l"]`，可改；然后 `GET /execs/{id}/pty`。不提供非 PTY 的运行表单 |
+| 文件 | §5 的列目录；单文件上传 `PUT files/content`；下载走同源链接，文件用 `files/content`，目录用 `files/archive`。不做浏览器内 tar 上传、删除、移动、mkdir、编辑 |
+| 端口 | 详情页输入端口号，`POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
 | Snapshot | 列表、版本、构建日志 |
 | Secret | 名字列表、覆盖写入、删除 |
-| 我的 token 与 Session | `/users/me/tokens`、`PUT /users/me/password`、`DELETE /sessions/current` |
-| admin | User（含重置密码、Quota）、Node、`GET /audit` |
+| 我的 token 与 Session | `/users/me/tokens` 的列表（带 `kind`、`last_used_at`）、创建（明文只显示一次）、吊销；`PUT /users/me/password`（仅 `login_type=password`）；`DELETE /sessions/current` |
+| admin | User：列表、创建、`PATCH`（login_type、is_admin）、重置密码、Quota、删除。Node：`/nodes` 和 `/capacity` 列表、pause/resume、删除。`GET /audit` 按 actor、action、target、时间区间过滤并分页。declare-lost 和 Enrollment Packet 用 CLI |
