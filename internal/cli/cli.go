@@ -81,6 +81,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runToken(c, rest[1:], stderr)
 	case "secret":
 		err = runSecret(c, rest[1:], stderr)
+	case "snapshot":
+		err = runSnapshot(c, rest[1:], stderr)
 	case "audit":
 		err = runAudit(c, rest[1:], stderr)
 	case "exec":
@@ -123,6 +125,13 @@ commands:
   secret set [--file PATH] <name>   write a value from stdin or a file
   secret list
   secret rm <name>
+  snapshot import <name> <ref@sha256:…> [--auth-secret NAME]
+                                    import an image and follow it to a terminal state
+  snapshot ls
+  snapshot rm <name-or-id>
+  snapshot versions <name-or-id>
+  snapshot current <name-or-id> [<version-id>]
+                                    show or move the current version
   audit list
   exec run|cancel
   shell <sandbox-id> [-- argv...]   open an interactive terminal

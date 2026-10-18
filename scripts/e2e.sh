@@ -30,6 +30,12 @@ COMPOSE_FILE="$PWD/deploy/compose.yaml"
 COMPOSE_PROJECT="stars-sandbox-e2e"
 COMPOSE=(docker compose --profile oidc --profile e2e -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
 
+# The e2e Agents copy their binaries into every Sandbox data root. On hosts
+# where /tmp is a small quota'd tmpfs that exhausts quickly, keep the test
+# directories on the regular filesystem instead.
+export TMPDIR="${STARS_E2E_TMPDIR:-/var/tmp/${COMPOSE_PROJECT}-$$}"
+mkdir -p "$TMPDIR"
+
 # Object store and registry (defaults.md, ADR-0014). The Control Plane reaches
 # RustFS as http://rustfs:9000 inside Compose; presigned URLs and the tests use
 # the host-mapped http://127.0.0.1:19000. The registry listens on host port
@@ -41,9 +47,6 @@ export STARS_S3_REGION="${STARS_S3_REGION:-us-east-1}"
 export STARS_S3_ACCESS_KEY="${STARS_S3_ACCESS_KEY:-stars}"
 export STARS_S3_SECRET_KEY="${STARS_S3_SECRET_KEY:-stars-secret}"
 export STARS_REGISTRY_ADDR="${STARS_REGISTRY_ADDR:-127.0.0.1:15000}"
-# Docker config.json auth document; deploy/registry/htpasswd has the same
-# user and password.
-export STARS_REGISTRY_CREDENTIAL="${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"}}}}"
 
 # The node listener always uses TLS (ADR-0014); a throwaway self-signed cert is
 # enough for the black-box tests. Backdate it: a remote Node whose clock is a
@@ -96,6 +99,17 @@ if [ -z "${STARS_ACCESS_URL:-}" ]; then
   export STARS_ACCESS_URL="http://${HOST_GATEWAY}:18080"
 fi
 
+# The Control Plane is a container: it cannot push to the registry through
+# 127.0.0.1, so imports use the host gateway. Nodes still pull from
+# 127.0.0.1:15000. The one credential document lists both hosts
+# (deploy/registry/htpasswd holds the same user and password).
+export STARS_REGISTRY_PUSH_ADDR="${STARS_REGISTRY_PUSH_ADDR:-${HOST_GATEWAY}:15000}"
+# Blob redirects must be reachable from both the host (Agents) and the
+# Control Plane container, so sign them for the bridge gateway.
+export STARS_REGISTRY_S3_REGIONENDPOINT="${STARS_REGISTRY_S3_REGIONENDPOINT:-http://${HOST_GATEWAY}:19000}"
+REGISTRY_AUTH="c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ="
+export STARS_REGISTRY_CREDENTIAL="${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"${REGISTRY_AUTH}\"},\"${HOST_GATEWAY}:15000\":{\"auth\":\"${REGISTRY_AUTH}\"}}}}"
+
 # OIDC e2e: Dex is the deployment's one external issuer (ADR-0020). Its issuer
 # is the Compose service name, which the Control Plane resolves; the redirect
 # URIs use the host gateway because STARS_ACCESS_URL also does (defaults.md).
@@ -113,24 +127,31 @@ sed -e "s|__MAIN_CALLBACK__|${STARS_ACCESS_URL%/}/api/v1/oidc/callback|" \
     deploy/dex.yaml > .e2e/dex/dex.yaml
 export STARS_DEX_DIR="$PWD/.e2e/dex"
 
-# Warm the cache; the Agent pulls the image itself if this misses.
-docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null
-
-# Every Sandbox is created from the deployment default Snapshot digest
-# (api.md §3). Prefer the pinned RepoDigest; a locally built image may not have
-# one, in which case the tag is the honest fallback.
-STARS_DEFAULT_SNAPSHOT_DIGEST="${STARS_DEFAULT_SNAPSHOT_DIGEST:-}"
-if [ -z "$STARS_DEFAULT_SNAPSHOT_DIGEST" ]; then
-  STARS_DEFAULT_SNAPSHOT_DIGEST="$(docker image inspect alpine:3.22 --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+# Every Sandbox without an explicit snapshot runs the deployment default
+# platform Snapshot (api.md §3, defaults.md). The Control Plane imports it into
+# the platform registry at startup, so the source must be pinned by digest.
+# A registry hiccup must not fail the run when the image is already local.
+if ! docker pull alpine:3.22 >/dev/null 2>&1; then
+  echo "warning: could not pull alpine:3.22; using the local image" >&2
 fi
-if [ -z "$STARS_DEFAULT_SNAPSHOT_DIGEST" ]; then
-  STARS_DEFAULT_SNAPSHOT_DIGEST="alpine:3.22"
+# The Agent pulls platform images as 127.0.0.1:15000/platform/...@digest, and
+# Docker attaches every pulled RepoDigest to the matching image id. Select the
+# Docker Hub digest explicitly instead of taking index 0.
+STARS_E2E_ALPINE_REF="$(docker image inspect alpine:3.22 \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
+  grep -E '^(docker\.io/)?(library/)?alpine@sha256:' | head -n1 || true)"
+if [ -z "$STARS_E2E_ALPINE_REF" ] || [ "$STARS_E2E_ALPINE_REF" = "<no value>" ]; then
+  echo "alpine:3.22 has no RepoDigest; platform Snapshot import needs ref@sha256:…" >&2
+  exit 1
 fi
-export STARS_DEFAULT_SNAPSHOT_DIGEST
-echo "default Snapshot: $STARS_DEFAULT_SNAPSHOT_DIGEST"
+export STARS_E2E_ALPINE_REF
+export STARS_PLATFORM_SNAPSHOTS="${STARS_PLATFORM_SNAPSHOTS:-default=${STARS_E2E_ALPINE_REF}}"
+export STARS_DEFAULT_SNAPSHOT="${STARS_DEFAULT_SNAPSHOT:-default}"
+echo "platform Snapshot: ${STARS_DEFAULT_SNAPSHOT}=${STARS_E2E_ALPINE_REF}"
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$TMPDIR" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -200,22 +221,11 @@ PY
 export STARS_GIT_PROVIDERS_DIR="$PWD/.e2e/git"
 export STARS_GIT_PROVIDERS_FILE=/git/providers.json
 
-"${COMPOSE[@]}" up -d --build
-
-code=""
-for _ in $(seq 1 120); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/api/v1/users" || true)"
-  if [ "$code" = "401" ]; then break; fi
-  sleep 1
-done
-if [ "$code" != "401" ]; then
-  echo "server did not become ready (last status: ${code:-none})" >&2
-  "${COMPOSE[@]}" logs --no-color >&2 || true
-  exit 1
-fi
-
 # RustFS and the platform registry are behind the object-store and image-pull
-# scenarios. The registry answers 401 without credentials once it is serving.
+# scenarios, and the Control Plane imports STARS_PLATFORM_SNAPSHOTS at
+# startup, so both must be serving first. The registry answers 401 without
+# credentials once it is serving.
+"${COMPOSE[@]}" up -d rustfs rustfs-init registry
 for _ in $(seq 1 120); do
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:19000/health" || true)"
   [ "$code" = "200" ] && break
@@ -234,6 +244,37 @@ done
 if [ "$code" != "401" ]; then
   echo "registry did not become ready (last status: ${code:-none})" >&2
   "${COMPOSE[@]}" logs --no-color registry >&2 || true
+  exit 1
+fi
+
+"${COMPOSE[@]}" up -d --build
+
+code=""
+for _ in $(seq 1 120); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/api/v1/users" || true)"
+  if [ "$code" = "401" ]; then break; fi
+  sleep 1
+done
+if [ "$code" != "401" ]; then
+  echo "server did not become ready (last status: ${code:-none})" >&2
+  "${COMPOSE[@]}" logs --no-color >&2 || true
+  exit 1
+fi
+
+# The default platform Snapshot is imported in the background at startup; wait
+# until it is ready so every Sandbox that omits `snapshot` can be created.
+ready=""
+for _ in $(seq 1 180); do
+  ready="$("${COMPOSE[@]}" exec -T postgres psql -U stars -d stars -tAc \
+    "SELECT count(*) FROM snapshot_versions sv JOIN snapshots s ON s.id = sv.snapshot_id
+     WHERE s.owner_id IS NULL AND s.name = '${STARS_DEFAULT_SNAPSHOT}' AND sv.state = 'ready'" \
+    2>/dev/null | tr -d '[:space:]')"
+  [ "$ready" = "1" ] && break
+  sleep 1
+done
+if [ "$ready" != "1" ]; then
+  echo "platform Snapshot ${STARS_DEFAULT_SNAPSHOT} did not become ready" >&2
+  "${COMPOSE[@]}" logs --no-color server registry >&2 || true
   exit 1
 fi
 
@@ -289,4 +330,6 @@ STARS_E2E_S3_ACCESS_KEY="$STARS_S3_ACCESS_KEY" \
 STARS_E2E_S3_SECRET_KEY="$STARS_S3_SECRET_KEY" \
 STARS_E2E_REGISTRY_ADDR="$STARS_REGISTRY_ADDR" \
 STARS_E2E_REGISTRY_CREDENTIAL="$STARS_REGISTRY_CREDENTIAL" \
+STARS_E2E_ALPINE_REF="$STARS_E2E_ALPINE_REF" \
+STARS_E2E_PLATFORM_SNAPSHOT="$STARS_DEFAULT_SNAPSHOT" \
 "$GO" test -tags e2e -count=1 "$@" ./e2e/...

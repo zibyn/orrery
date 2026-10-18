@@ -232,6 +232,29 @@ type Secret struct {
 	UpdatedAt  pgtype.Timestamptz
 }
 
+type Snapshot struct {
+	ID               uuid.UUID
+	OwnerID          *uuid.UUID
+	Name             string
+	CurrentVersionID *uuid.UUID
+	DeletedAt        pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+}
+
+type SnapshotVersion struct {
+	ID             uuid.UUID
+	SnapshotID     uuid.UUID
+	Digest         *string
+	State          string
+	Cause          *string
+	Source         string
+	BuildSandboxID *uuid.UUID
+	BuildExecID    *uuid.UUID
+	Provenance     json.RawMessage
+	IdempotencyKey *string
+	CreatedAt      pgtype.Timestamptz
+}
+
 type Upload struct {
 	ID         uuid.UUID
 	ResourceID uuid.UUID

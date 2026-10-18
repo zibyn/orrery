@@ -61,13 +61,13 @@ func TestPortTicket(t *testing.T) {
 	if _, ok := s.verifyPortTicket(payload + "x." + signature); ok {
 		t.Fatal("tampered payload verified")
 	}
-	// Flip the last character to a different one; replacing it with "A" is a
-	// no-op whenever the signature already ends in "A".
+	// Flip the first character. The last base64 character carries unused low
+	// bits, so some replacements decode to the same signature bytes.
 	replacement := "A"
-	if strings.HasSuffix(signature, replacement) {
+	if strings.HasPrefix(signature, replacement) {
 		replacement = "B"
 	}
-	if _, ok := s.verifyPortTicket(payload + "." + signature[:len(signature)-1] + replacement); ok {
+	if _, ok := s.verifyPortTicket(payload + "." + replacement + signature[1:]); ok {
 		t.Fatal("tampered signature verified")
 	}
 	if _, ok := s.verifyPortTicket(payload); ok {

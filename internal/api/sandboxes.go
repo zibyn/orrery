@@ -169,14 +169,6 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			gpuModel = req.GPU.Model
 		}
 	}
-	snapshot := s.cfg.SnapshotDigest
-	if req.Snapshot != nil && *req.Snapshot != "" {
-		snapshot = *req.Snapshot
-	} else if snapshot == "" {
-		writeProblem(w, "internal", "no default Snapshot is configured; set STARS_DEFAULT_SNAPSHOT_DIGEST or pass snapshot")
-		return
-	}
-
 	id, err := uuid.NewV7()
 	if err != nil {
 		s.internal(w, "generate Sandbox id", err)
@@ -213,6 +205,14 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
+	// Resolve the Snapshot inside the transaction: the pinned version cannot
+	// be deleted between the check and the row that references it.
+	pin, pinCode, pinDetail := resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Snapshot)
+	if pinCode != "" {
+		writeProblem(w, pinCode, pinDetail)
+		return
+	}
+	snapshot := pin.digest
 	// Quota is checked at admission, under the User's row lock, so concurrent
 	// creates cannot both take the last slot (ADR-0015).
 	owner, err := q.LockUser(ctx, p.user.ID)

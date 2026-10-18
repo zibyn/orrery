@@ -137,6 +137,14 @@ func responsesFor(rt route) map[string]any {
 		responses["503"] = problemResponse("unavailable")
 	case "listSecrets", "deleteSecret", "getGitCredential":
 		responses["503"] = problemResponse("unavailable")
+	case "createSnapshotVersion":
+		// An Idempotency-Key replay returns the version that already exists.
+		responses["200"] = map[string]any{
+			"description": "The SnapshotVersion created by an earlier request with the same Idempotency-Key",
+			"content":     map[string]any{"application/json": map[string]any{"schema": schemaRef(rt.Response)}},
+		}
+		responses["422"] = problemResponse("unsupported")
+		responses["503"] = problemResponse("unavailable")
 	case "createResourceUpload":
 		responses["413"] = problemResponse("payload_too_large")
 		responses["503"] = problemResponse("unavailable")
@@ -526,6 +534,82 @@ func schemas() map[string]any {
 				"next_cursor": nullableString,
 			},
 		},
+		"Snapshot": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "name", "created_at"},
+			"properties": map[string]any{
+				"id":                 map[string]any{"type": "string", "format": "uuid"},
+				"owner_id":           map[string]any{"type": []string{"string", "null"}, "format": "uuid", "description": "Null for a platform Snapshot."},
+				"name":               map[string]any{"type": "string"},
+				"current_version_id": map[string]any{"type": []string{"string", "null"}, "format": "uuid"},
+				"created_at":         map[string]any{"type": "string", "format": "date-time"},
+				"deleted_at":         nullableTime,
+			},
+		},
+		"SnapshotList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("Snapshot")},
+				"next_cursor": nullableString,
+			},
+		},
+		"CreateSnapshotRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"name"},
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+		},
+		"SnapshotVersion": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "snapshot_id", "state", "source", "created_at"},
+			"properties": map[string]any{
+				"id":               map[string]any{"type": "string", "format": "uuid"},
+				"snapshot_id":      map[string]any{"type": "string", "format": "uuid"},
+				"digest":           nullableString,
+				"state":            map[string]any{"type": "string", "enum": snapshotVersionStateNames},
+				"cause":            nullableString,
+				"source":           map[string]any{"type": "string", "enum": []string{"import", "build"}},
+				"build_sandbox_id": nullableString,
+				"build_exec_id":    nullableString,
+				"provenance":       map[string]any{"type": []string{"object", "null"}},
+				"created_at":       map[string]any{"type": "string", "format": "date-time"},
+			},
+		},
+		"SnapshotVersionList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("SnapshotVersion")},
+				"next_cursor": nullableString,
+			},
+		},
+		"CreateSnapshotVersionRequest": map[string]any{
+			"type":        "object",
+			"description": "Exactly one of import or build. Build execution arrives with #89 and currently answers 422 unsupported.",
+			"properties": map[string]any{
+				"import": map[string]any{
+					"type":     "object",
+					"required": []string{"ref"},
+					"properties": map[string]any{
+						"ref":         map[string]any{"type": "string", "description": "ref@sha256:…; the whole index is copied preserving its digest."},
+						"auth_secret": map[string]any{"type": "string", "description": "Name of the caller's Secret holding a Docker config.json for the source."},
+					},
+				},
+				"build": map[string]any{
+					"type":        "object",
+					"description": "Reserved for #89.",
+				},
+			},
+		},
+		"SetSnapshotCurrentRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"version"},
+			"properties": map[string]any{
+				"version": map[string]any{"type": "string", "format": "uuid"},
+			},
+		},
 		"CreateSandboxRequest": map[string]any{
 			"type":     "object",
 			"required": []string{"cpu", "memory"},
@@ -541,7 +625,7 @@ func schemas() map[string]any {
 						"mode": map[string]any{"type": "string", "enum": []string{"rw", "ro"}, "default": "rw"},
 					},
 				},
-				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name; omit for the deployment default digest."},
+				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name (own first, then platform); omit for STARS_DEFAULT_SNAPSHOT."},
 				"resources": map[string]any{
 					"type":        "array",
 					"description": "Resource versions pinned at create time and mounted read-only at /resources/<mount>.",
