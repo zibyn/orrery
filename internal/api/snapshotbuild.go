@@ -620,13 +620,13 @@ func versionCauseForSandbox(sb store.Sandbox) string {
 }
 
 func execCauseForVersion(version store.SnapshotVersion) string {
-	if version.State == string(SnapshotVersionReady) {
-		return "exited"
-	}
 	if version.State == string(SnapshotVersionCancelled) {
 		return "canceled"
 	}
-	return execCauseForVersionCause("")
+	if version.State == string(SnapshotVersionFailed) && version.Cause != nil {
+		return execCauseForVersionCause(*version.Cause)
+	}
+	return "exited"
 }
 
 func execCauseForVersionCause(cause string) string {
