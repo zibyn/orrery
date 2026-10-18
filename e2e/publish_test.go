@@ -145,6 +145,63 @@ chmod -R a+rwX /workspace/src
 	dst := filepath.Join(t.TempDir(), "pulled")
 	cli.run(t, "", "resource", "pull", name+"@"+version.ID, dst)
 	assertTreesEqual(t, writeExpectedTree(t), dst)
+
+	// #90 retention: STARS_RESOURCE_VERSION_TTL=1s and
+	// STARS_PURGE_INTERVAL=1s (scripts/e2e.sh). A Sandbox pins the first
+	// version; two more publishes make it non-current, and the middle one
+	// becomes a non-current version with no reference.
+	status, data = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
+		"name":      fmt.Sprintf("ttl-pin-%d", suffix),
+		"cpu":       0.5,
+		"memory":    128 << 20,
+		"idle_stop": 0,
+		"resources": []map[string]any{{"resource": name, "version": version.ID, "mount": "data"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create pinning Sandbox: %d %s", status, data)
+	}
+	var pinned sandboxView
+	mustJSON(t, data, &pinned)
+	defer deleteSandbox(t, admin, pinned.ID)
+	waitForSandboxState(t, admin, pinned.ID, "ready", 120*time.Second)
+
+	// Change the tree so the middle version has its own address, then publish
+	// the same tree twice: v2 is stale once v3 is current, but v3 still uses
+	// its content-addressed manifest.
+	runExecScript(t, admin, sb.ID, `printf 'second generation\n' > /workspace/src/hello.txt`)
+	var stale publishedVersion
+	mustJSON(t, cli.run(t, "", "workspace", "publish", ws.ID, "/workspace/src", name), &stale)
+	if stale.ID == version.ID || stale.State != "ready" || stale.Address == nil {
+		t.Fatalf("second published version = %+v", stale)
+	}
+	var current publishedVersion
+	mustJSON(t, cli.run(t, "", "workspace", "publish", ws.ID, "/workspace/src", name), &current)
+	if current.ID == stale.ID || current.Address == nil || *current.Address != *stale.Address {
+		t.Fatalf("third published version = %+v, want the middle version's content", current)
+	}
+	if resource := getResource(t, admin, version.ResourceID); resource.CurrentVersionID == nil || *resource.CurrentVersionID != current.ID {
+		t.Fatalf("current pointer = %v, want %s", resource.CurrentVersionID, current.ID)
+	}
+
+	// The stale version is physically gone (row included), while the version a
+	// stopped-able Sandbox references and the current version survive.
+	deadline := time.Now().Add(60 * time.Second)
+	for psqlCount(t, fmt.Sprintf("SELECT count(*) FROM resource_versions WHERE id = '%s'", stale.ID)) != "0" {
+		if time.Now().After(deadline) {
+			t.Fatalf("non-current version %s survived the TTL sweep", stale.ID)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if status, data := call(t, http.MethodGet,
+		"/api/v1/resources/"+version.ResourceID+"/versions/"+version.ID, admin, nil); status != http.StatusOK {
+		t.Fatalf("referenced version was swept: %d %s", status, data)
+	}
+	// The stale row shared its manifest with the current version; the object
+	// must outlive the sweep.
+	if status, data := call(t, http.MethodGet,
+		"/api/v1/resources/"+version.ResourceID+"/versions/"+current.ID+"/manifest", admin, nil); status != http.StatusOK {
+		t.Fatalf("shared manifest was swept with the stale version: %d %s", status, data)
+	}
 }
 
 // TestPublishAgentRestart is the "publish-agent-restart" acceptance scenario

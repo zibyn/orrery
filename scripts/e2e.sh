@@ -82,6 +82,11 @@ CGO_ENABLED=0 "$GO" build -o .e2e/stars-sandbox ./cmd/stars-sandbox
 export STARS_EXEC_LOG_CAP="${STARS_EXEC_LOG_CAP:-1048576}"
 export STARS_PTY_IDLE_SECONDS="${STARS_PTY_IDLE_SECONDS:-10}"
 export STARS_ADMISSION_TIMEOUT="${STARS_ADMISSION_TIMEOUT:-10s}"
+# The retention scenario (#90) observes a real sweep without waiting for the
+# documented 10-minute cadence and 30-day TTL. Production defaults are
+# untouched; these are e2e-only overrides.
+export STARS_RESOURCE_VERSION_TTL="${STARS_RESOURCE_VERSION_TTL:-1s}"
+export STARS_PURGE_INTERVAL="${STARS_PURGE_INTERVAL:-1s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
 export STARS_APPS_DOMAIN="${STARS_APPS_DOMAIN:-apps.test}"
