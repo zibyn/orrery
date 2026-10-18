@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -92,10 +93,31 @@ func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport
 	if probeErr != nil {
 		return nodeproto.CapabilityReport{}, probeErr
 	}
-	return capabilities(result, limitsEnforced, gpuVisible), nil
+	// A build runs on the host build API, not inside a container (ADR-0021).
+	// The CLI's presence is the self-check; a failed build still fails the
+	// version instead of the Node.
+	return capabilities(result, limitsEnforced, gpuVisible, buildxAvailable(ctx, socket)), nil
 }
 
-func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeproto.CapabilityReport {
+// buildxAvailable reports whether the host's Docker CLI can run buildx. A
+// missing CLI or plugin means the Node cannot build Snapshots.
+func buildxAvailable(ctx context.Context, socket string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "buildx", "version")
+	cmd.Env = append(os.Environ(), "DOCKER_HOST="+dockerHost(socket))
+	return cmd.Run() == nil
+}
+
+// dockerHost turns an Agent socket path into the CLI's DOCKER_HOST form.
+func dockerHost(socket string) string {
+	if strings.HasPrefix(socket, "unix://") {
+		return socket
+	}
+	return "unix://" + socket
+}
+
+func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, buildx bool) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
 			return nodeproto.ValueEnforced
@@ -125,6 +147,9 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeprot
 			// unsupported, which keeps the Scheduler from placing a Sandbox
 			// with Resources there.
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
+			// snapshot_build is the host build API self-check; a Local Node
+			// reports unsupported and takes no builds (ADR-0021).
+			{Name: nodeproto.CapSnapshotBuild, Value: value(buildx)},
 		},
 	}
 }

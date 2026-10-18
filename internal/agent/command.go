@@ -154,6 +154,25 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		go c.run("publish:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
 			return c.rt.publishWorkspace(c.ctx, cmd)
 		})
+	case *nodev1.ControlMessage_BuildSnapshot:
+		cmd := m.BuildSnapshot
+		if _, err := uuid.Parse(cmd.VersionId); err != nil {
+			c.result(cmd.CommandId, "invalid version id")
+			return
+		}
+		if _, err := uuid.Parse(cmd.SandboxId); err != nil {
+			c.result(cmd.CommandId, "invalid sandbox id")
+			return
+		}
+		if _, err := uuid.Parse(cmd.ExecId); err != nil {
+			c.result(cmd.CommandId, "invalid exec id")
+			return
+		}
+		// SnapshotVersions have no generation; the version id keys the lock.
+		// Buildx is canceled through the Exec id, not a Supervisor socket.
+		go c.run("build:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
+			return c.rt.buildSnapshot(c.ctx, cmd)
+		})
 	case *nodev1.ControlMessage_OpenTunnel:
 		cmd := m.OpenTunnel
 		var serve func(context.Context, string) error

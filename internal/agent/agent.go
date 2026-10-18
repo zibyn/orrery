@@ -336,6 +336,9 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 
 	runner := newCommandRunner(streamCtx, rt, send)
 	rt.connect(nodev1.NewNodeClient(conn), send)
+	// A build a previous process (or a dropped stream) left behind is
+	// interrupted, never retried (runtime.md §12).
+	go rt.resumeBuilds(streamCtx)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {

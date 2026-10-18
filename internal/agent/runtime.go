@@ -40,6 +40,8 @@ const (
 type Runtime struct {
 	d        *dockerClient
 	dataRoot string
+	// socket is the Docker Engine socket, for host CLI calls (buildx).
+	socket string
 
 	// Execs are launched from the Control stream; the output stream is opened
 	// per Exec against the same connection.
@@ -49,6 +51,12 @@ type Runtime struct {
 	execMu         sync.Mutex
 	execs          map[string]struct{} // exec id -> output delivery in flight
 	ptyAttachments map[string]int      // exec id -> live tunnel attachments
+
+	// buildCancels aborts a running buildx process by Exec id. CancelExec
+	// reaches builds here instead of a Supervisor socket.
+	buildMu      sync.Mutex
+	buildCancels map[string]context.CancelCauseFunc
+	buildDone    map[string]struct{}
 
 	// client makes one-shot Node RPCs outside the Control stream (Presign).
 	client nodev1.NodeClient
@@ -64,8 +72,11 @@ func NewRuntime(socket, dataRoot string) *Runtime {
 	return &Runtime{
 		d:              &dockerClient{http: unixHTTPClient(socket)},
 		dataRoot:       dataRoot,
+		socket:         socket,
 		execs:          make(map[string]struct{}),
 		ptyAttachments: make(map[string]int),
+		buildCancels:   make(map[string]context.CancelCauseFunc),
+		buildDone:      make(map[string]struct{}),
 		managed:        make(map[string]int64),
 	}
 }
@@ -116,6 +127,7 @@ func PrepareDataRoot(root string) error {
 		filepath.Join(root, "bin"),
 		filepath.Join(root, "workspaces"),
 		filepath.Join(root, "sandboxes"),
+		filepath.Join(root, "builds"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create data root: %w", err)
