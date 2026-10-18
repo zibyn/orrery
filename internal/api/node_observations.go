@@ -2,11 +2,9 @@ package api
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
@@ -75,68 +73,28 @@ func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, gener
 	}); err != nil {
 		n.s.log.Warn("finish lost Execs", "sandbox_id", id, "error", err)
 	}
-	stopped, err := n.s.q.MarkSandboxStopped(ctx, store.MarkSandboxStoppedParams{
+	if _, err := n.s.q.MarkSandboxStopped(ctx, store.MarkSandboxStoppedParams{
 		ID: id, Generation: generation,
-	})
-	if err != nil {
+	}); err != nil {
 		n.s.log.Warn("record SandboxObserved gone", "sandbox_id", id, "error", err)
 		return
 	}
-	lost, err := n.s.q.MarkSandboxRuntimeLost(ctx, store.MarkSandboxRuntimeLostParams{
+	if _, err := n.s.q.MarkSandboxRuntimeLost(ctx, store.MarkSandboxRuntimeLostParams{
 		ID: id, Generation: generation, Cause: strPtr("runtime_lost"),
-	})
-	if err != nil {
+	}); err != nil {
 		n.s.log.Warn("record runtime lost", "sandbox_id", id, "error", err)
 		return
 	}
-	if stopped > 0 || lost > 0 {
-		n.releaseCompute(ctx, id)
-		n.s.reconcile.notify()
-		return
-	}
-	sb, err := n.s.q.GetSandbox(ctx, id)
-	if err != nil {
-		return
-	}
-	// A Sandbox failed by a Workspace loss keeps its failed cause; the Runtime
-	// being gone is what releases its compute (ADR-0017).
-	if SandboxState(sb.State) == SandboxFailed {
-		n.releaseCompute(ctx, id)
-		n.s.reconcile.notify()
-		return
-	}
-	// A deleted Sandbox waits for its runtime to be gone before the Workspace
-	// can be removed.
-	if SandboxDesiredState(sb.DesiredState) != SandboxDesiredDeleted {
-		return
-	}
+	// finalizeGone releases the compute and finishes a deletion; it covers the
+	// stopped, runtime-lost, failed and already-gone cases alike.
 	tx, err := n.s.pool.Begin(ctx)
 	if err != nil {
 		return
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	q := n.s.q.WithTx(tx)
-	if err := releaseCompute(ctx, q, id); err != nil {
-		n.s.log.Warn("release compute", "sandbox_id", id, "error", err)
+	if err := finalizeGone(ctx, n.s.q.WithTx(tx), id); err != nil {
+		n.s.log.Warn("finalize gone Sandbox", "sandbox_id", id, "error", err)
 		return
-	}
-	ws, wsErr := q.GetSandboxWorkspace(ctx, id)
-	switch {
-	case wsErr == nil && ws.Kind == "ephemeral":
-		if _, err := q.SetWorkspaceDeleting(ctx, ws.ID); err != nil {
-			n.s.log.Warn("mark workspace deleting", "workspace_id", ws.ID, "error", err)
-			return
-		}
-	case wsErr != nil && !errors.Is(wsErr, pgx.ErrNoRows):
-		// A transient read error must not orphan an implicit Workspace; the
-		// next sweep sends the stop again.
-		n.s.log.Warn("look up Workspace for teardown", "sandbox_id", id, "error", wsErr)
-		return
-	default:
-		if _, err := q.MarkSandboxDeleted(ctx, id); err != nil {
-			n.s.log.Warn("mark Sandbox deleted", "sandbox_id", id, "error", err)
-			return
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		n.s.log.Warn("commit Sandbox teardown", "sandbox_id", id, "error", err)
@@ -207,8 +165,8 @@ func (n *nodeService) recordWorkspaceObserved(ctx context.Context, nodeID uuid.U
 		}
 		if rows > 0 {
 			if ws, err := n.s.q.GetWorkspace(ctx, id); err == nil && ws.SandboxID != nil {
-				if _, err := n.s.q.MarkSandboxDeleted(ctx, *ws.SandboxID); err != nil {
-					n.s.log.Warn("mark sandbox deleted", "sandbox_id", *ws.SandboxID, "error", err)
+				if err := finalizeGone(ctx, n.s.q, *ws.SandboxID); err != nil {
+					n.s.log.Warn("finalize Sandbox for gone Workspace", "sandbox_id", *ws.SandboxID, "error", err)
 				}
 			}
 			n.s.reconcile.notify()

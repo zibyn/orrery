@@ -1,6 +1,12 @@
 package api
 
 import (
+	"context"
+	"errors"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -111,4 +117,40 @@ func finalizeAction(state SandboxState, desired SandboxDesiredState, workspace *
 		return goneWorkspaceDeleting
 	}
 	return goneSandboxDeleted
+}
+
+// finalizeGone is the one teardown of a Sandbox whose Runtime is gone. It
+// releases the Runtime and then finishes the deletion the desired state asks
+// for. Every step is idempotent, so a repeated observation converges; the
+// caller owns the transaction and the wake.
+func finalizeGone(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) error {
+	sb, err := q.GetSandbox(ctx, sandboxID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // already deleted
+	}
+	if err != nil {
+		return err
+	}
+	// A deleted or missing Workspace row means the Sandbox finishes alone. A
+	// transient read error must not orphan an implicit Workspace.
+	ws, err := q.GetSandboxWorkspace(ctx, sandboxID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	var workspace *store.Workspace
+	if err == nil {
+		workspace = &ws
+	}
+	if err := releaseCompute(ctx, q, sandboxID); err != nil {
+		return err
+	}
+	switch finalizeAction(SandboxState(sb.State), SandboxDesiredState(sb.DesiredState), workspace) {
+	case goneWorkspaceDeleting:
+		_, err := q.SetWorkspaceDeleting(ctx, ws.ID)
+		return err
+	case goneSandboxDeleted:
+		_, err := q.MarkSandboxDeleted(ctx, sandboxID)
+		return err
+	}
+	return nil
 }

@@ -396,26 +396,11 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 // the deletion.
 func (r *reconciler) stopForDelete(ctx context.Context, sb store.Sandbox) {
 	if sb.NodeID == nil {
-		// Nothing ever ran. Release the Attachment, then either let the
-		// implicit Workspace's cleanup finish the Sandbox or keep a persistent
-		// Workspace and finish now (ADR-0018).
-		if err := r.s.q.DeleteAttachment(ctx, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: delete attachment", "sandbox_id", sb.ID, "error", err)
-		}
-		ws, err := r.s.q.GetSandboxWorkspace(ctx, sb.ID)
-		switch {
-		case err == nil && ws.Kind == "ephemeral":
-			if _, err := r.s.q.SetWorkspaceDeleting(ctx, ws.ID); err != nil {
-				r.s.log.Warn("reconcile: mark workspace deleting", "workspace_id", ws.ID, "error", err)
-			}
-			return
-		case err != nil && !errors.Is(err, pgx.ErrNoRows):
-			// A transient read error must not orphan an implicit Workspace.
-			r.s.log.Warn("reconcile: look up Workspace for teardown", "sandbox_id", sb.ID, "error", err)
-			return
-		}
-		if _, err := r.s.q.MarkSandboxDeleted(ctx, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: mark deleted", "sandbox_id", sb.ID, "error", err)
+		// Nothing ever ran. Release the Runtime and let the implicit
+		// Workspace's cleanup finish the Sandbox, or finish a persistent one
+		// now (ADR-0018).
+		if err := finalizeGone(ctx, r.s.q, sb.ID); err != nil {
+			r.s.log.Warn("reconcile: finalize deleted Sandbox", "sandbox_id", sb.ID, "error", err)
 		}
 		return
 	}
@@ -623,8 +608,8 @@ func (r *reconciler) finalizeWorkspace(ctx context.Context, ws store.Workspace) 
 		return
 	}
 	if ws.SandboxID != nil {
-		if _, err := r.s.q.MarkSandboxDeleted(ctx, *ws.SandboxID); err != nil {
-			r.s.log.Warn("reconcile: mark sandbox deleted", "sandbox_id", *ws.SandboxID, "error", err)
+		if err := finalizeGone(ctx, r.s.q, *ws.SandboxID); err != nil {
+			r.s.log.Warn("reconcile: finalize Sandbox", "sandbox_id", *ws.SandboxID, "error", err)
 		}
 	}
 }
