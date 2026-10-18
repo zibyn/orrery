@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -51,6 +52,66 @@ func TestCreateIdempotent(t *testing.T) {
 			func() (string, error) { return "new", nil })
 		if err != nil || replayed || row != "new" {
 			t.Fatalf("createIdempotent = (%q, %v, %v)", row, replayed, err)
+		}
+	})
+}
+
+func TestReadPage(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	parse := func(r *http.Request) (string, bool) {
+		return r.URL.Query().Get("cursor"), true
+	}
+	cursor := func(v string) string { return v }
+
+	t.Run("trims and reports the next cursor", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/x?limit=2&cursor=k", nil)
+		rows, next, ok := readPage(s, rec, req, "list", parse,
+			func(_ context.Context, limit int32, after string) ([]string, error) {
+				if limit != 3 || after != "k" {
+					t.Fatalf("fetch got limit=%d after=%q, want 3 and k", limit, after)
+				}
+				return []string{"a", "b", "c"}, nil
+			}, cursor)
+		if !ok || len(rows) != 2 || rows[0] != "a" || next == nil || *next != "b" {
+			t.Fatalf("readPage = (%v, %v, %v)", rows, next, ok)
+		}
+	})
+
+	t.Run("last page has no cursor", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/x?limit=2", nil)
+		rows, next, ok := readPage(s, rec, req, "list", parse,
+			func(context.Context, int32, string) ([]string, error) {
+				return []string{"a", "b"}, nil
+			}, cursor)
+		if !ok || len(rows) != 2 || next != nil {
+			t.Fatalf("readPage = (%v, %v, %v)", rows, next, ok)
+		}
+	})
+
+	t.Run("bad limit writes 400", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/x?limit=0", nil)
+		_, _, ok := readPage(s, rec, req, "list", parse,
+			func(context.Context, int32, string) ([]string, error) {
+				t.Fatal("fetch must not run")
+				return nil, nil
+			}, cursor)
+		if ok || rec.Code != http.StatusBadRequest {
+			t.Fatalf("readPage ok=%v status=%d", ok, rec.Code)
+		}
+	})
+
+	t.Run("fetch error writes 500", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		_, _, ok := readPage(s, rec, req, "list", parse,
+			func(context.Context, int32, string) ([]string, error) {
+				return nil, errors.New("boom")
+			}, cursor)
+		if ok || rec.Code != http.StatusInternalServerError {
+			t.Fatalf("readPage ok=%v status=%d", ok, rec.Code)
 		}
 	})
 }

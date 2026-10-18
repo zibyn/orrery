@@ -153,24 +153,16 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request, p 
 }
 
 func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list Resources", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Resource, error) {
+			return s.q.ListResources(ctx, store.ListResourcesParams{
+				OwnerID: p.user.ID, After: after, Limit: limit,
+			})
+		},
+		func(resource store.Resource) string { return EncodeCursor(resource.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListResources(r.Context(), store.ListResourcesParams{
-		OwnerID: p.user.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Resources", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(resource store.Resource) string { return EncodeCursor(resource.ID) })
 	list := resourceList{Items: make([]resourceDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		list.Items = append(list.Items, resourceToDTO(row))
@@ -600,26 +592,16 @@ func (s *Server) handleListResourceVersions(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list ResourceVersions", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.ResourceVersion, error) {
+			return s.q.ListResourceVersions(ctx, store.ListResourceVersionsParams{
+				ResourceID: resource.ID, After: after, Limit: limit,
+			})
+		},
+		func(version store.ResourceVersion) string { return EncodeCursor(version.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListResourceVersions(ctx, store.ListResourceVersionsParams{
-		ResourceID: resource.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list ResourceVersions", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(version store.ResourceVersion) string {
-		return EncodeCursor(version.ID)
-	})
 	list := resourceVersionList{Items: make([]resourceVersionDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		list.Items = append(list.Items, resourceVersionToDTO(row))

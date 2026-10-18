@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -109,26 +110,16 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request, p *pr
 	if !s.requireSecrets(w) {
 		return
 	}
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list Secrets", parseSecretCursor,
+		func(ctx context.Context, limit int32, after *string) ([]store.Secret, error) {
+			return s.q.ListSecrets(ctx, store.ListSecretsParams{
+				OwnerID: p.user.ID, After: after, Limit: limit,
+			})
+		},
+		func(secret store.Secret) string { return encodeSecretCursor(secret.Name) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseSecretCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListSecrets(r.Context(), store.ListSecretsParams{
-		OwnerID: p.user.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Secrets", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(secret store.Secret) string {
-		return encodeSecretCursor(secret.Name)
-	})
 	out := secretList{Items: make([]secretDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		out.Items = append(out.Items, secretToDTO(row))

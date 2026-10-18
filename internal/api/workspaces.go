@@ -118,24 +118,16 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 }
 
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list Workspaces", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Workspace, error) {
+			return s.q.ListWorkspaces(ctx, store.ListWorkspacesParams{
+				OwnerID: p.user.ID, After: after, Limit: limit,
+			})
+		},
+		func(ws store.Workspace) string { return EncodeCursor(ws.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListWorkspaces(r.Context(), store.ListWorkspacesParams{
-		OwnerID: p.user.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Workspaces", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(ws store.Workspace) string { return EncodeCursor(ws.ID) })
 	list := workspaceList{Items: make([]workspaceDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		list.Items = append(list.Items, s.workspaceToDTO(r.Context(), row))

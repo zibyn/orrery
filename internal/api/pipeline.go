@@ -1,6 +1,36 @@
 package api
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
+
+// readPage parses limit and cursor, writes the standard 400s, fetches one row
+// past the page (the caller receives limit+1 and must pass it to the query),
+// and returns the trimmed page with its next cursor.
+func readPage[T any, C any](s *Server, w http.ResponseWriter, r *http.Request, what string,
+	parseCursor func(*http.Request) (C, bool),
+	fetch func(ctx context.Context, limit int32, after C) ([]T, error),
+	cursor func(T) string,
+) ([]T, *string, bool) {
+	limit, ok := parseLimit(r)
+	if !ok {
+		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
+		return nil, nil, false
+	}
+	after, ok := parseCursor(r)
+	if !ok {
+		writeProblem(w, "invalid_request", "invalid cursor")
+		return nil, nil, false
+	}
+	rows, err := fetch(r.Context(), limit+1, after)
+	if err != nil {
+		s.internal(w, what, err)
+		return nil, nil, false
+	}
+	rows, next := trimPage(rows, limit, cursor)
+	return rows, next, true
+}
 
 // createIdempotent inserts a row that carries an Idempotency Key. A concurrent
 // request may win the unique index first; its row is then returned with

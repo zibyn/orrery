@@ -109,22 +109,14 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list users", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.User, error) {
+			return s.q.ListUsers(ctx, store.ListUsersParams{After: after, Limit: limit})
+		},
+		func(u store.User) string { return EncodeCursor(u.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListUsers(r.Context(), store.ListUsersParams{After: after, Limit: limit + 1})
-	if err != nil {
-		s.internal(w, "list users", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(u store.User) string { return EncodeCursor(u.ID) })
 	out := userList{Items: make([]userDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		out.Items = append(out.Items, userToDTO(row))

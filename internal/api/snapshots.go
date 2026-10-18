@@ -169,24 +169,16 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request, p 
 }
 
 func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	page, next, ok := readPage(s, w, r, "list Snapshots", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Snapshot, error) {
+			return s.q.ListSnapshots(ctx, store.ListSnapshotsParams{
+				OwnerID: &p.user.ID, After: after, Limit: limit,
+			})
+		},
+		func(s store.Snapshot) string { return EncodeCursor(s.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListSnapshots(r.Context(), store.ListSnapshotsParams{
-		OwnerID: &p.user.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Snapshots", err)
-		return
-	}
-	page, next := trimPage(rows, limit, func(s store.Snapshot) string { return EncodeCursor(s.ID) })
 	items := make([]snapshotDTO, 0, len(page))
 	for _, row := range page {
 		items = append(items, snapshotToDTO(row))
@@ -423,24 +415,16 @@ func (s *Server) handleListSnapshotVersions(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	limit, ok := parseLimit(r)
+	page, next, ok := readPage(s, w, r, "list SnapshotVersions", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.SnapshotVersion, error) {
+			return s.q.ListSnapshotVersions(ctx, store.ListSnapshotVersionsParams{
+				SnapshotID: snap.ID, After: after, Limit: limit,
+			})
+		},
+		func(v store.SnapshotVersion) string { return EncodeCursor(v.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListSnapshotVersions(r.Context(), store.ListSnapshotVersionsParams{
-		SnapshotID: snap.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list SnapshotVersions", err)
-		return
-	}
-	page, next := trimPage(rows, limit, func(v store.SnapshotVersion) string { return EncodeCursor(v.ID) })
 	items := make([]snapshotVersionDTO, 0, len(page))
 	for _, row := range page {
 		items = append(items, snapshotVersionToDTO(row))

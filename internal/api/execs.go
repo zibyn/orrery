@@ -257,24 +257,16 @@ func (s *Server) handleListExecs(w http.ResponseWriter, r *http.Request, p *prin
 	if _, ok := s.getOwnedSandbox(w, r.Context(), p, sandboxID); !ok {
 		return
 	}
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list Execs", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Exec, error) {
+			return s.q.ListExecs(ctx, store.ListExecsParams{
+				SandboxID: sandboxID, After: after, Limit: limit,
+			})
+		},
+		func(e store.Exec) string { return EncodeCursor(e.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListExecs(r.Context(), store.ListExecsParams{
-		SandboxID: sandboxID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Execs", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(e store.Exec) string { return EncodeCursor(e.ID) })
 	list := execList{Items: make([]execDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		list.Items = append(list.Items, execToDTO(row))

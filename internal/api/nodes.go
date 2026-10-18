@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/zibyn/stars-sandbox/internal/nodeproto"
 	"github.com/zibyn/stars-sandbox/internal/store"
@@ -78,22 +79,14 @@ func (s *Server) handleCreateEnrollmentPacket(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list nodes", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Node, error) {
+			return s.q.ListNodes(ctx, store.ListNodesParams{After: after, Limit: limit})
+		},
+		func(n store.Node) string { return EncodeCursor(n.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListNodes(r.Context(), store.ListNodesParams{After: after, Limit: limit + 1})
-	if err != nil {
-		s.internal(w, "list nodes", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(n store.Node) string { return EncodeCursor(n.ID) })
 	out := nodeList{Items: make([]nodeDTO, 0, len(rows)), NextCursor: next}
 	now := time.Now()
 	for _, row := range rows {
