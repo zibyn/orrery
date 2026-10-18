@@ -6,7 +6,9 @@ const DETAIL_INTERVAL_MS = 2000
 const LIST_INTERVAL_MS = 5000
 
 export function isSandboxTerminal(state: SandboxState | undefined): boolean {
-  return state === 'failed' || state === 'deleted'
+  // `stopped` has no autonomous transition; only a user start moves it, so a
+  // detail page or list can stop polling there (api.md §8).
+  return state === 'failed' || state === 'deleted' || state === 'stopped'
 }
 
 export function sandboxPollInterval(state: SandboxState | undefined): number | false {

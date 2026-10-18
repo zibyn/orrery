@@ -22,13 +22,15 @@ function sandbox(state: SandboxState): Sandbox {
 }
 
 describe('isSandboxTerminal', () => {
-  it('treats failed and deleted as terminal', () => {
+  it('treats failed, deleted and stopped as terminal', () => {
     expect(isSandboxTerminal('failed')).toBe(true)
     expect(isSandboxTerminal('deleted')).toBe(true)
+    // A stopped Sandbox has no autonomous transition; only a user start moves it.
+    expect(isSandboxTerminal('stopped')).toBe(true)
   })
 
-  it('keeps polling through every other state, including ready and stopped', () => {
-    for (const state of ['pending', 'provisioning', 'ready', 'stopping', 'stopped', 'deleting'] as const) {
+  it('keeps polling through every other state, including ready and stopping', () => {
+    for (const state of ['pending', 'provisioning', 'ready', 'stopping', 'deleting'] as const) {
       expect(isSandboxTerminal(state)).toBe(false)
     }
     expect(isSandboxTerminal(undefined)).toBe(false)
@@ -40,6 +42,8 @@ describe('sandboxPollInterval', () => {
     expect(sandboxPollInterval(undefined)).toBe(2000)
     expect(sandboxPollInterval('provisioning')).toBe(2000)
     expect(sandboxPollInterval('ready')).toBe(2000)
+    expect(sandboxPollInterval('stopping')).toBe(2000)
+    expect(sandboxPollInterval('stopped')).toBe(false)
     expect(sandboxPollInterval('failed')).toBe(false)
     expect(sandboxPollInterval('deleted')).toBe(false)
   })
@@ -51,7 +55,9 @@ describe('sandboxListPollInterval', () => {
   })
 
   it('stops when every Sandbox is terminal', () => {
-    expect(sandboxListPollInterval([sandbox('failed'), sandbox('deleted')])).toBe(false)
+    expect(sandboxListPollInterval([sandbox('failed'), sandbox('deleted'), sandbox('stopped')])).toBe(
+      false,
+    )
     expect(sandboxListPollInterval([])).toBe(false)
     expect(sandboxListPollInterval(undefined)).toBe(false)
   })
