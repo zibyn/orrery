@@ -27,6 +27,7 @@ import (
 	"github.com/tonistiigi/fsutil"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/dockerfile"
 	"github.com/zibyn/stars-sandbox/internal/supervisor"
 )
 
@@ -396,7 +397,7 @@ func collectFromDigests(status *client.SolveStatus, set map[string]struct{}) {
 // pinnedFromDigests is the provenance fallback: every external FROM and
 // --from= reference was validated as digest-pinned at create time, and the
 // base Snapshot is pinned too.
-func pinnedFromDigests(dockerfile, baseDigest string) []string {
+func pinnedFromDigests(text, baseDigest string) []string {
 	set := map[string]struct{}{}
 	add := func(ref string) {
 		if match := pinnedDigestPattern.FindStringSubmatch(ref); match != nil {
@@ -407,7 +408,7 @@ func pinnedFromDigests(dockerfile, baseDigest string) []string {
 	// Every external image reference in a Dockerfile is a FROM or --from=
 	// source and was validated as digest-pinned at create time. Scanning the
 	// logical lines captures both forms (including RUN --mount=...,from=).
-	for _, line := range dockerfileLogicalLines(dockerfile) {
+	for _, line := range dockerfile.LogicalLines(text) {
 		for _, match := range pinnedDigestPattern.FindAllStringSubmatch(line, -1) {
 			set[match[1]] = struct{}{}
 		}
@@ -417,39 +418,6 @@ func pinnedFromDigests(dockerfile, baseDigest string) []string {
 		out = append(out, digest)
 	}
 	sort.Strings(out)
-	return out
-}
-
-// dockerfileLogicalLines handles continuations and full-line comments for the
-// provenance fallback.
-func dockerfileLogicalLines(text string) []string {
-	var out []string
-	var current strings.Builder
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSuffix(raw, "\r")
-		if current.Len() == 0 {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-		}
-		trimmed := strings.TrimRight(line, " \t")
-		continuation := strings.HasSuffix(trimmed, "\\")
-		if continuation {
-			trimmed = strings.TrimRight(strings.TrimSuffix(trimmed, "\\"), " \t")
-		}
-		if current.Len() > 0 {
-			current.WriteByte(' ')
-		}
-		current.WriteString(strings.TrimSpace(trimmed))
-		if !continuation {
-			out = append(out, current.String())
-			current.Reset()
-		}
-	}
-	if current.Len() > 0 {
-		out = append(out, current.String())
-	}
 	return out
 }
 

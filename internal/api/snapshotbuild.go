@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/dockerfile"
 	"github.com/zibyn/stars-sandbox/internal/registry"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
@@ -82,7 +83,7 @@ func parseContextRef(ref string) (string, *string) {
 // resolved as BuildKit would.
 func validateBuildDockerfile(text string, contexts map[string]bool, hasBase bool) error {
 	stages := map[string]bool{}
-	for _, line := range dockerfileLogicalLines(text) {
+	for _, line := range dockerfile.LogicalLines(text) {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
@@ -165,40 +166,6 @@ func isStageIndex(value string) bool {
 		}
 	}
 	return true
-}
-
-// dockerfileLogicalLines handles continuations and full-line comments. It is
-// deliberately not a full Dockerfile parser: validation only needs the image
-// references, and anything it cannot resolve is rejected.
-func dockerfileLogicalLines(text string) []string {
-	var out []string
-	var current strings.Builder
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSuffix(raw, "\r")
-		if current.Len() == 0 {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-		}
-		trimmed := strings.TrimRight(line, " \t")
-		continuation := strings.HasSuffix(trimmed, "\\")
-		if continuation {
-			trimmed = strings.TrimRight(strings.TrimSuffix(trimmed, "\\"), " \t")
-		}
-		if current.Len() > 0 {
-			current.WriteByte(' ')
-		}
-		current.WriteString(strings.TrimSpace(trimmed))
-		if !continuation {
-			out = append(out, current.String())
-			current.Reset()
-		}
-	}
-	if current.Len() > 0 {
-		out = append(out, current.String())
-	}
-	return out
 }
 
 // createBuild validates a POST /snapshots/{id}/versions build request and
