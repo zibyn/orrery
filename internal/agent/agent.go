@@ -339,6 +339,9 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// A build a previous process (or a dropped stream) left behind is
 	// interrupted, never retried (runtime.md §12).
 	go rt.resumeBuilds(streamCtx)
+	// Cache eviction owns its own loop (runtime.md §11): a Node below the disk
+	// watermark reclaims LRU cache without touching Sandbox lifecycle.
+	go rt.evictLoop(streamCtx, opts.DiskWatermark)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {

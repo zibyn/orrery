@@ -119,6 +119,29 @@ func (s *Store) PresignManifestGetURL(ctx context.Context, ownerID, address stri
 	return s.presignGet(ctx, ManifestKey(ownerID, address))
 }
 
+// DeleteManifest removes a version's manifest. A missing object is success:
+// the sweep is retryable and only needs the end state.
+func (s *Store) DeleteManifest(ctx context.Context, ownerID, address string) error {
+	return s.delete(ctx, ManifestKey(ownerID, address))
+}
+
+// DeleteCASObject removes one owner-scoped object. The GC deletes the object
+// before its row, so a crash in between retries cleanly (ADR-0012).
+func (s *Store) DeleteCASObject(ctx context.Context, ownerID, sha256hex string) error {
+	return s.delete(ctx, CASKey(ownerID, sha256hex))
+}
+
+func (s *Store) delete(ctx context.Context, key string) error {
+	_, err := s.ops.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil && isNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // PutManifest stores a version's canonical manifest bytes. The Control Plane
 // writes these when a version is published; clients read them through the API.
 func (s *Store) PutManifest(ctx context.Context, ownerID, address string, data []byte) error {

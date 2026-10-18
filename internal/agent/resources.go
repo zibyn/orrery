@@ -34,9 +34,11 @@ var resourceFetchBackoff = []time.Duration{
 	time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
 }
 
-// resourceTreeMu serializes tree assembly. Two Sandboxes mounting the same
-// version may create it concurrently; the tree is built in a temporary
-// directory and renamed, so one build wins.
+// resourceTreeMu serializes tree assembly and eviction. Two Sandboxes mounting
+// the same version may create it concurrently; the tree is built in a temporary
+// directory and renamed, so one build wins. Eviction takes it while removing a
+// tree and reclaiming objects, so a download cannot lose its object between the
+// write and the hard link.
 var resourceTreeMu sync.Mutex
 
 // resourceHTTPClient fetches presigned URLs. The URL lifetime is an hour, so a
@@ -107,9 +109,23 @@ func (r *Runtime) ensureResourceVersion(ctx context.Context, address string) (st
 	cache := newResourceCache(r.dataRoot)
 	tree := cache.versionPath(address)
 	if _, err := os.Stat(tree); err == nil {
+		// The tree's mtime is its LRU clock for eviction (runtime.md §11);
+		// mounting it counts as a use.
+		now := time.Now()
+		_ = os.Chtimes(tree, now, now)
 		return tree, nil
 	} else if !os.IsNotExist(err) {
 		return "", err
+	}
+
+	// Fetch and assembly hold the cache lock together: eviction runs under the
+	// same lock, so it cannot reclaim a just-downloaded object before its hard
+	// link exists (runtime.md §11). A concurrent caller that built the tree
+	// while this one waited is reused.
+	resourceTreeMu.Lock()
+	defer resourceTreeMu.Unlock()
+	if _, err := os.Stat(tree); err == nil {
+		return tree, nil
 	}
 
 	var m manifest.Manifest
@@ -309,10 +325,8 @@ func copyWithMode(src, dst string, mode os.FileMode) error {
 
 // assembleTree builds the version tree from hard links in a temporary
 // directory and renames it into place. The caller has already downloaded every
-// referenced object.
+// referenced object and holds resourceTreeMu.
 func (c *resourceCache) assembleTree(address string, m manifest.Manifest) (string, error) {
-	resourceTreeMu.Lock()
-	defer resourceTreeMu.Unlock()
 	final := c.versionPath(address)
 	if _, err := os.Stat(final); err == nil {
 		return final, nil
