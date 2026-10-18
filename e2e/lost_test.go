@@ -69,11 +69,16 @@ func TestNodeUnreachableLost(t *testing.T) {
 
 	// The declaration is one irreversible cascade.
 	if status, data := call(t, http.MethodPost,
-		"/api/v1/nodes/"+node.ID+"/declare-lost", admin, nil); status != http.StatusOK {
+		"/api/v1/nodes/"+node.ID+"/declare-lost", admin, nil); status != http.StatusAccepted {
 		t.Fatalf("declare Node lost: %d %s", status, data)
 	}
 	if got := getNode(t, admin, node.ID); got.Status != "lost" {
 		t.Fatalf("declared Node status = %q, want lost", got.Status)
+	}
+	// Declaration is irreversible: a lost Node cannot be resumed (api.md §3).
+	if status, data := call(t, http.MethodPost,
+		"/api/v1/nodes/"+node.ID+"/resume", admin, nil); status != http.StatusConflict {
+		t.Fatalf("resume a lost Node: %d %s, want 409", status, data)
 	}
 	lost := getSandbox(t, admin, sb.ID)
 	if lost.State != "failed" || lost.Cause == nil || *lost.Cause != "node_lost" {

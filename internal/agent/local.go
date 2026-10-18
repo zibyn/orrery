@@ -138,13 +138,11 @@ func localExecArgs(sandboxID, execID uuid.UUID, as localUser, runRoot, superviso
 	return append(args, supervisorPath, "run", execID.String())
 }
 
-// localGPUProperties closes the device policy to the allocated cards plus the
-// NVIDIA control nodes (runtime.md §10). CUDA_VISIBLE_DEVICES travels in the
-// Exec environment instead.
+// localGPUProperties closes the device policy for a transient Exec service
+// (runtime.md §10). DeviceAllow entries name only the allocated cards plus the
+// NVIDIA control nodes; with no allocation the closed policy leaves no device
+// access at all. CUDA_VISIBLE_DEVICES travels in the Exec environment instead.
 func localGPUProperties(uuids []string, indices map[string]int) ([]string, error) {
-	if len(uuids) == 0 {
-		return nil, nil
-	}
 	props := []string{"--property=DevicePolicy=closed"}
 	seen := make(map[int]bool, len(uuids))
 	for _, id := range uuids {
@@ -157,6 +155,9 @@ func localGPUProperties(uuids []string, indices map[string]int) ([]string, error
 		}
 		seen[index] = true
 		props = append(props, fmt.Sprintf("--property=DeviceAllow=/dev/nvidia%d rw", index))
+	}
+	if len(uuids) == 0 {
+		return props, nil
 	}
 	return append(props,
 		"--property=DeviceAllow=/dev/nvidiactl rw",
@@ -259,26 +260,37 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 }
 
 // localExecEnv adds the Local-only variables to the common Exec environment:
-// the host Workspace path and the cards CUDA may see (node-protocol.md).
+// the host Workspace path and the cards CUDA may see (node-protocol.md). A
+// GPU-less Exec still names the variable as empty.
 func localExecEnv(caller map[string]string, basePath, binDir, workspace string, gpus []string) map[string]string {
 	env := execEnv(caller, basePath, binDir)
 	env["STARS_WORKSPACE"] = workspace
-	if len(gpus) > 0 {
-		env["CUDA_VISIBLE_DEVICES"] = strings.Join(gpus, ",")
-	}
+	env["CUDA_VISIBLE_DEVICES"] = strings.Join(gpus, ",")
 	return env
 }
 
 // localCwd turns the Exec's Workspace-relative cwd into the host path the
-// Supervisor needs (api.md §3).
-func localCwd(workspace, cwd string) string {
+// Supervisor needs (api.md §4). It never rewrites an escaping path: the API
+// rejects those first, and os.Root keeps the Agent safe on its own, including
+// symlinks that point out of the Workspace.
+func localCwd(workspace, cwd string) (string, error) {
 	if cwd == "" {
-		return workspace
+		return workspace, nil
 	}
-	if filepath.IsAbs(cwd) {
-		return cwd
+	if !filepath.IsLocal(cwd) {
+		return "", errBadPath
 	}
-	return filepath.Join(workspace, cwd)
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close() //nolint:errcheck // read-only handle
+	target, err := root.OpenRoot(filepath.Clean(cwd))
+	if err != nil {
+		return "", err
+	}
+	_ = target.Close()
+	return filepath.Join(workspace, filepath.Clean(cwd)), nil
 }
 
 // localDriver is the systemd-backed Provider (runtime.md §10). It shares every
@@ -296,9 +308,6 @@ type localDriver struct {
 func newLocalRuntime(dataRoot, nodeID string, as localUser, binDir string) *Runtime {
 	rt := newRuntime(runtimeConfig{provider: ProviderLocal}, dataRoot, nodeID)
 	rt.owner = &rootlessOwner{uid: as.uid, gid: as.gid}
-	if binDir == "" {
-		binDir = agentBinDir()
-	}
 	rt.driver = &localDriver{
 		r: rt, user: as, binDir: binDir,
 		// PrepareDataRoot stages the platform binary as bin/supervisor.
@@ -526,15 +535,16 @@ func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) erro
 	}
 
 	gpus := readSandboxGPUs(sandboxPath(d.r.dataRoot, sandboxID))
-	var props []string
+	var indices map[string]int
 	if len(gpus) > 0 {
-		indices, err := gpuDeviceIndices(ctx)
+		indices, err = gpuDeviceIndices(ctx)
 		if err != nil {
 			return err
 		}
-		if props, err = localGPUProperties(gpus, indices); err != nil {
-			return err
-		}
+	}
+	props, err := localGPUProperties(gpus, indices)
+	if err != nil {
+		return err
 	}
 	if active, _, _ := localUnitState(ctx, localExecService(execID)); !active {
 		if _, err := runLocalCommand(ctx, "systemd-run",
@@ -542,9 +552,13 @@ func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) erro
 			return err
 		}
 	}
+	cwd, err := localCwd(workspace, cmd.Cwd)
+	if err != nil {
+		return err
+	}
 	return d.r.deliverExecSpec(ctx, sandboxID, execID, dir, cmd,
 		localExecEnv(cmd.Env, os.Getenv("PATH"), d.binDir, workspace, gpus),
-		localCwd(workspace, cmd.Cwd))
+		cwd)
 }
 
 func (d *localDriver) probe(ctx context.Context) (nodeproto.CapabilityReport, error) {
@@ -682,13 +696,7 @@ func (d *localDriver) adopt(ctx context.Context, report func(string, int64)) {
 }
 
 func (d *localDriver) scan(ctx context.Context, report func(string, int64)) {
-	d.r.mu.Lock()
-	known := make(map[string]int64, len(d.r.managed))
-	for id, generation := range d.r.managed {
-		known[id] = generation
-	}
-	d.r.mu.Unlock()
-	for id, generation := range known {
+	for id, generation := range d.r.managedSnapshot() {
 		sandboxID, err := uuid.Parse(id)
 		if err != nil {
 			continue

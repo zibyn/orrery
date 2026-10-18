@@ -412,12 +412,7 @@ func (r *Runtime) scanContainers(ctx context.Context, report func(sandboxID stri
 	if err := r.d.negotiate(ctx); err != nil {
 		return
 	}
-	r.mu.Lock()
-	known := make(map[string]int64, len(r.managed))
-	for id, gen := range r.managed {
-		known[id] = gen
-	}
-	r.mu.Unlock()
+	known := r.managedSnapshot()
 	for id, gen := range known {
 		sandboxID, err := uuid.Parse(id)
 		if err != nil {
@@ -729,6 +724,18 @@ func (r *Runtime) forget(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.managed, id)
+}
+
+// managedSnapshot copies the tracked Sandboxes so a liveness scan can call out
+// without holding the lock.
+func (r *Runtime) managedSnapshot() map[string]int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	known := make(map[string]int64, len(r.managed))
+	for id, generation := range r.managed {
+		known[id] = generation
+	}
+	return known
 }
 
 func (d *dockerClient) inspectContainer(ctx context.Context, name string) (running, exists bool, labels map[string]string, err error) {

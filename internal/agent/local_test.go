@@ -132,6 +132,16 @@ func TestLocalGPUProperties(t *testing.T) {
 	if _, err := localGPUProperties([]string{"GPU-missing"}, map[string]int{}); err == nil {
 		t.Fatal("an allocated card with no device index was accepted")
 	}
+
+	// A GPU-less Exec still closes the device policy: with no DeviceAllow
+	// entries it has no device access at all (runtime.md §10).
+	props, err = localGPUProperties(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(props) != 1 || props[0] != "--property=DevicePolicy=closed" {
+		t.Fatalf("localGPUProperties(nil) = %v, want only DevicePolicy=closed", props)
+	}
 }
 
 // parseGPUIndexes reads nvidia-smi's "index, uuid" lines.
@@ -268,18 +278,50 @@ func TestLocalExecEnv(t *testing.T) {
 		t.Fatal("caller env was dropped")
 	}
 	// Without a caller PATH the Agent's own PATH is the base.
-	if got := localExecEnv(nil, "/host/bin", "/agent/bin", "/ws", nil)["PATH"]; got != "/host/bin:/agent/bin" {
+	noGPU := localExecEnv(nil, "/host/bin", "/agent/bin", "/ws", nil)
+	if got := noGPU["PATH"]; got != "/host/bin:/agent/bin" {
 		t.Fatalf("fallback PATH = %q", got)
+	}
+	// A GPU-less Exec still names the variable as empty, so a value inherited
+	// from elsewhere cannot leak in (runtime.md §10).
+	if got, ok := noGPU["CUDA_VISIBLE_DEVICES"]; !ok || got != "" {
+		t.Fatalf("GPU-less CUDA_VISIBLE_DEVICES = %q (set %v), want an empty value", got, ok)
 	}
 }
 
+// api.md §4: cwd is relative to the Workspace, on Local its host path. An
+// absolute path or one that escapes the root is refused, never rewritten.
 func TestLocalCwd(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "sub", "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, tt := range []struct{ cwd, want string }{
-		{"", "/ws"},
-		{"sub/dir", "/ws/sub/dir"},
+		{"", workspace},
+		{".", workspace},
+		{"sub/dir", filepath.Join(workspace, "sub", "dir")},
+		{"sub/../sub/dir", filepath.Join(workspace, "sub", "dir")},
 	} {
-		if got := localCwd("/ws", tt.cwd); got != tt.want {
+		got, err := localCwd(workspace, tt.cwd)
+		if err != nil {
+			t.Errorf("localCwd(%q): %v", tt.cwd, err)
+			continue
+		}
+		if got != tt.want {
 			t.Errorf("localCwd(%q) = %q, want %q", tt.cwd, got, tt.want)
 		}
+	}
+	for _, cwd := range []string{"/etc", "../outside", "sub/../../outside"} {
+		if _, err := localCwd(workspace, cwd); err == nil {
+			t.Errorf("localCwd(%q) escaped the Workspace", cwd)
+		}
+	}
+
+	// A symlink inside the Workspace must not redirect the cwd outside it.
+	if err := os.Symlink("/etc", filepath.Join(workspace, "escape")); err != nil {
+		t.Skipf("cannot create a symlink: %v", err)
+	}
+	if _, err := localCwd(workspace, "escape"); err == nil {
+		t.Error("localCwd followed a symlink out of the Workspace")
 	}
 }

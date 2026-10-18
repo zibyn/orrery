@@ -260,7 +260,7 @@ func (s *Server) handleDeclareWorkspaceLost(w http.ResponseWriter, r *http.Reque
 		s.internal(w, "get Workspace", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, ws))
+	writeJSON(w, http.StatusAccepted, s.workspaceToDTO(ctx, ws))
 }
 
 // handleAbandonWorkspace drops the cleanup of a Workspace stuck in deleting,
@@ -301,7 +301,7 @@ func (s *Server) handleAbandonWorkspace(w http.ResponseWriter, r *http.Request, 
 		s.internal(w, "get Workspace", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, ws))
+	writeJSON(w, http.StatusAccepted, s.workspaceToDTO(ctx, ws))
 }
 
 // getOwnedWorkspace hides another User's Workspace behind 404 (api.md §1).

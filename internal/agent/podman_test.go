@@ -61,7 +61,7 @@ func TestNewPodmanRuntimeKeepsOneProvider(t *testing.T) {
 	if _, err := newPodmanRuntime("/var/run/docker.sock", t.TempDir(), nodeID); err == nil {
 		t.Fatal("newPodmanRuntime accepted a non-Podman socket")
 	}
-	socket := podmanRootlessSocket(424242)
+	socket := "/run/user/424242/podman/podman.sock"
 	rt, err := newPodmanRuntime(socket, t.TempDir(), nodeID)
 	if err != nil {
 		t.Fatalf("newPodmanRuntime(%q): %v", socket, err)
