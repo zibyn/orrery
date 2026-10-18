@@ -163,6 +163,11 @@ func startPodmanHost(t *testing.T, name string) *podmanHost {
 	h.ensurePodman(t)
 	h.uid = strings.TrimSpace(h.sshRunRoot(t, "id", "-u", h.user))
 	h.gid = strings.TrimSpace(h.sshRunRoot(t, "id", "-g", h.user))
+	// A root SSH login created the directory; the rootless user must own it to
+	// write the service log and pid file.
+	if h.sshUser == "root" {
+		h.sshRunRoot(t, "chown", h.user+":"+h.gid, h.dir)
+	}
 	h.socket = rootlessPodmanSocket(h.uid)
 	h.startPodmanService(t)
 
@@ -286,7 +291,7 @@ func (h *podmanHost) startPodmanService(t *testing.T) {
 	}
 	h.startedService = true
 	h.sshRunScript(t, h.userPrefix(), fmt.Sprintf(
-		"XDG_RUNTIME_DIR=/run/user/%[1]s setsid podman system service --time=0 unix://%[2]s >%[3]s/podman.log 2>&1 </dev/null & echo $! >%[3]s/podman.pid",
+		"mkdir -p -m 0700 /run/user/%[1]s/podman && XDG_RUNTIME_DIR=/run/user/%[1]s setsid podman system service --time=0 unix://%[2]s >%[3]s/podman.log 2>&1 </dev/null & echo $! >%[3]s/podman.pid",
 		h.uid, h.socket, h.dir))
 
 	deadline := time.Now().Add(30 * time.Second)
@@ -335,7 +340,14 @@ func (h *podmanHost) sshRunRoot(t *testing.T, args ...string) string {
 
 func (h *podmanHost) sshRunUser(t *testing.T, args ...string) string {
 	t.Helper()
-	return h.sshRun(t, append(h.userPrefix(), args...)...)
+	prefix := h.userPrefix()
+	if len(prefix) == 0 {
+		return h.sshRun(t, args...)
+	}
+	// A root SSH login leaves the command in /root, which the rootless user
+	// cannot enter; /tmp is readable by every user.
+	script := "cd /tmp && exec " + strings.Join(args, " ")
+	return h.sshRun(t, append(prefix, "sh", "-c", shellQuote(script))...)
 }
 
 func (h *podmanHost) sshRunRootQuiet(t *testing.T, args ...string) {
@@ -360,7 +372,7 @@ func (h *podmanHost) sshRunScriptQuiet(t *testing.T, prefix []string, script str
 }
 
 func (h *podmanHost) trySSHScript(prefix []string, script string) ([]byte, error) {
-	remote := strings.Join(append(prefix, "sh", "-c", shellQuote(script)), " ")
+	remote := strings.Join(append(prefix, "sh", "-c", shellQuote("cd /tmp && "+script)), " ")
 	return exec.Command("ssh", h.target, remote).CombinedOutput()
 }
 

@@ -344,7 +344,7 @@ func waitForGPUCapacity(t *testing.T, admin, nodeID string, want int) {
 
 func waitForSandboxReady(t *testing.T, admin, id string) sandboxView {
 	t.Helper()
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(300 * time.Second)
 	for {
 		sb := getSandbox(t, admin, id)
 		if sb.State == "ready" {

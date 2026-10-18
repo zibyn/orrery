@@ -272,8 +272,24 @@ if [ -z "$SOURCE_DIGEST" ]; then
 fi
 STARS_E2E_ALPINE_REF="${SOURCE_HOST}:5000/alpine@${SOURCE_DIGEST}"
 export STARS_E2E_ALPINE_REF
-export STARS_PLATFORM_SNAPSHOTS="${STARS_PLATFORM_SNAPSHOTS:-default=${STARS_E2E_ALPINE_REF}}"
-echo "platform Snapshot: ${STARS_DEFAULT_SNAPSHOT}=${STARS_E2E_ALPINE_REF}"
+PLATFORM_SNAPSHOTS="default=${STARS_E2E_ALPINE_REF}"
+# gpu-sandbox-ready runs nvidia-smi inside the Sandbox, which the default
+# Alpine image cannot (gpu_test.go). STARS_E2E_CUDA_IMAGE names a local image
+# to publish as the `cuda` platform Snapshot for GPU hosts.
+if [ -n "${STARS_E2E_CUDA_IMAGE:-}" ]; then
+  docker tag "${STARS_E2E_CUDA_IMAGE}" "${SOURCE_REGISTRY}/e2e-cuda:latest"
+  docker push "${SOURCE_REGISTRY}/e2e-cuda:latest" >/dev/null
+  CUDA_DIGEST="$(curl -fsSI -H "Accept: ${SOURCE_ACCEPT}" \
+    "http://${SOURCE_HOST}:5000/v2/e2e-cuda/manifests/latest" 2>/dev/null | tr -d '\r' |
+    awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')"
+  if [ -z "$CUDA_DIGEST" ]; then
+    echo "the local source registry did not return a digest for the CUDA image" >&2
+    exit 1
+  fi
+  PLATFORM_SNAPSHOTS="${PLATFORM_SNAPSHOTS},cuda=${SOURCE_HOST}:5000/e2e-cuda@${CUDA_DIGEST}"
+fi
+export STARS_PLATFORM_SNAPSHOTS="${STARS_PLATFORM_SNAPSHOTS:-${PLATFORM_SNAPSHOTS}}"
+echo "platform Snapshots: ${STARS_PLATFORM_SNAPSHOTS}"
 
 "${COMPOSE[@]}" up -d --build
 
@@ -304,6 +320,25 @@ if [ "$ready" != "1" ]; then
   echo "platform Snapshot ${STARS_DEFAULT_SNAPSHOT} did not become ready" >&2
   "${COMPOSE[@]}" logs --no-color server registry >&2 || true
   exit 1
+fi
+
+# The GPU scenario names its own platform Snapshot (gpu_test.go).
+if [ -n "${STARS_E2E_CUDA_IMAGE:-}" ]; then
+  gpu_snapshot="${STARS_E2E_GPU_SNAPSHOT:-cuda}"
+  ready=""
+  for _ in $(seq 1 180); do
+    ready="$("${COMPOSE[@]}" exec -T postgres psql -U stars -d stars -tAc \
+      "SELECT count(*) FROM snapshot_versions sv JOIN snapshots s ON s.id = sv.snapshot_id
+       WHERE s.owner_id IS NULL AND s.name = '${gpu_snapshot}' AND sv.state = 'ready'" \
+      2>/dev/null | tr -d '[:space:]')"
+    [ "$ready" = "1" ] && break
+    sleep 1
+  done
+  if [ "$ready" != "1" ]; then
+    echo "platform Snapshot ${gpu_snapshot} did not become ready" >&2
+    "${COMPOSE[@]}" logs --no-color server registry >&2 || true
+    exit 1
+  fi
 fi
 
 # The OIDC-first-User scenario has its own Control Plane and database.
