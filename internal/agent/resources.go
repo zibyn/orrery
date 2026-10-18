@@ -205,7 +205,12 @@ func downloadObject(ctx context.Context, url string, cache *resourceCache, diges
 		return err
 	}
 	if len(variants) == 1 {
-		// The common case: install the downloaded file directly.
+		// The common case: install the downloaded file directly, read-only.
+		mode := objectMode(variants[0].executable)
+		if err := os.Chmod(tmp, mode); err != nil {
+			os.Remove(tmp) //nolint:errcheck // best effort
+			return err
+		}
 		if err := os.Rename(tmp, cache.objectPath(variants[0].digest, variants[0].executable)); err != nil {
 			os.Remove(tmp) //nolint:errcheck // best effort
 			return err

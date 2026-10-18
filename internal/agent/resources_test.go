@@ -222,6 +222,23 @@ func TestDownloadObjectInstallsBothVariants(t *testing.T) {
 	}
 }
 
+func TestDownloadObjectSingleVariantIsReadOnly(t *testing.T) {
+	content := []byte("one mode\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	cache := newResourceCache(t.TempDir())
+	if err := downloadObject(context.Background(), server.URL, cache, digest, []objectVariant{
+		{digest: digest, executable: true},
+	}); err != nil {
+		t.Fatalf("download object: %v", err)
+	}
+	assertFile(t, cache.objectPath(digest, true), string(content), 0o555)
+}
+
 // writeObject puts one object in the cache and returns its digest.
 func writeObject(t *testing.T, cache *resourceCache, content []byte, executable bool) string {
 	t.Helper()
