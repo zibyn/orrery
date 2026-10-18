@@ -76,6 +76,11 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			return
 		}
 		go c.run("sandbox:"+cmd.SandboxId, cmd.CommandId, cmd.Generation, func() error {
+			if len(cmd.Resources) > 0 {
+				// The Control Plane maps this to the fetching_resources
+				// condition until running or failed (node-protocol.md).
+				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseFetchingResources, "")
+			}
 			cause, err := c.rt.createSandbox(c.ctx, &createSandboxSpec{
 				sandboxID:     sbID.String(),
 				generation:    cmd.Generation,
@@ -85,6 +90,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				workspaceID:   cmd.Workspace.GetWorkspaceId(),
 				workspaceMode: cmd.Workspace.GetMode(),
 				gpuUUIDs:      cmd.GpuUuids,
+				resources:     resourceMounts(cmd.Resources),
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)
@@ -188,6 +194,15 @@ func commandFailed(commandID string, err error) {
 	if err != nil {
 		slog.Warn("command failed", "command_id", commandID, "error", err)
 	}
+}
+
+// resourceMounts copies the wire form into the adapter's mount table.
+func resourceMounts(in []*nodev1.ResourceMount) []resourceMount {
+	mounts := make([]resourceMount, 0, len(in))
+	for _, mount := range in {
+		mounts = append(mounts, resourceMount{address: mount.GetAddress(), mount: mount.GetMount()})
+	}
+	return mounts
 }
 
 func (c *commandRunner) observeSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string) {
