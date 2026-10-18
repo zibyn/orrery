@@ -330,7 +330,7 @@ func (r *Runtime) managesImage(image dockerImage) bool {
 	}
 	refs := append(append([]string{}, image.RepoTags...), image.RepoDigests...)
 	for _, ref := range refs {
-		if _, ok := r.registry.auths[registryHost(ref)]; ok {
+		if _, ok := r.registry.Get(registryHost(ref)); ok {
 			return true
 		}
 	}

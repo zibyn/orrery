@@ -361,19 +361,12 @@ func (r *Runtime) authProvider() session.Attachable {
 		AuthConfigProvider: func(_ context.Context, host string, _ []string, _ authprovider.ExpireCachedAuthCheck) (types.AuthConfig, error) {
 			r.registryMu.Lock()
 			defer r.registryMu.Unlock()
-			if r.registry == nil {
-				return types.AuthConfig{}, nil
-			}
 			host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
-			encoded, ok := r.registry.auths[host]
+			cfg, ok := r.registry.Get(host)
 			if !ok {
 				return types.AuthConfig{}, nil
 			}
-			user, pass, ok := strings.Cut(decodeBase64(encoded), ":")
-			if !ok {
-				return types.AuthConfig{}, nil
-			}
-			return types.AuthConfig{Username: user, Password: pass, ServerAddress: host}, nil
+			return types.AuthConfig{Username: cfg.Username, Password: cfg.Password, ServerAddress: host}, nil
 		},
 	})
 }

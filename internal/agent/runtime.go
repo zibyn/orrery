@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/registry"
 	"github.com/zibyn/stars-sandbox/internal/supervisor"
 )
 
@@ -66,7 +67,7 @@ type Runtime struct {
 	client nodev1.NodeClient
 
 	registryMu sync.Mutex
-	registry   *registryCredential
+	registry   *registry.Credential
 
 	mu      sync.Mutex
 	managed map[string]int64 // sandbox id -> generation known to run
@@ -101,9 +102,14 @@ func (r *Runtime) connect(client nodev1.NodeClient, send func(*nodev1.AgentMessa
 // setRegistryCredential stores the deployment credential from HelloAck. A
 // malformed document leaves the Runtime unauthenticated and is logged.
 func (r *Runtime) setRegistryCredential(raw string) {
-	cred, err := parseRegistryCredential(raw)
-	if err != nil {
-		slog.Warn("registry credential from HelloAck is invalid", "error", err)
+	var cred *registry.Credential
+	if raw != "" {
+		var err error
+		cred, err = registry.ParseCredential(raw)
+		if err != nil {
+			slog.Warn("registry credential from HelloAck is invalid", "error", err)
+			cred = nil
+		}
 	}
 	r.registryMu.Lock()
 	r.registry = cred
@@ -113,7 +119,7 @@ func (r *Runtime) setRegistryCredential(raw string) {
 func (r *Runtime) registryAuthHeader(ref string) string {
 	r.registryMu.Lock()
 	defer r.registryMu.Unlock()
-	return r.registry.authHeader(ref)
+	return authHeader(r.registry, ref)
 }
 
 // presign asks the Control Plane for object URLs (node-protocol.md "Presign").
