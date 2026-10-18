@@ -111,11 +111,11 @@ The lifecycle condition of a Sandbox independently of its Runtime instance: pend
 _Avoid_: Runtime state
 
 **Node**:
-A registered compute host whose Node Agent reports available Runtime Providers, hardware, and capabilities.
+A registered compute host whose Node Agent reports its Runtime Provider, hardware, and capabilities.
 _Avoid_: worker container, Sandbox
 
 **Paused Node**:
-A Node that receives no new Workspaces, while Workspaces already bound to it can still run Sandboxes and running Sandboxes continue undisturbed. A paused Node with no running Sandbox is drained; drained is a fact, not a separate state.
+A Node that receives no new Workspaces or builds, while Workspaces already bound to it can still run Sandboxes and running Sandboxes continue undisturbed. A paused Node with no running Sandbox is drained; drained is a fact, not a separate state.
 _Avoid_: cordoned, draining state, evicting
 
 **Node Agent**:
@@ -177,7 +177,7 @@ A single-use, short-lived credential by which an unregistered Node obtains its N
 _Avoid_: join token, registration token, bootstrap secret
 
 **Node Token**:
-The credential by which an enrolled Node Agent authenticates to the Control Plane. Deleting the Node revokes it.
+The credential by which an enrolled Node Agent authenticates to the Control Plane. Deleting the Node or declaring it lost revokes it.
 _Avoid_: certificate, runner key
 
 **Port Forward**:

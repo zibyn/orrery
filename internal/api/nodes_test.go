@@ -112,7 +112,7 @@ func capabilityReport(t *testing.T, unsupported bool) json.RawMessage {
 		}
 		entries = append(entries, nodeproto.CapabilityEntry{Name: name, Value: value})
 	}
-	raw, err := json.Marshal(nodeproto.CapabilityReport{Runtime: "docker", Entries: entries})
+	raw, err := json.Marshal(nodeproto.CapabilityReport{RuntimeProvider: "docker", Entries: entries})
 	if err != nil {
 		t.Fatal(err)
 	}

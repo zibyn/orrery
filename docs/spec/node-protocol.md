@@ -24,7 +24,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 `AgentMessage`（oneof）：
 - `Hello{node_id, agent_version, proto_major, proto_minor}`
 - `Heartbeat{runtime_health, disk_free, gpu_health[]}`
-- `Capabilities{runtime, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`entries` 含 `resource_mount` 和 `snapshot_build`，Local Runtime 两项都报 `unsupported`
+- `Capabilities{runtime_provider, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime_provider` 是这台 Node 唯一的 Runtime Provider（`docker`、`podman`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount` 和 `snapshot_build`，Local Runtime 的 `resource_mount` 报 `unsupported`，`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
 - `SandboxObserved{sandbox_id, generation, phase: fetching_resources|running|gone|create_failed, cause?}`；`fetching_resources` 让 Sandbox 挂上同名 condition，`create_failed` 的 cause 可以是 `resource_fetch_failed`（`runtime.md` §11）
 - `WorkspaceObserved{workspace_id, phase, cause?}`
 - `ExecObserved{exec_id, started_at}`（结果不走这里，见 ExecOutput）
@@ -49,9 +49,10 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 Sandbox Token 不在 `CreateSandbox` 里，而是随每个 `StartExec` 下发，所以 Agent 重启、Reconciler 重复下发都拿得到它。前例是 Coder 的 `workspace_agents.auth_token`：明文存储，放进每个进程的环境（`docs/research/recheck-identity-network-channel-vs-coder-daytona.md` I3、C1）。
 
 - **Control Plane** 往 `secret_env` 放 Secret 快照（`schema.md`）和 `STARS_SANDBOX_TOKEN`，往 `env` 放 `STARS_URL`（取 `STARS_ACCESS_URL`，未配置时不放）。这几项都不写入 `execs.env`。
-- **Agent** 再追加两组：
-  - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`，先写一条 `credential.helper=` 清空镜像的 helper 列表，再写 `credential.helper=/.stars/bin/stars-sandbox git-credential`；
-  - `PATH`：取调用方 `env` 里的 `PATH`，没有就取镜像配置里的 `PATH`（Local Runtime 取 Agent 自身的 `PATH`），在末尾追加 `/.stars/bin`，不遮挡镜像里的同名命令。
+- **Agent** 再追加两组。下面的 `<bin>` 是 `/.stars/bin`；Local Runtime 没有 `/.stars`，`<bin>` 是 Agent 自己的 bin 目录，即 Agent 可执行文件所在、旁边放着 `stars-sandbox` 的目录（`runtime.md` §2、§10）：
+  - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`，先写一条 `credential.helper=` 清空镜像的 helper 列表，再写 `credential.helper=<bin>/stars-sandbox git-credential`；
+  - `PATH`：取调用方 `env` 里的 `PATH`，没有就取镜像配置里的 `PATH`（Local Runtime 取 Agent 自身的 `PATH`），在末尾追加 `<bin>`，不遮挡镜像里的同名命令。
+- **Local Runtime** 另设 `STARS_WORKSPACE`，值为 Workspace 在宿主上的路径。
 - **合并顺序**：调用方的 Exec `env` 在前，平台写入的值最后合并，同名时覆盖调用方；唯一例外是 `PATH`，按上面的规则追加而不覆盖。Exec `env` 不做保留名校验，保留名只约束 Secret（ADR-0017）。PTY Exec 走同一条路径。
 
 ## Presign：Node 取放对象

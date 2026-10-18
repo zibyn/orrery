@@ -221,7 +221,7 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 		Hardware: mustHardware(t, nodeHardware{
 			CPUCores: 8, MemoryBytes: 32 * gib,
 		}),
-		Capabilities: json.RawMessage(`{"runtime":"docker","entries":[{"name":"gpu_device_visibility","value":"enforced"}]}`),
+		Capabilities: json.RawMessage(`{"runtime_provider":"docker","entries":[{"name":"gpu_device_visibility","value":"enforced"}]}`),
 	}
 	gpus := map[uuid.UUID][]store.Gpu{gpuNode.ID: {
 		{Uuid: "GPU-a", NodeID: gpuNode.ID, Model: "H100"},
@@ -245,7 +245,7 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 
 	// Without the CDI capability the cards exist but cannot be attached.
 	noCDI := gpuNode
-	noCDI.Capabilities = json.RawMessage(`{"runtime":"docker","entries":[{"name":"gpu_device_visibility","value":"unsupported"}]}`)
+	noCDI.Capabilities = json.RawMessage(`{"runtime_provider":"docker","entries":[{"name":"gpu_device_visibility","value":"unsupported"}]}`)
 	if !admissionExhausted([]store.Node{noCDI}, gpus, request, nil) {
 		t.Fatal("a Node without CDI must be exhausted for GPU requests")
 	}
