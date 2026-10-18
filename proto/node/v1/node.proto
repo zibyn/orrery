@@ -20,6 +20,33 @@ service Node {
   // Presign issues object store URLs for this Node (node-protocol.md
   // "Presign"). It is authenticated by the Node Token.
   rpc Presign(PresignRequest) returns (PresignResponse);
+  // SubmitManifest streams a Workspace publish's tree to the Control Plane.
+  // The first chunk carries version_id; the reply lists the objects the Node
+  // still has to upload (node-protocol.md "Workspace publish").
+  rpc SubmitManifest(stream ManifestChunk) returns (ManifestAck);
+}
+
+// ManifestChunk is one slice of a publish's manifest. version_id is set on
+// the first chunk only.
+message ManifestChunk {
+  string version_id = 1;
+  repeated ManifestEntry entries = 2;
+}
+
+// ManifestEntry mirrors internal/manifest.Entry (api.md §3).
+message ManifestEntry {
+  string path = 1;
+  // "file", "dir" or "symlink".
+  string type = 2;
+  optional int64 size = 3;
+  string sha256 = 4;
+  bool executable = 5;
+  string target = 6;
+}
+
+message ManifestAck {
+  // Objects of the submitted manifest that the store does not hold yet.
+  repeated string missing_sha256 = 1;
 }
 
 message PresignRequest {
@@ -152,7 +179,17 @@ message ControlMessage {
     StartExec start_exec = 6;
     CancelExec cancel_exec = 7;
     OpenTunnel open_tunnel = 8;
+    PublishWorkspace publish_workspace = 9;
   }
+}
+
+// PublishWorkspace walks a host Workspace directory and publishes it as a
+// ResourceVersion (node-protocol.md "Workspace publish").
+message PublishWorkspace {
+  string command_id = 1;
+  string version_id = 2;
+  string workspace_id = 3;
+  string path = 4;
 }
 
 message OpenTunnel {

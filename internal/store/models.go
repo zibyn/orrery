@@ -166,17 +166,19 @@ type Resource struct {
 }
 
 type ResourceVersion struct {
-	ID             uuid.UUID
-	ResourceID     uuid.UUID
-	Address        *string
-	ManifestKey    *string
-	Size           int64
-	Provenance     json.RawMessage
-	State          string
-	Cause          *string
-	IdempotencyKey *string
-	ExpiresAt      pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
+	ID                    uuid.UUID
+	ResourceID            uuid.UUID
+	Address               *string
+	ManifestKey           *string
+	Size                  int64
+	Provenance            json.RawMessage
+	State                 string
+	Cause                 *string
+	IdempotencyKey        *string
+	ExpiresAt             pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
 }
 
 type ResourceVersionObject struct {

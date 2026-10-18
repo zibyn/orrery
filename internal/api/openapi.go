@@ -142,6 +142,8 @@ func responsesFor(rt route) map[string]any {
 		responses["503"] = problemResponse("unavailable")
 	case "createResourceVersion", "getResourceManifest", "createResourceDownloads":
 		responses["503"] = problemResponse("unavailable")
+	case "publishWorkspace":
+		responses["503"] = problemResponse("unavailable")
 	case "setResourceCurrent":
 		responses["412"] = problemResponse("precondition_failed")
 	}
@@ -789,6 +791,20 @@ func schemas() map[string]any {
 			"required": []string{"upload_id"},
 			"properties": map[string]any{
 				"upload_id": map[string]any{"type": "string", "format": "uuid"},
+			},
+		},
+		"PublishWorkspaceRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"path", "resource"},
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Relative to the Workspace root; /workspace/... is accepted. Must stay inside the Workspace.",
+				},
+				"resource": map[string]any{
+					"type":        "string",
+					"description": "Resource name; created when absent.",
+				},
 			},
 		},
 		"ResourceVersion": map[string]any{
