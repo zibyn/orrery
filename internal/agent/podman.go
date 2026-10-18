@@ -77,27 +77,18 @@ type runtimeConfig struct {
 	owner *rootlessOwner
 }
 
-// configForSocket selects the Provider from the Engine socket. A rootless
-// Podman socket is unmistakable; everything else is Docker. An explicit
-// --runtime selection can replace this without touching the adapter below.
-func configForSocket(socket string) runtimeConfig {
-	if uid, ok := podmanUIDFromSocket(socket); ok {
-		owner := podmanOwner(uid)
-		return runtimeConfig{provider: ProviderPodman, socket: socket, owner: &owner}
-	}
-	return runtimeConfig{provider: ProviderDocker, socket: socket}
-}
-
 func (r *Runtime) config() runtimeConfig {
 	return runtimeConfig{provider: r.provider, socket: r.socket, owner: r.owner}
 }
 
-// newPodmanRuntime is the explicit constructor for --runtime podman.
-func newPodmanRuntime(socket, dataRoot string) (*Runtime, error) {
+// newPodmanRuntime is the explicit constructor for --runtime podman. The
+// rootless owner is derived from the socket, which must be the Podman compat
+// socket of the invoking user.
+func newPodmanRuntime(socket, dataRoot, nodeID string) (*Runtime, error) {
 	uid, ok := podmanUIDFromSocket(socket)
 	if !ok {
 		return nil, fmt.Errorf("rootless Podman socket must be /run/user/<uid>/podman/podman.sock, got %q", socket)
 	}
 	owner := podmanOwner(uid)
-	return newRuntime(runtimeConfig{provider: ProviderPodman, socket: socket, owner: &owner}, dataRoot), nil
+	return newRuntime(runtimeConfig{provider: ProviderPodman, socket: socket, owner: &owner}, dataRoot, nodeID), nil
 }

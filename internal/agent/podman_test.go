@@ -36,27 +36,6 @@ func TestPodmanUIDFromSocket(t *testing.T) {
 	}
 }
 
-// TestRuntimeConfigSelectsTheProvider keeps the provider name and the host
-// ownership mapping on one path, so the probe and container creation cannot
-// disagree about which uid container root maps to.
-func TestRuntimeConfigSelectsTheProvider(t *testing.T) {
-	podman := configForSocket("/run/user/1000/podman/podman.sock")
-	if podman.provider != ProviderPodman {
-		t.Errorf("provider = %q, want %q", podman.provider, ProviderPodman)
-	}
-	if podman.owner == nil || podman.owner.uid != 1000 {
-		t.Fatalf("owner = %+v, want uid 1000", podman.owner)
-	}
-
-	docker := configForSocket("/var/run/docker.sock")
-	if docker.provider != ProviderDocker {
-		t.Errorf("provider = %q, want %q", docker.provider, ProviderDocker)
-	}
-	if docker.owner != nil {
-		t.Errorf("rootful Docker maps no uid, got owner %+v", docker.owner)
-	}
-}
-
 // TestPodmanOwnerUsesTheUsersGID checks the group half of the rootless mapping:
 // container root maps to the invoking user's uid and primary gid.
 func TestPodmanOwnerUsesTheUsersGID(t *testing.T) {
@@ -76,19 +55,20 @@ func TestPodmanOwnerUsesTheUsersGID(t *testing.T) {
 }
 
 // TestNewPodmanRuntimeKeepsOneProvider: the explicit --runtime podman
-// constructor and the detected path agree on provider and ownership.
+// constructor carries the provider, socket, owner and Node identity together.
 func TestNewPodmanRuntimeKeepsOneProvider(t *testing.T) {
-	if _, err := newPodmanRuntime("/var/run/docker.sock", t.TempDir()); err == nil {
+	const nodeID = "11111111-1111-1111-1111-111111111111"
+	if _, err := newPodmanRuntime("/var/run/docker.sock", t.TempDir(), nodeID); err == nil {
 		t.Fatal("newPodmanRuntime accepted a non-Podman socket")
 	}
 	socket := podmanRootlessSocket(424242)
-	rt, err := newPodmanRuntime(socket, t.TempDir())
+	rt, err := newPodmanRuntime(socket, t.TempDir(), nodeID)
 	if err != nil {
 		t.Fatalf("newPodmanRuntime(%q): %v", socket, err)
 	}
-	if rt.provider != ProviderPodman || rt.socket != socket {
-		t.Fatalf("Runtime = provider %q socket %q, want %q %q",
-			rt.provider, rt.socket, ProviderPodman, socket)
+	if rt.provider != ProviderPodman || rt.socket != socket || rt.nodeID != nodeID {
+		t.Fatalf("Runtime = provider %q socket %q node %q, want %q %q %q",
+			rt.provider, rt.socket, rt.nodeID, ProviderPodman, socket, nodeID)
 	}
 	if rt.owner == nil || rt.owner.uid != 424242 {
 		t.Fatalf("owner = %+v, want uid 424242", rt.owner)

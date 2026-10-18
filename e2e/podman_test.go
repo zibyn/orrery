@@ -189,7 +189,7 @@ func startPodmanHost(t *testing.T, name string) *podmanHost {
 	h.args = []string{h.dir + "/agent", "run",
 		"--server", "127.0.0.1:" + remotePort, "--ca", h.dir + "/ca.crt",
 		"--state", h.state, "--data-root", h.dir + "/data",
-		"--docker", h.socket, "--reserve-cpu", "0"}
+		"--docker", h.socket, "--runtime", "podman", "--reserve-cpu", "0"}
 	h.startAgent(t)
 
 	t.Cleanup(func() {

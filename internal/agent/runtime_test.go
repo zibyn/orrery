@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -10,6 +11,60 @@ import (
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
 	"github.com/zibyn/stars-sandbox/internal/supervisor"
 )
+
+// runtime.md §8: an Agent adopts only containers carrying its own
+// stars.node=<node_id> label, so two Agents sharing a daemon never take over
+// each other's Runtimes.
+func TestContainerOwnedBy(t *testing.T) {
+	const mine = "11111111-1111-1111-1111-111111111111"
+	for name, tt := range map[string]struct {
+		labels map[string]string
+		want   bool
+	}{
+		"this Node": {
+			labels: map[string]string{"stars.managed": "true", "stars.node": mine},
+			want:   true,
+		},
+		"another Node": {
+			labels: map[string]string{"stars.managed": "true", "stars.node": "22222222-2222-2222-2222-222222222222"},
+			want:   false,
+		},
+		"no Node label": {
+			labels: map[string]string{"stars.managed": "true"},
+			want:   false,
+		},
+		"not managed": {
+			labels: map[string]string{"stars.node": mine},
+			want:   false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := containerOwnedBy(tt.labels, mine); got != tt.want {
+				t.Fatalf("containerOwnedBy(%v) = %v, want %v", tt.labels, got, tt.want)
+			}
+		})
+	}
+}
+
+// #93/#96: the --runtime flag is the single source of truth. docker is the
+// default, podman is explicit, and local (#97) must fail loudly rather than
+// silently running Docker.
+func TestResolveRuntime(t *testing.T) {
+	if got, err := resolveRuntime(""); err != nil || got != "docker" {
+		t.Fatalf("resolveRuntime(\"\") = %q, %v; want docker", got, err)
+	}
+	for _, name := range []string{"docker", "podman"} {
+		if got, err := resolveRuntime(name); err != nil || got != name {
+			t.Fatalf("resolveRuntime(%s) = %q, %v; want %s", name, got, err, name)
+		}
+	}
+	if _, err := resolveRuntime("local"); err == nil || !strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("resolveRuntime(local) error = %v, want not implemented", err)
+	}
+	if _, err := resolveRuntime("bogus"); err == nil {
+		t.Fatal("resolveRuntime(bogus) accepted an unknown provider")
+	}
+}
 
 func TestLimitsMatch(t *testing.T) {
 	// NanoCpus 0.5 CPU is a 50000 us quota over the fixed 100000 us period.

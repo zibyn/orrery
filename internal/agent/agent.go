@@ -145,6 +145,9 @@ type RunOptions struct {
 	Server string // overrides the address stored at enroll time
 	State  string
 	Docker string
+	// Runtime is the Node's one Runtime Provider (ADR-0014): docker or
+	// podman. local is not implemented yet (#97).
+	Runtime string
 	// Buildkit is the BuildKit endpoint. Empty means the Docker daemon's
 	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
 	Buildkit      string
@@ -154,10 +157,30 @@ type RunOptions struct {
 	DiskWatermark float64
 }
 
+// resolveRuntime picks the one Runtime Provider this Node runs (ADR-0014).
+// Unimplemented providers fail loudly rather than silently running Docker.
+func resolveRuntime(name string) (string, error) {
+	switch name {
+	case "", ProviderDocker:
+		return ProviderDocker, nil
+	case ProviderPodman:
+		return ProviderPodman, nil
+	case "local":
+		return "", fmt.Errorf("runtime %q not implemented", name)
+	default:
+		return "", fmt.Errorf("unknown runtime %q", name)
+	}
+}
+
 // Run keeps one Control stream alive, probing capabilities once per
 // connection. NOT_FOUND/UNAUTHENTICATED clears local identity; anything else
 // keeps it and backs off (ADR-0010's asymmetric rule).
 func Run(ctx context.Context, opts RunOptions) error {
+	provider, err := resolveRuntime(opts.Runtime)
+	if err != nil {
+		return err
+	}
+	opts.Runtime = provider
 	id, err := LoadIdentity(opts.State)
 	if err != nil {
 		return err
@@ -244,7 +267,17 @@ func isIncompatible(err error) bool {
 }
 
 func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
-	rt := NewRuntime(opts.Docker, opts.DataRoot)
+	// The --runtime flag is the single source of truth: an explicit Provider
+	// wins over any path heuristic, so a Docker Node pointing at an unusual
+	// socket never silently becomes Podman.
+	rt := NewRuntime(opts.Docker, opts.DataRoot, id.NodeID)
+	if opts.Runtime == ProviderPodman {
+		var err error
+		rt, err = newPodmanRuntime(opts.Docker, opts.DataRoot, id.NodeID)
+		if err != nil {
+			return false, err
+		}
+	}
 	rt.buildkit = opts.Buildkit
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
