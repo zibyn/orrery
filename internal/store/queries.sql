@@ -825,8 +825,87 @@ INSERT INTO resource_versions (
 ) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
 RETURNING *;
 
+-- CreatePendingResourceVersion is the Workspace publish path: the version
+-- starts pending and the Agent fills in the manifest (node-protocol.md
+-- "Workspace publish").
+-- name: CreatePendingResourceVersion :one
+INSERT INTO resource_versions (
+    id, resource_id, provenance, state, publish_workspace_id,
+    publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5)
+RETURNING *;
+
 -- name: GetResourceVersion :one
 SELECT * FROM resource_versions WHERE id = $1;
+
+-- name: GetResourceVersionByPublishIdempotencyKey :one
+SELECT * FROM resource_versions
+WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2;
+
+-- SetResourceVersionManifest records what SubmitManifest normalized. Only a
+-- pending version can accept a manifest: a terminal one must not be revived.
+-- name: SetResourceVersionManifest :one
+UPDATE resource_versions
+SET address = $2, manifest_key = $3, size = $4
+WHERE id = $1 AND state = 'pending'
+RETURNING *;
+
+-- name: DeleteResourceVersionObjects :exec
+DELETE FROM resource_version_objects WHERE version_id = $1;
+
+-- MarkResourceVersionReady and MarkResourceVersionFailed are conditional on
+-- pending so a redelivered command after a restart cannot overwrite a
+-- terminal state.
+-- name: MarkResourceVersionReady :execrows
+UPDATE resource_versions
+SET state = 'ready', cause = NULL
+WHERE id = $1 AND state = 'pending';
+
+-- name: MarkResourceVersionFailed :execrows
+UPDATE resource_versions
+SET state = 'failed', cause = $2
+WHERE id = $1 AND state = 'pending';
+
+-- ListPendingWorkspacePublishes is the Reconciler's desired-state query. The
+-- path lives in provenance (schema.md).
+-- name: ListPendingWorkspacePublishes :many
+SELECT rv.id, rv.resource_id, rv.provenance, rv.publish_workspace_id, w.node_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending' AND rv.publish_workspace_id IS NOT NULL
+ORDER BY rv.id;
+
+-- GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
+-- version must still be pending and its Workspace bound to the calling Node.
+-- name: GetPendingWorkspacePublish :one
+SELECT rv.*, w.node_id, r.owner_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.id = $1
+  AND rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL;
+
+-- FindPublishObjectOwner answers the Presign PUT question: is sha256 one of
+-- the objects of a pending publish assigned to this Node, and which owner's
+-- CAS key addresses it (ADR-0021)?
+-- name: FindPublishObjectOwner :one
+SELECT r.owner_id
+FROM resource_version_objects rvo
+JOIN resource_versions rv ON rv.id = rvo.version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL
+  AND w.node_id = $1
+  AND rvo.sha256 = $2
+LIMIT 1;
+
+-- GetLiveResourceByName resolves a publish's Resource name without creating
+-- it (api.md §3: a name is unique among live Resources of one owner).
+-- name: GetLiveResourceByName :one
+SELECT * FROM resources
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL;
 
 -- name: GetResourceVersionByIdempotencyKey :one
 SELECT * FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2;
@@ -839,8 +918,10 @@ ORDER BY id DESC
 LIMIT sqlc.arg('limit');
 
 -- name: PurgeResourceVersionIdempotencyKeys :exec
-UPDATE resource_versions SET idempotency_key = NULL
-WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+UPDATE resource_versions
+SET idempotency_key = NULL, publish_idempotency_key = NULL
+WHERE (idempotency_key IS NOT NULL OR publish_idempotency_key IS NOT NULL)
+  AND created_at < now() - interval '24 hours';
 
 -- name: InsertResourceVersionObject :exec
 INSERT INTO resource_version_objects (version_id, sha256)
