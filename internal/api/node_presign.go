@@ -13,7 +13,9 @@ import (
 
 // Presign issues object store URLs to an authenticated Node
 // (docs/spec/node-protocol.md "Presign"). It signs nothing the Node is not
-// entitled to, and answers PermissionDenied for the whole batch otherwise.
+// entitled to, and answers InvalidArgument for the whole batch otherwise
+// (node-protocol.md: never NotFound, which would make the Agent clear its
+// identity).
 func (n *nodeService) Presign(ctx context.Context, req *nodev1.PresignRequest) (*nodev1.PresignResponse, error) {
 	node, err := n.s.authenticateNode(ctx)
 	if err != nil {
@@ -49,7 +51,7 @@ func (n *nodeService) Presign(ctx context.Context, req *nodev1.PresignRequest) (
 			return nil, status.Error(codes.Internal, "authorize object")
 		}
 		if !ok {
-			return nil, status.Error(codes.PermissionDenied, "object is not authorized for this Node")
+			return nil, status.Error(codes.InvalidArgument, "object is not authorized for this Node")
 		}
 		owners = append(owners, owner)
 	}
@@ -61,7 +63,7 @@ func (n *nodeService) Presign(ctx context.Context, req *nodev1.PresignRequest) (
 			return nil, status.Error(codes.Internal, "authorize manifest")
 		}
 		if !ok {
-			return nil, status.Error(codes.PermissionDenied, "manifest is not authorized for this Node")
+			return nil, status.Error(codes.InvalidArgument, "manifest is not authorized for this Node")
 		}
 		manifestOwners = append(manifestOwners, owner)
 	}

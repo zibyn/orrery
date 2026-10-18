@@ -23,9 +23,9 @@ import (
 
 // TestPresignAuthorization is #84's acceptance scenario for the Presign RPC: a
 // Node Token is required, malformed requests are InvalidArgument, and an
-// object outside this Node's authorized set is PermissionDenied for the whole
-// batch. The reference tables arrive in #86/#87, so every object is
-// unauthorized for now.
+// object outside this Node's authorized set is InvalidArgument for the whole
+// batch (node-protocol.md). The reference tables arrive in #86/#87, so every
+// object is unauthorized for now.
 func TestPresignAuthorization(t *testing.T) {
 	admin := adminToken(t)
 	name := fmt.Sprintf("e2e-presign-node-%d", time.Now().UnixNano())
@@ -58,9 +58,9 @@ func TestPresignAuthorization(t *testing.T) {
 		{"no objects", &nodev1.PresignRequest{Method: "GET"}, codes.InvalidArgument},
 		{"both kinds", &nodev1.PresignRequest{Sha256: []string{digest}, Manifests: []string{"m"}, Method: "GET"}, codes.InvalidArgument},
 		{"manifest for PUT", &nodev1.PresignRequest{Manifests: []string{"m"}, Method: "PUT"}, codes.InvalidArgument},
-		{"unauthorized object GET", &nodev1.PresignRequest{Sha256: []string{digest}, Method: "GET"}, codes.PermissionDenied},
-		{"unauthorized manifest GET", &nodev1.PresignRequest{Manifests: []string{"sha256:abc"}, Method: "GET"}, codes.PermissionDenied},
-		{"unauthorized object PUT", &nodev1.PresignRequest{Sha256: []string{digest}, Method: "PUT"}, codes.PermissionDenied},
+		{"unauthorized object GET", &nodev1.PresignRequest{Sha256: []string{digest}, Method: "GET"}, codes.InvalidArgument},
+		{"unauthorized manifest GET", &nodev1.PresignRequest{Manifests: []string{"sha256:abc"}, Method: "GET"}, codes.InvalidArgument},
+		{"unauthorized object PUT", &nodev1.PresignRequest{Sha256: []string{digest}, Method: "PUT"}, codes.InvalidArgument},
 	}
 	for _, tc := range cases {
 		_, err := client.Presign(ctx, tc.req)
