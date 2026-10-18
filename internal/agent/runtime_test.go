@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 
@@ -46,20 +45,16 @@ func TestContainerOwnedBy(t *testing.T) {
 	}
 }
 
-// #93/#96: the --runtime flag is the single source of truth. docker is the
-// default, podman is explicit, and local (#97) must fail loudly rather than
-// silently running Docker.
+// #93/#96/#97: the --runtime flag is the single source of truth. docker is the
+// default, podman and local are explicit, and anything else fails loudly.
 func TestResolveRuntime(t *testing.T) {
 	if got, err := resolveRuntime(""); err != nil || got != "docker" {
 		t.Fatalf("resolveRuntime(\"\") = %q, %v; want docker", got, err)
 	}
-	for _, name := range []string{"docker", "podman"} {
+	for _, name := range []string{"docker", "podman", "local"} {
 		if got, err := resolveRuntime(name); err != nil || got != name {
 			t.Fatalf("resolveRuntime(%s) = %q, %v; want %s", name, got, err, name)
 		}
-	}
-	if _, err := resolveRuntime("local"); err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("resolveRuntime(local) error = %v, want not implemented", err)
 	}
 	if _, err := resolveRuntime("bogus"); err == nil {
 		t.Fatal("resolveRuntime(bogus) accepted an unknown provider")
