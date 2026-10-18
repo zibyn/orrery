@@ -1,26 +1,6 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test } from '@playwright/test'
 
-import { isAllowedConsoleUrl } from '../src/lib/request-scope'
-
-const ADMIN = { username: 'admin', password: 'admin-password-123' }
-const origin = process.env.STARS_E2E_API_URL ?? 'http://127.0.0.1:18080'
-const scope = { origin, appsDomain: process.env.STARS_E2E_APPS_DOMAIN ?? 'apps.test' }
-
-// console-parity: every HTTP request and WebSocket must stay on the console
-// origin or a port-forward subdomain (api.md §8).
-function watchRequests(page: Page): string[] {
-  const urls: string[] = []
-  page.on('request', (request) => urls.push(request.url()))
-  page.on('websocket', (socket) => urls.push(socket.url()))
-  return urls
-}
-
-async function signIn(page: Page, username: string, password: string) {
-  await page.goto('/login?return=%2Fsandboxes')
-  await page.getByLabel('Username').fill(username)
-  await page.getByLabel('Password').fill(password)
-  await page.getByRole('button', { name: 'Sign in' }).click()
-}
+import { ADMIN, assertConsoleScope, origin, signIn, watchRequests } from './harness'
 
 test('admin creates a User, sets quota, resets the password, and audits it', async ({
   page,
@@ -28,7 +8,7 @@ test('admin creates a User, sets quota, resets the password, and audits it', asy
 }) => {
   const requests = watchRequests(page)
 
-  await signIn(page, ADMIN.username, ADMIN.password)
+  await signIn(page)
   await expect(page).toHaveURL(/\/sandboxes$/)
 
   await page.getByRole('link', { name: 'Users' }).click()
@@ -68,7 +48,7 @@ test('admin creates a User, sets quota, resets the password, and audits it', asy
   const userContext = await browser.newContext({ baseURL: origin })
   const userPage = await userContext.newPage()
   const userRequests = watchRequests(userPage)
-  await signIn(userPage, name, resetPassword)
+  await signIn(userPage, { username: name, password: resetPassword })
   await expect(userPage).toHaveURL(/\/sandboxes$/)
   // Admin navigation is UI-gated on is_admin (the server still enforces scope).
   await expect(userPage.getByRole('link', { name: 'Users' })).toHaveCount(0)
@@ -99,10 +79,6 @@ test('admin creates a User, sets quota, resets the password, and audits it', asy
   await apply.click()
   await expect(page.getByTestId('audit-row').first()).toContainText('user.password_reset')
 
-  for (const urls of [requests, userRequests]) {
-    const disallowed = urls.filter(
-      (url) => /^(https?|wss?):/i.test(url) && !isAllowedConsoleUrl(url, scope),
-    )
-    expect(disallowed, 'requests outside the console origin and port-forward hosts').toEqual([])
-  }
+  assertConsoleScope(requests)
+  assertConsoleScope(userRequests)
 })
