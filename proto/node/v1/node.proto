@@ -17,6 +17,23 @@ service Node {
   // Tunnel is a reverse-dialled raw byte stream, opened when Control sends
   // OpenTunnel (ADR-0018).
   rpc Tunnel(stream TunnelFrame) returns (stream TunnelFrame);
+  // Presign issues object store URLs for this Node (node-protocol.md
+  // "Presign"). It is authenticated by the Node Token.
+  rpc Presign(PresignRequest) returns (PresignResponse);
+}
+
+message PresignRequest {
+  // CAS object digests, lowercase hex.
+  repeated string sha256 = 1;
+  // Manifest addresses, relative to manifests/<owner_id>/.
+  repeated string manifests = 2;
+  // "GET" or "PUT".
+  string method = 3;
+}
+
+message PresignResponse {
+  // URLs in request order: sha256 entries first, then manifests.
+  repeated string urls = 1;
 }
 
 message RedeemRequest {

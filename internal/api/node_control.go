@@ -49,7 +49,11 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 		return status.Error(codes.Internal, "record Hello")
 	}
 	if err := stream.Send(&nodev1.ControlMessage{Message: &nodev1.ControlMessage_HelloAck{
-		HelloAck: &nodev1.HelloAck{Accepted: true},
+		HelloAck: &nodev1.HelloAck{
+			Accepted: true,
+			// The deployment credential for the platform registry (ADR-0014).
+			RegistryCredential: n.s.cfg.RegistryCredential,
+		},
 	}}); err != nil {
 		return err
 	}
