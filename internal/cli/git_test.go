@@ -104,19 +104,36 @@ func TestGitCredentialStoreErase(t *testing.T) {
 	}
 }
 
-// `token <provider>` asks for a credential by provider id; the placeholder
-// answer is an error here, but the request shape is the contract.
+// `token <provider>` prints just the token, so `GH_TOKEN=$(stars-sandbox
+// token github) gh pr create` works (api.md §3).
 func TestTokenProvider(t *testing.T) {
 	srv, seen := credentialAPI(t, func(w http.ResponseWriter, body map[string]string) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"code":"not_found","status":404}`))
+		_, _ = w.Write([]byte(`{"username":"oauth2","password":"gitea_token_value"}`))
 	})
-	code, _, _ := runCLI(t, nil, "--api-url", srv.URL, "--token", "sst_test", "token", "github")
-	if code == 0 {
-		t.Fatal("the placeholder's 404 should surface as a failure")
+	code, stdout, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "sst_test", "token", "github")
+	if code != 0 {
+		t.Fatalf("token github: exit %d, %s", code, stderr)
 	}
 	if got := (*seen)["provider"]; got != "github" {
 		t.Fatalf("request provider = %q, want github", got)
+	}
+	if stdout != "gitea_token_value\n" {
+		t.Fatalf("stdout = %q, want only the token", stdout)
+	}
+}
+
+// An unlinked provider names the console page in the error.
+func TestTokenProviderUnlinked(t *testing.T) {
+	srv, _ := credentialAPI(t, func(w http.ResponseWriter, body map[string]string) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"not_found","status":404,"authorize_url":"https://stars.example/git"}`))
+	})
+	code, _, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "sst_test", "token", "gitea")
+	if code == 0 {
+		t.Fatal("an unlinked provider must fail")
+	}
+	if !strings.Contains(stderr, "https://stars.example/git") {
+		t.Fatalf("stderr = %q, want the authorize URL", stderr)
 	}
 }
 

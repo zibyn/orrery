@@ -40,7 +40,7 @@ func (s *Server) routes() []route {
 		{http.MethodPut, "/secrets/{name}", "user", "putSecret", "Create or overwrite a Secret", "PutSecretRequest", "Secret", nil, http.StatusOK, s.handlePutSecret},
 		{http.MethodGet, "/secrets", "user", "listSecrets", "List Secrets", "", "SecretList", []string{"limit", "cursor"}, http.StatusOK, s.handleListSecrets},
 		{http.MethodDelete, "/secrets/{name}", "user", "deleteSecret", "Delete a Secret", "", "Secret", nil, http.StatusAccepted, s.handleDeleteSecret},
-		{http.MethodPost, "/git/credential", "sandbox", "getGitCredential", "Fetch a Git credential", "", "", nil, http.StatusOK, s.handleGitCredential},
+		{http.MethodPost, "/git/credential", "sandbox", "getGitCredential", "Fetch a Git credential", "GitCredentialRequest", "GitCredential", nil, http.StatusOK, s.handleGitCredential},
 		{http.MethodGet, "/git-providers", "user", "listGitProviders", "List Git Providers", "", "GitProviderList", nil, http.StatusOK, s.handleListGitProviders},
 		{http.MethodGet, "/git-providers/{id}/authorize", "", "authorizeGitProvider", "Start linking a Git account", "", "", nil, http.StatusFound, s.handleGitAuthorize},
 		{http.MethodGet, "/external-auth/{id}/callback", "", "finishGitAuthorization", "Finish linking a Git account", "", "", []string{"code", "state", "error"}, http.StatusFound, s.handleGitCallback},

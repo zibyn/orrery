@@ -41,14 +41,6 @@ var problemTitle = map[string]string{
 	"unavailable":         "Unavailable",
 }
 
-type problemBody struct {
-	Type   string `json:"type"`
-	Title  string `json:"title"`
-	Status int    `json:"status"`
-	Detail string `json:"detail,omitempty"`
-	Code   string `json:"code"`
-}
-
 // Title returns the problem title for a catalog code.
 func Title(code string) string { return problemTitle[code] }
 
@@ -64,19 +56,34 @@ func CodeForStatus(status int) string {
 
 // Problem writes one problem+json response. An unknown code becomes internal.
 func Problem(w http.ResponseWriter, code, detail string) {
+	ProblemWith(w, code, detail, nil)
+}
+
+// ProblemWith writes a problem+json response with additional extension
+// members, such as the Git credential's authorize_url (api.md §3). A name that
+// would shadow a standard member is ignored.
+func ProblemWith(w http.ResponseWriter, code, detail string, extra map[string]any) {
 	status, ok := problemStatus[code]
 	if !ok {
 		status, code = http.StatusInternalServerError, "internal"
 	}
+	body := map[string]any{
+		"type":   "about:blank",
+		"title":  problemTitle[code],
+		"status": status,
+		"code":   code,
+	}
+	if detail != "" {
+		body["detail"] = detail
+	}
+	for name, value := range extra {
+		if _, standard := body[name]; !standard {
+			body[name] = value
+		}
+	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(problemBody{
-		Type:   "about:blank",
-		Title:  problemTitle[code],
-		Status: status,
-		Detail: detail,
-		Code:   code,
-	})
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // JSON writes one JSON response.

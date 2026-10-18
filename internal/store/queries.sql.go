@@ -1208,6 +1208,56 @@ func (q *Queries) GetExecWithNode(ctx context.Context, id uuid.UUID) (GetExecWit
 	return i, err
 }
 
+const getGitLink = `-- name: GetGitLink :one
+SELECT user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at FROM git_links WHERE user_id = $1 AND provider_id = $2
+`
+
+type GetGitLinkParams struct {
+	UserID     uuid.UUID
+	ProviderID string
+}
+
+func (q *Queries) GetGitLink(ctx context.Context, arg GetGitLinkParams) (GitLink, error) {
+	row := q.db.QueryRow(ctx, getGitLink, arg.UserID, arg.ProviderID)
+	var i GitLink
+	err := row.Scan(
+		&i.UserID,
+		&i.ProviderID,
+		&i.AccessTokenCt,
+		&i.RefreshTokenCt,
+		&i.KeyID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getGitLinkForUpdate = `-- name: GetGitLinkForUpdate :one
+SELECT user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at FROM git_links WHERE user_id = $1 AND provider_id = $2 FOR UPDATE
+`
+
+type GetGitLinkForUpdateParams struct {
+	UserID     uuid.UUID
+	ProviderID string
+}
+
+func (q *Queries) GetGitLinkForUpdate(ctx context.Context, arg GetGitLinkForUpdateParams) (GitLink, error) {
+	row := q.db.QueryRow(ctx, getGitLinkForUpdate, arg.UserID, arg.ProviderID)
+	var i GitLink
+	err := row.Scan(
+		&i.UserID,
+		&i.ProviderID,
+		&i.AccessTokenCt,
+		&i.RefreshTokenCt,
+		&i.KeyID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getNode = `-- name: GetNode :one
 SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes WHERE id = $1
 `

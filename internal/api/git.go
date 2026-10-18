@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/oauth2"
 
@@ -139,32 +140,37 @@ func (s *Server) handleGitCallback(w http.ResponseWriter, r *http.Request, _ *pr
 		writeProblem(w, "invalid_request", "the Git provider returned no access token")
 		return
 	}
-	aad := []byte(p.user.ID.String())
+	if err := s.storeGitLink(r.Context(), s.q, p.user.ID, provider.ID, token); err != nil {
+		s.internal(w, "store Git account link", err)
+		return
+	}
+	http.Redirect(w, r, "/git", http.StatusFound)
+}
+
+// storeGitLink encrypts a link's tokens for its owner and writes the row. The
+// query handle lets a refresh store inside its locking transaction.
+func (s *Server) storeGitLink(ctx context.Context, q *store.Queries, owner uuid.UUID, providerID string, token *oauth2.Token) error {
+	aad := []byte(owner.String())
 	accessCt, keyID, err := s.cfg.EncryptionKeys.Encrypt([]byte(token.AccessToken), aad)
 	if err != nil {
-		s.internal(w, "encrypt Git access token", err)
-		return
+		return err
 	}
 	var refreshCt []byte
 	if token.RefreshToken != "" {
 		refreshCt, _, err = s.cfg.EncryptionKeys.Encrypt([]byte(token.RefreshToken), aad)
 		if err != nil {
-			s.internal(w, "encrypt Git refresh token", err)
-			return
+			return err
 		}
 	}
-	if _, err := s.q.UpsertGitLink(r.Context(), store.UpsertGitLinkParams{
-		UserID:         p.user.ID,
-		ProviderID:     provider.ID,
+	_, err = q.UpsertGitLink(ctx, store.UpsertGitLinkParams{
+		UserID:         owner,
+		ProviderID:     providerID,
 		AccessTokenCt:  accessCt,
 		RefreshTokenCt: refreshCt,
 		KeyID:          keyID,
 		ExpiresAt:      timestamptzPtr(expiryPtr(token)),
-	}); err != nil {
-		s.internal(w, "store Git account link", err)
-		return
-	}
-	http.Redirect(w, r, "/git", http.StatusFound)
+	})
+	return err
 }
 
 // GET /users/me/git-links lists the caller's linked providers. Tokens never
@@ -378,9 +384,6 @@ func expiryPtr(token *oauth2.Token) *time.Time {
 	return &token.Expiry
 }
 
-// gitRevokeClient bounds the best-effort upstream revocation on unlink.
-var gitRevokeClient = &http.Client{Timeout: 15 * time.Second}
-
 // revokeGitToken invalidates the token upstream where the provider has a
 // revoke endpoint. Gitea has none, and generic providers are not configured
 // with one.
@@ -413,7 +416,7 @@ func revokeGitToken(ctx context.Context, p GitProvider, token string) error {
 }
 
 func doRevoke(req *http.Request) error {
-	resp, err := gitRevokeClient.Do(req)
+	resp, err := gitUpstreamClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -423,12 +426,4 @@ func doRevoke(req *http.Request) error {
 		return fmt.Errorf("revoke answered %s", resp.Status)
 	}
 	return nil
-}
-
-// POST /git/credential returns the Git credential a Sandbox Token may use for
-// a host or provider. Issuing real Git tokens is the next ticket's job; until
-// it lands this endpoint is a placeholder that always answers not_found
-// (ticket #76, api.md §3).
-func (s *Server) handleGitCredential(w http.ResponseWriter, r *http.Request, p *principal) {
-	writeProblem(w, "not_found", "no Git credential is available")
 }

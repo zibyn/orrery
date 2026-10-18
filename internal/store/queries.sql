@@ -761,5 +761,11 @@ RETURNING *;
 -- name: ListGitLinks :many
 SELECT * FROM git_links WHERE user_id = $1 ORDER BY provider_id;
 
+-- name: GetGitLink :one
+SELECT * FROM git_links WHERE user_id = $1 AND provider_id = $2;
+
+-- name: GetGitLinkForUpdate :one
+SELECT * FROM git_links WHERE user_id = $1 AND provider_id = $2 FOR UPDATE;
+
 -- name: DeleteGitLink :one
 DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING *;

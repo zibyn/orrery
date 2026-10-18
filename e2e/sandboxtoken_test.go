@@ -77,7 +77,7 @@ func TestSandboxTokenScope(t *testing.T) {
 	status, body = call(t, http.MethodPost, "/api/v1/git/credential", token,
 		map[string]string{"host": "github.com"})
 	if status != http.StatusNotFound {
-		t.Fatalf("POST /git/credential (placeholder): %d %s, want 404", status, body)
+		t.Fatalf("POST /git/credential for an unknown host: %d %s, want 404", status, body)
 	}
 	requireProblemCode(t, body, "not_found")
 
@@ -97,15 +97,15 @@ func TestSandboxTokenScope(t *testing.T) {
 		t.Fatalf("PATH = %q, want /.stars/bin appended", path)
 	}
 
-	// The helper answers the placeholder: no output, and a not_found round
+	// An unmatched host passes through: no output, and a not_found round
 	// trip through STARS_URL still exits 0 so git can try the next helper.
 	stdout, stderr := run("sh", "-c",
 		`printf 'protocol=https\nhost=github.com\n\n' | /.stars/bin/stars-sandbox git-credential get`)
 	if stdout != "" {
-		t.Fatalf("placeholder helper stdout = %q, want empty", stdout)
+		t.Fatalf("pass-through helper stdout = %q, want empty", stdout)
 	}
 	if stderr != "" {
-		t.Fatalf("placeholder helper stderr = %q, want empty", stderr)
+		t.Fatalf("pass-through helper stderr = %q, want empty", stderr)
 	}
 
 	// The token is never persisted: not in the Workspace, not in the

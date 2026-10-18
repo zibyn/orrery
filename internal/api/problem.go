@@ -10,6 +10,10 @@ func writeProblem(w http.ResponseWriter, code, detail string) {
 	httpjson.Problem(w, code, detail)
 }
 
+func writeProblemWithExtras(w http.ResponseWriter, code, detail string, extra map[string]any) {
+	httpjson.ProblemWith(w, code, detail, extra)
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	httpjson.JSON(w, status, v)
 }

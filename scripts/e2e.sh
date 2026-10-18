@@ -179,7 +179,7 @@ print(json.dumps([{
     "client_id": client_id,
     "client_secret_file": "/git/gitea-secret",
     "base_url": base_url,
-    "scopes": ["read:repository", "write:repository"],
+    "scopes": ["read:user", "read:repository", "write:repository"],
 }], indent=2))
 PY
 export STARS_GIT_PROVIDERS_DIR="$PWD/.e2e/git"
@@ -234,6 +234,7 @@ STARS_E2E_DEX_URL="http://127.0.0.1:15556/dex" \
 STARS_E2E_GITEA_URL="$STARS_GITEA_URL" \
 STARS_E2E_GITEA_USER="$GITEA_USER" \
 STARS_E2E_GITEA_PASSWORD="$GITEA_USER_PASSWORD" \
+STARS_E2E_GITEA_TOKEN="$GITEA_TOKEN" \
 STARS_E2E_GIT_PROVIDER="gitea" \
 STARS_E2E_CLI="$PWD/.e2e/stars-sandbox" \
 STARS_E2E_AGENT="$PWD/.e2e/stars-sandbox-agent" \

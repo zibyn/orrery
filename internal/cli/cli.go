@@ -585,10 +585,37 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 		return c.sendAndPrint(http.MethodDelete, "/api/v1/users/me/tokens/"+url.PathEscape(fs.Arg(0)), nil, "")
 	default:
 		// `token <provider>` fetches a Git credential for the Sandbox's owner.
-		// The API Token verbs above keep their names.
+		// The API Token verbs above keep their names. Only the token goes to
+		// stdout, so GH_TOKEN=$(stars-sandbox token github) works (api.md §3).
 		if len(args) == 1 && !strings.HasPrefix(args[0], "-") {
-			return c.sendAndPrint(http.MethodPost, "/api/v1/git/credential",
+			status, data, err := c.send(http.MethodPost, "/api/v1/git/credential", nil,
 				map[string]string{"provider": args[0]}, "")
+			if err != nil {
+				return err
+			}
+			if status == http.StatusNotFound {
+				var problem struct {
+					AuthorizeURL string `json:"authorize_url"`
+				}
+				if json.Unmarshal(data, &problem) == nil && problem.AuthorizeURL != "" {
+					return fmt.Errorf("no Git account is linked for %s; authorize at %s",
+						args[0], problem.AuthorizeURL)
+				}
+			}
+			if status < 200 || status >= 300 {
+				return problemError(status, data)
+			}
+			var cred struct {
+				Password string `json:"password"`
+			}
+			if err := json.Unmarshal(data, &cred); err != nil {
+				return fmt.Errorf("decode Git credential: %w", err)
+			}
+			if cred.Password == "" {
+				return fmt.Errorf("the API returned an empty Git token")
+			}
+			fmt.Fprintln(c.out, cred.Password)
+			return nil
 		}
 		return fmt.Errorf("unknown token command %q", args[0])
 	}

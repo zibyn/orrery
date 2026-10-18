@@ -135,7 +135,7 @@ func responsesFor(rt route) map[string]any {
 		responses["413"] = problemResponse("payload_too_large")
 		responses["429"] = problemResponse("quota_exceeded")
 		responses["503"] = problemResponse("unavailable")
-	case "listSecrets", "deleteSecret":
+	case "listSecrets", "deleteSecret", "getGitCredential":
 		responses["503"] = problemResponse("unavailable")
 	}
 	return responses
@@ -351,6 +351,22 @@ func schemas() map[string]any {
 			"properties": map[string]any{
 				"items":       map[string]any{"type": "array", "items": schemaRef("GitLink")},
 				"next_cursor": nullableString,
+			},
+		},
+		"GitCredentialRequest": map[string]any{
+			"type":        "object",
+			"description": "Exactly one of host or provider.",
+			"properties": map[string]any{
+				"host":     map[string]any{"type": "string", "description": "Repository host, matched against the providers' host patterns."},
+				"provider": map[string]any{"type": "string", "description": "A provider id from GET /git-providers."},
+			},
+		},
+		"GitCredential": map[string]any{
+			"type":     "object",
+			"required": []string{"username", "password"},
+			"properties": map[string]any{
+				"username": map[string]any{"type": "string"},
+				"password": map[string]any{"type": "string"},
 			},
 		},
 		"ChangePasswordRequest": map[string]any{

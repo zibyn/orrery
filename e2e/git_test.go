@@ -3,13 +3,18 @@
 package e2e
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -213,13 +218,7 @@ func (b *giteaBrowser) get(t *testing.T, rawURL string) (*http.Response, []byte)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := b.client.Do(req)
-	if err != nil {
-		t.Fatalf("GET %s: %v", rawURL, err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	return resp, data
+	return b.do(t, req)
 }
 
 func (b *giteaBrowser) login(t *testing.T, username, password string) {
@@ -329,6 +328,415 @@ func (b *giteaBrowser) postForm(t *testing.T, rawURL string, form url.Values) (*
 	resp, err := b.client.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return resp, data
+}
+
+// gitFixture is a User-owned ready Sandbox whose owner may or may not have
+// linked the e2e Gitea provider.
+type gitFixture struct {
+	userID       string
+	userToken    string
+	sandboxID    string
+	sandboxToken string
+}
+
+func gitProviderID() string    { return envOr("STARS_E2E_GIT_PROVIDER", "gitea") }
+func gitGiteaUser() string     { return envOr("STARS_E2E_GITEA_USER", "gitea-user") }
+func gitGiteaPassword() string { return envOr("STARS_E2E_GITEA_PASSWORD", "gitea-user-password-123") }
+
+func giteaBase() string { return envOr("STARS_E2E_GITEA_URL", "http://127.0.0.1:13000") }
+
+// newGitFixture creates a User with sandbox quota and a ready Sandbox they
+// own, optionally linking the e2e Gitea provider first.
+func newGitFixture(t *testing.T, admin string, link bool) *gitFixture {
+	t.Helper()
+	suffix := time.Now().UnixNano()
+	username := fmt.Sprintf("git-cred-%d", suffix)
+	const password = "git-cred-password-123"
+	adminCLI := newCLIRunner(t, admin)
+	adminCLI.run(t, password+"\n", "user", "create",
+		"--name", username, "--login-type", "password", "--password-stdin")
+
+	userToken, status, data := login(t, username, password, fmt.Sprintf("git-cred-%d", suffix), "user")
+	if status != http.StatusCreated {
+		t.Fatalf("login as %s: %d %s", username, status, data)
+	}
+	status, data = call(t, http.MethodGet, "/api/v1/users/me", userToken, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get me: %d %s", status, data)
+	}
+	var me struct {
+		ID string `json:"id"`
+	}
+	mustJSON(t, data, &me)
+	setUserSandboxQuota(t, admin, me.ID, 5)
+
+	if link {
+		linkGitea(t, loginSession(t, username, password))
+	}
+
+	nodeName := fmt.Sprintf("git-cred-node-%d", suffix)
+	state, dataRoot := enrollAgent(t, admin, nodeName)
+	// Git inside a Sandbox runs as root and leaves root-owned files under the
+	// Workspace; hand them back before t.TempDir removes the tree.
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "run", "--rm", "-v", dataRoot+":/w",
+			"alpine:3.22", "chmod", "-R", "a+rwX", "/w").Run()
+	})
+	startAgent(t, state, dataRoot)
+	waitForNodeReady(t, admin, nodeName)
+	sandboxID := createReadySandbox(t, userToken, fmt.Sprintf("git-cred-%d", suffix), 256<<20)
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", "stars-sandbox-"+sandboxID).Run()
+	})
+
+	stdout, stderr, code := execInSandbox(t, admin, sandboxID, "sh", "-c", `printf %s "$STARS_SANDBOX_TOKEN"`)
+	if code != 0 || !strings.HasPrefix(stdout, "sst_") {
+		t.Fatalf("Sandbox Token: exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	return &gitFixture{
+		userID:       me.ID,
+		userToken:    userToken,
+		sandboxID:    sandboxID,
+		sandboxToken: stdout,
+	}
+}
+
+// linkGitea completes the provider's OAuth flow for a Control Plane Session.
+func linkGitea(t *testing.T, session *http.Cookie) *giteaBrowser {
+	t.Helper()
+	authorizeURL := startGitAuthorize(t, gitProviderID(), session)
+	browser := newGiteaBrowser(t)
+	callbackURL := browser.loginAndAuthorize(t, authorizeURL, gitGiteaUser(), gitGiteaPassword())
+	status, location, body := finishGitAuthorize(t, callbackURL, session)
+	if status != http.StatusFound {
+		t.Fatalf("Git callback: %d %q %s, want 302", status, location, body)
+	}
+	return browser
+}
+
+func setUserSandboxQuota(t *testing.T, admin, userID string, sandboxes int) {
+	t.Helper()
+	status, data := call(t, http.MethodPut, "/api/v1/users/"+userID+"/quota", admin, map[string]any{
+		"gpus": 0, "sandboxes": sandboxes,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("set quota for %s: %d %s", userID, status, data)
+	}
+}
+
+// execInSandbox runs one Exec and returns its streams and exit code.
+func execInSandbox(t *testing.T, admin, sandboxID string, argv ...string) (string, string, int) {
+	t.Helper()
+	e := createExec(t, admin, sandboxID, map[string]any{"argv": argv})
+	stdout, stderr, _, result := followExec(t, admin, e.ID, 180*time.Second)
+	if result.Cause != "exited" {
+		t.Fatalf("%v: cause = %q, stderr %s", argv, result.Cause, stderr)
+	}
+	code := -1
+	if result.ExitCode != nil {
+		code = int(*result.ExitCode)
+	}
+	return string(stdout), string(stderr), code
+}
+
+// createGiteaRepo creates a private repository owned by owner through the
+// Gitea admin API, with an initial commit so it can be cloned.
+func createGiteaRepo(t *testing.T, owner, name string) {
+	t.Helper()
+	token := os.Getenv("STARS_E2E_GITEA_TOKEN")
+	if token == "" {
+		t.Fatal("STARS_E2E_GITEA_TOKEN is not set; run make e2e")
+	}
+	body, err := json.Marshal(map[string]any{
+		"name": name, "private": true, "auto_init": true, "default_branch": "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		giteaBase()+"/api/v1/admin/users/"+url.PathEscape(owner)+"/repos", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create Gitea repository: %v", err)
+	}
+	defer resp.Body.Close()
+	page, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create Gitea repository: %d %s", resp.StatusCode, page)
+	}
+}
+
+func giteaRepoFileExists(t *testing.T, owner, repo, path string) bool {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet,
+		giteaBase()+"/api/v1/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/contents/"+url.PathEscape(path), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "token "+os.Getenv("STARS_E2E_GITEA_TOKEN"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("read Gitea repository: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode == http.StatusOK
+}
+
+// credentialPassword calls POST /git/credential and returns the password.
+func credentialPassword(t *testing.T, sandboxToken string, body map[string]string) string {
+	t.Helper()
+	status, data := call(t, http.MethodPost, "/api/v1/git/credential", sandboxToken, body)
+	if status != http.StatusOK {
+		t.Fatalf("POST /git/credential %v: %d %s", body, status, data)
+	}
+	var cred struct {
+		Password string `json:"password"`
+	}
+	mustJSON(t, data, &cred)
+	return cred.Password
+}
+
+// TestGitLinkClonePush is the git-link-clone-push scenario (#80): a linked
+// User clones and pushes a private repository with plain git, and neither the
+// Workspace nor the container configuration retains the token.
+func TestGitLinkClonePush(t *testing.T) {
+	admin := adminToken(t)
+	fixture := newGitFixture(t, admin, true)
+	suffix := time.Now().UnixNano()
+	repo := fmt.Sprintf("clone-push-%d", suffix)
+	createGiteaRepo(t, gitGiteaUser(), repo)
+	cloneURL := giteaBase() + "/" + gitGiteaUser() + "/" + repo + ".git"
+
+	if out, errOut, code := execInSandbox(t, admin, fixture.sandboxID,
+		"sh", "-c", "apk add --no-cache git >/dev/null 2>&1 || true"); code != 0 {
+		t.Fatalf("install git: %s %s", out, errOut)
+	}
+	clone := fmt.Sprintf(
+		"export GIT_TERMINAL_PROMPT=0; git clone %s /workspace/repo && "+
+			"cd /workspace/repo && echo e2e > pushed.txt && "+
+			"git -c user.email=e2e@example.com -c user.name=e2e add pushed.txt && "+
+			"git -c user.email=e2e@example.com -c user.name=e2e commit -m e2e >/dev/null && "+
+			"git push", cloneURL)
+	if out, errOut, code := execInSandbox(t, admin, fixture.sandboxID, "sh", "-c", clone); code != 0 {
+		t.Fatalf("clone and push: exit %d\nstdout %s\nstderr %s", code, out, errOut)
+	}
+	if !giteaRepoFileExists(t, gitGiteaUser(), repo, "pushed.txt") {
+		t.Fatal("the pushed file is not in the Gitea repository")
+	}
+
+	// The credential is issued per use and never persisted: compare what the
+	// endpoint returns now against the Workspace and the container config.
+	token := credentialPassword(t, fixture.sandboxToken, map[string]string{"provider": gitProviderID()})
+	if token == "" {
+		t.Fatal("the endpoint returned an empty token")
+	}
+	grep := fmt.Sprintf(`grep -rlF '%s' /workspace 2>/dev/null || true`, token)
+	if out, _, _ := execInSandbox(t, admin, fixture.sandboxID, "sh", "-c", grep); out != "" {
+		t.Fatalf("the Git token is written under /workspace:\n%s", out)
+	}
+	configs, _, _ := execInSandbox(t, admin, fixture.sandboxID, "sh", "-c",
+		`git -C /workspace/repo config --list`)
+	if strings.Contains(configs, token) {
+		t.Fatalf("git config holds the Git token:\n%s", configs)
+	}
+	if out, err := exec.Command("docker", "inspect", "stars-sandbox-"+fixture.sandboxID).CombinedOutput(); err != nil {
+		t.Fatalf("docker inspect: %v\n%s", err, out)
+	} else if strings.Contains(string(out), token) {
+		t.Fatalf("docker inspect exposes the Git token:\n%s", out)
+	}
+
+	// Every issue is audited with the host, provider and Sandbox, never the
+	// token (ADR-0013).
+	status, data := call(t, http.MethodGet,
+		"/api/v1/audit?action=git.token_issue&target="+fixture.sandboxID+"&limit=200", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /audit: %d %s", status, data)
+	}
+	var audit auditList
+	mustJSON(t, data, &audit)
+	if len(audit.Items) == 0 {
+		t.Fatal("no git.token_issue Audit Record")
+	}
+	hostSeen := false
+	for _, item := range audit.Items {
+		detail := string(item.Detail)
+		if strings.Contains(detail, token) {
+			t.Fatal("the Audit Record contains the token")
+		}
+		var fields struct {
+			Host     string `json:"host"`
+			Provider string `json:"provider"`
+		}
+		if json.Unmarshal(item.Detail, &fields) == nil &&
+			fields.Provider == gitProviderID() && fields.Host != "" {
+			hostSeen = true
+		}
+	}
+	if !hostSeen {
+		t.Fatalf("no Audit Record carries the repository host: %+v", audit.Items)
+	}
+}
+
+// TestGitUnlinked is the git-unlinked scenario (#80): with no link the helper
+// names the console's authorize URL on stderr and git fails.
+func TestGitUnlinked(t *testing.T) {
+	admin := adminToken(t)
+	fixture := newGitFixture(t, admin, false)
+	repo := fmt.Sprintf("unlinked-%d", time.Now().UnixNano())
+	createGiteaRepo(t, gitGiteaUser(), repo)
+	cloneURL := giteaBase() + "/" + gitGiteaUser() + "/" + repo + ".git"
+
+	if _, errOut, code := execInSandbox(t, admin, fixture.sandboxID,
+		"sh", "-c", "apk add --no-cache git >/dev/null 2>&1 || true"); code != 0 {
+		t.Fatalf("install git: %s", errOut)
+	}
+	stdout, stderr, code := execInSandbox(t, admin, fixture.sandboxID, "sh", "-c",
+		fmt.Sprintf("GIT_TERMINAL_PROMPT=0 git clone %s /workspace/repo", cloneURL))
+	if code == 0 {
+		t.Fatal("cloning a private repository without a link succeeded")
+	}
+	want := strings.TrimSuffix(envURL("STARS_E2E_ACCESS_URL", apiURL()), "/") + "/git"
+	if !strings.Contains(stdout+stderr, want) {
+		t.Fatalf("clone output does not name %s:\nstdout %s\nstderr %s", want, stdout, stderr)
+	}
+}
+
+// TestGitRefresh is the git-refresh scenario (#80): an expired link is
+// refreshed once even when many requests race, because the row lock
+// serializes them (ADR-0017). Gitea rotates refresh tokens, so a second
+// concurrent refresh would be rejected upstream.
+func TestGitRefresh(t *testing.T) {
+	admin := adminToken(t)
+	fixture := newGitFixture(t, admin, true)
+	// Fetch once so the link holds a token with a refresh token.
+	credentialPassword(t, fixture.sandboxToken, map[string]string{"provider": gitProviderID()})
+
+	updated := psqlCount(t, fmt.Sprintf(
+		"UPDATE git_links SET expires_at = now() - interval '1 hour' "+
+			"WHERE user_id = '%s' AND provider_id = '%s' RETURNING user_id",
+		fixture.userID, gitProviderID()))
+	if updated == "" {
+		t.Fatal("the Git link was not expired")
+	}
+
+	const racers = 8
+	type result struct {
+		status int
+		data   []byte
+		err    error
+	}
+	results := make([]result, racers)
+	var wg sync.WaitGroup
+	for n := range racers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			status, data, err := postJSON(http.MethodPost, "/api/v1/git/credential",
+				fixture.sandboxToken, map[string]string{"provider": gitProviderID()})
+			results[n] = result{status: status, data: data, err: err}
+		}(n)
+	}
+	wg.Wait()
+
+	passwords := make([]string, racers)
+	for n, res := range results {
+		if res.err != nil {
+			t.Fatalf("racer %d: %v", n, res.err)
+		}
+		if res.status != http.StatusOK {
+			t.Fatalf("racer %d: %d %s", n, res.status, res.data)
+		}
+		var cred struct {
+			Password string `json:"password"`
+		}
+		mustJSON(t, res.data, &cred)
+		passwords[n] = cred.Password
+	}
+	for n := 1; n < racers; n++ {
+		if passwords[n] != passwords[0] {
+			t.Fatalf("racers received different tokens: %d refreshed more than once", n)
+		}
+	}
+}
+
+// TestGitRevokedUpstream is the git-revoked-upstream scenario (#80): after the
+// owner revokes the provider grant, the endpoint returns the authorization URL
+// instead of a dead token.
+func TestGitRevokedUpstream(t *testing.T) {
+	admin := adminToken(t)
+	fixture := newGitFixture(t, admin, true)
+	credentialPassword(t, fixture.sandboxToken, map[string]string{"provider": gitProviderID()})
+
+	browser := newGiteaBrowser(t)
+	browser.login(t, gitGiteaUser(), gitGiteaPassword())
+	revokeGiteaGrant(t, browser)
+
+	status, data := call(t, http.MethodPost, "/api/v1/git/credential", fixture.sandboxToken,
+		map[string]string{"provider": gitProviderID()})
+	if status != http.StatusNotFound {
+		t.Fatalf("after upstream revocation: %d %s, want 404", status, data)
+	}
+	requireProblemCode(t, data, "not_found")
+	var problem struct {
+		AuthorizeURL string `json:"authorize_url"`
+	}
+	mustJSON(t, data, &problem)
+	if problem.AuthorizeURL == "" {
+		t.Fatalf("problem = %s, want an authorize_url", data)
+	}
+	if bytes.Contains(data, []byte(`"password"`)) {
+		t.Fatalf("a rejected token was issued: %s", data)
+	}
+}
+
+var (
+	giteaRevokeForm = regexp.MustCompile(`data-url="(/user/settings/applications/oauth2/\d+/revoke/\d+)"`)
+	giteaCSRFToken  = regexp.MustCompile(`csrfToken: '([^']+)'`)
+)
+
+// revokeGiteaGrant removes the user's authorization of the OAuth application
+// through Gitea's own settings page, the only place it offers.
+func revokeGiteaGrant(t *testing.T, browser *giteaBrowser) {
+	t.Helper()
+	resp, page := browser.get(t, browser.base+"/user/settings/applications")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Gitea applications page: %d %s", resp.StatusCode, page)
+	}
+	form := giteaRevokeForm.FindSubmatch(page)
+	if form == nil {
+		t.Fatalf("no OAuth2 grant to revoke on the page: %s", page)
+	}
+	csrf := giteaCSRFToken.FindSubmatch(page)
+	if csrf == nil {
+		t.Fatal("the Gitea settings page has no CSRF token")
+	}
+	req, err := http.NewRequest(http.MethodPost, browser.base+string(form[1]), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("x-csrf-token", string(csrf[1]))
+	resp, page = browser.do(t, req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke OAuth2 grant: %d %s", resp.StatusCode, page)
+	}
+}
+
+// do performs one browser request and drains its body.
+func (b *giteaBrowser) do(t *testing.T, req *http.Request) (*http.Response, []byte) {
+	t.Helper()
+	resp, err := b.client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", req.Method, req.URL, err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
