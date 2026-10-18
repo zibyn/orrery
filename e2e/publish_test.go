@@ -150,7 +150,7 @@ chmod -R a+rwX /workspace/src
 	assertTreesEqual(t, writeExpectedTree(t), dst)
 
 	// #90 retention: STARS_RESOURCE_VERSION_TTL=1s and
-	// STARS_PURGE_INTERVAL=1s (scripts/e2e.sh). A Sandbox pins the first
+	// STARS_TEST_PURGE_INTERVAL=1s (scripts/e2e.sh). A Sandbox pins the first
 	// version; two more publishes make it non-current, and the middle one
 	// becomes a non-current version with no reference.
 	status, data = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{

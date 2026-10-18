@@ -86,7 +86,8 @@ export STARS_ADMISSION_TIMEOUT="${STARS_ADMISSION_TIMEOUT:-10s}"
 # documented 10-minute cadence and 30-day TTL. Production defaults are
 # untouched; these are e2e-only overrides.
 export STARS_RESOURCE_VERSION_TTL="${STARS_RESOURCE_VERSION_TTL:-1s}"
-export STARS_PURGE_INTERVAL="${STARS_PURGE_INTERVAL:-1s}"
+# Test hook only: production uses the 10-minute constant (defaults.md).
+export STARS_TEST_PURGE_INTERVAL="${STARS_TEST_PURGE_INTERVAL:-1s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
 export STARS_APPS_DOMAIN="${STARS_APPS_DOMAIN:-apps.test}"
