@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,12 +14,16 @@ import (
 )
 
 // buildkitClient connects to the Node's BuildKit endpoint (ADR-0021). With no
-// explicit --buildkit address, the Docker daemon's built-in BuildKit is the
-// endpoint: the Docker socket accepts an h2c upgrade on /grpc and the BuildKit
-// gRPC client runs over that hijacked connection.
+// explicit --buildkit address, only dockerd offers an endpoint: the Docker
+// socket accepts an h2c upgrade on /grpc and the BuildKit gRPC client runs over
+// that hijacked connection. Podman has no /grpc upgrade, so no address means
+// no endpoint and snapshot_build stays unsupported (runtime.md §12).
 func (r *Runtime) buildkitClient(ctx context.Context) (*client.Client, error) {
 	if r.buildkit != "" {
 		return client.New(ctx, r.buildkit)
+	}
+	if r.provider != ProviderDocker {
+		return nil, errors.New("no BuildKit endpoint configured")
 	}
 	return client.New(ctx, "", client.WithContextDialer(dockerGRPCDialer(r.socket)))
 }

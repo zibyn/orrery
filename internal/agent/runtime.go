@@ -41,9 +41,14 @@ const (
 type Runtime struct {
 	d        *dockerClient
 	dataRoot string
-	// socket is the Docker Engine socket. It is also the default BuildKit
-	// endpoint (dockerd's built-in BuildKit via /grpc).
+	// socket is the Engine API socket. It is also the default BuildKit
+	// endpoint for Docker (dockerd's built-in BuildKit via /grpc).
 	socket string
+	// provider is the Node's single Runtime Provider (node-protocol.md).
+	provider string
+	// owner maps host paths to the rootless Podman user (runtime.md §9); nil
+	// for rootful Docker, whose container root maps to host root.
+	owner *rootlessOwner
 	// buildkit is the Agent-configured BuildKit endpoint. Empty means the
 	// Docker daemon's built-in BuildKit.
 	buildkit string
@@ -74,10 +79,16 @@ type Runtime struct {
 }
 
 func NewRuntime(socket, dataRoot string) *Runtime {
+	return newRuntime(configForSocket(socket), dataRoot)
+}
+
+func newRuntime(cfg runtimeConfig, dataRoot string) *Runtime {
 	return &Runtime{
-		d:              &dockerClient{http: unixHTTPClient(socket)},
+		d:              &dockerClient{http: unixHTTPClient(cfg.socket)},
 		dataRoot:       dataRoot,
-		socket:         socket,
+		socket:         cfg.socket,
+		provider:       cfg.provider,
+		owner:          cfg.owner,
 		execs:          make(map[string]struct{}),
 		ptyAttachments: make(map[string]int),
 		buildCancels:   make(map[string]context.CancelCauseFunc),
@@ -188,7 +199,12 @@ func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {
 		return err
 	}
 	// MkdirAll is subject to umask; the Sandbox user must be able to write.
-	return os.Chmod(path, 0o777)
+	if err := os.Chmod(path, 0o777); err != nil {
+		return err
+	}
+	// Rootless Podman maps container root to the invoking user, so the host
+	// directory must belong to that user (runtime.md §9).
+	return r.owner.own(path)
 }
 
 func (r *Runtime) deleteWorkspace(workspaceID uuid.UUID) error {
@@ -221,6 +237,11 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	if err := os.Chmod(workspace, 0o777); err != nil {
 		return "runtime_create_failed", err
 	}
+	// Rootless Podman maps container root to the invoking user, so the host
+	// directory must belong to that user (runtime.md §9).
+	if err := r.owner.own(workspace); err != nil {
+		return "runtime_create_failed", err
+	}
 	// The image's default USER writes here; rootful and rootless map that uid
 	// differently, so the Agent cannot chown it correctly without knowing the
 	// image. ponytail: world-writable, per-uid chown when USERs become common.
@@ -229,6 +250,9 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 		return "runtime_create_failed", err
 	}
 	if err := os.Chmod(runDir, 0o777); err != nil {
+		return "runtime_create_failed", err
+	}
+	if err := r.owner.own(runDir); err != nil {
 		return "runtime_create_failed", err
 	}
 	mode := cmd.workspaceMode
