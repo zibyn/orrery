@@ -1986,7 +1986,10 @@ type CreateSandbox struct {
 	Workspace   *WorkspaceMount `protobuf:"bytes,6,opt,name=workspace,proto3" json:"workspace,omitempty"`
 	// Whole cards, named by their platform UUID (ADR-0015). The Agent attaches
 	// them with CDI and fails a readback that does not show them (runtime.md §9).
-	GpuUuids      []string `protobuf:"bytes,7,rep,name=gpu_uuids,json=gpuUuids,proto3" json:"gpu_uuids,omitempty"` // Resource and Secret mounts arrive with later tickets.
+	GpuUuids []string `protobuf:"bytes,7,rep,name=gpu_uuids,json=gpuUuids,proto3" json:"gpu_uuids,omitempty"`
+	// Resource versions to fetch into the Node cache and mount read-only at
+	// /resources/<mount> (runtime.md §11). Objects travel through Presign.
+	Resources     []*ResourceMount `protobuf:"bytes,8,rep,name=resources,proto3" json:"resources,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2070,6 +2073,67 @@ func (x *CreateSandbox) GetGpuUuids() []string {
 	return nil
 }
 
+func (x *CreateSandbox) GetResources() []*ResourceMount {
+	if x != nil {
+		return x.Resources
+	}
+	return nil
+}
+
+type ResourceMount struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// ResourceVersion manifest address.
+	Address string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	// One path segment; the mount point is /resources/<mount>.
+	Mount         string `protobuf:"bytes,2,opt,name=mount,proto3" json:"mount,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResourceMount) Reset() {
+	*x = ResourceMount{}
+	mi := &file_node_v1_node_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResourceMount) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResourceMount) ProtoMessage() {}
+
+func (x *ResourceMount) ProtoReflect() protoreflect.Message {
+	mi := &file_node_v1_node_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResourceMount.ProtoReflect.Descriptor instead.
+func (*ResourceMount) Descriptor() ([]byte, []int) {
+	return file_node_v1_node_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ResourceMount) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *ResourceMount) GetMount() string {
+	if x != nil {
+		return x.Mount
+	}
+	return ""
+}
+
 type Limits struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Cores, e.g. 0.5.
@@ -2081,7 +2145,7 @@ type Limits struct {
 
 func (x *Limits) Reset() {
 	*x = Limits{}
-	mi := &file_node_v1_node_proto_msgTypes[28]
+	mi := &file_node_v1_node_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2093,7 +2157,7 @@ func (x *Limits) String() string {
 func (*Limits) ProtoMessage() {}
 
 func (x *Limits) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[28]
+	mi := &file_node_v1_node_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2106,7 +2170,7 @@ func (x *Limits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Limits.ProtoReflect.Descriptor instead.
 func (*Limits) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{28}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *Limits) GetCpu() float64 {
@@ -2134,7 +2198,7 @@ type WorkspaceMount struct {
 
 func (x *WorkspaceMount) Reset() {
 	*x = WorkspaceMount{}
-	mi := &file_node_v1_node_proto_msgTypes[29]
+	mi := &file_node_v1_node_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2146,7 +2210,7 @@ func (x *WorkspaceMount) String() string {
 func (*WorkspaceMount) ProtoMessage() {}
 
 func (x *WorkspaceMount) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[29]
+	mi := &file_node_v1_node_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2159,7 +2223,7 @@ func (x *WorkspaceMount) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspaceMount.ProtoReflect.Descriptor instead.
 func (*WorkspaceMount) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{29}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *WorkspaceMount) GetWorkspaceId() string {
@@ -2187,7 +2251,7 @@ type StopSandbox struct {
 
 func (x *StopSandbox) Reset() {
 	*x = StopSandbox{}
-	mi := &file_node_v1_node_proto_msgTypes[30]
+	mi := &file_node_v1_node_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2199,7 +2263,7 @@ func (x *StopSandbox) String() string {
 func (*StopSandbox) ProtoMessage() {}
 
 func (x *StopSandbox) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[30]
+	mi := &file_node_v1_node_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2212,7 +2276,7 @@ func (x *StopSandbox) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSandbox.ProtoReflect.Descriptor instead.
 func (*StopSandbox) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{30}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *StopSandbox) GetCommandId() string {
@@ -2259,7 +2323,7 @@ type StartExec struct {
 
 func (x *StartExec) Reset() {
 	*x = StartExec{}
-	mi := &file_node_v1_node_proto_msgTypes[31]
+	mi := &file_node_v1_node_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2271,7 +2335,7 @@ func (x *StartExec) String() string {
 func (*StartExec) ProtoMessage() {}
 
 func (x *StartExec) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[31]
+	mi := &file_node_v1_node_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2284,7 +2348,7 @@ func (x *StartExec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartExec.ProtoReflect.Descriptor instead.
 func (*StartExec) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{31}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *StartExec) GetCommandId() string {
@@ -2388,7 +2452,7 @@ type CancelExec struct {
 
 func (x *CancelExec) Reset() {
 	*x = CancelExec{}
-	mi := &file_node_v1_node_proto_msgTypes[32]
+	mi := &file_node_v1_node_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2400,7 +2464,7 @@ func (x *CancelExec) String() string {
 func (*CancelExec) ProtoMessage() {}
 
 func (x *CancelExec) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[32]
+	mi := &file_node_v1_node_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2413,7 +2477,7 @@ func (x *CancelExec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelExec.ProtoReflect.Descriptor instead.
 func (*CancelExec) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{32}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *CancelExec) GetCommandId() string {
@@ -2447,7 +2511,7 @@ type OutputFrame struct {
 
 func (x *OutputFrame) Reset() {
 	*x = OutputFrame{}
-	mi := &file_node_v1_node_proto_msgTypes[33]
+	mi := &file_node_v1_node_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2459,7 +2523,7 @@ func (x *OutputFrame) String() string {
 func (*OutputFrame) ProtoMessage() {}
 
 func (x *OutputFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[33]
+	mi := &file_node_v1_node_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2472,7 +2536,7 @@ func (x *OutputFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputFrame.ProtoReflect.Descriptor instead.
 func (*OutputFrame) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{33}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *OutputFrame) GetSeq() int64 {
@@ -2527,7 +2591,7 @@ type OutputBatch struct {
 
 func (x *OutputBatch) Reset() {
 	*x = OutputBatch{}
-	mi := &file_node_v1_node_proto_msgTypes[34]
+	mi := &file_node_v1_node_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2539,7 +2603,7 @@ func (x *OutputBatch) String() string {
 func (*OutputBatch) ProtoMessage() {}
 
 func (x *OutputBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[34]
+	mi := &file_node_v1_node_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2552,7 +2616,7 @@ func (x *OutputBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputBatch.ProtoReflect.Descriptor instead.
 func (*OutputBatch) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{34}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *OutputBatch) GetExecId() string {
@@ -2579,7 +2643,7 @@ type OutputAck struct {
 
 func (x *OutputAck) Reset() {
 	*x = OutputAck{}
-	mi := &file_node_v1_node_proto_msgTypes[35]
+	mi := &file_node_v1_node_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2591,7 +2655,7 @@ func (x *OutputAck) String() string {
 func (*OutputAck) ProtoMessage() {}
 
 func (x *OutputAck) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[35]
+	mi := &file_node_v1_node_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2604,7 +2668,7 @@ func (x *OutputAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputAck.ProtoReflect.Descriptor instead.
 func (*OutputAck) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{35}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *OutputAck) GetExecId() string {
@@ -2633,7 +2697,7 @@ type HelloAck struct {
 
 func (x *HelloAck) Reset() {
 	*x = HelloAck{}
-	mi := &file_node_v1_node_proto_msgTypes[36]
+	mi := &file_node_v1_node_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2645,7 +2709,7 @@ func (x *HelloAck) String() string {
 func (*HelloAck) ProtoMessage() {}
 
 func (x *HelloAck) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[36]
+	mi := &file_node_v1_node_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2658,7 +2722,7 @@ func (x *HelloAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HelloAck.ProtoReflect.Descriptor instead.
 func (*HelloAck) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{36}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *HelloAck) GetAccepted() bool {
@@ -2832,7 +2896,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x03R\n" +
-	"generation\"\x99\x02\n" +
+	"generation\"\xd5\x02\n" +
 	"\rCreateSandbox\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x1d\n" +
@@ -2844,7 +2908,11 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\fimage_digest\x18\x04 \x01(\tR\vimageDigest\x12-\n" +
 	"\x06limits\x18\x05 \x01(\v2\x15.stars.node.v1.LimitsR\x06limits\x12;\n" +
 	"\tworkspace\x18\x06 \x01(\v2\x1d.stars.node.v1.WorkspaceMountR\tworkspace\x12\x1b\n" +
-	"\tgpu_uuids\x18\a \x03(\tR\bgpuUuids\"2\n" +
+	"\tgpu_uuids\x18\a \x03(\tR\bgpuUuids\x12:\n" +
+	"\tresources\x18\b \x03(\v2\x1c.stars.node.v1.ResourceMountR\tresources\"?\n" +
+	"\rResourceMount\x12\x18\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x14\n" +
+	"\x05mount\x18\x02 \x01(\tR\x05mount\"2\n" +
 	"\x06Limits\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\x01R\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x02 \x01(\x03R\x06memory\"G\n" +
@@ -2937,7 +3005,7 @@ func file_node_v1_node_proto_rawDescGZIP() []byte {
 }
 
 var file_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
+var file_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_node_v1_node_proto_goTypes = []any{
 	(CapabilityValue)(0),       // 0: stars.node.v1.CapabilityValue
 	(*ManifestChunk)(nil),      // 1: stars.node.v1.ManifestChunk
@@ -2968,17 +3036,18 @@ var file_node_v1_node_proto_goTypes = []any{
 	(*ProvisionWorkspace)(nil), // 26: stars.node.v1.ProvisionWorkspace
 	(*DeleteWorkspace)(nil),    // 27: stars.node.v1.DeleteWorkspace
 	(*CreateSandbox)(nil),      // 28: stars.node.v1.CreateSandbox
-	(*Limits)(nil),             // 29: stars.node.v1.Limits
-	(*WorkspaceMount)(nil),     // 30: stars.node.v1.WorkspaceMount
-	(*StopSandbox)(nil),        // 31: stars.node.v1.StopSandbox
-	(*StartExec)(nil),          // 32: stars.node.v1.StartExec
-	(*CancelExec)(nil),         // 33: stars.node.v1.CancelExec
-	(*OutputFrame)(nil),        // 34: stars.node.v1.OutputFrame
-	(*OutputBatch)(nil),        // 35: stars.node.v1.OutputBatch
-	(*OutputAck)(nil),          // 36: stars.node.v1.OutputAck
-	(*HelloAck)(nil),           // 37: stars.node.v1.HelloAck
-	nil,                        // 38: stars.node.v1.StartExec.EnvEntry
-	nil,                        // 39: stars.node.v1.StartExec.SecretEnvEntry
+	(*ResourceMount)(nil),      // 29: stars.node.v1.ResourceMount
+	(*Limits)(nil),             // 30: stars.node.v1.Limits
+	(*WorkspaceMount)(nil),     // 31: stars.node.v1.WorkspaceMount
+	(*StopSandbox)(nil),        // 32: stars.node.v1.StopSandbox
+	(*StartExec)(nil),          // 33: stars.node.v1.StartExec
+	(*CancelExec)(nil),         // 34: stars.node.v1.CancelExec
+	(*OutputFrame)(nil),        // 35: stars.node.v1.OutputFrame
+	(*OutputBatch)(nil),        // 36: stars.node.v1.OutputBatch
+	(*OutputAck)(nil),          // 37: stars.node.v1.OutputAck
+	(*HelloAck)(nil),           // 38: stars.node.v1.HelloAck
+	nil,                        // 39: stars.node.v1.StartExec.EnvEntry
+	nil,                        // 40: stars.node.v1.StartExec.SecretEnvEntry
 }
 var file_node_v1_node_proto_depIdxs = []int32{
 	2,  // 0: stars.node.v1.ManifestChunk.entries:type_name -> stars.node.v1.ManifestEntry
@@ -2993,40 +3062,41 @@ var file_node_v1_node_proto_depIdxs = []int32{
 	13, // 9: stars.node.v1.Capabilities.entries:type_name -> stars.node.v1.CapabilityEntry
 	14, // 10: stars.node.v1.Capabilities.gpus:type_name -> stars.node.v1.GPU
 	0,  // 11: stars.node.v1.CapabilityEntry.value:type_name -> stars.node.v1.CapabilityValue
-	37, // 12: stars.node.v1.ControlMessage.hello_ack:type_name -> stars.node.v1.HelloAck
+	38, // 12: stars.node.v1.ControlMessage.hello_ack:type_name -> stars.node.v1.HelloAck
 	26, // 13: stars.node.v1.ControlMessage.provision_workspace:type_name -> stars.node.v1.ProvisionWorkspace
 	27, // 14: stars.node.v1.ControlMessage.delete_workspace:type_name -> stars.node.v1.DeleteWorkspace
 	28, // 15: stars.node.v1.ControlMessage.create_sandbox:type_name -> stars.node.v1.CreateSandbox
-	31, // 16: stars.node.v1.ControlMessage.stop_sandbox:type_name -> stars.node.v1.StopSandbox
-	32, // 17: stars.node.v1.ControlMessage.start_exec:type_name -> stars.node.v1.StartExec
-	33, // 18: stars.node.v1.ControlMessage.cancel_exec:type_name -> stars.node.v1.CancelExec
+	32, // 16: stars.node.v1.ControlMessage.stop_sandbox:type_name -> stars.node.v1.StopSandbox
+	33, // 17: stars.node.v1.ControlMessage.start_exec:type_name -> stars.node.v1.StartExec
+	34, // 18: stars.node.v1.ControlMessage.cancel_exec:type_name -> stars.node.v1.CancelExec
 	21, // 19: stars.node.v1.ControlMessage.open_tunnel:type_name -> stars.node.v1.OpenTunnel
 	20, // 20: stars.node.v1.ControlMessage.publish_workspace:type_name -> stars.node.v1.PublishWorkspace
 	22, // 21: stars.node.v1.OpenTunnel.agent_http:type_name -> stars.node.v1.AgentHTTP
 	23, // 22: stars.node.v1.OpenTunnel.sandbox_port:type_name -> stars.node.v1.SandboxPort
-	29, // 23: stars.node.v1.CreateSandbox.limits:type_name -> stars.node.v1.Limits
-	30, // 24: stars.node.v1.CreateSandbox.workspace:type_name -> stars.node.v1.WorkspaceMount
-	38, // 25: stars.node.v1.StartExec.env:type_name -> stars.node.v1.StartExec.EnvEntry
-	39, // 26: stars.node.v1.StartExec.secret_env:type_name -> stars.node.v1.StartExec.SecretEnvEntry
-	25, // 27: stars.node.v1.StartExec.pty:type_name -> stars.node.v1.PtySpec
-	34, // 28: stars.node.v1.OutputBatch.frames:type_name -> stars.node.v1.OutputFrame
-	6,  // 29: stars.node.v1.Node.Redeem:input_type -> stars.node.v1.RedeemRequest
-	8,  // 30: stars.node.v1.Node.Control:input_type -> stars.node.v1.AgentMessage
-	35, // 31: stars.node.v1.Node.ExecOutput:input_type -> stars.node.v1.OutputBatch
-	24, // 32: stars.node.v1.Node.Tunnel:input_type -> stars.node.v1.TunnelFrame
-	4,  // 33: stars.node.v1.Node.Presign:input_type -> stars.node.v1.PresignRequest
-	1,  // 34: stars.node.v1.Node.SubmitManifest:input_type -> stars.node.v1.ManifestChunk
-	7,  // 35: stars.node.v1.Node.Redeem:output_type -> stars.node.v1.RedeemResponse
-	19, // 36: stars.node.v1.Node.Control:output_type -> stars.node.v1.ControlMessage
-	36, // 37: stars.node.v1.Node.ExecOutput:output_type -> stars.node.v1.OutputAck
-	24, // 38: stars.node.v1.Node.Tunnel:output_type -> stars.node.v1.TunnelFrame
-	5,  // 39: stars.node.v1.Node.Presign:output_type -> stars.node.v1.PresignResponse
-	3,  // 40: stars.node.v1.Node.SubmitManifest:output_type -> stars.node.v1.ManifestAck
-	35, // [35:41] is the sub-list for method output_type
-	29, // [29:35] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	30, // 23: stars.node.v1.CreateSandbox.limits:type_name -> stars.node.v1.Limits
+	31, // 24: stars.node.v1.CreateSandbox.workspace:type_name -> stars.node.v1.WorkspaceMount
+	29, // 25: stars.node.v1.CreateSandbox.resources:type_name -> stars.node.v1.ResourceMount
+	39, // 26: stars.node.v1.StartExec.env:type_name -> stars.node.v1.StartExec.EnvEntry
+	40, // 27: stars.node.v1.StartExec.secret_env:type_name -> stars.node.v1.StartExec.SecretEnvEntry
+	25, // 28: stars.node.v1.StartExec.pty:type_name -> stars.node.v1.PtySpec
+	35, // 29: stars.node.v1.OutputBatch.frames:type_name -> stars.node.v1.OutputFrame
+	6,  // 30: stars.node.v1.Node.Redeem:input_type -> stars.node.v1.RedeemRequest
+	8,  // 31: stars.node.v1.Node.Control:input_type -> stars.node.v1.AgentMessage
+	36, // 32: stars.node.v1.Node.ExecOutput:input_type -> stars.node.v1.OutputBatch
+	24, // 33: stars.node.v1.Node.Tunnel:input_type -> stars.node.v1.TunnelFrame
+	4,  // 34: stars.node.v1.Node.Presign:input_type -> stars.node.v1.PresignRequest
+	1,  // 35: stars.node.v1.Node.SubmitManifest:input_type -> stars.node.v1.ManifestChunk
+	7,  // 36: stars.node.v1.Node.Redeem:output_type -> stars.node.v1.RedeemResponse
+	19, // 37: stars.node.v1.Node.Control:output_type -> stars.node.v1.ControlMessage
+	37, // 38: stars.node.v1.Node.ExecOutput:output_type -> stars.node.v1.OutputAck
+	24, // 39: stars.node.v1.Node.Tunnel:output_type -> stars.node.v1.TunnelFrame
+	5,  // 40: stars.node.v1.Node.Presign:output_type -> stars.node.v1.PresignResponse
+	3,  // 41: stars.node.v1.Node.SubmitManifest:output_type -> stars.node.v1.ManifestAck
+	36, // [36:42] is the sub-list for method output_type
+	30, // [30:36] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_node_v1_node_proto_init() }
@@ -3059,14 +3129,14 @@ func file_node_v1_node_proto_init() {
 		(*OpenTunnel_AgentHttp)(nil),
 		(*OpenTunnel_SandboxPort)(nil),
 	}
-	file_node_v1_node_proto_msgTypes[33].OneofWrappers = []any{}
+	file_node_v1_node_proto_msgTypes[34].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_node_v1_node_proto_rawDesc), len(file_node_v1_node_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   39,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

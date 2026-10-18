@@ -212,6 +212,13 @@ type Sandbox struct {
 	WorkspaceID     *uuid.UUID
 	WorkspaceMode   string
 	TokenKeyID      *string
+	Conditions      json.RawMessage
+}
+
+type SandboxResource struct {
+	SandboxID         uuid.UUID
+	ResourceVersionID uuid.UUID
+	Mount             string
 }
 
 type Secret struct {

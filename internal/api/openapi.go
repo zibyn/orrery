@@ -542,6 +542,19 @@ func schemas() map[string]any {
 					},
 				},
 				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name; omit for the deployment default digest."},
+				"resources": map[string]any{
+					"type":        "array",
+					"description": "Resource versions pinned at create time and mounted read-only at /resources/<mount>.",
+					"items": map[string]any{
+						"type":     "object",
+						"required": []string{"resource"},
+						"properties": map[string]any{
+							"resource": map[string]any{"type": "string", "description": "Resource id or owner-scoped name."},
+							"version":  map[string]any{"type": "string", "format": "uuid", "description": "ResourceVersion id; omit for the current version."},
+							"mount":    map[string]any{"type": "string", "description": "One path segment; defaults to the Resource name."},
+						},
+					},
+				},
 				"secrets": map[string]any{
 					"type":                 "object",
 					"description":          "Environment variable name to Secret name; injected into every Exec.",
@@ -562,7 +575,7 @@ func schemas() map[string]any {
 		},
 		"Sandbox": map[string]any{
 			"type":     "object",
-			"required": []string{"id", "name", "labels", "state", "snapshot", "cpu", "memory", "idle_stop", "created_at"},
+			"required": []string{"id", "name", "labels", "state", "snapshot", "conditions", "cpu", "memory", "idle_stop", "created_at"},
 			"properties": map[string]any{
 				"id":       map[string]any{"type": "string", "format": "uuid"},
 				"name":     map[string]any{"type": "string"},
@@ -582,6 +595,7 @@ func schemas() map[string]any {
 					"required": []string{"count"},
 				},
 				"idle_stop":      map[string]any{"type": "integer"},
+				"conditions":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Current conditions, e.g. fetching_resources while the Node pulls Resource version trees."},
 				"workspace":      schemaRef("SandboxWorkspace"),
 				"queue_position": map[string]any{"type": "integer", "description": "1-based position in the admission queue while pending."},
 				"blocked_reason": nullableString,

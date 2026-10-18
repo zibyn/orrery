@@ -244,7 +244,16 @@ message CreateSandbox {
   // Whole cards, named by their platform UUID (ADR-0015). The Agent attaches
   // them with CDI and fails a readback that does not show them (runtime.md §9).
   repeated string gpu_uuids = 7;
-  // Resource and Secret mounts arrive with later tickets.
+  // Resource versions to fetch into the Node cache and mount read-only at
+  // /resources/<mount> (runtime.md §11). Objects travel through Presign.
+  repeated ResourceMount resources = 8;
+}
+
+message ResourceMount {
+  // ResourceVersion manifest address.
+  string address = 1;
+  // One path segment; the mount point is /resources/<mount>.
+  string mount = 2;
 }
 
 message Limits {
