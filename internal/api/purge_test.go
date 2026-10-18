@@ -41,6 +41,23 @@ func TestResourceVersionExpired(t *testing.T) {
 	}
 }
 
+func TestSnapshotVersionCleanable(t *testing.T) {
+	// A Snapshot deleted mid-build keeps its building version so the build
+	// sweep can still release the Sandbox and Allocation (ADR-0014); terminal
+	// versions are tombstone garbage.
+	cases := map[string]bool{
+		"building":  false,
+		"ready":     true,
+		"failed":    true,
+		"cancelled": true,
+	}
+	for state, want := range cases {
+		if got := snapshotVersionCleanable(state); got != want {
+			t.Fatalf("cleanable(%q) = %v, want %v", state, got, want)
+		}
+	}
+}
+
 func TestCASSweepable(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	grace := 24 * time.Hour

@@ -1281,9 +1281,13 @@ LIMIT $1;
 UPDATE snapshots SET current_version_id = NULL
 WHERE id = $1 AND deleted_at IS NOT NULL;
 
+-- A Snapshot deleted mid-build must keep its building version: the build row
+-- still owns the Sandbox and Exec that release its allocation. Only terminal
+-- versions are tombstone garbage.
 -- name: ListSnapshotVersionsForCleanup :many
 SELECT * FROM snapshot_versions
 WHERE snapshot_id = $1
+  AND state <> 'building'
 ORDER BY id
 LIMIT $2;
 

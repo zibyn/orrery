@@ -323,6 +323,15 @@ func (s *Server) purgeResourceTombstones(ctx context.Context, q *store.Queries) 
 	return nil
 }
 
+// snapshotVersionCleanable reports whether a tombstoned Snapshot's version may
+// be removed. A building version still belongs to the build sweep, which
+// releases its Sandbox and Allocation; a later sweep removes it once terminal.
+func snapshotVersionCleanable(state string) bool {
+	return state == string(SnapshotVersionReady) ||
+		state == string(SnapshotVersionFailed) ||
+		state == string(SnapshotVersionCancelled)
+}
+
 // purgeSnapshotTombstones removes each version of a deleted Snapshot once the
 // last Sandbox reference is gone: the registry manifest first, then the row,
 // and finally the Snapshot. Blob GC stays an operator procedure (ADR-0014).
@@ -346,6 +355,11 @@ func (s *Server) purgeSnapshotTombstones(ctx context.Context, q *store.Queries) 
 			return fmt.Errorf("list Snapshot versions for cleanup: %w", err)
 		}
 		for _, version := range versions {
+			if !snapshotVersionCleanable(version.State) {
+				// The build sweep still owns this version, its Sandbox and its
+				// Exec; deleting it would strand the allocation (ADR-0014).
+				continue
+			}
 			if version.Digest != nil {
 				ref := repo + "@" + *version.Digest
 				count, err := q.CountSandboxSnapshotReferences(ctx, ref)

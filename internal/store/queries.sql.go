@@ -4410,6 +4410,7 @@ func (q *Queries) ListSnapshotVersions(ctx context.Context, arg ListSnapshotVers
 const listSnapshotVersionsForCleanup = `-- name: ListSnapshotVersionsForCleanup :many
 SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
 WHERE snapshot_id = $1
+  AND state <> 'building'
 ORDER BY id
 LIMIT $2
 `
@@ -4419,6 +4420,9 @@ type ListSnapshotVersionsForCleanupParams struct {
 	Limit      int32
 }
 
+// A Snapshot deleted mid-build must keep its building version: the build row
+// still owns the Sandbox and Exec that release its allocation. Only terminal
+// versions are tombstone garbage.
 func (q *Queries) ListSnapshotVersionsForCleanup(ctx context.Context, arg ListSnapshotVersionsForCleanupParams) ([]SnapshotVersion, error) {
 	rows, err := q.db.Query(ctx, listSnapshotVersionsForCleanup, arg.SnapshotID, arg.Limit)
 	if err != nil {
