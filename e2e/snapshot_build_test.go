@@ -273,17 +273,21 @@ func readCgroupFile(dir, name string) string {
 
 func dockerInspect(t *testing.T, ref, format string) string {
 	t.Helper()
-	var last []byte
-	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		out, err := exec.Command("docker", "image", "inspect", ref, "--format", format).CombinedOutput()
+	var diagnostics []string
+	for attempt := 0; attempt < 20; attempt++ {
+		cmd := exec.Command("docker", "image", "inspect", ref, "--format", format)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
 		if err == nil {
-			return string(out)
+			return stdout.String()
 		}
-		last, lastErr = out, err
-		time.Sleep(200 * time.Millisecond)
+		diagnostics = append(diagnostics,
+			fmt.Sprintf("attempt %d: %v stdout=%q stderr=%q", attempt, err, stdout.String(), stderr.String()))
+		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatalf("docker image inspect %s: %v\n%s", ref, lastErr, last)
+	images, _ := exec.Command("docker", "images", "--no-trunc", "--digests").CombinedOutput()
+	t.Fatalf("docker image inspect %s failed:\n%s\nimages:\n%s", ref, strings.Join(diagnostics, "\n"), images)
 	return ""
 }
 
