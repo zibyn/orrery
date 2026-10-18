@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zibyn/stars-sandbox/internal/keyring"
+	"github.com/zibyn/stars-sandbox/internal/registry"
 )
 
 // Config is the deployment configuration. Values that defaults.md marks as
@@ -21,8 +22,12 @@ type Config struct {
 	EnrollmentPacketTTL time.Duration
 	DefaultGPUQuota     int32
 	DefaultSandboxQuota int32
-	// SnapshotDigest is the deployment default when a create omits snapshot.
-	SnapshotDigest string
+	// PlatformSnapshots are the deployment's platform images (defaults.md,
+	// STARS_PLATFORM_SNAPSHOTS). The Control Plane imports them at startup.
+	PlatformSnapshots []PlatformSnapshot
+	// DefaultSnapshot is the platform Snapshot name used when a Sandbox
+	// create omits snapshot (defaults.md, STARS_DEFAULT_SNAPSHOT).
+	DefaultSnapshot string
 	// ExecLogCap bounds an Execution Log (defaults.md, 16 MiB).
 	ExecLogCap int64
 	// ExecLogRetention keeps an Execution Log this long after its Exec is
@@ -62,9 +67,22 @@ type Config struct {
 	// RegistryAddr is the Node-reachable address of the platform OCI registry
 	// (ADR-0014), e.g. "127.0.0.1:15000". Empty means no registry is deployed.
 	RegistryAddr string
+	// RegistryPushAddr is the address the Control Plane pushes imports to.
+	// It differs from RegistryAddr inside a container, where 127.0.0.1 is the
+	// Control Plane itself. Empty means RegistryAddr.
+	RegistryPushAddr string
 	// RegistryCredential is the Docker config.json auth document handed to
 	// Nodes in HelloAck, e.g. {"auths":{"host":{"auth":"base64(user:pass)"}}}.
 	RegistryCredential string
+	// RegistryCredentialDoc is the parsed credential. It must resolve
+	// RegistryPushAddr as well as RegistryAddr (see ConfigFromEnv).
+	RegistryCredentialDoc *registry.Credential
+}
+
+// PlatformSnapshot is one STARS_PLATFORM_SNAPSHOTS entry.
+type PlatformSnapshot struct {
+	Name string
+	Ref  string // ref@sha256:…
 }
 
 // S3Config is the S3-compatible object store configuration (defaults.md).
@@ -95,15 +113,14 @@ func (c OIDCConfig) Enabled() bool { return c.IssuerURL != "" }
 
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		DatabaseURL:    os.Getenv("STARS_DATABASE_URL"),
-		Addr:           envOr("STARS_API_ADDR", ":8080"),
-		NodeAddr:       envOr("STARS_NODE_ADDR", ":8081"),
-		NodeTLSCert:    os.Getenv("STARS_NODE_TLS_CERT"),
-		NodeTLSKey:     os.Getenv("STARS_NODE_TLS_KEY"),
-		SnapshotDigest: os.Getenv("STARS_DEFAULT_SNAPSHOT_DIGEST"),
-		AppsDomain:     os.Getenv("STARS_APPS_DOMAIN"),
-		PortTicketKey:  []byte(os.Getenv("STARS_PORT_TICKET_KEY")),
-		AccessURL:      os.Getenv("STARS_ACCESS_URL"),
+		DatabaseURL:   os.Getenv("STARS_DATABASE_URL"),
+		Addr:          envOr("STARS_API_ADDR", ":8080"),
+		NodeAddr:      envOr("STARS_NODE_ADDR", ":8081"),
+		NodeTLSCert:   os.Getenv("STARS_NODE_TLS_CERT"),
+		NodeTLSKey:    os.Getenv("STARS_NODE_TLS_KEY"),
+		AppsDomain:    os.Getenv("STARS_APPS_DOMAIN"),
+		PortTicketKey: []byte(os.Getenv("STARS_PORT_TICKET_KEY")),
+		AccessURL:     os.Getenv("STARS_ACCESS_URL"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("STARS_DATABASE_URL is required")
@@ -163,8 +180,65 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	cfg.RegistryAddr = os.Getenv("STARS_REGISTRY_ADDR")
+	cfg.RegistryPushAddr = envOr("STARS_REGISTRY_PUSH_ADDR", cfg.RegistryAddr)
 	cfg.RegistryCredential = os.Getenv("STARS_REGISTRY_CREDENTIAL")
+	if cfg.RegistryCredentialDoc, err = registry.ParseCredential(cfg.RegistryCredential); err != nil {
+		return Config{}, err
+	}
+	// A single credential document serves Nodes and the Control Plane. When
+	// the deployment lists only the Node-reachable host, let the push host
+	// reuse that entry instead of failing the platform import at startup.
+	cfg.RegistryCredentialDoc.Alias(cfg.RegistryPushAddr, cfg.RegistryAddr)
+	if cfg.PlatformSnapshots, err = parsePlatformSnapshots(os.Getenv("STARS_PLATFORM_SNAPSHOTS")); err != nil {
+		return Config{}, err
+	}
+	cfg.DefaultSnapshot = os.Getenv("STARS_DEFAULT_SNAPSHOT")
+	if cfg.DefaultSnapshot != "" {
+		found := false
+		for _, snapshot := range cfg.PlatformSnapshots {
+			if snapshot.Name == cfg.DefaultSnapshot {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return Config{}, fmt.Errorf("STARS_DEFAULT_SNAPSHOT must name an entry of STARS_PLATFORM_SNAPSHOTS")
+		}
+	}
 	return cfg, nil
+}
+
+// parsePlatformSnapshots reads `name=ref@sha256:…,…` (defaults.md). Names and
+// refs are validated here so a broken deployment fails at startup rather than
+// at the first Sandbox create.
+func parsePlatformSnapshots(raw string) ([]PlatformSnapshot, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	var snapshots []PlatformSnapshot
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, ref, ok := strings.Cut(entry, "=")
+		if !ok || name == "" || ref == "" {
+			return nil, fmt.Errorf("STARS_PLATFORM_SNAPSHOTS entries are name=ref@sha256:…, got %q", entry)
+		}
+		if !registry.ValidPlatformName(name) {
+			return nil, fmt.Errorf("platform Snapshot name %q must be lowercase alphanumeric with . _ - separators", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("platform Snapshot name %q is listed twice", name)
+		}
+		seen[name] = true
+		if _, err := registry.ParseSourceRef(ref); err != nil {
+			return nil, fmt.Errorf("platform Snapshot %q: %w", name, err)
+		}
+		snapshots = append(snapshots, PlatformSnapshot{Name: name, Ref: ref})
+	}
+	return snapshots, nil
 }
 
 // loadOIDC reads the deployment's one external issuer (defaults.md identity
