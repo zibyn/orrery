@@ -56,6 +56,29 @@ type Config struct {
 	// OIDC is the single external issuer (ADR-0020). An empty IssuerURL turns
 	// OIDC off.
 	OIDC OIDCConfig
+	// S3 is the object store. An empty Endpoint turns object storage off, and
+	// Presign then answers with an error.
+	S3 S3Config
+	// RegistryAddr is the Node-reachable address of the platform OCI registry
+	// (ADR-0014), e.g. "127.0.0.1:15000". Empty means no registry is deployed.
+	RegistryAddr string
+	// RegistryCredential is the Docker config.json auth document handed to
+	// Nodes in HelloAck, e.g. {"auths":{"host":{"auth":"base64(user:pass)"}}}.
+	RegistryCredential string
+}
+
+// S3Config is the S3-compatible object store configuration (defaults.md).
+type S3Config struct {
+	// Endpoint is what the Control Plane reaches, e.g. http://rustfs:9000.
+	Endpoint string
+	// PublicEndpoint is what Nodes reach; presigned URLs use it. Empty means
+	// Endpoint.
+	PublicEndpoint string
+	Bucket         string
+	// Region defaults to us-east-1.
+	Region    string
+	AccessKey string
+	SecretKey string
 }
 
 type OIDCConfig struct {
@@ -126,6 +149,21 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, err
 		}
 	}
+	cfg.S3 = S3Config{
+		Endpoint:       os.Getenv("STARS_S3_ENDPOINT"),
+		PublicEndpoint: os.Getenv("STARS_S3_PUBLIC_ENDPOINT"),
+		Bucket:         os.Getenv("STARS_S3_BUCKET"),
+		Region:         os.Getenv("STARS_S3_REGION"),
+		AccessKey:      os.Getenv("STARS_S3_ACCESS_KEY"),
+		SecretKey:      os.Getenv("STARS_S3_SECRET_KEY"),
+	}
+	if cfg.S3.Endpoint != "" || cfg.S3.Bucket != "" {
+		if cfg.S3.Endpoint == "" || cfg.S3.Bucket == "" || cfg.S3.AccessKey == "" || cfg.S3.SecretKey == "" {
+			return Config{}, fmt.Errorf("STARS_S3_ENDPOINT, STARS_S3_BUCKET, STARS_S3_ACCESS_KEY and STARS_S3_SECRET_KEY are required together")
+		}
+	}
+	cfg.RegistryAddr = os.Getenv("STARS_REGISTRY_ADDR")
+	cfg.RegistryCredential = os.Getenv("STARS_REGISTRY_CREDENTIAL")
 	return cfg, nil
 }
 

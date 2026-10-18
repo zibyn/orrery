@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
+	"github.com/zibyn/stars-sandbox/internal/objectstore"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -21,6 +22,7 @@ type Server struct {
 	pool         *pgxpool.Pool
 	q            *store.Queries
 	log          *slog.Logger
+	objects      *objectstore.Store // nil when object storage is unconfigured
 	logins       *loginLimiter
 	crossOrigin  http.CrossOriginProtection
 	reconcile    *reconciler
@@ -39,6 +41,21 @@ func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
 	}
 	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter(),
 		tunnels: newTunnelRegistry(), activity: newActivityTracker()}
+	if cfg.S3.Endpoint != "" {
+		objects, err := objectstore.New(context.Background(), objectstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			PublicEndpoint: cfg.S3.PublicEndpoint,
+			Bucket:         cfg.S3.Bucket,
+			Region:         cfg.S3.Region,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+		})
+		if err != nil {
+			log.Error("build object store client", "error", err)
+		} else {
+			s.objects = objects
+		}
+	}
 	s.reconcile = newReconciler(s)
 	return s
 }
