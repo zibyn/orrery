@@ -37,21 +37,25 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, _ *
 		writeUnauthenticated(w, "invalid username or password")
 		return
 	}
-	if !VerifyPassword(*user.PasswordHash, req.Password) {
+	passwordHash := *user.PasswordHash
+	if !VerifyPassword(passwordHash, req.Password) {
 		s.logins.fail(limitKey, now)
 		writeUnauthenticated(w, "invalid username or password")
 		return
 	}
 	s.logins.succeed(limitKey)
 
+	// Issuing the token is conditional on this hash still being current, so a
+	// password change cannot be overtaken by a login that verified the old one
+	// (#123).
 	if req.Token != nil {
-		s.createLoginToken(w, r, user, *req.Token)
+		s.createLoginToken(w, r, user, *req.Token, passwordHash)
 		return
 	}
-	s.createBrowserSession(w, r, user)
+	s.createBrowserSession(w, r, user, passwordHash)
 }
 
-func (s *Server) createLoginToken(w http.ResponseWriter, r *http.Request, user store.User, tokenReq createTokenRequest) {
+func (s *Server) createLoginToken(w http.ResponseWriter, r *http.Request, user store.User, tokenReq createTokenRequest, passwordHash string) {
 	ctx := r.Context()
 	if code, detail, ok := s.validateTokenRequest(tokenReq, &principal{user: user}); !ok {
 		writeProblem(w, code, detail)
@@ -62,9 +66,13 @@ func (s *Server) createLoginToken(w http.ResponseWriter, r *http.Request, user s
 		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
 		return
 	}
-	token, raw, replayed, err := s.issueNamedToken(ctx, user.ID, tokenReq, key)
+	token, raw, replayed, err := s.issueNamedToken(ctx, user.ID, tokenReq, key, &passwordHash)
 	if errors.Is(err, errTokenNameTaken) {
 		writeProblem(w, "conflict", "a token with that name already exists")
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeUnauthenticated(w, "invalid username or password")
 		return
 	}
 	if err != nil {
@@ -81,8 +89,12 @@ func (s *Server) createLoginToken(w http.ResponseWriter, r *http.Request, user s
 	writeJSON(w, http.StatusCreated, createdTokenDTO{tokenDTO: tokenToDTO(token), Token: raw})
 }
 
-func (s *Server) createBrowserSession(w http.ResponseWriter, r *http.Request, user store.User) {
-	token, err := s.startBrowserSession(w, r.Context(), user, nil)
+func (s *Server) createBrowserSession(w http.ResponseWriter, r *http.Request, user store.User, passwordHash string) {
+	token, err := s.startBrowserSession(w, r.Context(), user, &passwordHash, nil)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeUnauthenticated(w, "invalid username or password")
+		return
+	}
 	if err != nil {
 		s.internal(w, "create session", err)
 		return
@@ -90,10 +102,11 @@ func (s *Server) createBrowserSession(w http.ResponseWriter, r *http.Request, us
 	writeJSON(w, http.StatusCreated, tokenToDTO(token))
 }
 
-// startBrowserSession mints a Session, sets its cookie and audits it. No
-// idempotency key: the cookie is the only copy of the secret, so a retried
-// login cannot return the old one (api.md §1).
-func (s *Server) startBrowserSession(w http.ResponseWriter, ctx context.Context, user store.User, detail any) (store.ApiToken, error) {
+// startBrowserSession mints a Session, sets its cookie and audits it. A nil
+// passwordHash is an OIDC login; otherwise the insert is conditional on that
+// hash still being current (#123). No idempotency key: the cookie is the only
+// copy of the secret, so a retried login cannot return the old one (api.md §1).
+func (s *Server) startBrowserSession(w http.ResponseWriter, ctx context.Context, user store.User, passwordHash *string, detail any) (store.ApiToken, error) {
 	raw, id, hash, err := NewToken()
 	if err != nil {
 		return store.ApiToken{}, err
@@ -103,7 +116,7 @@ func (s *Server) startBrowserSession(w http.ResponseWriter, ctx context.Context,
 		scope = "admin"
 	}
 	expires := time.Now().Add(sessionIdleTTL)
-	token, err := s.q.CreateToken(ctx, store.CreateTokenParams{
+	token, err := s.insertToken(ctx, store.CreateTokenParams{
 		ID:         id,
 		UserID:     user.ID,
 		Kind:       "session",
@@ -111,7 +124,7 @@ func (s *Server) startBrowserSession(w http.ResponseWriter, ctx context.Context,
 		SecretHash: hash,
 		Scope:      scope,
 		ExpiresAt:  timestamptzPtr(&expires),
-	})
+	}, passwordHash)
 	if err != nil {
 		return store.ApiToken{}, err
 	}

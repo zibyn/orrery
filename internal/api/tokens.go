@@ -27,7 +27,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, p *pr
 		writeProblem(w, code, detail)
 		return
 	}
-	token, raw, replayed, err := s.issueNamedToken(r.Context(), p.user.ID, req, key)
+	token, raw, replayed, err := s.issueNamedToken(r.Context(), p.user.ID, req, key, nil)
 	if errors.Is(err, errTokenNameTaken) {
 		writeProblem(w, "conflict", "a token with that name already exists")
 		return
@@ -48,8 +48,9 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, p *pr
 }
 
 // issueNamedToken creates one named API Token. replayed means the idempotency
-// key already produced a token: its row is returned and raw is empty.
-func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req createTokenRequest, key *string) (store.ApiToken, string, bool, error) {
+// key already produced a token: its row is returned and raw is empty. A non-nil
+// passwordHash conditions the insert on that login's hash still being current.
+func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req createTokenRequest, key *string, passwordHash *string) (store.ApiToken, string, bool, error) {
 	lookup := func() (store.ApiToken, error) {
 		return s.q.GetTokenByIdempotencyKey(ctx, store.GetTokenByIdempotencyKeyParams{
 			UserID: userID, IdempotencyKey: key,
@@ -66,7 +67,7 @@ func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req crea
 	}
 	token, replayed, err := createIdempotent(key, "api_tokens_idempotency_key_unique", lookup,
 		func() (store.ApiToken, error) {
-			return s.q.CreateToken(ctx, store.CreateTokenParams{
+			return s.insertToken(ctx, store.CreateTokenParams{
 				ID:             id,
 				UserID:         userID,
 				Kind:           "token",
@@ -75,7 +76,7 @@ func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req crea
 				Scope:          req.Scope,
 				ExpiresAt:      timestamptzPtr(req.ExpiresAt),
 				IdempotencyKey: key,
-			})
+			}, passwordHash)
 		})
 	if err != nil {
 		if uniqueViolation(err) == "api_tokens_name_unique" {
@@ -87,6 +88,27 @@ func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req crea
 		return token, "", true, nil
 	}
 	return token, raw, false, nil
+}
+
+// insertToken creates one api_tokens row. passwordHash set means it is a
+// password login: the insert fails with pgx.ErrNoRows unless the User still
+// has that hash, and its FOR SHARE makes a concurrent password change
+// serialize with it (#123).
+func (s *Server) insertToken(ctx context.Context, params store.CreateTokenParams, passwordHash *string) (store.ApiToken, error) {
+	if passwordHash == nil {
+		return s.q.CreateToken(ctx, params)
+	}
+	return s.q.CreatePasswordToken(ctx, store.CreatePasswordTokenParams{
+		ID:             params.ID,
+		Kind:           params.Kind,
+		Name:           params.Name,
+		SecretHash:     params.SecretHash,
+		Scope:          params.Scope,
+		ExpiresAt:      params.ExpiresAt,
+		IdempotencyKey: params.IdempotencyKey,
+		UserID:         params.UserID,
+		PasswordHash:   passwordHash,
+	})
 }
 
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, p *principal) {

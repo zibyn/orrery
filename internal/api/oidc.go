@@ -153,7 +153,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request, _ *p
 		s.internal(w, "resolve OIDC User", err)
 		return
 	}
-	if _, err := s.startBrowserSession(w, r.Context(), user, map[string]any{"via": "oidc"}); err != nil {
+	if _, err := s.startBrowserSession(w, r.Context(), user, nil, map[string]any{"via": "oidc"}); err != nil {
 		s.internal(w, "create OIDC Session", err)
 		return
 	}

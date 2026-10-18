@@ -254,6 +254,100 @@ func TestPasswordSession(t *testing.T) {
 	}
 }
 
+// TestPasswordChangeRace is #123: a login that verified the old password must
+// never leave a Session that a concurrent password reset did not revoke.
+func TestPasswordChangeRace(t *testing.T) {
+	admin := adminToken(t)
+	adminCLI := newCLIRunner(t, admin)
+	suffix := time.Now().UnixNano()
+
+	const rounds = 4
+	const logins = 6
+
+	for round := 0; round < rounds; round++ {
+		username := fmt.Sprintf("grace-%d-%d", suffix, round)
+		password := fmt.Sprintf("grace-password-%d", round)
+		next := fmt.Sprintf("grace-new-password-%d", round)
+
+		created := adminCLI.run(t, password+"\n", "user", "create",
+			"--name", username, "--login-type", "password", "--password-stdin")
+		var user struct {
+			ID string `json:"id"`
+		}
+		mustJSON(t, created, &user)
+
+		// Start logins with the old password and the reset together: both
+		// spend about one argon2 verification before touching the database.
+		type loginResult struct {
+			status int
+			cookie *http.Cookie
+			err    error
+		}
+		results := make(chan loginResult, logins)
+		start := make(chan struct{})
+		for i := 0; i < logins; i++ {
+			go func() {
+				<-start
+				body, _ := json.Marshal(map[string]any{"username": username, "password": password})
+				resp, err := http.Post(apiURL()+"/api/v1/sessions", "application/json", bytes.NewReader(body))
+				if err != nil {
+					results <- loginResult{err: err}
+					return
+				}
+				defer resp.Body.Close()
+				_, _ = io.Copy(io.Discard, resp.Body)
+				var cookie *http.Cookie
+				if cookies := resp.Cookies(); len(cookies) == 1 {
+					cookie = cookies[0]
+				}
+				results <- loginResult{status: resp.StatusCode, cookie: cookie}
+			}()
+		}
+		changeStatus := 0
+		var changeBody []byte
+		var changeErr error
+		changed := make(chan struct{})
+		go func() {
+			defer close(changed)
+			changeStatus, changeBody, changeErr = postJSON(http.MethodPut,
+				"/api/v1/users/"+user.ID+"/password", admin, map[string]any{"password": next})
+		}()
+		close(start)
+		<-changed
+		if changeErr != nil {
+			t.Fatalf("round %d: reset password: %v", round, changeErr)
+		}
+		if changeStatus != http.StatusOK {
+			t.Fatalf("round %d: reset password: %d %s", round, changeStatus, changeBody)
+		}
+
+		successes := 0
+		for i := 0; i < logins; i++ {
+			r := <-results
+			if r.err != nil {
+				t.Fatalf("round %d: login: %v", round, r.err)
+			}
+			switch r.status {
+			case http.StatusCreated:
+				successes++
+				if r.cookie == nil {
+					t.Fatalf("round %d: a 201 login set no Session cookie", round)
+				}
+				// The login may have finished before or after the reset
+				// committed; either way its Session must already be revoked.
+				if status, body := callWithCookie(t, http.MethodGet, "/api/v1/users/me", r.cookie, nil, nil); status != http.StatusUnauthorized {
+					t.Fatalf("round %d: Session created from the old password survived the reset: %d %s", round, status, body)
+				}
+			case http.StatusUnauthorized:
+				// The reset landed first; the login is correctly refused.
+			default:
+				t.Fatalf("round %d: login with the old password = %d, want 201 or 401", round, r.status)
+			}
+		}
+		t.Logf("round %d: %d/%d logins completed before the reset", round, successes, logins)
+	}
+}
+
 func TestLoginRateLimit(t *testing.T) {
 	admin := adminToken(t)
 	adminCLI := newCLIRunner(t, admin)

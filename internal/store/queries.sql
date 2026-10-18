@@ -107,6 +107,26 @@ INSERT INTO api_tokens (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
+-- CreatePasswordToken inserts a token only while the User still has the
+-- password hash the login verified. FOR SHARE makes a password change wait for
+-- this statement, so the change either sees the new Session in its revocation
+-- delete or this insert re-reads the new hash and inserts nothing. The lock
+-- covers this statement only; argon2 verification stays outside it.
+-- name: CreatePasswordToken :one
+INSERT INTO api_tokens (
+    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key
+)
+SELECT
+    sqlc.arg('id'), u.id, sqlc.arg('kind'), sqlc.arg('name'),
+    sqlc.arg('secret_hash'), sqlc.arg('scope'), sqlc.narg('expires_at'),
+    sqlc.narg('idempotency_key')
+FROM users u
+WHERE u.id = sqlc.arg('user_id')
+  AND u.password_hash = sqlc.arg('password_hash')
+  AND u.deleted_at IS NULL
+FOR SHARE
+RETURNING *;
+
 -- name: GetToken :one
 SELECT * FROM api_tokens WHERE id = $1;
 
