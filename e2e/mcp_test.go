@@ -112,13 +112,18 @@ func TestMCPTools(t *testing.T) {
 		return result
 	}
 
-	// A missing Sandbox is a tool error with a code, not a JSON-RPC error.
+	// A missing Sandbox is a tool error with a code and no structuredContent,
+	// not a JSON-RPC error.
 	missing := call("sandbox_get", map[string]any{"sandbox_id": "d3b07384-d9a1-4c0f-8a3e-3f7e6e1a2b3c"})
 	if !missing.IsError {
 		t.Fatalf("missing Sandbox was not an error result: %#v", missing.Content)
 	}
-	if code := mcpErrorCode(t, missing); code != "not_found" {
-		t.Fatalf("missing Sandbox code = %q, want not_found", code)
+	if missing.StructuredContent != nil {
+		t.Fatalf("error result carries structuredContent: %#v", missing.StructuredContent)
+	}
+	problem := mcpErrorBody(t, missing)
+	if problem.Code != "not_found" || problem.Detail == "" {
+		t.Fatalf("missing Sandbox error = %#v", problem)
 	}
 
 	// Create, run a command longer than wait_seconds, reattach, read files,
@@ -249,15 +254,24 @@ func mcpText(t *testing.T, result *sdk.CallToolResult) string {
 	return ""
 }
 
-func mcpErrorCode(t *testing.T, result *sdk.CallToolResult) string {
+type mcpError struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+}
+
+func mcpErrorBody(t *testing.T, result *sdk.CallToolResult) mcpError {
 	t.Helper()
-	var body struct {
-		Code string `json:"code"`
+	if !result.IsError {
+		t.Fatalf("result is not an error: %#v", result.Content)
 	}
+	if result.StructuredContent != nil {
+		t.Fatalf("error result carries structuredContent: %#v", result.StructuredContent)
+	}
+	var body mcpError
 	if err := json.Unmarshal([]byte(mcpText(t, result)), &body); err != nil {
 		t.Fatalf("error result is not JSON: %v", err)
 	}
-	return body.Code
+	return body
 }
 
 // mcpFrames concatenates stdout and stderr frames in order.
