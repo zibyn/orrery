@@ -244,12 +244,81 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 ## 7. MCP Tool API
 
-`stars-sandbox mcp` 通过 stdio 提供服务，使用调用方的 API Token。
+工具集手写精选，不按 OpenAPI 生成；长时间跑的 Exec 用 handle 加轮询；没有 PTY 工具（ADR-0022）。
 
-- 每个 `user` scope 可调用的非流式 OpenAPI operation 生成一个工具，名字取 operationId 的 snake_case。标 **admin** 的接口、WebSocket 端点和登录类接口（`/sessions`、`/oidc/*`、密码修改、Git 授权与回调）不生成工具。
-- 另有两个组合工具：
-  - `exec_run_and_wait`：创建 Exec 并跟随到结束，返回输出尾部、`result` 和 `log_truncated`。
-  - `pty_send_and_read`：向 PTY 写入，然后读取到输出静默或超时为止。
+**传输与认证**
+
+- 只走 stdio，命令是 `stars-sandbox mcp`。
+- 凭据解析和其它 CLI 子命令一致：`--token` > `STARS_SANDBOX_TOKEN` > config 文件。
+- 不接受 Sandbox Token。
+
+**协议**
+
+- 用 go-sdk v1.8.0 协商版本：优先 2026-07-28，也接受旧修订。
+- capability 只声明 `tools`，不声明 `logging`；诊断信息写 stderr。
+- 不提供 Resources、Prompts、completions、Elicitation 和 Tasks。
+- `tools/list` 的顺序固定，并标为可缓存。
+- 提供 server `instructions`，用一小段话说明典型流程：`sandbox_create` → `exec_run` → `exec_output` → `sandbox_delete`。
+
+**工具清单**（共 17 个，名字都是 snake_case）
+
+| 工具 | 对应 REST | annotations |
+|---|---|---|
+| `sandbox_create` | `POST /sandboxes`，然后 `wait_for=ready` | |
+| `sandbox_list` | `GET /sandboxes` | readOnly |
+| `sandbox_get` | `GET /sandboxes/{id}?wait_for=` | readOnly |
+| `sandbox_start` | `POST …/start` | idempotent，destructive=false |
+| `sandbox_stop` | `POST …/stop` | idempotent |
+| `sandbox_delete` | `DELETE /sandboxes/{id}` | idempotent，destructive |
+| `exec_run` | `POST /sandboxes/{id}/execs`，然后读输出 | destructive |
+| `exec_output` | `GET /execs/{id}/output`，`GET /execs/{id}` | readOnly |
+| `exec_cancel` | `POST /execs/{id}/cancel` | idempotent，destructive |
+| `file_list` / `file_stat` / `file_read` | §5 | readOnly |
+| `file_write` | `PUT …/files/content` | idempotent，destructive |
+| `file_mkdir` | `POST …/files/mkdir` | idempotent，destructive=false |
+| `file_move` | `POST …/files/move` | destructive |
+| `file_delete` | `DELETE …/files` | idempotent，destructive |
+| `port_url` | `POST …/ports/{port}/ticket` | readOnly=false，destructive=false |
+
+每个工具都要有：
+
+- `title`；
+- JSON Schema 2020-12 的 `inputSchema`（无参数时用 `{"type":"object","additionalProperties":false}`）和 `outputSchema`；
+- 返回的 `structuredContent` 必须符合 `outputSchema`，同时附一个 text content，内容是同一份 JSON。
+
+不写 `openWorldHint`，沿用默认值 true：Sandbox 里的命令可以访问网络。
+
+**参数与语义**
+
+- `sandbox_create`：
+  - 参数照搬 `CreateSandboxRequest` 的全部字段。
+  - 创建后用 `wait_for=ready` 等待，每次最多 60 秒；超时就返回 `pending`，带上 `queue_position` 和 `blocked_reason`。
+  - 想继续等，就调用 `sandbox_get{id, wait_for}`。
+- `exec_run{sandbox_id, command, cwd, env, stdin, timeout, wait_seconds}`：
+  - `command` 是一个字符串，执行为 argv `["sh","-c",command]`。
+  - `timeout` 是 Exec 自己的超时，到点会杀掉进程；`wait_seconds` 只决定这次调用等多久，默认 30，上限 300，不等后进程照常跑。工具描述里写清两者的区别。
+  - Exec 结束时，返回 `exec_id`、`state`、`result`、输出尾部 32 KiB（stdout 和 stderr 按帧顺序分开返回）、`log_truncated`，以及下一次读取用的 `after`。
+  - 没结束就返回 `exec_id`、`state: running` 和到目前为止的输出尾部。
+  - 等待期间，如果请求带了 `progressToken`，就发进度通知：已输出的字节数和当前状态。
+- `exec_output{exec_id, after, wait_seconds}`：
+  - 给了 `after`：从 `after` 开始，最多返回 32 KiB，附 `next_after`。
+  - 没给 `after`：返回尾部 32 KiB。
+  - 带 `wait_seconds` 时，一直等到有新输出或 Exec 结束为止。
+- `exec_id` 的有效期跟 Exec 本身一样，写在 `exec_run` 的描述里。id 查不到时，用 `isError` 返回 `not_found`。
+- `file_read{sandbox_id, path, offset, limit}`：
+  - 上限 1 MiB。
+  - UTF-8 内容返回 text content；`image/*` 返回 image content；其它二进制放进 `structuredContent.content_base64`，并标出 `encoding: base64`。
+- `file_write{sandbox_id, path, content, encoding: text|base64}`：上限 1 MiB。
+- 不提供 tar 归档工具，大文件和归档走 CLI。
+- `port_url{sandbox_id, port}`：返回带票据的 URL，交给人在浏览器里打开；在描述里写明票据 1 分钟内有效。
+
+**错误**
+
+- REST 返回的 problem+json 转成 `isError: true` 的结果，带上 `code`（取自 §2 的封闭目录）和 `detail`。
+- 参数校验失败也用 `isError` 返回。
+- 只有工具名不存在、请求格式错误、进程内部错误，才用 JSON-RPC 错误。
+
+**配置**：README 给出 `claude mcp add stars-sandbox -- stars-sandbox mcp` 和通用 JSON 配置示例，不做 `mcp init`。
 
 ## 8. Web 控制台
 
@@ -280,3 +349,26 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | Secret | 名字列表、覆盖写入、删除 |
 | 我的 token 与 Session | `/users/me/tokens` 的列表（带 `kind`、`last_used_at`）、创建（明文只显示一次）、吊销；`PUT /users/me/password`（仅 `login_type=password`）；`DELETE /sessions/current` |
 | admin | User：列表、创建、`PATCH`（login_type、is_admin）、重置密码、Quota、删除。Node：`/nodes` 和 `/capacity` 列表、pause/resume、删除。`GET /audit` 按 actor、action、target、时间区间过滤并分页。declare-lost 和 Enrollment Packet 用 CLI |
+
+## 9. SDK
+
+两个 SDK 都手写（ADR-0017）。
+
+- **Go**：
+  - 公开包 `github.com/zibyn/stars-sandbox/client`，用 `client.New(baseURL, token)` 创建。
+  - 方法第一个参数都是 `ctx`，请求和响应的结构体手写。
+  - 错误类型 `*client.Error{Status, Code, Detail}`。
+  - 提供帮助函数 `RunExec` 和 `FollowOutput`。
+  - 只用标准库。
+  - CLI 和 `mcp` 都基于这个包，仓库里只有一个 Go 客户端。
+  - 覆盖范围等于 CLI 能做的全部。
+- **Python**：
+  - 放在 `sdk/python/`，用 httpx 手写，只提供同步接口。
+  - Python ≥ 3.10，唯一依赖是 httpx，模型用 `dataclasses`。
+  - 错误类型 `StarsSandboxError(status, code, detail)`。
+  - 覆盖范围：Sandbox 生命周期（含 `wait_for`）、Exec（create、wait、按 `after` 跟随输出、cancel）、文件（§5 全部，包括 tar 上传和下载）、Secret。
+  - 不覆盖 Resource 上传、Workspace publish、端口转发和 PTY。
+- **发布**：
+  - 不发布到 PyPI，用 `pip install "git+…#subdirectory=sdk/python"` 安装。
+  - 版本号与仓库 tag 锁步，不维护兼容矩阵。
+  - 不提交生成的 `openapi.json`。

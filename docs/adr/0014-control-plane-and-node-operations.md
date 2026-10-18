@@ -1,6 +1,6 @@
 # ADR-0014: Control Plane and Node operations
 
-- Status: accepted; amended by ADR-0016 and ADR-0017; one Runtime per Node, lost, deletion and paused builds amended in place by #92
+- Status: accepted; amended by ADR-0016 and ADR-0017; one Runtime per Node, lost, deletion and paused builds amended in place by #92; MCP Tool API placement amended in place by #107
 - Date: 2026-10-17
 
 ## Context
@@ -9,7 +9,7 @@
 
 ## Decision
 
-**One process.** The Control Plane is a single process; the REST API, Agent Tool API and Gateway are modules of that binary, and the Node Agent is a second binary. The process holds no authoritative state: everything is in PostgreSQL and memory is cache, so availability is restart plus Reconciler convergence. Multiple replicas are an upgrade path that needs per-Node command routing (`NOTIFY` to the replica holding the stream), not part of this design.
+**One process.** The Control Plane is a single process; the REST API and Gateway are modules of that binary, and the Node Agent is a second binary; the MCP Tool API is served by the CLI (ADR-0022). The process holds no authoritative state: everything is in PostgreSQL and memory is cache, so availability is restart plus Reconciler convergence. Multiple replicas are an upgrade path that needs per-Node command routing (`NOTIFY` to the replica holding the stream), not part of this design.
 
 **No job queue.** Durable intent tables (Sandbox desired state, Exec) are the queue: a write sends `NOTIFY` to wake the Reconciler, with periodic polling as the fallback. Admission stays `#34`'s transactional feasible-set FIFO. Each periodic task (Reconciler sweep, purge, GC sweep) runs only after `pg_try_advisory_xact_lock` on its own fixed id succeeds, so the code is already correct for several replicas. No leader election, no River.
 

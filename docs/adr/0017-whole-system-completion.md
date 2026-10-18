@@ -1,6 +1,6 @@
 # ADR-0017: The whole system, completed against Coder and Daytona
 
-- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92
+- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92; MCP and SDK entries amended in place by #107 (ADR-0022)
 - Date: 2026-10-17
 
 ## Context
@@ -73,9 +73,9 @@ The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port 
 - `GET /users/me/quota` reports quota usage. A read-only capacity view lists each Node's GPU model, total, allocated and status. A Sandbox shows `queue_position` and `blocked_reason` while `pending`.
 - `GET /sandboxes/{id}/execs` lists a Sandbox's Execs.
 - Files: list, stat, read with range, write, mkdir, move, delete, and tar upload and download.
-- The Agent Tool API is MCP, served by `stars-sandbox mcp` over stdio. Its tools are generated from the OpenAPI document, plus two composite tools: run an Exec and wait for its result, and a PTY send-and-read.
+- The MCP Tool API is ADR-0022 (amended in place by #107).
 - Per-Sandbox CPU, memory and GPU utilization are exported to Prometheus with Sandbox labels.
-- SDKs are Python and Go. Docker inside a Sandbox is unsupported, and the capability documentation says so.
+- SDKs are Python and Go, both hand-written (amended in place by #107). The Go SDK covers everything the CLI does, and the CLI and `mcp` are built on it; the Python SDK covers only the subset an agent uses. Docker inside a Sandbox is unsupported, and the capability documentation says so.
 
 ### Command lines
 
