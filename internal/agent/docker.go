@@ -31,10 +31,12 @@ const (
 )
 
 // dockerProbe runs one probe container and turns the readback into Runtime
-// Capabilities (runtime.md §9). It needs no Docker client dependency: the Engine
-// API over the socket is a handful of JSON requests.
-func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport, error) {
-	d := &dockerClient{http: unixHTTPClient(socket)}
+// Capabilities (runtime.md §9). Docker and rootless Podman speak the same
+// Engine API, so the probe is shared and only the socket and host ownership
+// differ. It needs no Docker client dependency: the Engine API over the socket
+// is a handful of JSON requests.
+func dockerProbe(ctx context.Context, cfg runtimeConfig) (nodeproto.CapabilityReport, error) {
+	d := &dockerClient{http: unixHTTPClient(cfg.socket)}
 	if err := d.negotiate(ctx); err != nil {
 		return nodeproto.CapabilityReport{}, err
 	}
@@ -47,12 +49,22 @@ func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport
 		return nodeproto.CapabilityReport{}, err
 	}
 	defer os.RemoveAll(dir) //nolint:errcheck // best effort
+	// The rootless Podman daemon runs as the invoking user and must traverse
+	// the probe tree, which MkdirTemp leaves at 0700 root.
+	if err := cfg.owner.own(dir); err != nil {
+		return nodeproto.CapabilityReport{}, err
+	}
 	binDir := filepath.Join(dir, "bin")
 	workspace := filepath.Join(dir, "workspace")
 	for _, sub := range []string{binDir, workspace} {
 		if err := os.Mkdir(sub, 0o755); err != nil {
 			return nodeproto.CapabilityReport{}, err
 		}
+	}
+	// The probe writes to the Workspace as container root, which rootless
+	// Podman maps to the invoking user.
+	if err := cfg.owner.own(workspace); err != nil {
+		return nodeproto.CapabilityReport{}, err
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -92,7 +104,7 @@ func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport
 	if probeErr != nil {
 		return nodeproto.CapabilityReport{}, probeErr
 	}
-	return capabilities(result, limitsEnforced, gpuVisible), nil
+	return capabilities(result, limitsEnforced, gpuVisible, cfg.provider), nil
 }
 
 // withSnapshotBuild adds the BuildKit endpoint self-check to a Runtime report.
@@ -115,7 +127,7 @@ func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.Cap
 	return report
 }
 
-func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeproto.CapabilityReport {
+func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool, provider string) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
 			return nodeproto.ValueEnforced
@@ -126,7 +138,7 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeprot
 	isolated := r.PIDNamespace != "" && r.PIDNamespace != pidNS &&
 		r.MountNamespace != "" && r.MountNamespace != mntNS
 	return nodeproto.CapabilityReport{
-		RuntimeProvider: "docker",
+		RuntimeProvider: provider,
 		Entries: []nodeproto.CapabilityEntry{
 			{Name: nodeproto.CapProcessMountNamespace, Value: value(isolated)},
 			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(limitsEnforced)},

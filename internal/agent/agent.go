@@ -323,11 +323,11 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// Runtime (runtime.md §12). It is reported even when the Runtime probe
 	// fails; the Node's status already keeps it out of placement then.
 	buildOK := rt.buildkitAvailable(streamCtx)
-	report, probeErr := dockerProbe(streamCtx, opts.Docker)
+	report, probeErr := dockerProbe(streamCtx, rt.config())
 	health := "healthy"
 	if probeErr != nil {
 		health = "unhealthy"
-		report = nodeproto.CapabilityReport{RuntimeProvider: "docker"}
+		report = nodeproto.CapabilityReport{RuntimeProvider: rt.provider}
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
 	report = withSnapshotBuild(report, buildOK)
