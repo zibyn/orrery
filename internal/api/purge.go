@@ -52,6 +52,8 @@ func (s *Server) purgeOnce(ctx context.Context) {
 	check("token idempotency keys", q.PurgeTokenIdempotencyKeys(ctx))
 	check("Sandbox idempotency keys", q.PurgeSandboxIdempotencyKeys(ctx))
 	check("Workspace idempotency keys", q.PurgeWorkspaceIdempotencyKeys(ctx))
+	check("Resource idempotency keys", q.PurgeResourceIdempotencyKeys(ctx))
+	check("ResourceVersion idempotency keys", q.PurgeResourceVersionIdempotencyKeys(ctx))
 	check("Enrollment Packets", q.PurgeEnrollmentPackets(ctx))
 	check("expired tokens", q.PurgeExpiredTokens(ctx))
 	check("terminal admission requests", q.PurgeTerminalAdmissionRequests(ctx))
