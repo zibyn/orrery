@@ -30,6 +30,21 @@ COMPOSE_FILE="$PWD/deploy/compose.yaml"
 COMPOSE_PROJECT="stars-sandbox-e2e"
 COMPOSE=(docker compose --profile oidc --profile e2e -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
 
+# Object store and registry (defaults.md, ADR-0014). The Control Plane reaches
+# RustFS as http://rustfs:9000 inside Compose; presigned URLs and the tests use
+# the host-mapped http://127.0.0.1:19000. The registry listens on host port
+# 15000 because it signs redirects for the Node-reachable address.
+export STARS_S3_ENDPOINT="${STARS_S3_ENDPOINT:-http://rustfs:9000}"
+export STARS_S3_PUBLIC_ENDPOINT="${STARS_S3_PUBLIC_ENDPOINT:-http://127.0.0.1:19000}"
+export STARS_S3_BUCKET="${STARS_S3_BUCKET:-stars}"
+export STARS_S3_REGION="${STARS_S3_REGION:-us-east-1}"
+export STARS_S3_ACCESS_KEY="${STARS_S3_ACCESS_KEY:-stars}"
+export STARS_S3_SECRET_KEY="${STARS_S3_SECRET_KEY:-stars-secret}"
+export STARS_REGISTRY_ADDR="${STARS_REGISTRY_ADDR:-127.0.0.1:15000}"
+# Docker config.json auth document; deploy/registry/htpasswd has the same
+# user and password.
+export STARS_REGISTRY_CREDENTIAL="${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"}}}}"
+
 # The node listener always uses TLS (ADR-0014); a throwaway self-signed cert is
 # enough for the black-box tests. Backdate it: a remote Node whose clock is a
 # few seconds behind would otherwise reject it as "not yet valid".
@@ -199,6 +214,29 @@ if [ "$code" != "401" ]; then
   exit 1
 fi
 
+# RustFS and the platform registry are behind the object-store and image-pull
+# scenarios. The registry answers 401 without credentials once it is serving.
+for _ in $(seq 1 120); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:19000/health" || true)"
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+if [ "$code" != "200" ]; then
+  echo "rustfs did not become ready (last status: ${code:-none})" >&2
+  "${COMPOSE[@]}" logs --no-color rustfs rustfs-init >&2 || true
+  exit 1
+fi
+for _ in $(seq 1 120); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:15000/v2/" || true)"
+  [ "$code" = "401" ] && break
+  sleep 1
+done
+if [ "$code" != "401" ]; then
+  echo "registry did not become ready (last status: ${code:-none})" >&2
+  "${COMPOSE[@]}" logs --no-color registry >&2 || true
+  exit 1
+fi
+
 # The OIDC-first-User scenario has its own Control Plane and database.
 for _ in $(seq 1 120); do
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18082/api/v1/users" || true)"
@@ -245,4 +283,10 @@ STARS_E2E_COMPOSE_FILE="$COMPOSE_FILE" \
 STARS_E2E_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
 STARS_E2E_EXEC_LOG_CAP="$STARS_EXEC_LOG_CAP" \
 STARS_E2E_PTY_IDLE_SECONDS="$STARS_PTY_IDLE_SECONDS" \
+STARS_E2E_S3_ENDPOINT="${STARS_E2E_S3_ENDPOINT:-http://127.0.0.1:19000}" \
+STARS_E2E_S3_BUCKET="$STARS_S3_BUCKET" \
+STARS_E2E_S3_ACCESS_KEY="$STARS_S3_ACCESS_KEY" \
+STARS_E2E_S3_SECRET_KEY="$STARS_S3_SECRET_KEY" \
+STARS_E2E_REGISTRY_ADDR="$STARS_REGISTRY_ADDR" \
+STARS_E2E_REGISTRY_CREDENTIAL="$STARS_REGISTRY_CREDENTIAL" \
 "$GO" test -tags e2e -count=1 "$@" ./e2e/...
