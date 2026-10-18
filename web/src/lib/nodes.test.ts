@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { CapacityNode, Node } from '@/api'
 
-import { mergeNodeCapacity } from './nodes'
+import { mergeNodeCapacity, nodeListPollInterval } from './nodes'
 
 function node(overrides: Partial<Node>): Node {
   return {
@@ -64,5 +64,24 @@ describe('mergeNodeCapacity', () => {
     expect(rows).toEqual([
       { id: 'node-2', name: 'node-2', status: 'ready', paused: null, gpus: [] },
     ])
+  })
+})
+
+describe('nodeListPollInterval', () => {
+  it('polls while any Node is not lost', () => {
+    expect(nodeListPollInterval([{ status: 'ready' }, { status: 'lost' }])).toBe(5000)
+    expect(nodeListPollInterval([{ status: 'lost' }, { status: 'unavailable' }])).toBe(5000)
+  })
+
+  it('treats ready, paused, unavailable and outdated as non-terminal', () => {
+    for (const status of ['ready', 'paused', 'unavailable', 'outdated'] as const) {
+      expect(nodeListPollInterval([{ status }])).toBe(5000)
+    }
+  })
+
+  it('stops when every Node is lost', () => {
+    expect(nodeListPollInterval([{ status: 'lost' }])).toBe(false)
+    expect(nodeListPollInterval([])).toBe(false)
+    expect(nodeListPollInterval(undefined)).toBe(false)
   })
 })

@@ -34,6 +34,15 @@ export function mergeNodeCapacity(nodes: Node[], capacity: CapacityNode[]): Node
   return rows
 }
 
+// api.md §8: a list polls every 5 s while a resource is non-terminal. `lost`
+// is the only terminal Node status; a ready/paused/unavailable/outdated Node
+// can still change.
+export function nodeListPollInterval(
+  nodes: Pick<Node, 'status'>[] | undefined,
+): number | false {
+  return nodes?.some((node) => node.status !== 'lost') ? 5000 : false
+}
+
 // Fallback for a Node with no capacity row (for example a race between the two
 // requests): the Node reports which GPUs it has, but not their usage.
 function totalsFromInventory(node: Node): CapacityGPU[] {
