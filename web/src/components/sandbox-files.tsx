@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
-import { api, apiVoid, type FileEntry } from '@/api'
+import { api, apiRaw, type FileEntry } from '@/api'
 import { Button } from '@/components/ui/button'
 import {
   downloadHref,
@@ -24,7 +24,7 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
 
   const upload = useMutation({
     mutationFn: (file: File) =>
-      apiVoid('PUT', fileContentPath(sandboxId, joinPath(path, file.name)), file),
+      apiRaw('PUT', fileContentPath(sandboxId, joinPath(path, file.name)), file),
     onSuccess: () => {
       setUploadError('')
       queryClient.invalidateQueries({ queryKey: ['files', sandboxId] })
@@ -68,6 +68,14 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
           )}
           {listing.data.items.map((entry) => {
             const entryPath = entry.path || joinPath(path, entry.name)
+            // Only files have a content download; directories are archived,
+            // and the API rejects content requests for symlinks/other types.
+            const href =
+              entry.type === 'file'
+                ? downloadHref('file', sandboxId, entryPath)
+                : entry.type === 'dir'
+                  ? downloadHref('dir', sandboxId, entryPath)
+                  : null
             return (
               <li
                 key={entryPath}
@@ -91,13 +99,15 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
                     {new Date(entry.mod_time).toLocaleString()}
                   </span>
                 </div>
-                <a
-                  href={downloadHref(entry.type === 'dir' ? 'dir' : 'file', sandboxId, entryPath)}
-                  download={entry.name}
-                  className="text-muted-foreground hover:underline"
-                >
-                  Download
-                </a>
+                {href && (
+                  <a
+                    href={href}
+                    download={entry.name}
+                    className="text-muted-foreground hover:underline"
+                  >
+                    Download
+                  </a>
+                )}
               </li>
             )
           })}

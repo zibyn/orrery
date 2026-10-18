@@ -16,13 +16,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { buildCreateSandboxBody, createSandboxSchema } from '@/lib/sandbox-form'
+import { selectClass } from '@/lib/utils'
 
 export const Route = createFileRoute('/_authed/sandboxes/new')({
   component: NewSandboxPage,
 })
-
-const selectClass =
-  'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50'
 
 function NewSandboxPage() {
   const navigate = useNavigate()

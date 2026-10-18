@@ -3,7 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 
 import { api, type CapacityNode, type ListResponse, type Node } from '@/api'
 import { Button } from '@/components/ui/button'
-import { mergeNodeCapacity } from '@/lib/nodes'
+import { mergeNodeCapacity, nodeListPollInterval } from '@/lib/nodes'
 
 export const Route = createFileRoute('/_authed/admin/nodes')({
   component: NodesPage,
@@ -15,6 +15,7 @@ function NodesPage() {
   const nodes = useQuery({
     queryKey: ['nodes'],
     queryFn: () => api<ListResponse<Node>>('GET', '/nodes?limit=200'),
+    refetchInterval: (query) => nodeListPollInterval(query.state.data?.items),
   })
   const capacity = useQuery({
     queryKey: ['capacity'],

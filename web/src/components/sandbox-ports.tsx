@@ -18,12 +18,23 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
       setLocked(true)
       return
     }
-    setOpening(true)
     setError('')
+    // The ticket request is async, so open the window now while the click is
+    // still a user gesture (a later window.open can be popup-blocked) and
+    // navigate it to the ticket URL once the request returns.
+    const popup = window.open('', '_blank')
+    if (!popup) {
+      setError('The browser blocked the new tab. Allow pop-ups and try again.')
+      setLocked(true)
+      return
+    }
+    popup.opener = null
+    setOpening(true)
     try {
       const ticket = await api<PortTicket>('POST', `/sandboxes/${sandboxId}/ports/${value}/ticket`)
-      window.open(ticket.url, '_blank', 'noopener')
+      popup.location.href = ticket.url
     } catch (err) {
+      popup.close()
       setError(err instanceof Error ? err.message : 'Could not open the port')
       setLocked(true)
     } finally {

@@ -47,8 +47,51 @@ export function execListPollInterval(items: Pick<{ state: ExecState }, 'state'>[
   return items?.some((exec) => exec.state !== 'finished') ? 5000 : false
 }
 
+// The argv field is editable (api.md §8), so accept the shell quoting a user
+// would expect: single quotes are literal, double quotes and bare text honour
+// a backslash escape, and an unterminated quote runs to the end.
 export function parseArgv(text: string): string[] {
-  return text.split(/\s+/).filter(Boolean)
+  const args: string[] = []
+  let current = ''
+  let inToken = false
+  let quote: '"' | "'" | null = null
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (quote) {
+      if (char === quote) {
+        quote = null
+      } else if (char === '\\' && quote === '"' && index + 1 < text.length) {
+        current += text[index + 1]
+        index += 1
+      } else {
+        current += char
+      }
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      inToken = true
+      continue
+    }
+    if (char === '\\' && index + 1 < text.length) {
+      current += text[index + 1]
+      index += 1
+      inToken = true
+      continue
+    }
+    if (/\s/.test(char)) {
+      if (inToken) {
+        args.push(current)
+        current = ''
+        inToken = false
+      }
+      continue
+    }
+    current += char
+    inToken = true
+  }
+  if (inToken) args.push(current)
+  return args
 }
 
 // The console is same-origin with the API (api.md §8); only the ws scheme
@@ -56,4 +99,83 @@ export function parseArgv(text: string): string[] {
 export function consoleWebSocketUrl(path: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/api/v1${path}`
+}
+
+export type FollowOutputHandlers = {
+  write: (text: string) => void
+  result: (frame: ExecResultFrame) => void
+  error: (message: string) => void
+  open?: () => void
+}
+
+export type FollowOutputOptions = {
+  after?: number
+  retries?: number
+  retryDelayMs?: number
+  closedMessage: string
+  failedMessage?: string
+}
+
+// Follows GET /execs/{id}/output?follow=true: parses each frame, classifies the
+// terminal result frame and writes data frames to the terminal. The returned
+// cleanup closes the socket. Reconnects resume from the last byte offset, so a
+// caller that wants a bounded retry just sets `retries`.
+export function followExecOutput(
+  execId: string,
+  handlers: FollowOutputHandlers,
+  options: FollowOutputOptions,
+): () => void {
+  const retries = options.retries ?? 0
+  const retryDelayMs = options.retryDelayMs ?? 1000
+  const failedMessage = options.failedMessage
+  let after = options.after ?? 0
+  let closed = false
+  let finished = false
+  let attempts = 0
+  let retryTimer: number | undefined
+  let socket: WebSocket | null = null
+
+  const connect = () => {
+    socket = new WebSocket(consoleWebSocketUrl(`/execs/${execId}/output?after=${after}&follow=true`))
+    socket.onopen = () => {
+      if (!closed) handlers.open?.()
+    }
+    socket.onmessage = (event) => {
+      let frame: unknown
+      try {
+        frame = JSON.parse(String(event.data))
+      } catch {
+        return
+      }
+      if (isResultFrame(frame)) {
+        finished = true
+        handlers.result(frame)
+        return
+      }
+      const output = frame as ExecOutputFrame
+      handlers.write(frameText(output))
+      after = frameEnd(output)
+    }
+    socket.onclose = () => {
+      if (closed || finished) return
+      if (attempts < retries) {
+        attempts += 1
+        retryTimer = window.setTimeout(connect, retryDelayMs)
+        return
+      }
+      handlers.error(options.closedMessage)
+    }
+    if (failedMessage) {
+      socket.onerror = () => {
+        if (!closed && !finished) handlers.error(failedMessage)
+      }
+    }
+  }
+  connect()
+
+  return () => {
+    closed = true
+    window.clearTimeout(retryTimer)
+    socket?.close()
+  }
 }

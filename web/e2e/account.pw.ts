@@ -1,19 +1,6 @@
-import { expect, request as playwrightRequest, test, type Page } from '@playwright/test'
+import { expect, request as playwrightRequest, test } from '@playwright/test'
 
-import { isAllowedConsoleUrl } from '../src/lib/request-scope'
-
-const ADMIN = { username: 'admin', password: 'admin-password-123' }
-const origin = process.env.STARS_E2E_API_URL ?? 'http://127.0.0.1:18080'
-const scope = { origin, appsDomain: process.env.STARS_E2E_APPS_DOMAIN ?? 'apps.test' }
-
-// console-parity: collect every HTTP request and WebSocket, then assert each
-// URL stays on the console origin or a port-forward subdomain (api.md §8).
-function watchRequests(page: Page): string[] {
-  const urls: string[] = []
-  page.on('request', (request) => urls.push(request.url()))
-  page.on('websocket', (socket) => urls.push(socket.url()))
-  return urls
-}
+import { assertConsoleScope, origin, signIn, watchRequests } from './harness'
 
 test('admin creates a token, uses it, revokes it and it stops working', async ({ page }) => {
   const requests = watchRequests(page)
@@ -21,10 +8,7 @@ test('admin creates a token, uses it, revokes it and it stops working', async ({
   // bearer token alone, not by the browser's Session cookie.
   const api = await playwrightRequest.newContext({ baseURL: origin })
 
-  await page.goto('/login?return=%2Faccount')
-  await page.getByLabel('Username').fill(ADMIN.username)
-  await page.getByLabel('Password').fill(ADMIN.password)
-  await page.getByRole('button', { name: 'Sign in' }).click()
+  await signIn(page, { returnTo: '/account' })
   await expect(page).toHaveURL(/\/account$/)
 
   // The login response carried the Session id, so exactly one row is marked.
@@ -55,8 +39,5 @@ test('admin creates a token, uses it, revokes it and it stops working', async ({
   expect(second.status()).toBe(401)
   await api.dispose()
 
-  const disallowed = requests.filter(
-    (url) => /^(https?|wss?):/i.test(url) && !isAllowedConsoleUrl(url, scope),
-  )
-  expect(disallowed, 'requests outside the console origin and port-forward hosts').toEqual([])
+  assertConsoleScope(requests)
 })
