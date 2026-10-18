@@ -34,6 +34,7 @@ export const Route = createFileRoute('/_authed/cli-auth')({
 function CliAuthPage() {
   const token = Route.useLoaderData()
   const [copied, setCopied] = useState(false)
+  const [done, setDone] = useState(false)
 
   async function copy() {
     try {
@@ -42,6 +43,17 @@ function CliAuthPage() {
     } catch {
       // Clipboard access can be denied; the token stays visible to select.
     }
+  }
+
+  if (done) {
+    return (
+      <div className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-2 px-4">
+        <h1 className="text-2xl font-semibold">CLI authorization</h1>
+        <p className="text-sm text-muted-foreground">
+          Token created. You can close this tab and return to the terminal.
+        </p>
+      </div>
+    )
   }
 
   return (
@@ -55,7 +67,7 @@ function CliAuthPage() {
       <pre className="overflow-x-auto rounded-md border border-border bg-muted p-3 font-mono text-sm">{token.token}</pre>
       <div className="flex gap-2">
         <Button onClick={copy}>{copied ? 'Copied' : 'Copy token'}</Button>
-        <Button variant="outline" onClick={() => window.location.assign('/')}>
+        <Button variant="outline" onClick={() => setDone(true)}>
           Done
         </Button>
       </div>
