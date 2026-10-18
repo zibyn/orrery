@@ -132,6 +132,22 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		go c.run("exec:"+cmd.ExecId, cmd.CommandId, noGenerationFence, func() error {
 			return c.rt.cancelExec(c.ctx, execID)
 		})
+	case *nodev1.ControlMessage_PublishWorkspace:
+		cmd := m.PublishWorkspace
+		if _, err := uuid.Parse(cmd.VersionId); err != nil {
+			c.result(cmd.CommandId, "invalid version id")
+			return
+		}
+		if _, err := uuid.Parse(cmd.WorkspaceId); err != nil {
+			c.result(cmd.CommandId, "invalid workspace id")
+			return
+		}
+		// ResourceVersions have no generation; the Control Plane sends 0. The
+		// version id is part of the key, so only the same publish collapses
+		// onto one lock.
+		go c.run("publish:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
+			return c.rt.publishWorkspace(c.ctx, cmd)
+		})
 	case *nodev1.ControlMessage_OpenTunnel:
 		cmd := m.OpenTunnel
 		var serve func(context.Context, string) error

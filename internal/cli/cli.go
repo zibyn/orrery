@@ -91,6 +91,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runFiles(c, rest[1:], stderr)
 	case "resource":
 		err = runResource(c, rest[1:], stderr)
+	case "workspace":
+		err = runWorkspace(c, rest[1:], stderr)
 	case "port-forward":
 		err = runPortForward(c, rest[1:])
 	case "git-credential":
@@ -134,6 +136,8 @@ commands:
   resource push <dir> <name>        upload and publish a directory
   resource pull <name>[@version] <dir>
                                     download a version into a directory
+  workspace publish <id> <path> <name>
+                                    publish a Workspace path as a Resource version
   port-forward <sandbox-id> [LOCAL:]REMOTE
                                     tunnel a local TCP port to a Sandbox port
 
