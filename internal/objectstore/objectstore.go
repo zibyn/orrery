@@ -4,11 +4,13 @@
 package objectstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -117,6 +119,34 @@ func (s *Store) PresignManifestGetURL(ctx context.Context, ownerID, address stri
 	return s.presignGet(ctx, ManifestKey(ownerID, address))
 }
 
+// PutManifest stores a version's canonical manifest bytes. The Control Plane
+// writes these when a version is published; clients read them through the API.
+func (s *Store) PutManifest(ctx context.Context, ownerID, address string, data []byte) error {
+	_, err := s.ops.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(ManifestKey(ownerID, address)),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String("application/json"),
+	})
+	return err
+}
+
+// GetManifest reads a version's stored canonical manifest bytes.
+func (s *Store) GetManifest(ctx context.Context, ownerID, address string) ([]byte, error) {
+	out, err := s.ops.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(ManifestKey(ownerID, address)),
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	defer out.Body.Close()
+	return io.ReadAll(out.Body)
+}
+
 func (s *Store) presignGet(ctx context.Context, key string) (string, error) {
 	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -137,10 +167,7 @@ func (s *Store) HeadSHA256(ctx context.Context, ownerID, sha256hex string) (stri
 		ChecksumMode: types.ChecksumModeEnabled,
 	})
 	if err != nil {
-		var notFound *types.NotFound
-		var apiErr smithy.APIError
-		if errors.As(err, &notFound) ||
-			(errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "NoSuchKey")) {
+		if isNotFound(err) {
 			return "", ErrNotFound
 		}
 		return "", err
@@ -153,4 +180,11 @@ func (s *Store) HeadSHA256(ctx context.Context, ownerID, sha256hex string) (stri
 		return "", fmt.Errorf("decode object checksum: %w", err)
 	}
 	return hex.EncodeToString(raw), nil
+}
+
+func isNotFound(err error) bool {
+	var notFound *types.NotFound
+	var apiErr smithy.APIError
+	return errors.As(err, &notFound) ||
+		(errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "NoSuchKey"))
 }

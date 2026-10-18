@@ -270,11 +270,23 @@ func nodeSchedulable(node store.Node, now time.Time, workspaceHere bool) bool {
 // is already bound (ADR-0015 locality). A GPU Sandbox claims whole cards;
 // their primary key keeps the cards exclusive (ADR-0015).
 func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sandbox, ws store.Workspace, nodes []store.Node, now time.Time) (bool, error) {
+	// A Sandbox with Resources can only run where the Runtime can bind-mount
+	// them (runtime.md §10-11). Filtering placement rather than rejecting the
+	// create keeps a mixed fleet working: api.md's Local `422 unsupported` is
+	// the single-Runtime case, and here a fleet with no capable Node ends the
+	// admission request `unsatisfiable` instead.
+	resourceMounts, err := q.CountSandboxResources(ctx, sb.ID)
+	if err != nil {
+		return false, err
+	}
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
 			continue
 		}
 		if ws.NodeID != nil && node.ID != *ws.NodeID {
+			continue
+		}
+		if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
 			continue
 		}
 		if !nodeSchedulable(node, now, ws.NodeID != nil) || !r.hub.connected(node.ID) {

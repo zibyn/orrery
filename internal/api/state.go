@@ -63,3 +63,20 @@ var (
 		string(SnapshotVersionFailed), string(SnapshotVersionCancelled),
 	}
 )
+
+// ResourceVersionState is the lifecycle condition of a ResourceVersion
+// (api.md §3, schema.md). unavailable means an object it references is gone
+// from the store; a later successful publish check repairs it.
+type ResourceVersionState string
+
+const (
+	ResourceVersionPending     ResourceVersionState = "pending"
+	ResourceVersionReady       ResourceVersionState = "ready"
+	ResourceVersionFailed      ResourceVersionState = "failed"
+	ResourceVersionUnavailable ResourceVersionState = "unavailable"
+)
+
+var resourceVersionStateNames = []string{
+	string(ResourceVersionPending), string(ResourceVersionReady),
+	string(ResourceVersionFailed), string(ResourceVersionUnavailable),
+}

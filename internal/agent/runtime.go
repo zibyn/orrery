@@ -228,21 +228,30 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 			return "runtime_create_failed", err
 		}
 	}
+	// Resource trees are fetched only when a runtime is actually built. A
+	// resend of the same command after a lost reply adopts the running
+	// container instead of downloading again.
+	resourcePaths, cause, err := r.resourceBinds(ctx, cmd.resources)
+	if err != nil {
+		return cause, err
+	}
 	nanoCPUs := int64(cmd.cpu * 1e9)
 	if nanoCPUs < 1e6 {
 		nanoCPUs = 1e6
 	}
+	binds := []string{
+		workspace + ":" + workspaceMount + ":" + mode,
+		filepath.Join(r.dataRoot, "bin") + ":/.stars/bin:ro",
+		runDir + ":" + runMount + ":rw",
+	}
+	binds = append(binds, resourcePaths...)
 	hostConfig := map[string]any{
 		"CgroupnsMode": "private",
 		"Init":         false,
-		"Binds": []string{
-			workspace + ":" + workspaceMount + ":" + mode,
-			filepath.Join(r.dataRoot, "bin") + ":/.stars/bin:ro",
-			runDir + ":" + runMount + ":rw",
-		},
-		"NanoCpus":  nanoCPUs,
-		"Memory":    cmd.memory,
-		"PidsLimit": sandboxPidsLimit,
+		"Binds":        binds,
+		"NanoCpus":     nanoCPUs,
+		"Memory":       cmd.memory,
+		"PidsLimit":    sandboxPidsLimit,
 	}
 	if requests := cdiDeviceRequest(cmd.gpuUUIDs); requests != nil {
 		hostConfig["DeviceRequests"] = requests
@@ -732,4 +741,11 @@ type createSandboxSpec struct {
 	workspaceID   string
 	workspaceMode string
 	gpuUUIDs      []string
+	resources     []resourceMount
+}
+
+// resourceMount is one version to fetch and mount at /resources/<mount>.
+type resourceMount struct {
+	address string
+	mount   string
 }

@@ -410,13 +410,13 @@ WHERE id = $1 AND desired_state = 'deleted';
 
 -- name: MarkSandboxReady :execrows
 UPDATE sandboxes
-SET state = 'ready', cause = NULL, last_activity_at = now(), updated_at = now()
+SET state = 'ready', cause = NULL, conditions = NULL, last_activity_at = now(), updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning');
 
 -- name: MarkSandboxFailed :execrows
 UPDATE sandboxes
-SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
+SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', updated_at = now()
 WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
 -- name: MarkSandboxRuntimeLost :execrows
@@ -442,9 +442,33 @@ WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'run
 
 -- name: MarkSandboxStopped :execrows
 UPDATE sandboxes
-SET state = 'stopped', updated_at = now()
+SET state = 'stopped', conditions = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+
+-- Sandbox Resource mounts: versions pinned at create time. The Reconciler
+-- sends the address on every create, so a restarted Sandbox mounts what it was
+-- created with (runtime.md §11).
+-- name: CreateSandboxResource :exec
+INSERT INTO sandbox_resources (sandbox_id, resource_version_id, mount)
+VALUES ($1, $2, $3);
+
+-- name: ListSandboxResourceMounts :many
+SELECT sr.mount, rv.address
+FROM sandbox_resources sr
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+WHERE sr.sandbox_id = $1
+ORDER BY sr.mount;
+
+-- name: CountSandboxResources :one
+SELECT count(*)::bigint FROM sandbox_resources WHERE sandbox_id = $1;
+
+-- SetSandboxConditions writes the Agent-reported condition set under the
+-- generation fence.
+-- name: SetSandboxConditions :execrows
+UPDATE sandboxes
+SET conditions = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
 -- Admission requests
 
@@ -769,6 +793,234 @@ SELECT * FROM git_links WHERE user_id = $1 AND provider_id = $2 FOR UPDATE;
 
 -- name: DeleteGitLink :one
 DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING *;
+
+-- Resources
+
+-- name: CreateResource :one
+INSERT INTO resources (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- GetResource includes tombstones so DELETE can be idempotent; reads hide
+-- them in the handler (api.md §1).
+-- name: GetResource :one
+SELECT * FROM resources WHERE id = $1;
+
+-- name: GetResourceByName :one
+SELECT * FROM resources
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL;
+
+-- name: GetResourceByIdempotencyKey :one
+SELECT * FROM resources
+WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
+
+-- name: ListResources :many
+SELECT * FROM resources
+WHERE owner_id = sqlc.arg('owner_id')
+  AND deleted_at IS NULL
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- LockResource serializes current-pointer moves of one Resource (ADR-0012).
+-- name: LockResource :one
+SELECT * FROM resources WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
+-- name: SoftDeleteResource :one
+UPDATE resources
+SET deleted_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: SetResourceCurrent :one
+UPDATE resources
+SET current_version_id = $2
+WHERE id = $1
+RETURNING *;
+
+-- PurgeResourceIdempotencyKeys expires Idempotency Keys after 24 hours
+-- (defaults.md).
+-- name: PurgeResourceIdempotencyKeys :exec
+UPDATE resources SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
+-- Resource versions
+
+-- name: CreateResourceVersion :one
+INSERT INTO resource_versions (
+    id, resource_id, address, manifest_key, size, provenance,
+    state, idempotency_key
+) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
+RETURNING *;
+
+-- CreatePendingResourceVersion is the Workspace publish path: the version
+-- starts pending and the Agent fills in the manifest (node-protocol.md
+-- "Workspace publish").
+-- name: CreatePendingResourceVersion :one
+INSERT INTO resource_versions (
+    id, resource_id, provenance, state, publish_workspace_id,
+    publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5)
+RETURNING *;
+
+-- name: GetResourceVersion :one
+SELECT * FROM resource_versions WHERE id = $1;
+
+-- name: GetResourceVersionByPublishIdempotencyKey :one
+SELECT * FROM resource_versions
+WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2;
+
+-- SetResourceVersionManifest records what SubmitManifest normalized. Only a
+-- pending version can accept a manifest: a terminal one must not be revived.
+-- name: SetResourceVersionManifest :one
+UPDATE resource_versions
+SET address = $2, manifest_key = $3, size = $4
+WHERE id = $1 AND state = 'pending'
+RETURNING *;
+
+-- name: DeleteResourceVersionObjects :exec
+DELETE FROM resource_version_objects WHERE version_id = $1;
+
+-- MarkResourceVersionReady and MarkResourceVersionFailed are conditional on
+-- pending so a redelivered command after a restart cannot overwrite a
+-- terminal state.
+-- name: MarkResourceVersionReady :execrows
+UPDATE resource_versions
+SET state = 'ready', cause = NULL
+WHERE id = $1 AND state = 'pending';
+
+-- name: MarkResourceVersionFailed :execrows
+UPDATE resource_versions
+SET state = 'failed', cause = $2
+WHERE id = $1 AND state = 'pending';
+
+-- ListPendingWorkspacePublishes is the Reconciler's desired-state query. The
+-- path lives in provenance (schema.md).
+-- name: ListPendingWorkspacePublishes :many
+SELECT rv.id, rv.resource_id, rv.provenance, rv.publish_workspace_id, w.node_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending' AND rv.publish_workspace_id IS NOT NULL
+ORDER BY rv.id;
+
+-- GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
+-- version must still be pending and its Workspace bound to the calling Node.
+-- name: GetPendingWorkspacePublish :one
+SELECT rv.*, w.node_id, r.owner_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.id = $1
+  AND rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL;
+
+-- FindPublishObjectOwner answers the Presign PUT question: is sha256 one of
+-- the objects of a pending publish assigned to this Node, and which owner's
+-- CAS key addresses it (ADR-0021)?
+-- name: FindPublishObjectOwner :one
+SELECT r.owner_id
+FROM resource_version_objects rvo
+JOIN resource_versions rv ON rv.id = rvo.version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL
+  AND w.node_id = $1
+  AND rvo.sha256 = $2
+LIMIT 1;
+
+-- GetLiveResourceByName resolves a publish's Resource name without creating
+-- it (api.md §3: a name is unique among live Resources of one owner).
+-- name: GetLiveResourceByName :one
+SELECT * FROM resources
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL;
+
+-- name: GetResourceVersionByIdempotencyKey :one
+SELECT * FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2;
+
+-- name: ListResourceVersions :many
+SELECT * FROM resource_versions
+WHERE resource_id = $1
+  AND (sqlc.narg('after')::uuid IS NULL OR id < sqlc.narg('after'))
+ORDER BY id DESC
+LIMIT sqlc.arg('limit');
+
+-- name: PurgeResourceVersionIdempotencyKeys :exec
+UPDATE resource_versions
+SET idempotency_key = NULL, publish_idempotency_key = NULL
+WHERE (idempotency_key IS NOT NULL OR publish_idempotency_key IS NOT NULL)
+  AND created_at < now() - interval '24 hours';
+
+-- name: InsertResourceVersionObject :exec
+INSERT INTO resource_version_objects (version_id, sha256)
+VALUES ($1, $2)
+ON CONFLICT (version_id, sha256) DO NOTHING;
+
+-- name: ListResourceVersionObjects :many
+SELECT sha256 FROM resource_version_objects WHERE version_id = $1 ORDER BY sha256;
+
+-- CAS objects (owner-scoped, ADR-0021)
+
+-- name: UpsertCASObject :exec
+INSERT INTO cas_objects (owner_id, sha256, size)
+VALUES ($1, $2, $3)
+ON CONFLICT (owner_id, sha256) DO NOTHING;
+
+-- name: GetCASObject :one
+SELECT * FROM cas_objects WHERE owner_id = $1 AND sha256 = $2;
+
+-- name: DeleteCASObject :exec
+DELETE FROM cas_objects WHERE owner_id = $1 AND sha256 = $2;
+
+-- Upload sessions
+
+-- name: CreateUpload :one
+INSERT INTO uploads (id, resource_id, address, manifest, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: GetUpload :one
+SELECT * FROM uploads WHERE id = $1;
+
+-- ReusableUpload is the resume rule: an unexpired session for the same
+-- Resource and manifest address is reused (api.md §3).
+-- name: ReusableUpload :one
+SELECT * FROM uploads
+WHERE resource_id = $1 AND address = $2 AND expires_at > now()
+ORDER BY created_at DESC, id
+LIMIT 1;
+
+-- name: DeleteUpload :exec
+DELETE FROM uploads WHERE id = $1;
+
+-- Presign authorization (node-protocol.md "Presign")
+--
+-- Only objects and manifests of versions mounted by a Sandbox (including a
+-- build row later) allocated to this Node may be signed for GET. CAS keys are
+-- owner-scoped, so the caller needs the Resource's owner (ADR-0021).
+
+-- name: ListNodeSandboxObjectRefs :many
+SELECT DISTINCT r.owner_id, rv.id AS version_id
+FROM sandbox_resources sr
+JOIN sandboxes sb ON sb.id = sr.sandbox_id
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN resource_version_objects rvo ON rvo.version_id = rv.id
+WHERE sb.node_id = $1 AND sb.state <> 'deleted' AND rvo.sha256 = $2;
+
+-- name: ListNodeSandboxManifestOwner :one
+SELECT r.owner_id
+FROM sandbox_resources sr
+JOIN sandboxes sb ON sb.id = sr.sandbox_id
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE sb.node_id = $1 AND sb.state <> 'deleted' AND rv.address = $2
+LIMIT 1;
+
+-- name: MarkResourceVersionUnavailable :execrows
+UPDATE resource_versions
+SET state = 'unavailable'
+WHERE id = $1 AND state = 'ready';
 
 -- M4 ticket #88: Snapshots and SnapshotVersions (schema.md, ADR-0012).
 

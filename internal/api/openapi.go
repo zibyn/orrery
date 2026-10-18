@@ -145,6 +145,15 @@ func responsesFor(rt route) map[string]any {
 		}
 		responses["422"] = problemResponse("unsupported")
 		responses["503"] = problemResponse("unavailable")
+	case "createResourceUpload":
+		responses["413"] = problemResponse("payload_too_large")
+		responses["503"] = problemResponse("unavailable")
+	case "createResourceVersion", "getResourceManifest", "createResourceDownloads":
+		responses["503"] = problemResponse("unavailable")
+	case "publishWorkspace":
+		responses["503"] = problemResponse("unavailable")
+	case "setResourceCurrent":
+		responses["412"] = problemResponse("precondition_failed")
 	}
 	return responses
 }
@@ -617,6 +626,19 @@ func schemas() map[string]any {
 					},
 				},
 				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name (own first, then platform); omit for STARS_DEFAULT_SNAPSHOT."},
+				"resources": map[string]any{
+					"type":        "array",
+					"description": "Resource versions pinned at create time and mounted read-only at /resources/<mount>.",
+					"items": map[string]any{
+						"type":     "object",
+						"required": []string{"resource"},
+						"properties": map[string]any{
+							"resource": map[string]any{"type": "string", "description": "Resource id or owner-scoped name."},
+							"version":  map[string]any{"type": "string", "format": "uuid", "description": "ResourceVersion id; omit for the current version."},
+							"mount":    map[string]any{"type": "string", "description": "One path segment; defaults to the Resource name."},
+						},
+					},
+				},
 				"secrets": map[string]any{
 					"type":                 "object",
 					"description":          "Environment variable name to Secret name; injected into every Exec.",
@@ -637,7 +659,7 @@ func schemas() map[string]any {
 		},
 		"Sandbox": map[string]any{
 			"type":     "object",
-			"required": []string{"id", "name", "labels", "state", "snapshot", "cpu", "memory", "idle_stop", "created_at"},
+			"required": []string{"id", "name", "labels", "state", "snapshot", "conditions", "cpu", "memory", "idle_stop", "created_at"},
 			"properties": map[string]any{
 				"id":       map[string]any{"type": "string", "format": "uuid"},
 				"name":     map[string]any{"type": "string"},
@@ -657,6 +679,7 @@ func schemas() map[string]any {
 					"required": []string{"count"},
 				},
 				"idle_stop":      map[string]any{"type": "integer"},
+				"conditions":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Current conditions, e.g. fetching_resources while the Node pulls Resource version trees."},
 				"workspace":      schemaRef("SandboxWorkspace"),
 				"queue_position": map[string]any{"type": "integer", "description": "1-based position in the admission queue while pending."},
 				"blocked_reason": nullableString,
@@ -783,6 +806,133 @@ func schemas() map[string]any {
 			"required": []string{"url"},
 			"properties": map[string]any{
 				"url": map[string]any{"type": "string", "description": "Signed URL on the port's subdomain; valid for 60 seconds."},
+			},
+		},
+		"CreateResourceRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"name"},
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string", "description": "Unique per User among undeleted Resources."},
+			},
+		},
+		"Resource": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "name", "created_at"},
+			"properties": map[string]any{
+				"id":                 map[string]any{"type": "string", "format": "uuid"},
+				"name":               map[string]any{"type": "string"},
+				"current_version_id": nullableString,
+				"created_at":         map[string]any{"type": "string", "format": "date-time"},
+				"deleted_at":         nullableTime,
+			},
+		},
+		"ResourceList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("Resource")},
+				"next_cursor": nullableString,
+			},
+		},
+		"Manifest": map[string]any{
+			"type":     "object",
+			"required": []string{"entries"},
+			"properties": map[string]any{
+				"entries": map[string]any{"type": "array", "items": schemaRef("ManifestEntry"), "maxItems": 1000000},
+			},
+		},
+		"ManifestEntry": map[string]any{
+			"type":     "object",
+			"required": []string{"path", "type"},
+			"properties": map[string]any{
+				"path":       map[string]any{"type": "string", "description": "Slash-separated relative path; the parent must be an explicit dir entry."},
+				"type":       map[string]any{"type": "string", "enum": []string{"file", "dir", "symlink"}},
+				"size":       map[string]any{"type": "integer", "minimum": 0, "maximum": 5 << 30, "description": "File only; required for files, at most 5 GiB."},
+				"sha256":     map[string]any{"type": "string", "description": "File only; 64 lowercase hex characters."},
+				"executable": map[string]any{"type": "boolean", "description": "File only; the sole recorded permission bit (644 or 755)."},
+				"target":     map[string]any{"type": "string", "description": "Symlink only; recorded, never followed."},
+			},
+		},
+		"Upload": map[string]any{
+			"type":     "object",
+			"required": []string{"upload_id", "expires_at", "puts"},
+			"properties": map[string]any{
+				"upload_id":  map[string]any{"type": "string", "format": "uuid"},
+				"expires_at": map[string]any{"type": "string", "format": "date-time"},
+				"puts":       map[string]any{"type": "array", "items": schemaRef("UploadPut")},
+			},
+		},
+		"UploadPut": map[string]any{
+			"type":     "object",
+			"required": []string{"sha256", "url"},
+			"properties": map[string]any{
+				"sha256": map[string]any{"type": "string"},
+				"url":    map[string]any{"type": "string", "description": "Presigned PUT; send x-amz-checksum-sha256 (base64) with the bytes."},
+			},
+		},
+		"CreateResourceVersionRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"upload_id"},
+			"properties": map[string]any{
+				"upload_id": map[string]any{"type": "string", "format": "uuid"},
+			},
+		},
+		"PublishWorkspaceRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"path", "resource"},
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Relative to the Workspace root; /workspace/... is accepted. Must stay inside the Workspace.",
+				},
+				"resource": map[string]any{
+					"type":        "string",
+					"description": "Resource name; created when absent.",
+				},
+			},
+		},
+		"ResourceVersion": map[string]any{
+			"type":     "object",
+			"required": []string{"id", "resource_id", "size", "state", "provenance", "created_at"},
+			"properties": map[string]any{
+				"id":          map[string]any{"type": "string", "format": "uuid"},
+				"resource_id": map[string]any{"type": "string", "format": "uuid"},
+				"address":     nullableString,
+				"size":        map[string]any{"type": "integer"},
+				"state":       map[string]any{"type": "string", "enum": resourceVersionStateNames},
+				"cause":       nullableString,
+				"provenance":  map[string]any{"type": "object", "description": "upload, or workspace{id, path}."},
+				"created_at":  map[string]any{"type": "string", "format": "date-time"},
+				"expires_at":  nullableTime,
+			},
+		},
+		"ResourceVersionList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("ResourceVersion")},
+				"next_cursor": nullableString,
+			},
+		},
+		"ResourceDownloadsRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"sha256"},
+			"properties": map[string]any{
+				"sha256": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+		},
+		"ResourceDownloads": map[string]any{
+			"type":     "object",
+			"required": []string{"urls"},
+			"properties": map[string]any{
+				"urls": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Presigned GETs in request order."},
+			},
+		},
+		"SetResourceCurrentRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"version"},
+			"properties": map[string]any{
+				"version": map[string]any{"type": "string", "format": "uuid"},
 			},
 		},
 	}

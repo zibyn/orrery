@@ -19,11 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Node_Redeem_FullMethodName     = "/stars.node.v1.Node/Redeem"
-	Node_Control_FullMethodName    = "/stars.node.v1.Node/Control"
-	Node_ExecOutput_FullMethodName = "/stars.node.v1.Node/ExecOutput"
-	Node_Tunnel_FullMethodName     = "/stars.node.v1.Node/Tunnel"
-	Node_Presign_FullMethodName    = "/stars.node.v1.Node/Presign"
+	Node_Redeem_FullMethodName         = "/stars.node.v1.Node/Redeem"
+	Node_Control_FullMethodName        = "/stars.node.v1.Node/Control"
+	Node_ExecOutput_FullMethodName     = "/stars.node.v1.Node/ExecOutput"
+	Node_Tunnel_FullMethodName         = "/stars.node.v1.Node/Tunnel"
+	Node_Presign_FullMethodName        = "/stars.node.v1.Node/Presign"
+	Node_SubmitManifest_FullMethodName = "/stars.node.v1.Node/SubmitManifest"
 )
 
 // NodeClient is the client API for Node service.
@@ -46,6 +47,10 @@ type NodeClient interface {
 	// Presign issues object store URLs for this Node (node-protocol.md
 	// "Presign"). It is authenticated by the Node Token.
 	Presign(ctx context.Context, in *PresignRequest, opts ...grpc.CallOption) (*PresignResponse, error)
+	// SubmitManifest streams a Workspace publish's tree to the Control Plane.
+	// The first chunk carries version_id; the reply lists the objects the Node
+	// still has to upload (node-protocol.md "Workspace publish").
+	SubmitManifest(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ManifestChunk, ManifestAck], error)
 }
 
 type nodeClient struct {
@@ -115,6 +120,19 @@ func (c *nodeClient) Presign(ctx context.Context, in *PresignRequest, opts ...gr
 	return out, nil
 }
 
+func (c *nodeClient) SubmitManifest(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ManifestChunk, ManifestAck], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Node_ServiceDesc.Streams[3], Node_SubmitManifest_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ManifestChunk, ManifestAck]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_SubmitManifestClient = grpc.ClientStreamingClient[ManifestChunk, ManifestAck]
+
 // NodeServer is the server API for Node service.
 // All implementations must embed UnimplementedNodeServer
 // for forward compatibility.
@@ -135,6 +153,10 @@ type NodeServer interface {
 	// Presign issues object store URLs for this Node (node-protocol.md
 	// "Presign"). It is authenticated by the Node Token.
 	Presign(context.Context, *PresignRequest) (*PresignResponse, error)
+	// SubmitManifest streams a Workspace publish's tree to the Control Plane.
+	// The first chunk carries version_id; the reply lists the objects the Node
+	// still has to upload (node-protocol.md "Workspace publish").
+	SubmitManifest(grpc.ClientStreamingServer[ManifestChunk, ManifestAck]) error
 	mustEmbedUnimplementedNodeServer()
 }
 
@@ -159,6 +181,9 @@ func (UnimplementedNodeServer) Tunnel(grpc.BidiStreamingServer[TunnelFrame, Tunn
 }
 func (UnimplementedNodeServer) Presign(context.Context, *PresignRequest) (*PresignResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Presign not implemented")
+}
+func (UnimplementedNodeServer) SubmitManifest(grpc.ClientStreamingServer[ManifestChunk, ManifestAck]) error {
+	return status.Errorf(codes.Unimplemented, "method SubmitManifest not implemented")
 }
 func (UnimplementedNodeServer) mustEmbedUnimplementedNodeServer() {}
 func (UnimplementedNodeServer) testEmbeddedByValue()              {}
@@ -238,6 +263,13 @@ func _Node_Presign_Handler(srv interface{}, ctx context.Context, dec func(interf
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Node_SubmitManifest_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(NodeServer).SubmitManifest(&grpc.GenericServerStream[ManifestChunk, ManifestAck]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_SubmitManifestServer = grpc.ClientStreamingServer[ManifestChunk, ManifestAck]
+
 // Node_ServiceDesc is the grpc.ServiceDesc for Node service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -271,6 +303,11 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "Tunnel",
 			Handler:       _Node_Tunnel_Handler,
 			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "SubmitManifest",
+			Handler:       _Node_SubmitManifest_Handler,
 			ClientStreams: true,
 		},
 	},

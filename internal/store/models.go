@@ -64,6 +64,13 @@ type AuditRecord struct {
 	Detail        json.RawMessage
 }
 
+type CasObject struct {
+	OwnerID   uuid.UUID
+	Sha256    string
+	Size      int64
+	CreatedAt pgtype.Timestamptz
+}
+
 type EnrollmentPacket struct {
 	ID         uuid.UUID
 	SecretHash []byte
@@ -148,6 +155,37 @@ type Node struct {
 	MemoryPerGpu   int64
 }
 
+type Resource struct {
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	Name             string
+	CurrentVersionID *uuid.UUID
+	IdempotencyKey   *string
+	DeletedAt        pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+}
+
+type ResourceVersion struct {
+	ID                    uuid.UUID
+	ResourceID            uuid.UUID
+	Address               *string
+	ManifestKey           *string
+	Size                  int64
+	Provenance            json.RawMessage
+	State                 string
+	Cause                 *string
+	IdempotencyKey        *string
+	ExpiresAt             pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
+}
+
+type ResourceVersionObject struct {
+	VersionID uuid.UUID
+	Sha256    string
+}
+
 type Sandbox struct {
 	ID              uuid.UUID
 	OwnerID         uuid.UUID
@@ -174,6 +212,13 @@ type Sandbox struct {
 	WorkspaceID     *uuid.UUID
 	WorkspaceMode   string
 	TokenKeyID      *string
+	Conditions      json.RawMessage
+}
+
+type SandboxResource struct {
+	SandboxID         uuid.UUID
+	ResourceVersionID uuid.UUID
+	Mount             string
 }
 
 type Secret struct {
@@ -208,6 +253,15 @@ type SnapshotVersion struct {
 	Provenance     json.RawMessage
 	IdempotencyKey *string
 	CreatedAt      pgtype.Timestamptz
+}
+
+type Upload struct {
+	ID         uuid.UUID
+	ResourceID uuid.UUID
+	Address    string
+	Manifest   json.RawMessage
+	ExpiresAt  pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
 }
 
 type User struct {

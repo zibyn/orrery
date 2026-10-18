@@ -124,6 +124,7 @@ func (r *reconciler) once(ctx context.Context) {
 	}
 	r.deleteWorkspaces(ctx)
 	r.workspaces(ctx)
+	r.publishWorkspaces(ctx)
 	r.execs(ctx)
 	r.idle(ctx)
 	// Admission is last so its writes commit with the sweep and its own
@@ -316,6 +317,20 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 		r.s.log.Warn("reconcile: list sandbox GPUs", "sandbox_id", sb.ID, "error", err)
 		return
 	}
+	mounts, err := r.s.q.ListSandboxResourceMounts(ctx, sb.ID)
+	if err != nil {
+		r.s.log.Warn("reconcile: list sandbox Resource mounts", "sandbox_id", sb.ID, "error", err)
+		return
+	}
+	resources := make([]*nodev1.ResourceMount, 0, len(mounts))
+	for _, mount := range mounts {
+		if mount.Address == nil {
+			// A version without a manifest cannot be mounted; creation already
+			// rejects non-ready versions, so this is defensive.
+			continue
+		}
+		resources = append(resources, &nodev1.ResourceMount{Address: *mount.Address, Mount: mount.Mount})
+	}
 	id := commandID("create-sandbox", sb.ID, sb.Generation)
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{
 		CreateSandbox: &nodev1.CreateSandbox{
@@ -326,6 +341,7 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 			Limits:      &nodev1.Limits{Cpu: sb.Cpu, Memory: sb.Memory},
 			Workspace:   &nodev1.WorkspaceMount{WorkspaceId: att.WorkspaceID.String(), Mode: att.Mode},
 			GpuUuids:    gpus,
+			Resources:   resources,
 		},
 	}})
 }
@@ -492,6 +508,41 @@ func (r *reconciler) placeWorkspace(ctx context.Context, ws store.Workspace, now
 			r.s.log.Warn("reconcile: bind Workspace", "workspace_id", ws.ID, "error", err)
 		}
 		return
+	}
+}
+
+// publishWorkspaces derives PublishWorkspace for every pending
+// workspace-source ResourceVersion and sends it to the Workspace's bound Node.
+// nodeHub clears its dedupe memory on reconnect, so an Agent restart redelivers
+// the command and the walk converges (publish-agent-restart).
+func (r *reconciler) publishWorkspaces(ctx context.Context) {
+	rows, err := r.s.q.ListPendingWorkspacePublishes(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			r.s.log.Warn("reconcile: list pending publishes", "error", err)
+		}
+		return
+	}
+	for _, row := range rows {
+		if row.NodeID == nil {
+			continue
+		}
+		workspaceID, publishPath, ok := parseWorkspaceProvenance(row.Provenance)
+		if !ok {
+			r.s.log.Warn("reconcile: publish has no workspace provenance", "version_id", row.ID)
+			continue
+		}
+		id := publishCommandID(row.ID)
+		r.send(ctx, row.NodeID, id, &nodev1.ControlMessage{
+			Message: &nodev1.ControlMessage_PublishWorkspace{
+				PublishWorkspace: &nodev1.PublishWorkspace{
+					CommandId:   id,
+					VersionId:   row.ID.String(),
+					WorkspaceId: workspaceID.String(),
+					Path:        publishPath,
+				},
+			},
+		})
 	}
 }
 
