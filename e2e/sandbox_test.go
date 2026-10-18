@@ -18,6 +18,7 @@ type sandboxView struct {
 	ID       string            `json:"id"`
 	Name     string            `json:"name"`
 	Labels   map[string]string `json:"labels"`
+	Runtime  string            `json:"runtime"`
 	State    string            `json:"state"`
 	Cause    *string           `json:"cause"`
 	NodeID   *string           `json:"node_id"`
