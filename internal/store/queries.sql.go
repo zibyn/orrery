@@ -360,7 +360,7 @@ func (q *Queries) CountSandboxResources(ctx context.Context, sandboxID uuid.UUID
 
 const countSandboxSnapshotReferences = `-- name: CountSandboxSnapshotReferences :one
 SELECT count(*)::bigint FROM sandboxes
-WHERE deleted_at IS NULL
+WHERE state <> 'deleted'
   AND right(snapshot_digest, length($1::text)) = $1::text
 `
 
@@ -3246,7 +3246,11 @@ WHERE r.deleted_at IS NULL
   AND rv.created_at < $1
   AND rv.state <> 'pending'
   AND (r.current_version_id IS NULL OR r.current_version_id <> rv.id)
-  AND NOT EXISTS (SELECT 1 FROM sandbox_resources sr WHERE sr.resource_version_id = rv.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
 ORDER BY rv.created_at
 LIMIT $2
 `
@@ -3881,7 +3885,11 @@ FROM resource_versions rv
 JOIN resources r ON r.id = rv.resource_id
 WHERE rv.resource_id = $1
   AND rv.state <> 'pending'
-  AND NOT EXISTS (SELECT 1 FROM sandbox_resources sr WHERE sr.resource_version_id = rv.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
 ORDER BY rv.id
 LIMIT $2
 `
