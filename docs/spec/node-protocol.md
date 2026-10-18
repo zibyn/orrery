@@ -24,7 +24,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 `AgentMessage`（oneof）：
 - `Hello{node_id, agent_version, proto_major, proto_minor}`
 - `Heartbeat{runtime_health, disk_free, gpu_health[]}`
-- `Capabilities{runtime, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime` 是这台 Node 唯一的 Runtime（`docker`、`podman`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount` 和 `snapshot_build`，Local Runtime 的 `resource_mount` 报 `unsupported`，`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
+- `Capabilities{runtime_provider, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime_provider` 是这台 Node 唯一的 Runtime Provider（`docker`、`podman`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount` 和 `snapshot_build`，Local Runtime 的 `resource_mount` 报 `unsupported`，`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
 - `SandboxObserved{sandbox_id, generation, phase: fetching_resources|running|gone|create_failed, cause?}`；`fetching_resources` 让 Sandbox 挂上同名 condition，`create_failed` 的 cause 可以是 `resource_fetch_failed`（`runtime.md` §11）
 - `WorkspaceObserved{workspace_id, phase, cause?}`
 - `ExecObserved{exec_id, started_at}`（结果不走这里，见 ExecOutput）
