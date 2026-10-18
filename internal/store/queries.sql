@@ -304,19 +304,39 @@ INSERT INTO sandboxes (
 ) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11, $12, $13, $14)
 RETURNING *;
 
--- name: GetSandbox :one
-SELECT * FROM sandboxes WHERE id = $1 AND state <> 'deleted';
+-- CreateBuildSandbox is the internal row that carries a Snapshot build's
+-- Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no
+-- Workspace and no Runtime; secret_env_ct holds the build's Secret snapshot.
+-- name: CreateBuildSandbox :one
+INSERT INTO sandboxes (
+    id, owner_id, kind, name, labels, desired_state, state, snapshot_digest,
+    cpu, memory, gpu_count, idle_stop_seconds, generation, secret_env_ct
+) VALUES ($1, $2, 'build', $3, '{}', 'running', 'pending', $4, $5, $6, 0, 0, 1, $7)
+RETURNING *;
 
+-- MarkBuildSandboxDone takes a build row out of the admission and reconcile
+-- sweeps once its version is terminal. It has no Runtime to stop.
+-- name: MarkBuildSandboxDone :execrows
+UPDATE sandboxes
+SET state = 'stopped', desired_state = 'stopped', updated_at = now()
+WHERE id = $1 AND kind = 'build' AND state <> 'stopped';
+
+-- name: GetSandbox :one
+SELECT * FROM sandboxes WHERE id = $1 AND kind = 'user' AND state <> 'deleted';
+
+-- GetSandboxIncludingDeleted does not filter kind: a build Exec's log is
+-- readable through its owner, and the build row carries that ownership.
 -- name: GetSandboxIncludingDeleted :one
 SELECT * FROM sandboxes WHERE id = $1;
 
 -- name: GetSandboxByIdempotencyKey :one
 SELECT * FROM sandboxes
-WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
+WHERE owner_id = $1 AND kind = 'user' AND idempotency_key = $2 AND state <> 'deleted';
 
 -- name: ListSandboxes :many
 SELECT * FROM sandboxes
 WHERE owner_id = sqlc.arg('owner_id')
+  AND kind = 'user'
   AND state <> 'deleted'
   AND (sqlc.narg('state')::text IS NULL OR state = sqlc.narg('state'))
   AND (sqlc.narg('node_id')::uuid IS NULL OR node_id = sqlc.narg('node_id'))
@@ -329,12 +349,13 @@ ORDER BY id
 LIMIT sqlc.arg('limit');
 
 -- An open admission request is part of active usage, so the pending state is
--- the quota hold (ADR-0015).
+-- the quota hold (ADR-0015). Builds are system work and never count (ADR-0021).
 -- name: CountActiveSandboxResources :one
 SELECT count(*)::bigint AS sandboxes,
        COALESCE(SUM(gpu_count), 0)::bigint AS gpus
 FROM sandboxes
-WHERE owner_id = $1 AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+WHERE owner_id = $1 AND kind = 'user'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping');
 
 -- name: StartSandbox :one
 UPDATE sandboxes
@@ -361,7 +382,7 @@ UPDATE sandboxes SET last_activity_at = now() WHERE id = $1 AND state = 'ready';
 -- period (defaults.md, ADR-0015).
 -- name: ListIdleSandboxes :many
 SELECT * FROM sandboxes
-WHERE state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
+WHERE kind = 'user' AND state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
 ORDER BY id;
 
 -- name: DeleteSandbox :one
@@ -376,7 +397,8 @@ RETURNING *;
 
 -- name: ListReconcilableSandboxes :many
 SELECT * FROM sandboxes
-WHERE state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+WHERE kind = 'user'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
 ORDER BY id;
 
 -- name: SetSandboxNode :execrows
@@ -410,13 +432,13 @@ WHERE id = $1 AND desired_state = 'deleted';
 
 -- name: MarkSandboxReady :execrows
 UPDATE sandboxes
-SET state = 'ready', cause = NULL, last_activity_at = now(), updated_at = now()
+SET state = 'ready', cause = NULL, conditions = NULL, last_activity_at = now(), updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning');
 
 -- name: MarkSandboxFailed :execrows
 UPDATE sandboxes
-SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
+SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', updated_at = now()
 WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
 -- name: MarkSandboxRuntimeLost :execrows
@@ -442,9 +464,33 @@ WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'run
 
 -- name: MarkSandboxStopped :execrows
 UPDATE sandboxes
-SET state = 'stopped', updated_at = now()
+SET state = 'stopped', conditions = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+
+-- Sandbox Resource mounts: versions pinned at create time. The Reconciler
+-- sends the address on every create, so a restarted Sandbox mounts what it was
+-- created with (runtime.md §11).
+-- name: CreateSandboxResource :exec
+INSERT INTO sandbox_resources (sandbox_id, resource_version_id, mount)
+VALUES ($1, $2, $3);
+
+-- name: ListSandboxResourceMounts :many
+SELECT sr.mount, rv.address
+FROM sandbox_resources sr
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+WHERE sr.sandbox_id = $1
+ORDER BY sr.mount;
+
+-- name: CountSandboxResources :one
+SELECT count(*)::bigint FROM sandbox_resources WHERE sandbox_id = $1;
+
+-- SetSandboxConditions writes the Agent-reported condition set under the
+-- generation fence.
+-- name: SetSandboxConditions :execrows
+UPDATE sandboxes
+SET conditions = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
 -- Admission requests
 
@@ -699,7 +745,7 @@ SELECT sqlc.embed(e), s.node_id AS sandbox_node_id, s.owner_id AS sandbox_owner_
        s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
 FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id
-WHERE e.finished_at IS NULL
+WHERE e.finished_at IS NULL AND s.kind = 'user'
 ORDER BY e.id;
 
 -- Execution Log retention is counted from the Exec's terminal state
@@ -769,3 +815,504 @@ SELECT * FROM git_links WHERE user_id = $1 AND provider_id = $2 FOR UPDATE;
 
 -- name: DeleteGitLink :one
 DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING *;
+
+-- Resources
+
+-- name: CreateResource :one
+INSERT INTO resources (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- GetResource includes tombstones so DELETE can be idempotent; reads hide
+-- them in the handler (api.md §1).
+-- name: GetResource :one
+SELECT * FROM resources WHERE id = $1;
+
+-- name: GetResourceByIdempotencyKey :one
+SELECT * FROM resources
+WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
+
+-- name: ListResources :many
+SELECT * FROM resources
+WHERE owner_id = sqlc.arg('owner_id')
+  AND deleted_at IS NULL
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- LockResource serializes current-pointer moves of one Resource (ADR-0012).
+-- name: LockResource :one
+SELECT * FROM resources WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
+-- name: SoftDeleteResource :one
+UPDATE resources
+SET deleted_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: SetResourceCurrent :one
+UPDATE resources
+SET current_version_id = $2
+WHERE id = $1
+RETURNING *;
+
+-- PurgeResourceIdempotencyKeys expires Idempotency Keys after 24 hours
+-- (defaults.md).
+-- name: PurgeResourceIdempotencyKeys :exec
+UPDATE resources SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
+-- Resource versions
+
+-- name: CreateResourceVersion :one
+INSERT INTO resource_versions (
+    id, resource_id, address, manifest_key, size, provenance,
+    state, idempotency_key
+) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
+RETURNING *;
+
+-- CreatePendingResourceVersion is the Workspace publish path: the version
+-- starts pending and the Agent fills in the manifest (node-protocol.md
+-- "Workspace publish").
+-- name: CreatePendingResourceVersion :one
+INSERT INTO resource_versions (
+    id, resource_id, provenance, state, publish_workspace_id,
+    publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5)
+RETURNING *;
+
+-- name: GetResourceVersion :one
+SELECT * FROM resource_versions WHERE id = $1;
+
+-- name: GetResourceVersionByPublishIdempotencyKey :one
+SELECT * FROM resource_versions
+WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2;
+
+-- SetResourceVersionManifest records what SubmitManifest normalized. Only a
+-- pending version can accept a manifest: a terminal one must not be revived.
+-- name: SetResourceVersionManifest :one
+UPDATE resource_versions
+SET address = $2, manifest_key = $3, size = $4
+WHERE id = $1 AND state = 'pending'
+RETURNING *;
+
+-- name: DeleteResourceVersionObjects :exec
+DELETE FROM resource_version_objects WHERE version_id = $1;
+
+-- MarkResourceVersionReady and MarkResourceVersionFailed are conditional on
+-- pending so a redelivered command after a restart cannot overwrite a
+-- terminal state.
+-- name: MarkResourceVersionReady :execrows
+UPDATE resource_versions
+SET state = 'ready', cause = NULL
+WHERE id = $1 AND state = 'pending';
+
+-- name: MarkResourceVersionFailed :execrows
+UPDATE resource_versions
+SET state = 'failed', cause = $2
+WHERE id = $1 AND state = 'pending';
+
+-- ListPendingWorkspacePublishes is the Reconciler's desired-state query. The
+-- path lives in provenance (schema.md).
+-- name: ListPendingWorkspacePublishes :many
+SELECT rv.id, rv.resource_id, rv.provenance, rv.publish_workspace_id, w.node_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending' AND rv.publish_workspace_id IS NOT NULL
+ORDER BY rv.id;
+
+-- GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
+-- version must still be pending and its Workspace bound to the calling Node.
+-- name: GetPendingWorkspacePublish :one
+SELECT rv.*, w.node_id, r.owner_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.id = $1
+  AND rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL;
+
+-- FindPublishObjectOwner answers the Presign PUT question: is sha256 one of
+-- the objects of a pending publish assigned to this Node, and which owner's
+-- CAS key addresses it (ADR-0021)?
+-- name: FindPublishObjectOwner :one
+SELECT r.owner_id
+FROM resource_version_objects rvo
+JOIN resource_versions rv ON rv.id = rvo.version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL
+  AND w.node_id = $1
+  AND rvo.sha256 = $2
+LIMIT 1;
+
+-- GetLiveResourceByName resolves a publish's Resource name without creating
+-- it (api.md §3: a name is unique among live Resources of one owner).
+-- name: GetLiveResourceByName :one
+SELECT * FROM resources
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL;
+
+-- name: GetResourceVersionByIdempotencyKey :one
+SELECT * FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2;
+
+-- name: ListResourceVersions :many
+SELECT * FROM resource_versions
+WHERE resource_id = $1
+  AND (sqlc.narg('after')::uuid IS NULL OR id < sqlc.narg('after'))
+ORDER BY id DESC
+LIMIT sqlc.arg('limit');
+
+-- name: PurgeResourceVersionIdempotencyKeys :exec
+UPDATE resource_versions
+SET idempotency_key = NULL, publish_idempotency_key = NULL
+WHERE (idempotency_key IS NOT NULL OR publish_idempotency_key IS NOT NULL)
+  AND created_at < now() - interval '24 hours';
+
+-- name: InsertResourceVersionObject :exec
+INSERT INTO resource_version_objects (version_id, sha256)
+VALUES ($1, $2)
+ON CONFLICT (version_id, sha256) DO NOTHING;
+
+-- name: ListResourceVersionObjects :many
+SELECT sha256 FROM resource_version_objects WHERE version_id = $1 ORDER BY sha256;
+
+-- A successful publish validation proves the uploaded objects are present, so
+-- the owner's unavailable versions that reference them are re-checked and may
+-- return to ready (api.md §3).
+-- name: ListUnavailableVersionsReferencing :many
+SELECT DISTINCT rv.id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+JOIN resource_version_objects rvo ON rvo.version_id = rv.id
+WHERE r.owner_id = sqlc.arg('owner_id')
+  AND rv.state = 'unavailable'
+  AND rvo.sha256 = ANY(sqlc.arg('sha256')::text[]);
+
+-- MarkResourceVersionAvailable is conditional on unavailable so a concurrent
+-- state change is not overwritten.
+-- name: MarkResourceVersionAvailable :execrows
+UPDATE resource_versions
+SET state = 'ready'
+WHERE id = $1 AND state = 'unavailable';
+
+-- CAS objects (owner-scoped, ADR-0021)
+
+-- name: UpsertCASObject :exec
+INSERT INTO cas_objects (owner_id, sha256, size)
+VALUES ($1, $2, $3)
+ON CONFLICT (owner_id, sha256) DO NOTHING;
+
+-- name: GetCASObject :one
+SELECT * FROM cas_objects WHERE owner_id = $1 AND sha256 = $2;
+
+-- name: DeleteCASObject :exec
+DELETE FROM cas_objects WHERE owner_id = $1 AND sha256 = $2;
+
+-- Upload sessions
+
+-- name: CreateUpload :one
+INSERT INTO uploads (id, resource_id, address, manifest, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: GetUpload :one
+SELECT * FROM uploads WHERE id = $1;
+
+-- ReusableUpload is the resume rule: an unexpired session for the same
+-- Resource and manifest address is reused (api.md §3).
+-- name: ReusableUpload :one
+SELECT * FROM uploads
+WHERE resource_id = $1 AND address = $2 AND expires_at > now()
+ORDER BY created_at DESC, id
+LIMIT 1;
+
+-- name: DeleteUpload :exec
+DELETE FROM uploads WHERE id = $1;
+
+-- Presign authorization (node-protocol.md "Presign")
+--
+-- Only objects and manifests of versions mounted by a Sandbox (including a
+-- build row later) allocated to this Node may be signed for GET. CAS keys are
+-- owner-scoped, so the caller needs the Resource's owner (ADR-0021).
+
+-- name: ListNodeSandboxObjectRefs :many
+SELECT DISTINCT r.owner_id, rv.id AS version_id
+FROM sandbox_resources sr
+JOIN sandboxes sb ON sb.id = sr.sandbox_id
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN resource_version_objects rvo ON rvo.version_id = rv.id
+WHERE sb.node_id = $1 AND sb.state <> 'deleted' AND rvo.sha256 = $2;
+
+-- name: ListNodeSandboxManifestOwner :one
+SELECT r.owner_id
+FROM sandbox_resources sr
+JOIN sandboxes sb ON sb.id = sr.sandbox_id
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE sb.node_id = $1 AND sb.state <> 'deleted' AND rv.address = $2
+LIMIT 1;
+
+-- name: MarkResourceVersionUnavailable :execrows
+UPDATE resource_versions
+SET state = 'unavailable'
+WHERE id = $1 AND state = 'ready';
+
+-- M4 ticket #88: Snapshots and SnapshotVersions (schema.md, ADR-0012).
+
+-- name: CreateSnapshot :one
+INSERT INTO snapshots (id, owner_id, name)
+VALUES (sqlc.arg('id'), sqlc.narg('owner_id'), sqlc.arg('name'))
+RETURNING *;
+
+-- name: GetSnapshot :one
+SELECT * FROM snapshots WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: GetSnapshotByName :one
+SELECT * FROM snapshots
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL;
+
+-- name: GetPlatformSnapshotByName :one
+SELECT * FROM snapshots
+WHERE owner_id IS NULL AND name = $1 AND deleted_at IS NULL;
+
+-- name: ListSnapshots :many
+SELECT * FROM snapshots
+WHERE deleted_at IS NULL
+  AND (owner_id = sqlc.arg('owner_id') OR owner_id IS NULL)
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- name: DeleteSnapshot :one
+UPDATE snapshots SET deleted_at = now()
+WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: SetSnapshotCurrentVersion :one
+UPDATE snapshots SET current_version_id = sqlc.arg('version_id')
+WHERE id = sqlc.arg('id') AND deleted_at IS NULL
+RETURNING *;
+
+-- name: CreateSnapshotVersion :one
+INSERT INTO snapshot_versions (
+    id, snapshot_id, digest, state, cause, source,
+    build_sandbox_id, build_exec_id, provenance, idempotency_key, build_request
+) VALUES (
+    sqlc.arg('id'), sqlc.arg('snapshot_id'), sqlc.narg('digest'), sqlc.arg('state'),
+    sqlc.narg('cause'), sqlc.arg('source'), sqlc.narg('build_sandbox_id'),
+    sqlc.narg('build_exec_id'), sqlc.narg('provenance'), sqlc.narg('idempotency_key'),
+    sqlc.narg('build_request')
+)
+RETURNING *;
+
+-- name: GetSnapshotVersion :one
+SELECT * FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2;
+
+-- name: GetSnapshotVersionByIdempotencyKey :one
+SELECT * FROM snapshot_versions
+WHERE snapshot_id = $1 AND idempotency_key = $2;
+
+-- name: ListSnapshotVersions :many
+SELECT * FROM snapshot_versions
+WHERE snapshot_id = sqlc.arg('snapshot_id')
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- name: MarkSnapshotVersionReady :one
+UPDATE snapshot_versions
+SET state = 'ready', digest = sqlc.arg('digest'), provenance = sqlc.narg('provenance')
+WHERE id = sqlc.arg('id') AND state = 'building'
+RETURNING *;
+
+-- name: MarkSnapshotVersionFailed :one
+UPDATE snapshot_versions SET state = 'failed', cause = sqlc.arg('cause')
+WHERE id = sqlc.arg('id') AND state = 'building'
+RETURNING *;
+
+-- name: CancelSnapshotVersion :one
+UPDATE snapshot_versions SET state = 'cancelled'
+WHERE id = sqlc.arg('id') AND state = 'building'
+RETURNING *;
+
+-- name: DeleteSnapshotVersion :exec
+DELETE FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2;
+
+-- An import runs in the Control Plane process, so a restart leaves only a
+-- building row behind; mark it failed rather than letting it hang.
+-- name: FailBuildingSnapshotImports :exec
+UPDATE snapshot_versions SET state = 'failed', cause = 'import_failed'
+WHERE state = 'building' AND source = 'import';
+
+-- The suffix is "<repo>@<digest>"; matching the suffix avoids caring which
+-- registry address a Sandbox was created against.
+-- name: CountSandboxSnapshotReferences :one
+SELECT count(*)::bigint FROM sandboxes
+WHERE kind = 'user' AND state <> 'deleted'
+  AND right(snapshot_digest, length(sqlc.arg('ref')::text)) = sqlc.arg('ref')::text;
+
+-- name: GetSnapshotVersionByID :one
+SELECT * FROM snapshot_versions WHERE id = $1;
+
+-- ListBuildRuns is the build sweep's queue: every build version still tied to
+-- a live build sandbox or Exec, terminal versions included, so cleanup is
+-- retried until it succeeds (ADR-0014: desired state is the queue).
+-- name: ListBuildRuns :many
+SELECT sqlc.embed(v), sqlc.embed(s),
+       e.id AS exec_id, e.accepted_at AS exec_accepted_at,
+       e.started_at AS exec_started_at, e.deadline_at AS exec_deadline_at,
+       e.cancel_requested_at AS exec_cancel_requested_at,
+       e.finished_at AS exec_finished_at, e.timeout_seconds AS exec_timeout_seconds,
+       e.generation AS exec_generation
+FROM snapshot_versions v
+JOIN sandboxes s ON s.id = v.build_sandbox_id
+JOIN execs e ON e.id = v.build_exec_id
+WHERE v.source = 'build' AND s.kind = 'build'
+  -- A terminal version whose sandbox and Exec are already settled needs no
+  -- more work.
+  AND NOT (s.state = 'stopped' AND e.finished_at IS NOT NULL)
+ORDER BY v.id;
+-- M4 ticket #90: Retention, CAS sweep and tombstone cleanup (ADR-0012).
+
+-- ListExpiredResourceVersions is the ResourceVersion TTL sweep. The handler
+-- re-applies the eligibility predicate; the filters here keep the batch small.
+-- name: ListExpiredResourceVersions :many
+SELECT rv.id, rv.address, rv.manifest_key, rv.state, rv.created_at,
+       (r.current_version_id IS NOT DISTINCT FROM rv.id) AS current, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.deleted_at IS NULL
+  AND rv.created_at < sqlc.arg('cutoff')
+  AND rv.state <> 'pending'
+  AND (r.current_version_id IS NULL OR r.current_version_id <> rv.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
+ORDER BY rv.created_at
+LIMIT sqlc.arg('limit');
+
+-- name: DeleteResourceVersion :exec
+DELETE FROM resource_versions WHERE id = $1;
+
+-- name: DeleteExpiredUploads :execrows
+DELETE FROM uploads WHERE expires_at <= now();
+
+-- ListSweepableCASObjects finds objects past the grace window that no version
+-- of the same owner references and no unexpired upload will still write. The
+-- owner join is what makes the sweep owner-scoped (ADR-0021).
+-- name: ListSweepableCASObjects :many
+SELECT c.owner_id, c.sha256, c.created_at
+FROM cas_objects c
+WHERE c.created_at < sqlc.arg('cutoff')
+  AND NOT EXISTS (
+    SELECT 1
+    FROM resource_version_objects rvo
+    JOIN resource_versions rv ON rv.id = rvo.version_id
+    JOIN resources r ON r.id = rv.resource_id
+    WHERE r.owner_id = c.owner_id AND rvo.sha256 = c.sha256
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM uploads u
+    JOIN resources r ON r.id = u.resource_id
+    WHERE r.owner_id = c.owner_id
+      AND u.expires_at > now()
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(u.manifest->'entries') e
+        WHERE e->>'sha256' = c.sha256
+      )
+  )
+ORDER BY c.created_at
+LIMIT sqlc.arg('limit');
+
+-- Tombstoned Resources keep their versions until no Sandbox references them,
+-- then the version, its objects and the manifest go, and finally the row.
+-- name: ListDeletedResources :many
+SELECT * FROM resources
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at
+LIMIT $1;
+
+-- name: ClearResourceCurrent :exec
+UPDATE resources SET current_version_id = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL;
+
+-- name: ListResourceVersionsForCleanup :many
+SELECT rv.id, rv.address, rv.manifest_key, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.resource_id = $1
+  AND rv.state <> 'pending'
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
+ORDER BY rv.id
+LIMIT $2;
+
+-- name: CountResourceVersions :one
+SELECT count(*)::bigint FROM resource_versions WHERE resource_id = $1;
+
+-- name: CountResourceUploads :one
+SELECT count(*)::bigint FROM uploads WHERE resource_id = $1;
+
+-- name: DeleteDeletedResource :exec
+DELETE FROM resources
+WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL;
+
+-- Tombstoned Snapshots drop each version once the last Sandbox reference is
+-- gone (registry manifest first), then the row.
+-- name: ListDeletedSnapshots :many
+SELECT * FROM snapshots
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at
+LIMIT $1;
+
+-- name: ClearSnapshotCurrent :exec
+UPDATE snapshots SET current_version_id = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL;
+
+-- A Snapshot deleted mid-build must keep its building version: the build row
+-- still owns the Sandbox and Exec that release its allocation. Only terminal
+-- versions are tombstone garbage.
+-- name: ListSnapshotVersionsForCleanup :many
+SELECT * FROM snapshot_versions
+WHERE snapshot_id = $1
+  AND state <> 'building'
+ORDER BY id
+LIMIT $2;
+
+-- name: CountSnapshotVersions :one
+SELECT count(*)::bigint FROM snapshot_versions WHERE snapshot_id = $1;
+
+-- name: DeleteDeletedSnapshot :exec
+DELETE FROM snapshots
+WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL;
+
+-- Manifest objects are content-addressed, so two versions (or a current and a
+-- non-current one) can share one manifest. The sweep only deletes it when no
+-- other version of the owner still names the address.
+-- name: CountResourceManifestReferences :one
+SELECT count(*)::bigint
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3;
+
+-- Snapshot digests are unique content too; deleting a version must not remove
+-- a manifest another version of the same Snapshot still uses.
+-- name: CountSnapshotVersionDigestReferences :one
+SELECT count(*)::bigint FROM snapshot_versions
+WHERE snapshot_id = $1 AND digest = $2 AND id <> $3;
+
+-- A deleted Sandbox no longer retains versions, but its sandbox_resources
+-- rows outlive it (the row is kept for API idempotency). The sweep releases
+-- those references before the version/FK checks run.
+-- name: DeleteDeletedSandboxResources :execrows
+DELETE FROM sandbox_resources sr
+USING sandboxes sb
+WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted';

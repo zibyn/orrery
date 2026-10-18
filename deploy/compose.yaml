@@ -13,6 +13,84 @@ services:
     volumes:
       - ./postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
+  # RustFS is the S3-compatible object store (defaults.md). The Control Plane
+  # reaches it as http://rustfs:9000; Nodes reach the host-mapped
+  # http://127.0.0.1:19000, which is the address presigned URLs use.
+  rustfs:
+    image: rustfs/rustfs:1.0.2
+    environment:
+      RUSTFS_ACCESS_KEY: "${STARS_S3_ACCESS_KEY:-stars}"
+      RUSTFS_SECRET_KEY: "${STARS_S3_SECRET_KEY:-stars-secret}"
+    volumes:
+      - rustfs-data:/data
+    ports:
+      - "19000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  # One-shot bucket creation; re-running it is harmless.
+  rustfs-init:
+    image: amazon/aws-cli:2.17.0
+    environment:
+      AWS_ACCESS_KEY_ID: "${STARS_S3_ACCESS_KEY:-stars}"
+      AWS_SECRET_ACCESS_KEY: "${STARS_S3_SECRET_KEY:-stars-secret}"
+      AWS_DEFAULT_REGION: "${STARS_S3_REGION:-us-east-1}"
+      S3_ENDPOINT: "${STARS_S3_INTERNAL_ENDPOINT:-http://rustfs:9000}"
+      S3_BUCKET: "${STARS_S3_BUCKET:-stars}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until aws --endpoint-url "$$S3_ENDPOINT" s3api head-bucket --bucket "$$S3_BUCKET" 2>/dev/null; do
+          aws --endpoint-url "$$S3_ENDPOINT" s3 mb "s3://$$S3_BUCKET" 2>/dev/null || sleep 1
+        done
+    depends_on:
+      rustfs:
+        condition: service_healthy
+
+  # The platform OCI registry (ADR-0014). Host networking lets it both reach
+  # RustFS at 127.0.0.1:19000 and sign redirects for that same Node-reachable
+  # address. Nodes pull from 127.0.0.1:15000.
+  registry:
+    image: registry:3
+    network_mode: host
+    environment:
+      # Distribution signs blob redirects for this endpoint. Nodes reach the
+      # host-mapped 127.0.0.1:19000; in e2e the Control Plane (a container)
+      # must reach it too, so the script points this at the bridge gateway.
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: "${STARS_REGISTRY_S3_REGIONENDPOINT:-http://127.0.0.1:19000}"
+    volumes:
+      - ./registry/config.yml:/etc/distribution/config.yml:ro
+      - ./registry/htpasswd:/etc/distribution/htpasswd:ro
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # /v2/ answers 401 to anonymous requests, so the healthcheck sends the
+      # development credential (base64 of stars:stars-registry-password).
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header='Authorization: Basic c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=' http://127.0.0.1:15000/v2/"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  # An unauthenticated local image source for e2e. Platform Snapshot import
+  # must not depend on Docker Hub availability or anonymous rate limits;
+  # scripts/e2e.sh pushes the default base image here before the server starts.
+  registry-source:
+    image: registry:3
+    profiles: ["e2e"]
+    volumes:
+      - registry-source-data:/var/lib/registry
+    ports:
+      - "15001:5000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5000/v2/"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
   dex:
     image: ghcr.io/dexidp/dex:v2.41.1
     # The e2e-only profile keeps the reference deployment free of a test IdP.
@@ -57,10 +135,15 @@ services:
       STARS_NODE_ADDR: ":8081"
       STARS_NODE_TLS_CERT: /tls/server.crt
       STARS_NODE_TLS_KEY: /tls/server.key
-      STARS_DEFAULT_SNAPSHOT_DIGEST: "${STARS_DEFAULT_SNAPSHOT_DIGEST:-}"
+      STARS_PLATFORM_SNAPSHOTS: "${STARS_PLATFORM_SNAPSHOTS:-}"
+      STARS_DEFAULT_SNAPSHOT: "${STARS_DEFAULT_SNAPSHOT:-}"
       STARS_EXEC_LOG_CAP: "${STARS_EXEC_LOG_CAP:-}"
       STARS_EXEC_LOG_RETENTION: "${STARS_EXEC_LOG_RETENTION:-}"
       STARS_AUDIT_RETENTION: "${STARS_AUDIT_RETENTION:-}"
+      STARS_RESOURCE_VERSION_TTL: "${STARS_RESOURCE_VERSION_TTL:-}"
+      STARS_CAS_GRACE: "${STARS_CAS_GRACE:-}"
+      # Test hook only; production uses the 10-minute constant (defaults.md).
+      STARS_TEST_PURGE_INTERVAL: "${STARS_TEST_PURGE_INTERVAL:-}"
       STARS_PTY_IDLE_SECONDS: "${STARS_PTY_IDLE_SECONDS:-}"
       STARS_IDLE_STOP_SECONDS: "${STARS_IDLE_STOP_SECONDS:-}"
       STARS_ADMISSION_TIMEOUT: "${STARS_ADMISSION_TIMEOUT:-}"
@@ -74,6 +157,26 @@ services:
       STARS_OIDC_ALLOW_SIGNUPS: "${STARS_OIDC_ALLOW_SIGNUPS:-}"
       STARS_OIDC_EMAIL_DOMAINS: "${STARS_OIDC_EMAIL_DOMAINS:-}"
       STARS_GIT_PROVIDERS_FILE: "${STARS_GIT_PROVIDERS_FILE:-}"
+      # Object store and registry (defaults.md, ADR-0014).
+      STARS_S3_ENDPOINT: "${STARS_S3_ENDPOINT:-http://rustfs:9000}"
+      STARS_S3_PUBLIC_ENDPOINT: "${STARS_S3_PUBLIC_ENDPOINT:-http://127.0.0.1:19000}"
+      STARS_S3_BUCKET: "${STARS_S3_BUCKET:-stars}"
+      STARS_S3_REGION: "${STARS_S3_REGION:-us-east-1}"
+      STARS_S3_ACCESS_KEY: "${STARS_S3_ACCESS_KEY:-stars}"
+      STARS_S3_SECRET_KEY: "${STARS_S3_SECRET_KEY:-stars-secret}"
+      STARS_REGISTRY_ADDR: "${STARS_REGISTRY_ADDR:-127.0.0.1:15000}"
+      # Nodes reach the registry at 127.0.0.1:15000 (host networking). The
+      # Control Plane is a container, so its pushes go through the host
+      # gateway instead; the credential document lists both hosts.
+      STARS_REGISTRY_PUSH_ADDR: "${STARS_REGISTRY_PUSH_ADDR:-host.docker.internal:15000}"
+      # Docker config.json auth document; matches deploy/registry/htpasswd.
+      STARS_REGISTRY_CREDENTIAL: "${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"},\"host.docker.internal:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"}}}}"
+      # Snapshot build limits (defaults.md: 4 CPU + 8 GiB, 1 hour).
+      STARS_BUILD_CPU: "${STARS_BUILD_CPU:-}"
+      STARS_BUILD_MEMORY: "${STARS_BUILD_MEMORY:-}"
+      STARS_BUILD_TIMEOUT: "${STARS_BUILD_TIMEOUT:-}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
       - "${STARS_ENCRYPTION_KEYS_DIR:-./keys}:/keys:ro"
@@ -81,6 +184,10 @@ services:
       - "${STARS_GIT_PROVIDERS_DIR:-./git}:/git:ro"
     depends_on:
       postgres:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+      registry:
         condition: service_healthy
     ports:
       - "18080:8080"
@@ -116,3 +223,5 @@ services:
 
 volumes:
   gitea-data:
+  registry-source-data:
+  rustfs-data:

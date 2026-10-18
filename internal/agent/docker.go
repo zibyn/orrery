@@ -95,6 +95,26 @@ func dockerProbe(ctx context.Context, socket string) (nodeproto.CapabilityReport
 	return capabilities(result, limitsEnforced, gpuVisible), nil
 }
 
+// withSnapshotBuild adds the BuildKit endpoint self-check to a Runtime report.
+// It is independent of the Runtime type (runtime.md §12): a Local or Podman
+// Node with a reachable BuildKit endpoint builds too.
+func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.CapabilityReport {
+	value := nodeproto.ValueUnsupported
+	if ok {
+		value = nodeproto.ValueEnforced
+	}
+	for i := range report.Entries {
+		if report.Entries[i].Name == nodeproto.CapSnapshotBuild {
+			report.Entries[i].Value = value
+			return report
+		}
+	}
+	report.Entries = append(report.Entries, nodeproto.CapabilityEntry{
+		Name: nodeproto.CapSnapshotBuild, Value: value,
+	})
+	return report
+}
+
 func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
@@ -106,7 +126,7 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeprot
 	isolated := r.PIDNamespace != "" && r.PIDNamespace != pidNS &&
 		r.MountNamespace != "" && r.MountNamespace != mntNS
 	return nodeproto.CapabilityReport{
-		Runtime: "docker",
+		RuntimeProvider: "docker",
 		Entries: []nodeproto.CapabilityEntry{
 			{Name: nodeproto.CapProcessMountNamespace, Value: value(isolated)},
 			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(limitsEnforced)},
@@ -120,6 +140,13 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool) nodeprot
 			// honestly instead of guessing.
 			{Name: nodeproto.CapDiskCapacityQuota, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapArbitraryMounts, Value: nodeproto.ValueUnsupported},
+			// The Docker adapter mounts Resource version trees as extra
+			// read-only binds (runtime.md §2, §11). The Local Runtime reports
+			// unsupported, which keeps the Scheduler from placing a Sandbox
+			// with Resources there.
+			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
+			// snapshot_build is added by the Agent from the BuildKit endpoint
+			// self-check, independent of the Runtime (runtime.md §12).
 		},
 	}
 }
@@ -181,7 +208,7 @@ func (d *dockerClient) negotiate(ctx context.Context) error {
 func (d *dockerClient) api(path string) string { return "/v" + d.version + path }
 
 func (d *dockerClient) ensureImage(ctx context.Context) error {
-	return d.ensureImageRef(ctx, probeImage)
+	return d.ensureImageRef(ctx, probeImage, "")
 }
 
 // probe creates, starts and reads back one container. limitsEnforced is true
@@ -295,6 +322,10 @@ func (d *dockerClient) do(ctx context.Context, method, path string, body, out an
 }
 
 func (d *dockerClient) request(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return d.requestHeaders(ctx, method, path, body, nil)
+}
+
+func (d *dockerClient) requestHeaders(ctx context.Context, method, path string, body any, headers map[string]string) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -309,6 +340,9 @@ func (d *dockerClient) request(ctx context.Context, method, path string, body an
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 	return d.http.Do(req)
 }

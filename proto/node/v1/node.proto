@@ -17,6 +17,50 @@ service Node {
   // Tunnel is a reverse-dialled raw byte stream, opened when Control sends
   // OpenTunnel (ADR-0018).
   rpc Tunnel(stream TunnelFrame) returns (stream TunnelFrame);
+  // Presign issues object store URLs for this Node (node-protocol.md
+  // "Presign"). It is authenticated by the Node Token.
+  rpc Presign(PresignRequest) returns (PresignResponse);
+  // SubmitManifest streams a Workspace publish's tree to the Control Plane.
+  // The first chunk carries version_id; the reply lists the objects the Node
+  // still has to upload (node-protocol.md "Workspace publish").
+  rpc SubmitManifest(stream ManifestChunk) returns (ManifestAck);
+}
+
+// ManifestChunk is one slice of a publish's manifest. version_id is set on
+// the first chunk only.
+message ManifestChunk {
+  string version_id = 1;
+  repeated ManifestEntry entries = 2;
+}
+
+// ManifestEntry mirrors internal/manifest.Entry (api.md §3).
+message ManifestEntry {
+  string path = 1;
+  // "file", "dir" or "symlink".
+  string type = 2;
+  optional int64 size = 3;
+  string sha256 = 4;
+  bool executable = 5;
+  string target = 6;
+}
+
+message ManifestAck {
+  // Objects of the submitted manifest that the store does not hold yet.
+  repeated string missing_sha256 = 1;
+}
+
+message PresignRequest {
+  // CAS object digests, lowercase hex.
+  repeated string sha256 = 1;
+  // Manifest addresses, relative to manifests/<owner_id>/.
+  repeated string manifests = 2;
+  // "GET" or "PUT".
+  string method = 3;
+}
+
+message PresignResponse {
+  // URLs in request order: sha256 entries first, then manifests.
+  repeated string urls = 1;
 }
 
 message RedeemRequest {
@@ -42,6 +86,8 @@ message AgentMessage {
     WorkspaceObserved workspace_observed = 5;
     CommandResult command_result = 6;
     ExecObserved exec_observed = 7;
+    // A Snapshot build reached a terminal state (node-protocol.md "构建").
+    BuildObserved build_observed = 8;
   }
 }
 
@@ -76,7 +122,7 @@ message GPUHealth {
 }
 
 message Capabilities {
-  string runtime = 1;
+  string runtime_provider = 1;
   repeated CapabilityEntry entries = 2;
   repeated GPU gpus = 3;
 }
@@ -125,6 +171,18 @@ message ExecObserved {
   string started_at = 2;
 }
 
+// BuildObserved reports the terminal state of a Snapshot build. Success
+// carries the pushed manifest digest and the FROM digests BuildKit resolved;
+// failure carries one of timed_out, build_interrupted, node_lost or
+// build_failed (node-protocol.md "构建").
+message BuildObserved {
+  string version_id = 1;
+  // "sha256:<hex>" of the pushed image.
+  string digest = 2;
+  repeated string from_digests = 3;
+  string cause = 4;
+}
+
 message ControlMessage {
   oneof message {
     HelloAck hello_ack = 1;
@@ -135,7 +193,56 @@ message ControlMessage {
     StartExec start_exec = 6;
     CancelExec cancel_exec = 7;
     OpenTunnel open_tunnel = 8;
+    PublishWorkspace publish_workspace = 9;
+    BuildSnapshot build_snapshot = 10;
   }
+}
+
+// PublishWorkspace walks a host Workspace directory and publishes it as a
+// ResourceVersion (node-protocol.md "Workspace publish").
+message PublishWorkspace {
+  string command_id = 1;
+  string version_id = 2;
+  string workspace_id = 3;
+  string path = 4;
+}
+
+// BuildSnapshot runs a Snapshot build on the Node's host build API
+// (node-protocol.md "构建", runtime.md §12).
+message BuildSnapshot {
+  string command_id = 1;
+  string version_id = 2;
+  // The kind=build Sandbox carrying the Allocation.
+  string sandbox_id = 3;
+  // The Exec whose Execution Log is the build log.
+  string exec_id = 4;
+  string dockerfile = 5;
+  // Platform-registry reference `<addr>/<repo>@sha256:…` for the named `base`
+  // context, when the caller passed base.
+  string base_digest = 6;
+  // ResourceVersion manifest addresses to fetch through the Node cache.
+  repeated BuildContext contexts = 7;
+  // Secret values are decrypted by the Control Plane and never stored in an
+  // Exec's env (node-protocol.md).
+  repeated BuildSecret secrets = 8;
+  Limits limits = 9;
+  int64 timeout_seconds = 10;
+  // Registry repository the pushed manifest belongs to, e.g.
+  // `<registry>/snapshots/<snapshot_id>`.
+  string push_repository = 11;
+}
+
+message BuildContext {
+  // Docker named context; `base` is reserved for base_digest.
+  string name = 1;
+  // ResourceVersion manifest address.
+  string address = 2;
+}
+
+message BuildSecret {
+  // Dockerfile `RUN --mount=type=secret,id=<id>`.
+  string id = 1;
+  string value = 2;
 }
 
 message OpenTunnel {
@@ -190,7 +297,16 @@ message CreateSandbox {
   // Whole cards, named by their platform UUID (ADR-0015). The Agent attaches
   // them with CDI and fails a readback that does not show them (runtime.md §9).
   repeated string gpu_uuids = 7;
-  // Resource and Secret mounts arrive with later tickets.
+  // Resource versions to fetch into the Node cache and mount read-only at
+  // /resources/<mount> (runtime.md §11). Objects travel through Presign.
+  repeated ResourceMount resources = 8;
+}
+
+message ResourceMount {
+  // ResourceVersion manifest address.
+  string address = 1;
+  // One path segment; the mount point is /resources/<mount>.
+  string mount = 2;
 }
 
 message Limits {
@@ -258,6 +374,7 @@ message OutputAck {
 
 message HelloAck {
   bool accepted = 1;
-  // Empty until the OCI registry exists (M4).
+  // Docker config.json auth document for the platform registry (ADR-0014);
+  // empty when the deployment has no registry.
   string registry_credential = 2;
 }

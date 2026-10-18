@@ -141,10 +141,13 @@ func SaveIdentity(path string, id Identity) error {
 }
 
 type RunOptions struct {
-	CAPath        string
-	Server        string // overrides the address stored at enroll time
-	State         string
-	Docker        string
+	CAPath string
+	Server string // overrides the address stored at enroll time
+	State  string
+	Docker string
+	// Buildkit is the BuildKit endpoint. Empty means the Docker daemon's
+	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
+	Buildkit      string
 	DataRoot      string
 	ReserveCPU    float64
 	ReserveMemory int64
@@ -242,6 +245,7 @@ func isIncompatible(err error) bool {
 
 func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
 	rt := NewRuntime(opts.Docker, opts.DataRoot)
+	rt.buildkit = opts.Buildkit
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
 		return false, err
@@ -277,6 +281,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	if ack == nil || !ack.Accepted {
 		return false, errors.New("the Control Plane rejected Hello")
 	}
+	rt.setRegistryCredential(ack.RegistryCredential)
 	slog.Info("control stream connected", "node_id", id.NodeID)
 
 	// One goroutine owns Send; the receive loop and command goroutines only
@@ -314,13 +319,18 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		}})
 	}
 
+	// snapshot_build is the BuildKit endpoint self-check, independent of the
+	// Runtime (runtime.md §12). It is reported even when the Runtime probe
+	// fails; the Node's status already keeps it out of placement then.
+	buildOK := rt.buildkitAvailable(streamCtx)
 	report, probeErr := dockerProbe(streamCtx, opts.Docker)
 	health := "healthy"
 	if probeErr != nil {
 		health = "unhealthy"
-		report = nodeproto.CapabilityReport{Runtime: "docker"}
+		report = nodeproto.CapabilityReport{RuntimeProvider: "docker"}
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
+	report = withSnapshotBuild(report, buildOK)
 	// The inventory is a hardware fact; placement still requires the CDI
 	// capability above, so an old Docker's GPUs are visible but not usable.
 	gpus := enumerateGPUs(streamCtx)
@@ -335,6 +345,12 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 
 	runner := newCommandRunner(streamCtx, rt, send)
 	rt.connect(nodev1.NewNodeClient(conn), send)
+	// A build a previous process (or a dropped stream) left behind is
+	// interrupted, never retried (runtime.md §12).
+	go rt.resumeBuilds(streamCtx)
+	// Cache eviction owns its own loop (runtime.md §11): a Node below the disk
+	// watermark reclaims LRU cache without touching Sandbox lifecycle.
+	go rt.evictLoop(streamCtx, opts.DiskWatermark)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {
@@ -422,7 +438,7 @@ func heartbeatMessage(health string, host hardware, opts RunOptions, gpuStates [
 }
 
 func capabilitiesMessage(snapshot nodeproto.CapabilityReport, gpus []gpuInfo) *nodev1.Capabilities {
-	caps := &nodev1.Capabilities{Runtime: snapshot.Runtime}
+	caps := &nodev1.Capabilities{RuntimeProvider: snapshot.RuntimeProvider}
 	for _, entry := range snapshot.Entries {
 		caps.Entries = append(caps.Entries, &nodev1.CapabilityEntry{
 			Name:  entry.Name,

@@ -81,6 +81,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runToken(c, rest[1:], stderr)
 	case "secret":
 		err = runSecret(c, rest[1:], stderr)
+	case "snapshot":
+		err = runSnapshot(c, rest[1:], stderr)
 	case "audit":
 		err = runAudit(c, rest[1:], stderr)
 	case "exec":
@@ -89,6 +91,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runShell(c, rest[1:], stderr)
 	case "files":
 		err = runFiles(c, rest[1:], stderr)
+	case "resource":
+		err = runResource(c, rest[1:], stderr)
+	case "workspace":
+		err = runWorkspace(c, rest[1:], stderr)
 	case "port-forward":
 		err = runPortForward(c, rest[1:])
 	case "git-credential":
@@ -119,11 +125,31 @@ commands:
   secret set [--file PATH] <name>   write a value from stdin or a file
   secret list
   secret rm <name>
+  snapshot import <name> <ref@sha256:…> [--auth-secret NAME]
+                                    import an image and follow it to a terminal state
+  snapshot build <name> -f Dockerfile [--base SNAPSHOT]
+                   [--context name=resource[@version] ...] [--secret id=secret ...]
+                                    build a Snapshot and follow its log
+  snapshot ls
+  snapshot rm <name-or-id>
+  snapshot versions <name-or-id>
+  snapshot current <name-or-id> [<version-id>]
+                                    show or move the current version
   audit list
   exec run|cancel
   shell <sandbox-id> [-- argv...]   open an interactive terminal
   files ls <sandbox-id> [path]      list a Workspace directory
   files cp <src> <dst>              copy a file to or from <sandbox-id>:<path>
+  resource create <name>
+  resource ls
+  resource rm <name|id>
+  resource versions <name|id>
+  resource current <name|id>
+  resource push <dir> <name>        upload and publish a directory
+  resource pull <name>[@version] <dir>
+                                    download a version into a directory
+  workspace publish <id> <path> <name>
+                                    publish a Workspace path as a Resource version
   port-forward <sandbox-id> [LOCAL:]REMOTE
                                     tunnel a local TCP port to a Sandbox port
 

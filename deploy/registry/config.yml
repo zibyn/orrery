@@ -1,0 +1,26 @@
+# The platform OCI registry (ADR-0014). It uses the same bucket as the
+# Control Plane, under /registry, and redirects blob downloads to the object
+# store. regionendpoint is the address Nodes reach: distribution signs the 307
+# redirect with it, so it must not be the Compose-internal service name.
+version: 0.1
+log:
+  level: info
+storage:
+  s3:
+    accesskey: stars
+    secretkey: stars-secret
+    region: us-east-1
+    regionendpoint: http://127.0.0.1:19000
+    bucket: stars
+    rootdirectory: /registry
+    forcepathstyle: true
+    secure: false
+  # redirects stay enabled: Nodes fetch blobs from the store directly.
+http:
+  addr: :15000
+  # Signs internal state; this is a development value.
+  secret: stars-sandbox-registry-dev-secret
+auth:
+  htpasswd:
+    realm: stars-sandbox
+    path: /etc/distribution/htpasswd

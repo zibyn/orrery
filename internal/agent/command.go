@@ -76,6 +76,11 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			return
 		}
 		go c.run("sandbox:"+cmd.SandboxId, cmd.CommandId, cmd.Generation, func() error {
+			if len(cmd.Resources) > 0 {
+				// The Control Plane maps this to the fetching_resources
+				// condition until running or failed (node-protocol.md).
+				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseFetchingResources, "")
+			}
 			cause, err := c.rt.createSandbox(c.ctx, &createSandboxSpec{
 				sandboxID:     sbID.String(),
 				generation:    cmd.Generation,
@@ -85,6 +90,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				workspaceID:   cmd.Workspace.GetWorkspaceId(),
 				workspaceMode: cmd.Workspace.GetMode(),
 				gpuUUIDs:      cmd.GpuUuids,
+				resources:     resourceMounts(cmd.Resources),
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)
@@ -131,6 +137,41 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		}
 		go c.run("exec:"+cmd.ExecId, cmd.CommandId, noGenerationFence, func() error {
 			return c.rt.cancelExec(c.ctx, execID)
+		})
+	case *nodev1.ControlMessage_PublishWorkspace:
+		cmd := m.PublishWorkspace
+		if _, err := uuid.Parse(cmd.VersionId); err != nil {
+			c.result(cmd.CommandId, "invalid version id")
+			return
+		}
+		if _, err := uuid.Parse(cmd.WorkspaceId); err != nil {
+			c.result(cmd.CommandId, "invalid workspace id")
+			return
+		}
+		// ResourceVersions have no generation; the Control Plane sends 0. The
+		// version id is part of the key, so only the same publish collapses
+		// onto one lock.
+		go c.run("publish:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
+			return c.rt.publishWorkspace(c.ctx, cmd)
+		})
+	case *nodev1.ControlMessage_BuildSnapshot:
+		cmd := m.BuildSnapshot
+		if _, err := uuid.Parse(cmd.VersionId); err != nil {
+			c.result(cmd.CommandId, "invalid version id")
+			return
+		}
+		if _, err := uuid.Parse(cmd.SandboxId); err != nil {
+			c.result(cmd.CommandId, "invalid sandbox id")
+			return
+		}
+		if _, err := uuid.Parse(cmd.ExecId); err != nil {
+			c.result(cmd.CommandId, "invalid exec id")
+			return
+		}
+		// SnapshotVersions have no generation; the version id keys the lock.
+		// Buildx is canceled through the Exec id, not a Supervisor socket.
+		go c.run("build:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
+			return c.rt.buildSnapshot(c.ctx, cmd)
 		})
 	case *nodev1.ControlMessage_OpenTunnel:
 		cmd := m.OpenTunnel
@@ -188,6 +229,15 @@ func commandFailed(commandID string, err error) {
 	if err != nil {
 		slog.Warn("command failed", "command_id", commandID, "error", err)
 	}
+}
+
+// resourceMounts copies the wire form into the adapter's mount table.
+func resourceMounts(in []*nodev1.ResourceMount) []resourceMount {
+	mounts := make([]resourceMount, 0, len(in))
+	for _, mount := range in {
+		mounts = append(mounts, resourceMount{address: mount.GetAddress(), mount: mount.GetMount()})
+	}
+	return mounts
 }
 
 func (c *commandRunner) observeSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string) {

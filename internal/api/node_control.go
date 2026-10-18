@@ -49,7 +49,11 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 		return status.Error(codes.Internal, "record Hello")
 	}
 	if err := stream.Send(&nodev1.ControlMessage{Message: &nodev1.ControlMessage_HelloAck{
-		HelloAck: &nodev1.HelloAck{Accepted: true},
+		HelloAck: &nodev1.HelloAck{
+			Accepted: true,
+			// The deployment credential for the platform registry (ADR-0014).
+			RegistryCredential: n.s.cfg.RegistryCredential,
+		},
 	}}); err != nil {
 		return err
 	}
@@ -95,7 +99,12 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 			n.recordWorkspaceObserved(ctx, node.ID, m.WorkspaceObserved)
 		case *nodev1.AgentMessage_ExecObserved:
 			n.recordExecObserved(ctx, node.ID, m.ExecObserved)
+		case *nodev1.AgentMessage_BuildObserved:
+			n.recordBuildObserved(ctx, node.ID, m.BuildObserved)
 		case *nodev1.AgentMessage_CommandResult:
+			// A Workspace publish is finalized from its CommandResult: success
+			// verifies the objects, failure ends the version (node-protocol.md).
+			n.handlePublishCommandResult(ctx, node, m.CommandResult)
 			if m.CommandResult.Error != "" {
 				n.s.log.Warn("command failed on Agent",
 					"node_id", node.ID, "command_id", m.CommandResult.CommandId, "error", m.CommandResult.Error)
@@ -167,7 +176,7 @@ func perGPUShare(heartbeat *nodev1.Heartbeat, cards int) (cpu float64, memory in
 }
 
 func (n *nodeService) recordCapabilities(ctx context.Context, id uuid.UUID, caps *nodev1.Capabilities) error {
-	snapshot := nodeproto.CapabilityReport{Runtime: caps.Runtime}
+	snapshot := nodeproto.CapabilityReport{RuntimeProvider: caps.RuntimeProvider}
 	for _, entry := range caps.Entries {
 		snapshot.Entries = append(snapshot.Entries, nodeproto.CapabilityEntry{
 			Name:  entry.Name,

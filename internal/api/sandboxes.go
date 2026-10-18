@@ -26,11 +26,21 @@ type createSandboxRequest struct {
 	Labels    map[string]string        `json:"labels"`
 	Workspace *sandboxWorkspaceRequest `json:"workspace"`
 	Snapshot  *string                  `json:"snapshot"`
+	Resources []sandboxResourceRequest `json:"resources"`
 	Secrets   map[string]string        `json:"secrets"`
 	CPU       *float64                 `json:"cpu"`
 	Memory    *int64                   `json:"memory"`
 	GPU       *sandboxGPURequest       `json:"gpu"`
 	IdleStop  *int32                   `json:"idle_stop"`
+}
+
+// sandboxResourceRequest pins one Resource version at create time (api.md §3).
+// Version is a ResourceVersion id; omitted means the Resource's current
+// version. Mount defaults to the Resource name and must be one path segment.
+type sandboxResourceRequest struct {
+	Resource string  `json:"resource"`
+	Version  *string `json:"version"`
+	Mount    *string `json:"mount"`
 }
 
 // sandboxWorkspaceRequest attaches an existing Workspace; omitting it creates
@@ -68,6 +78,7 @@ type sandboxDTO struct {
 	GPU           *sandboxGPUDTO       `json:"gpu,omitempty"`
 	IdleStop      int32                `json:"idle_stop"`
 	Workspace     *sandboxWorkspaceDTO `json:"workspace,omitempty"`
+	Conditions    []string             `json:"conditions"`
 	QueuePosition *int64               `json:"queue_position,omitempty"`
 	BlockedReason *string              `json:"blocked_reason,omitempty"`
 	CreatedAt     time.Time            `json:"created_at"`
@@ -158,14 +169,6 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			gpuModel = req.GPU.Model
 		}
 	}
-	snapshot := s.cfg.SnapshotDigest
-	if req.Snapshot != nil && *req.Snapshot != "" {
-		snapshot = *req.Snapshot
-	} else if snapshot == "" {
-		writeProblem(w, "internal", "no default Snapshot is configured; set STARS_DEFAULT_SNAPSHOT_DIGEST or pass snapshot")
-		return
-	}
-
 	id, err := uuid.NewV7()
 	if err != nil {
 		s.internal(w, "generate Sandbox id", err)
@@ -202,6 +205,13 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
+	// Resolve the Snapshot inside the transaction: the pinned version cannot
+	// be deleted between the check and the row that references it.
+	snapshot, pinCode, pinDetail := resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Snapshot)
+	if pinCode != "" {
+		writeProblem(w, pinCode, pinDetail)
+		return
+	}
 	// Quota is checked at admission, under the User's row lock, so concurrent
 	// creates cannot both take the last slot (ADR-0015).
 	owner, err := q.LockUser(ctx, p.user.ID)
@@ -216,6 +226,12 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	}
 	if problem := quotaProblem(owner, usage, gpuCount); problem != "" {
 		writeProblem(w, "quota_exceeded", problem)
+		return
+	}
+	// Resources resolve to concrete versions now; the rows pin them for the
+	// Sandbox's whole life, restarts included (api.md §3, runtime.md §11).
+	resources, ok := s.resolveSandboxResources(w, ctx, q, p.user.ID, req.Resources)
+	if !ok {
 		return
 	}
 	// An explicit Workspace is attached as requested; otherwise the Sandbox
@@ -279,6 +295,14 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		}
 		s.internal(w, "create Sandbox", err)
 		return
+	}
+	for _, resource := range resources {
+		if err := q.CreateSandboxResource(ctx, store.CreateSandboxResourceParams{
+			SandboxID: sandbox.ID, ResourceVersionID: resource.ResourceVersionID, Mount: resource.Mount,
+		}); err != nil {
+			s.internal(w, "pin Sandbox Resource", err)
+			return
+		}
 	}
 	workspaceID := uuid.Nil
 	if attached != nil {
@@ -346,6 +370,140 @@ func quotaProblem(owner store.User, usage store.CountActiveSandboxResourcesRow, 
 		return fmt.Sprintf("GPU quota is %d", owner.GpuQuota)
 	}
 	return ""
+}
+
+// resolveSandboxResources turns the request's Resource references into the
+// concrete ResourceVersions the Sandbox pins. A missing Resource is 404, a
+// missing or non-ready version is 409, and a malformed or duplicate mount is
+// 400 (issue #86; api.md §2/§3).
+func (s *Server) resolveSandboxResources(w http.ResponseWriter, ctx context.Context, q *store.Queries, ownerID uuid.UUID, refs []sandboxResourceRequest) ([]store.CreateSandboxResourceParams, bool) {
+	if len(refs) == 0 {
+		return nil, true
+	}
+	mounts := make(map[string]struct{}, len(refs))
+	resolved := make([]store.CreateSandboxResourceParams, 0, len(refs))
+	for _, ref := range refs {
+		resource, ok := s.resolveSandboxResource(w, ctx, q, ownerID, ref.Resource)
+		if !ok {
+			return nil, false
+		}
+		version, ok := s.resolveSandboxResourceVersion(w, ctx, q, resource, ref.Version)
+		if !ok {
+			return nil, false
+		}
+		mount := resource.Name
+		if ref.Mount != nil && *ref.Mount != "" {
+			mount = *ref.Mount
+		}
+		if !validMountName(mount) {
+			writeProblem(w, "invalid_request", "mount must be a single non-empty path segment")
+			return nil, false
+		}
+		if _, duplicate := mounts[mount]; duplicate {
+			writeProblem(w, "invalid_request", "mount names must be unique within a Sandbox")
+			return nil, false
+		}
+		mounts[mount] = struct{}{}
+		resolved = append(resolved, store.CreateSandboxResourceParams{
+			ResourceVersionID: version.ID, Mount: mount,
+		})
+	}
+	return resolved, true
+}
+
+// resolveSandboxResource accepts a Resource id or its owner-scoped name.
+func (s *Server) resolveSandboxResource(w http.ResponseWriter, ctx context.Context, q *store.Queries, ownerID uuid.UUID, reference string) (store.Resource, bool) {
+	if reference == "" {
+		writeProblem(w, "invalid_request", "resource is required")
+		return store.Resource{}, false
+	}
+	var resource store.Resource
+	var err error
+	if id, parseErr := uuid.Parse(reference); parseErr == nil {
+		resource, err = q.GetResource(ctx, id)
+	} else {
+		resource, err = q.GetLiveResourceByName(ctx, store.GetLiveResourceByNameParams{OwnerID: ownerID, Name: reference})
+	}
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (resource.OwnerID != ownerID || resource.DeletedAt.Valid)) {
+		writeProblem(w, "not_found", "no such Resource")
+		return store.Resource{}, false
+	}
+	if err != nil {
+		s.internal(w, "get Resource for Sandbox", err)
+		return store.Resource{}, false
+	}
+	return resource, true
+}
+
+// resolveSandboxResourceVersion pins the requested version, or the current
+// one. Only a ready version can be mounted (api.md §2).
+func (s *Server) resolveSandboxResourceVersion(w http.ResponseWriter, ctx context.Context, q *store.Queries, resource store.Resource, reference *string) (store.ResourceVersion, bool) {
+	var versionID uuid.UUID
+	if reference == nil || *reference == "" {
+		if resource.CurrentVersionID == nil {
+			writeProblem(w, "conflict", "the Resource has no current version")
+			return store.ResourceVersion{}, false
+		}
+		versionID = *resource.CurrentVersionID
+	} else {
+		id, err := uuid.Parse(*reference)
+		if err != nil {
+			writeProblem(w, "invalid_request", "version must be a ResourceVersion id")
+			return store.ResourceVersion{}, false
+		}
+		versionID = id
+	}
+	version, err := q.GetResourceVersion(ctx, versionID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && version.ResourceID != resource.ID) {
+		writeProblem(w, "conflict", "the ResourceVersion does not belong to the Resource")
+		return store.ResourceVersion{}, false
+	}
+	if err != nil {
+		s.internal(w, "read ResourceVersion for Sandbox", err)
+		return store.ResourceVersion{}, false
+	}
+	if ResourceVersionState(version.State) != ResourceVersionReady {
+		writeProblem(w, "conflict", "the ResourceVersion is not ready")
+		return store.ResourceVersion{}, false
+	}
+	return version, true
+}
+
+// validMountName keeps the mount a single path segment: no separators, no
+// traversal, no NUL (runtime.md §2).
+func validMountName(mount string) bool {
+	return mount != "" && mount != "." && mount != ".." &&
+		len(mount) <= maxNameLen && !strings.ContainsAny(mount, "/\x00")
+}
+
+// sandboxConditions is the Sandbox's conditions column. Only the conditions
+// the Agent actually reports are defined (api.md §3).
+type sandboxConditions struct {
+	FetchingResources bool `json:"fetching_resources,omitempty"`
+}
+
+func parseSandboxConditions(raw json.RawMessage) sandboxConditions {
+	var c sandboxConditions
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &c)
+	}
+	return c
+}
+
+func (c sandboxConditions) names() []string {
+	names := []string{}
+	if c.FetchingResources {
+		names = append(names, "fetching_resources")
+	}
+	return names
+}
+
+func encodeSandboxConditions(c sandboxConditions) json.RawMessage {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 // enqueueAdmission opens the admission request that holds the Sandbox's quota
@@ -703,6 +861,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 		State: sb.State, Cause: sb.Cause, NodeID: uuidPtr(sb.NodeID),
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
+		Conditions: parseSandboxConditions(sb.Conditions).names(),
 	}
 	if sb.GpuCount > 0 {
 		dto.GPU = &sandboxGPUDTO{Count: sb.GpuCount, Model: sb.GpuModel}

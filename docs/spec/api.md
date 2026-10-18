@@ -26,10 +26,10 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `unauthenticated` | 401 | 没有 token、token 无效、过期或已吊销 |
 | `permission_denied` | 403 | token 的 scope 不够；修改平台 Snapshot |
 | `not_found` | 404 | 不存在，或不属于调用方 |
-| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、删除 current 版本、删除被引用的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
+| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、宣告可达的 Node lost、删除 current 版本、删除被引用的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
 | `precondition_failed` | 412 | `If-Match` 不匹配 |
 | `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
-| `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力 |
+| `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `rate_limited` | 429 | 登录失败次数超限；带 `Retry-After` |
 | `internal` | 500 | 平台缺陷 |
@@ -37,7 +37,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
-生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
+生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`workspace_lost`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`；ResourceVersion 的 `node_lost`）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
 
 ## 3. 资源与路径
 
@@ -67,11 +67,11 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /workspaces` · `GET /workspaces` · `GET /workspaces/{id}` · `DELETE /workspaces/{id}` | 只创建持久 Workspace；临时 Workspace 随 Sandbox 隐式创建（ADR-0018） |
+| `POST /workspaces` · `GET /workspaces` · `GET /workspaces/{id}` · `DELETE /workspaces/{id}` | 只创建持久 Workspace；临时 Workspace 随 Sandbox 隐式创建（ADR-0018）。删除 `lost` 的 Workspace 直接变成 `deleted`，不向 Node 下发命令 |
 | `POST /workspaces/{id}/publish` | `{path, resource}` → `202` 和一个 `pending` 的 ResourceVersion；变成 `ready` 时移动 current 指针，失败时不动（ADR-0012、`node-protocol.md`）。接受 `Idempotency-Key`；不要求有运行中的 Sandbox；Node 不可达返回 `503` |
-| `POST /workspaces/{id}/declare-lost` · `POST /workspaces/{id}/abandon` | **admin**。存活 Node 上的单个 Workspace 宣告 lost；放弃卡在 `deleting` 的清理 |
+| `POST /workspaces/{id}/declare-lost` · `POST /workspaces/{id}/abandon` | **admin**。存活 Node 上的单个 Workspace 宣告 lost：挂着它的 Sandbox（运行中的和 stopped 的）变成 `failed/workspace_lost`，Reconciler 停掉它们的 Runtime，其中的 Exec 以 `runtime_lost` 结束。放弃卡在 `deleting` 的清理 |
 
-字段：`kind`（`ephemeral`/`persistent`）、`node_id`、`state`（`provisioning`、`ready`、`deleting`、`deleted`、`failed`、`lost`）、`unavailable`（由 Node 可达性派生）、`conditions`（如 `provisioning_stalled`）。
+字段：`kind`（`ephemeral`/`persistent`）、`node_id`、`state`（`provisioning`、`ready`、`deleting`、`deleted`、`failed`、`lost`；后三个是终态）、`unavailable`（由 Node 可达性派生）、`conditions`（如 `provisioning_stalled`）。
 
 **Sandbox**
 
@@ -90,15 +90,23 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 ```
 name?, labels?
+runtime?: container|local       # 默认 container；调用方分不出 Docker 和 Podman
 workspace?: {id, mode: rw|ro}     # 不写就隐式创建临时 Workspace，rw
-snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；不写就用 STARS_DEFAULT_SNAPSHOT
+snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 STARS_DEFAULT_SNAPSHOT，local 没有 Snapshot
 resources?: [{resource, version?, mount?}]   # 创建时解析成具体版本，只读挂载到 /resources/<mount>；mount 是单段名字，默认取 Resource 名
 secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}
 idle_stop?: 秒数，默认 900，0 表示关闭
 ```
 
-每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009）。响应字段另有 `state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。Local Runtime 不支持 Resource 挂载，带 `resources` 时返回 `422 unsupported`。
+每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
+
+`runtime`（ADR-0009）：
+
+- `container` 只放到 Docker 或 Podman 的 Node 上，`local` 只放到 Local Node 上；重启后仍作为准入约束。
+- `local` 带了 `snapshot` 或 `resources` 时返回 `422 unsupported`。
+- Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `STARS_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。
+- Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用。GPU 可见性为 `best_effort` 时也接受。
 
 **Exec**：`GET /execs/{id}` · `POST /execs/{id}/cancel` · `GET /execs/{id}/output` · `GET /execs/{id}/pty`，见 §4。
 
@@ -107,9 +115,29 @@ idle_stop?: 秒数，默认 900，0 表示关闭
 | 方法与路径 | 说明 |
 |---|---|
 | `POST /enrollment-packets` | **admin**。返回一次性 Packet，写审计 |
-| `GET /nodes` · `GET /nodes/{id}` · `DELETE /nodes/{id}` | **admin**。删除要求 Node 已 paused 且没有非终态 Workspace，否则 `409` |
-| `POST /nodes/{id}/pause` · `/resume` · `/declare-lost` | **admin** |
+| `GET /nodes` · `GET /nodes/{id}` · `DELETE /nodes/{id}` | **admin**。删除见下 |
+| `POST /nodes/{id}/pause` · `/resume` · `/declare-lost` | **admin**。宣告 lost 见下 |
 | `GET /capacity` | 所有 scope 可读：每个 Node 的 GPU 型号、总数、已分配、状态（`ready`、`paused`、`unavailable`、`outdated`、`lost`） |
+
+Paused Node 不接收新的 Workspace 和构建。
+
+**宣告 lost**（ADR-0014）：
+
+- Node 当前可达时返回 `409`；存活 Node 的存储坏了，用 Workspace 级的 `declare-lost`。
+- 不可撤回：同时清空 Node Token 并置 `paused`。Agent 重连时收到 `UNAUTHENTICATED`，清掉本地身份；这台宿主只能作为新 Node 重新注册。
+- 级联在一个事务里完成：
+  - 这台 Node 上所有未 `deleted` 的 Sandbox（含 `stopped`，以及已绑定到这台 Node 的 `pending`）变成 `failed/node_lost`，释放 Allocation 和 GPU，结束读写 Attachment；
+  - 未结束的 Exec 以 `node_lost` 结束；
+  - `deleting` 的 Workspace 直接变成 `deleted`，其余非终态的 Workspace 变成 `lost`；
+  - 进行中的构建变成 `failed/node_lost`；
+  - 进行中的 publish：对应的 ResourceVersion 变成 `failed`，cause 为 `node_lost`。
+
+**删除 Node**：
+
+- 前提：已 paused，没有非终态的 Workspace，也没有非终态的 Sandbox（含构建行），否则 `409`。
+- 这一行留作墓碑：写 `deleted_at`，清空 Node Token，删掉它的 `gpus` 行；墓碑不清理。
+- 删除后的 Node 不出现在 `GET /nodes` 和 `/capacity` 里。
+- 还连着的 Agent 收到 `UNAUTHENTICATED`，流被关闭。
 
 **Resource**
 
@@ -146,7 +174,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
   - `contexts?: {name: resource[@version]}`，创建时解析为具体版本，作为命名上下文传入。
   - `base?` 是平台内的 Snapshot 引用（同 Sandbox 的 `snapshot`），以命名上下文 `base` 注入；`FROM` 也可以写外部 `ref@digest`。
   - `secrets?: {id: secret_name}`，Dockerfile 用 `RUN --mount=type=secret,id=<id>` 读取；带 `secrets` 的构建不用缓存。
-  - 构建以 `system` 优先级准入，资源上限和超时见 `defaults.md`，不计入 User Quota；Local Node 不能构建。provenance 记录 BuildKit 实际解析出的 FROM digest 和各 context 的版本地址。执行细节见 `runtime.md` §12。
+  - 构建以 `system` 优先级准入，资源上限和超时见 `defaults.md`，不计入 User Quota；只放到 `snapshot_build` 为 `enforced` 的 Node 上，与 Node 用哪种 Runtime 无关。provenance 记录 BuildKit 实际解析出的 FROM digest 和各 context 的版本地址。执行细节见 `runtime.md` §12。
 
 构建中的 SnapshotVersion 带 `build_exec_id`，构建日志用 `GET /execs/{id}/output` 读。
 
@@ -175,7 +203,7 @@ Git Provider 来自部署配置 `STARS_GIT_PROVIDERS_FILE`（`defaults.md`）。
 ```
 argv: [string]        # 不经过 shell
 env?: {k: v}
-cwd?: 相对 /workspace 的路径
+cwd?: 相对 /workspace 的路径（Local 上相对 Workspace 的宿主路径）
 timeout?: 秒数
 stdin?: string        # 一次性写入后关闭；PTY 模式下忽略
 pty?: {rows, cols}    # 带上就是 PTY 模式
@@ -191,7 +219,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 ## 5. 文件
 
-挂在 Sandbox 下。路径参数 `path` 相对于 `/workspace`，只能访问 Workspace：Resource 挂载点和 rootfs 要通过 Exec 访问。前提条件：Sandbox 必须是 `ready`，否则 `409`；只读挂载下写入返回 `409`；Node 不可达返回 `503`。
+挂在 Sandbox 下。路径参数 `path` 相对于 `/workspace`（Local 上相对 Workspace 的宿主路径），只能访问 Workspace：Resource 挂载点和 rootfs 要通过 Exec 访问。前提条件：Sandbox 必须是 `ready`，否则 `409`；只读挂载下写入返回 `409`；Node 不可达返回 `503`。
 
 | 方法与路径 | 说明 |
 |---|---|
@@ -216,12 +244,81 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 ## 7. MCP Tool API
 
-`stars-sandbox mcp` 通过 stdio 提供服务，使用调用方的 API Token。
+工具集手写精选，不按 OpenAPI 生成；长时间跑的 Exec 用 handle 加轮询；没有 PTY 工具（ADR-0022）。
 
-- 每个 `user` scope 可调用的非流式 OpenAPI operation 生成一个工具，名字取 operationId 的 snake_case。标 **admin** 的接口、WebSocket 端点和登录类接口（`/sessions`、`/oidc/*`、密码修改、Git 授权与回调）不生成工具。
-- 另有两个组合工具：
-  - `exec_run_and_wait`：创建 Exec 并跟随到结束，返回输出尾部、`result` 和 `log_truncated`。
-  - `pty_send_and_read`：向 PTY 写入，然后读取到输出静默或超时为止。
+**传输与认证**
+
+- 只走 stdio，命令是 `stars-sandbox mcp`。
+- 凭据解析和其它 CLI 子命令一致：`--token` > `STARS_SANDBOX_TOKEN` > config 文件。
+- 不接受 Sandbox Token。
+
+**协议**
+
+- 用 go-sdk v1.8.0 协商版本：优先 2026-07-28，也接受旧修订。
+- capability 只声明 `tools`，不声明 `logging`；诊断信息写 stderr。
+- 不提供 Resources、Prompts、completions、Elicitation 和 Tasks。
+- `tools/list` 的顺序固定，并标为可缓存。
+- 提供 server `instructions`，用一小段话说明典型流程：`sandbox_create` → `exec_run` → `exec_output` → `sandbox_delete`。
+
+**工具清单**（共 17 个，名字都是 snake_case）
+
+| 工具 | 对应 REST | annotations |
+|---|---|---|
+| `sandbox_create` | `POST /sandboxes`，然后 `wait_for=ready` | |
+| `sandbox_list` | `GET /sandboxes` | readOnly |
+| `sandbox_get` | `GET /sandboxes/{id}?wait_for=` | readOnly |
+| `sandbox_start` | `POST …/start` | idempotent，destructive=false |
+| `sandbox_stop` | `POST …/stop` | idempotent |
+| `sandbox_delete` | `DELETE /sandboxes/{id}` | idempotent，destructive |
+| `exec_run` | `POST /sandboxes/{id}/execs`，然后读输出 | destructive |
+| `exec_output` | `GET /execs/{id}/output`，`GET /execs/{id}` | readOnly |
+| `exec_cancel` | `POST /execs/{id}/cancel` | idempotent，destructive |
+| `file_list` / `file_stat` / `file_read` | §5 | readOnly |
+| `file_write` | `PUT …/files/content` | idempotent，destructive |
+| `file_mkdir` | `POST …/files/mkdir` | idempotent，destructive=false |
+| `file_move` | `POST …/files/move` | destructive |
+| `file_delete` | `DELETE …/files` | idempotent，destructive |
+| `port_url` | `POST …/ports/{port}/ticket` | readOnly=false，destructive=false |
+
+每个工具都要有：
+
+- `title`；
+- JSON Schema 2020-12 的 `inputSchema`（无参数时用 `{"type":"object","additionalProperties":false}`）和 `outputSchema`；
+- 返回的 `structuredContent` 必须符合 `outputSchema`，同时附一个 text content，内容是同一份 JSON。
+
+不写 `openWorldHint`，沿用默认值 true：Sandbox 里的命令可以访问网络。
+
+**参数与语义**
+
+- `sandbox_create`：
+  - 参数照搬 `CreateSandboxRequest` 的全部字段。
+  - 创建后用 `wait_for=ready` 等待，每次最多 60 秒；超时就返回 `pending`，带上 `queue_position` 和 `blocked_reason`。
+  - 想继续等，就调用 `sandbox_get{id, wait_for}`。
+- `exec_run{sandbox_id, command, cwd, env, stdin, timeout, wait_seconds}`：
+  - `command` 是一个字符串，执行为 argv `["sh","-c",command]`。
+  - `timeout` 是 Exec 自己的超时，到点会杀掉进程；`wait_seconds` 只决定这次调用等多久，默认 30，上限 300，不等后进程照常跑。工具描述里写清两者的区别。
+  - Exec 结束时，返回 `exec_id`、`state`、`result`、输出尾部 32 KiB（stdout 和 stderr 按帧顺序分开返回）、`log_truncated`，以及下一次读取用的 `after`。
+  - 没结束就返回 `exec_id`、`state: running` 和到目前为止的输出尾部。
+  - 等待期间，如果请求带了 `progressToken`，就发进度通知：已输出的字节数和当前状态。
+- `exec_output{exec_id, after, wait_seconds}`：
+  - 给了 `after`：从 `after` 开始，最多返回 32 KiB，附 `next_after`。
+  - 没给 `after`：返回尾部 32 KiB。
+  - 带 `wait_seconds` 时，一直等到有新输出或 Exec 结束为止。
+- `exec_id` 的有效期跟 Exec 本身一样，写在 `exec_run` 的描述里。id 查不到时，用 `isError` 返回 `not_found`。
+- `file_read{sandbox_id, path, offset, limit}`：
+  - 上限 1 MiB。
+  - UTF-8 内容返回 text content；`image/*` 返回 image content；其它二进制放进 `structuredContent.content_base64`，并标出 `encoding: base64`。
+- `file_write{sandbox_id, path, content, encoding: text|base64}`：上限 1 MiB。
+- 不提供 tar 归档工具，大文件和归档走 CLI。
+- `port_url{sandbox_id, port}`：返回带票据的 URL，交给人在浏览器里打开；在描述里写明票据 1 分钟内有效。
+
+**错误**
+
+- REST 返回的 problem+json 转成 `isError: true` 的结果，带上 `code`（取自 §2 的封闭目录）和 `detail`。
+- 参数校验失败也用 `isError` 返回。
+- 只有工具名不存在、请求格式错误、进程内部错误，才用 JSON-RPC 错误。
+
+**配置**：README 给出 `claude mcp add stars-sandbox -- stars-sandbox mcp` 和通用 JSON 配置示例，不做 `mcp init`。
 
 ## 8. Web 控制台
 
@@ -233,17 +330,45 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 - 纯 SPA，不引入 TanStack Start 运行时；目录结构参考 Start 模板。
 - 源码在 `web/`，产物经 `go:embed` 嵌入，未命中静态文件的路径回退到 `index.html`。仓库提交一个占位 `index.html`，不装 node 也能 `go build`；真正的构建放在 Makefile 和 Dockerfile 的多阶段构建里，`dist` 不进仓库。
 
+约定：
+
+- **刷新**：没有推送，控制台轮询。资源处于非终态时，详情 2 秒、列表 5 秒刷新一次；进入终态后停止。
+- **终端与日志**：用同一个终端模拟器渲染，日志用只读实例。`base64` 帧解码后显示，`truncated` 帧显式标出；超出 scrollback 的部分用 CLI 看。
+
 | 页面 | 用到的接口 |
 |---|---|
 | 登录 `/login?return=` | `POST /sessions`、`GET /oidc/login` |
 | CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `stars-sandbox login` |
 | Git 关联 `/git` | `GET /git-providers`、`/users/me/git-links`、`authorize`；`authorize_url` 指向这里 |
-| Sandbox 列表与详情 | 创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions` |
-| Exec | 列表、`output?follow=true` 跟随 |
-| 终端 | `GET /execs/{id}/pty` |
-| 文件 | §5 的列目录、上传、下载 |
-| 端口 | `POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
+| Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、workspace（默认临时；或从 `GET /workspaces` 选一个持久的，并选 rw/ro）、idle_stop。resources、secrets、labels 用 CLI |
+| Exec | `GET /sandboxes/{id}/execs`、`output?follow=true` 跟随、`POST /execs/{id}/cancel` |
+| 终端 | `POST /sandboxes/{id}/execs` 带 `pty`，argv 默认 `["/bin/sh", "-l"]`，可改；然后 `GET /execs/{id}/pty`。不提供非 PTY 的运行表单 |
+| 文件 | §5 的列目录；单文件上传 `PUT files/content`；下载走同源链接，文件用 `files/content`，目录用 `files/archive`。不做浏览器内 tar 上传、删除、移动、mkdir、编辑 |
+| 端口 | 详情页输入端口号，`POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
 | Snapshot | 列表、版本、构建日志 |
 | Secret | 名字列表、覆盖写入、删除 |
-| 我的 token 与 Session | `/users/me/tokens`、`PUT /users/me/password`、`DELETE /sessions/current` |
-| admin | User（含重置密码、Quota）、Node、`GET /audit` |
+| 我的 token 与 Session | `/users/me/tokens` 的列表（带 `kind`、`last_used_at`）、创建（明文只显示一次）、吊销；`PUT /users/me/password`（仅 `login_type=password`）；`DELETE /sessions/current` |
+| admin | User：列表、创建、`PATCH`（login_type、is_admin）、重置密码、Quota、删除。Node：`/nodes` 和 `/capacity` 列表、pause/resume、删除。`GET /audit` 按 actor、action、target、时间区间过滤并分页。declare-lost 和 Enrollment Packet 用 CLI |
+
+## 9. SDK
+
+两个 SDK 都手写（ADR-0017）。
+
+- **Go**：
+  - 公开包 `github.com/zibyn/stars-sandbox/client`，用 `client.New(baseURL, token)` 创建。
+  - 方法第一个参数都是 `ctx`，请求和响应的结构体手写。
+  - 错误类型 `*client.Error{Status, Code, Detail}`。
+  - 提供帮助函数 `RunExec` 和 `FollowOutput`。
+  - 只用标准库。
+  - CLI 和 `mcp` 都基于这个包，仓库里只有一个 Go 客户端。
+  - 覆盖范围等于 CLI 能做的全部。
+- **Python**：
+  - 放在 `sdk/python/`，用 httpx 手写，只提供同步接口。
+  - Python ≥ 3.10，唯一依赖是 httpx，模型用 `dataclasses`。
+  - 错误类型 `StarsSandboxError(status, code, detail)`。
+  - 覆盖范围：Sandbox 生命周期（含 `wait_for`）、Exec（create、wait、按 `after` 跟随输出、cancel）、文件（§5 全部，包括 tar 上传和下载）、Secret。
+  - 不覆盖 Resource 上传、Workspace publish、端口转发和 PTY。
+- **发布**：
+  - 不发布到 PyPI，用 `pip install "git+…#subdirectory=sdk/python"` 安装。
+  - 版本号与仓库 tag 锁步，不维护兼容矩阵。
+  - 不提交生成的 `openapi.json`。

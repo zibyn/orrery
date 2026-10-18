@@ -62,6 +62,14 @@ environment:
   STARS_DEFAULT_SANDBOX_QUOTA   new User Sandbox quota (default 0)
   STARS_APPS_DOMAIN             wildcard domain for port forwarding (off when empty)
   STARS_PORT_TICKET_KEY         signs port tickets and Gateway cookies
+  STARS_PLATFORM_SNAPSHOTS      name=ref@sha256:…,… imported at startup (platform images)
+  STARS_DEFAULT_SNAPSHOT        platform Snapshot used when a create omits snapshot
+  STARS_REGISTRY_ADDR           Node-reachable registry address (e.g. 127.0.0.1:15000)
+  STARS_REGISTRY_PUSH_ADDR      Control Plane push address (default STARS_REGISTRY_ADDR)
+  STARS_REGISTRY_CREDENTIAL     Docker config.json for Nodes and pushes; list both hosts
+  STARS_BUILD_CPU               Snapshot build CPU ceiling (default 4)
+  STARS_BUILD_MEMORY            Snapshot build memory ceiling in bytes (default 8 GiB)
+  STARS_BUILD_TIMEOUT           Snapshot build timeout (default 1h)
 `)
 }
 

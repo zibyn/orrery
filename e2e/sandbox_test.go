@@ -27,8 +27,9 @@ type sandboxView struct {
 	GPU      *struct {
 		Count int32 `json:"count"`
 	} `json:"gpu"`
-	QueuePosition *int64  `json:"queue_position"`
-	BlockedBy     *string `json:"blocked_reason"`
+	QueuePosition *int64   `json:"queue_position"`
+	BlockedBy     *string  `json:"blocked_reason"`
+	Conditions    []string `json:"conditions"`
 	Workspace     *struct {
 		ID   string `json:"id"`
 		Mode string `json:"mode"`
@@ -185,7 +186,23 @@ func TestSandboxLifecycle(t *testing.T) {
 
 func raiseSandboxQuota(t *testing.T, admin string, sandboxes int) {
 	t.Helper()
-	status, data := call(t, http.MethodGet, "/api/v1/users/me", admin, nil)
+	// Raise, never lower: tests share one admin User and deletions are
+	// asynchronous, so a lower value would trip quota_exceeded on leftovers
+	// from earlier tests.
+	status, data := call(t, http.MethodGet, "/api/v1/users/me/quota", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get quota: %d %s", status, data)
+	}
+	var quota struct {
+		Sandboxes struct {
+			Limit int `json:"limit"`
+		} `json:"sandboxes"`
+	}
+	mustJSON(t, data, &quota)
+	if quota.Sandboxes.Limit > sandboxes {
+		sandboxes = quota.Sandboxes.Limit
+	}
+	status, data = call(t, http.MethodGet, "/api/v1/users/me", admin, nil)
 	if status != http.StatusOK {
 		t.Fatalf("get me: %d %s", status, data)
 	}

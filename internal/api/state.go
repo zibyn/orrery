@@ -16,6 +16,15 @@ const (
 	SandboxFailed       SandboxState = "failed"
 )
 
+// SandboxKind distinguishes a caller's Sandbox from the internal row a
+// Snapshot build runs (ADR-0021).
+type SandboxKind string
+
+const (
+	SandboxKindUser  SandboxKind = "user"
+	SandboxKindBuild SandboxKind = "build"
+)
+
 // SandboxDesiredState is the lifecycle the caller asked a Sandbox to reach.
 type SandboxDesiredState string
 
@@ -37,6 +46,16 @@ const (
 	WorkspaceLost         WorkspaceState = "lost"
 )
 
+// SnapshotVersionState is the lifecycle of an import or build (api.md §3).
+type SnapshotVersionState string
+
+const (
+	SnapshotVersionBuilding  SnapshotVersionState = "building"
+	SnapshotVersionReady     SnapshotVersionState = "ready"
+	SnapshotVersionFailed    SnapshotVersionState = "failed"
+	SnapshotVersionCancelled SnapshotVersionState = "cancelled"
+)
+
 // The wire names in lifecycle order, used by the OpenAPI document.
 var (
 	sandboxStateNames = []string{
@@ -48,4 +67,25 @@ var (
 		string(WorkspaceProvisioning), string(WorkspaceReady), string(WorkspaceDeleting),
 		string(WorkspaceDeleted), string(WorkspaceFailed), string(WorkspaceLost),
 	}
+	snapshotVersionStateNames = []string{
+		string(SnapshotVersionBuilding), string(SnapshotVersionReady),
+		string(SnapshotVersionFailed), string(SnapshotVersionCancelled),
+	}
 )
+
+// ResourceVersionState is the lifecycle condition of a ResourceVersion
+// (api.md §3, schema.md). unavailable means an object it references is gone
+// from the store; a later successful publish check repairs it.
+type ResourceVersionState string
+
+const (
+	ResourceVersionPending     ResourceVersionState = "pending"
+	ResourceVersionReady       ResourceVersionState = "ready"
+	ResourceVersionFailed      ResourceVersionState = "failed"
+	ResourceVersionUnavailable ResourceVersionState = "unavailable"
+)
+
+var resourceVersionStateNames = []string{
+	string(ResourceVersionPending), string(ResourceVersionReady),
+	string(ResourceVersionFailed), string(ResourceVersionUnavailable),
+}

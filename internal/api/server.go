@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
+	"github.com/zibyn/stars-sandbox/internal/objectstore"
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
@@ -21,6 +23,7 @@ type Server struct {
 	pool         *pgxpool.Pool
 	q            *store.Queries
 	log          *slog.Logger
+	objects      *objectstore.Store // nil when object storage is unconfigured
 	logins       *loginLimiter
 	crossOrigin  http.CrossOriginProtection
 	reconcile    *reconciler
@@ -28,6 +31,10 @@ type Server struct {
 	activity     *activityTracker
 	oidcMu       sync.Mutex
 	oidcProvider *oidc.Provider
+	// snapshotCancels ends in-flight imports (api.md §3). Imports do not
+	// survive a restart, so an in-process map is the whole registry.
+	snapshotMu      sync.Mutex
+	snapshotCancels map[uuid.UUID]context.CancelFunc
 }
 
 func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
@@ -38,7 +45,23 @@ func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
 		}
 	}
 	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter(),
-		tunnels: newTunnelRegistry(), activity: newActivityTracker()}
+		tunnels: newTunnelRegistry(), activity: newActivityTracker(),
+		snapshotCancels: map[uuid.UUID]context.CancelFunc{}}
+	if cfg.S3.Endpoint != "" {
+		objects, err := objectstore.New(context.Background(), objectstore.Config{
+			Endpoint:       cfg.S3.Endpoint,
+			PublicEndpoint: cfg.S3.PublicEndpoint,
+			Bucket:         cfg.S3.Bucket,
+			Region:         cfg.S3.Region,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+		})
+		if err != nil {
+			log.Error("build object store client", "error", err)
+		} else {
+			s.objects = objects
+		}
+	}
 	s.reconcile = newReconciler(s)
 	return s
 }
@@ -46,6 +69,12 @@ func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
 func (s *Server) Serve(ctx context.Context) error {
 	go s.purgeExpired(ctx)
 	go s.reconcile.run(ctx)
+	// An import runs inside this process; one left building by a previous
+	// instance is failed so a Sandbox create does not wait on it forever.
+	if err := s.q.FailBuildingSnapshotImports(ctx); err != nil {
+		s.log.Error("fail interrupted Snapshot imports", "error", err)
+	}
+	go s.importPlatformSnapshots(ctx)
 	httpServer := &http.Server{
 		Addr:              s.cfg.Addr,
 		Handler:           s.Handler(),

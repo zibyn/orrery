@@ -146,6 +146,10 @@ func fitFor(node store.Node, used store.NodePlacementRow) (nodeFit, bool) {
 // has not reported yet) is not proof either way. A Sandbox bound to a Node can
 // only ever go there. gpus is each Node's reported inventory.
 func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb store.Sandbox, workspaceNode *uuid.UUID) bool {
+	if sb.Kind == string(SandboxKindBuild) && len(nodes) == 0 {
+		// No Node can enforce snapshot_build (ADR-0021).
+		return true
+	}
 	known, unknown := false, false
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
@@ -154,6 +158,19 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		// A Workspace never moves: its Sandbox can only ever run there.
 		if workspaceNode != nil && node.ID != *workspaceNode {
 			continue
+		}
+		if sb.Kind == string(SandboxKindBuild) {
+			if len(node.Capabilities) == 0 {
+				// A Node that has not reported its Capabilities may still turn
+				// out to support builds.
+				unknown = true
+				continue
+			}
+			if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapSnapshotBuild) {
+				// Reported and incapable: this Node can never take the build.
+				known = true
+				continue
+			}
 		}
 		fit, ok := fitFor(node, store.NodePlacementRow{GpuTotal: int64(len(gpus[node.ID]))})
 		if !ok {
@@ -222,6 +239,21 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 			continue
 		}
 		ws, err := q.GetSandboxWorkspace(ctx, sb.ID)
+		if sb.Kind == string(SandboxKindBuild) {
+			// A build row has no Workspace or Attachment (schema.md, ADR-0021).
+			placed, err := r.tryAdmit(ctx, q, sb, store.Workspace{}, nodes, now)
+			if err != nil {
+				return err
+			}
+			if placed {
+				r.endAdmission(ctx, q, sb.ID, "admitted")
+				continue
+			}
+			if admissionExhausted(nodes, inventory, sb, nil) {
+				r.failAdmission(ctx, q, sb, "unsatisfiable")
+			}
+			continue
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.failAdmission(ctx, q, sb, "runtime_create_failed")
 			continue
@@ -270,14 +302,36 @@ func nodeSchedulable(node store.Node, now time.Time, workspaceHere bool) bool {
 // is already bound (ADR-0015 locality). A GPU Sandbox claims whole cards;
 // their primary key keeps the cards exclusive (ADR-0015).
 func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sandbox, ws store.Workspace, nodes []store.Node, now time.Time) (bool, error) {
+	// A Sandbox with Resources can only run where the Runtime can bind-mount
+	// them (runtime.md §10-11). Filtering placement rather than rejecting the
+	// create keeps a mixed fleet working: api.md's Local `422 unsupported` is
+	// the single-Runtime case, and here a fleet with no capable Node ends the
+	// admission request `unsatisfiable` instead.
+	isBuild := sb.Kind == string(SandboxKindBuild)
+	var resourceMounts int64
+	if !isBuild {
+		var err error
+		resourceMounts, err = q.CountSandboxResources(ctx, sb.ID)
+		if err != nil {
+			return false, err
+		}
+	}
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
 			continue
 		}
-		if ws.NodeID != nil && node.ID != *ws.NodeID {
+		if !isBuild && ws.NodeID != nil && node.ID != *ws.NodeID {
 			continue
 		}
-		if !nodeSchedulable(node, now, ws.NodeID != nil) || !r.hub.connected(node.ID) {
+		if isBuild {
+			// Builds run on the host build API only (ADR-0021).
+			if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapSnapshotBuild) {
+				continue
+			}
+		} else if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
+			continue
+		}
+		if !nodeSchedulable(node, now, !isBuild && ws.NodeID != nil) || !r.hub.connected(node.ID) {
 			continue
 		}
 		used, err := q.NodePlacement(ctx, node.ID)
@@ -319,7 +373,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			if rows == 0 {
 				return false, nil
 			}
-			if ws.NodeID == nil {
+			if !isBuild && ws.NodeID == nil {
 				if _, err := q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{
 					ID: ws.ID, NodeID: &node.ID,
 				}); err != nil {

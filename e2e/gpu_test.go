@@ -21,8 +21,11 @@ import (
 // The test deploys the Agent over SSH, opens a reverse tunnel so the host
 // reaches this machine's `node` listener on 127.0.0.1 (which the throwaway TLS
 // certificate covers), and drives the scenarios through the public REST API.
-// STARS_E2E_GPU_SNAPSHOT overrides the Sandbox image (default
-// nvidia/cuda:12.4.1-base-ubuntu22.04, whose glibc can run nvidia-smi).
+// STARS_E2E_GPU_SNAPSHOT names a platform Snapshot for GPU Sandboxes (M4
+// imports images by digest and Sandboxes reference a Snapshot by name). The
+// deployment must list it in STARS_PLATFORM_SNAPSHOTS; a raw image reference
+// is no longer accepted. The default CUDA image is the smallest glibc base
+// whose nvidia-smi can run.
 
 const gpuAPIPort = 18081 // published `node` listener on this machine
 
@@ -46,7 +49,7 @@ func TestGPUSandboxReady(t *testing.T) {
 
 	setGPUQuota(t, admin, int32(cards), int32(cards)+2)
 
-	sb := createSandbox(t, admin, gpuSandboxBody(node, 1))
+	sb := createSandbox(t, admin, gpuSandboxBody(t, node, 1))
 	t.Cleanup(func() { deleteSandbox(t, admin, sb.ID) })
 	waitForSandboxReady(t, admin, sb.ID)
 	if sb.GPU == nil || sb.GPU.Count != 1 {
@@ -95,11 +98,11 @@ func TestGPUQueueAndDeadline(t *testing.T) {
 	// hold a quota slot while it waits (ADR-0015).
 	setGPUQuota(t, admin, int32(cards)+1, int32(cards)+2)
 
-	holder := createSandbox(t, admin, gpuSandboxBody(node, cards))
+	holder := createSandbox(t, admin, gpuSandboxBody(t, node, cards))
 	t.Cleanup(func() { deleteSandbox(t, admin, holder.ID) })
 	waitForSandboxReady(t, admin, holder.ID)
 
-	waiting := createSandbox(t, admin, gpuSandboxBody(node, 1))
+	waiting := createSandbox(t, admin, gpuSandboxBody(t, node, 1))
 	t.Cleanup(func() { deleteSandbox(t, admin, waiting.ID) })
 	if waiting.State != "pending" {
 		t.Fatalf("a Sandbox over the card count is %q, want pending", waiting.State)
@@ -236,7 +239,8 @@ func remoteGPUUUIDs(t *testing.T, h *gpuHost, sandboxID string) []string {
 }
 
 // gpuSandboxBody asks for count cards within the Node's per-GPU share.
-func gpuSandboxBody(node nodeView, count int) map[string]any {
+func gpuSandboxBody(t *testing.T, node nodeView, count int) map[string]any {
+	t.Helper()
 	cores, _ := node.Hardware["cpu_cores"].(float64)
 	share := cores * 0.75 / float64(len(node.GPUs))
 	cpu := 0.5
@@ -248,9 +252,20 @@ func gpuSandboxBody(node nodeView, count int) map[string]any {
 		// The default e2e Snapshot is Alpine, where the glibc-linked nvidia-smi
 		// the toolkit mounts cannot run. A CUDA base image is the smallest image
 		// that satisfies the acceptance check.
-		"snapshot": envOr("STARS_E2E_GPU_SNAPSHOT", "nvidia/cuda:12.4.1-base-ubuntu22.04"),
+		"snapshot": gpuSnapshotName(t),
 		"gpu":      map[string]any{"count": count},
 	}
+}
+
+// gpuSnapshotName is a platform Snapshot name, not an image reference:
+// Sandboxes resolve a Snapshot name to its current ready version (api.md §3).
+func gpuSnapshotName(t *testing.T) string {
+	t.Helper()
+	name := envOr("STARS_E2E_GPU_SNAPSHOT", "cuda")
+	if strings.ContainsAny(name, "/:") {
+		t.Fatalf("STARS_E2E_GPU_SNAPSHOT must be a Snapshot name listed in STARS_PLATFORM_SNAPSHOTS, got image reference %q", name)
+	}
+	return name
 }
 
 func createEnrollmentPacket(t *testing.T, admin string) string {

@@ -59,7 +59,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   stars-sandbox-agent enroll --server HOST:PORT --packet sse_... [--ca FILE] [--name NAME] [--state FILE]
-  stars-sandbox-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--docker SOCKET] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
+  stars-sandbox-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--docker SOCKET] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
   stars-sandbox-agent supervisor init
   stars-sandbox-agent supervisor probe [WORKSPACE]
   stars-sandbox-agent supervisor run EXEC_ID
@@ -90,6 +90,7 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.Server, "server", "", "override the enrolled node address")
 	fs.StringVar(&opts.State, "state", agent.DefaultStatePath, "identity file")
 	fs.StringVar(&opts.Docker, "docker", agent.DefaultDockerSock, "Docker Engine socket")
+	fs.StringVar(&opts.Buildkit, "buildkit", "", "BuildKit endpoint (default: dockerd's built-in BuildKit via the Docker socket)")
 	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "Workspace and Supervisor data directory")
 	fs.Float64Var(&opts.ReserveCPU, "reserve-cpu", agent.DefaultReserveCPU, "CPU cores kept free for the host")
 	fs.Int64Var(&opts.ReserveMemory, "reserve-memory", agent.DefaultReserveBytes, "memory bytes kept free for the host")

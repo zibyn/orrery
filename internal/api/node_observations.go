@@ -27,6 +27,15 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 		return
 	}
 	switch nodeproto.SandboxPhase(obs.Phase) {
+	case nodeproto.SandboxPhaseFetchingResources:
+		// The Node is pulling Resource version trees; the condition is public
+		// until the Runtime is running (node-protocol.md, runtime.md §11).
+		if _, err := n.s.q.SetSandboxConditions(ctx, store.SetSandboxConditionsParams{
+			ID: id, Generation: obs.Generation,
+			Conditions: encodeSandboxConditions(sandboxConditions{FetchingResources: true}),
+		}); err != nil {
+			n.s.log.Warn("record SandboxObserved fetching_resources", "sandbox_id", id, "error", err)
+		}
 	case nodeproto.SandboxPhaseRunning:
 		rows, err := n.s.q.MarkSandboxReady(ctx, store.MarkSandboxReadyParams{
 			ID: id, Generation: obs.Generation,

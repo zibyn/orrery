@@ -40,7 +40,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 	}
 	for _, name := range []string{
 		"process_mount_namespace", "cpu_memory_pid_limits", "workspace_rw_mount",
-		"exec_supervisor", "gpu_device_visibility",
+		"exec_supervisor", "gpu_device_visibility", "resource_mount",
 	} {
 		if values[name] != nodeproto.ValueEnforced {
 			t.Errorf("%s = %q, want enforced", name, values[name])
@@ -57,8 +57,30 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 		if entry.Name == "exec_supervisor" {
 			continue // the probe ran, so the Supervisor works
 		}
+		if entry.Name == nodeproto.CapResourceMount {
+			continue // the Docker adapter's bind mounts do not depend on the probe
+		}
 		if entry.Value != nodeproto.ValueUnsupported {
 			t.Errorf("%s = %q, want unsupported", entry.Name, entry.Value)
+		}
+	}
+}
+
+func TestSnapshotBuildCapabilityIsIndependent(t *testing.T) {
+	report := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false)
+	enforced := withSnapshotBuild(report, true)
+	values := map[string]string{}
+	for _, entry := range enforced.Entries {
+		values[entry.Name] = entry.Value
+	}
+	if values[nodeproto.CapSnapshotBuild] != nodeproto.ValueEnforced {
+		t.Fatalf("snapshot_build = %q, want enforced even when the runtime probe is weak",
+			values[nodeproto.CapSnapshotBuild])
+	}
+	unsupported := withSnapshotBuild(report, false)
+	for _, entry := range unsupported.Entries {
+		if entry.Name == nodeproto.CapSnapshotBuild && entry.Value != nodeproto.ValueUnsupported {
+			t.Fatalf("snapshot_build = %q, want unsupported", entry.Value)
 		}
 	}
 }

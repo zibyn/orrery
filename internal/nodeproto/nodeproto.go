@@ -10,7 +10,7 @@ import "encoding/json"
 // refused (ADR-0014).
 const (
 	Major uint32 = 1
-	Minor uint32 = 3
+	Minor uint32 = 4
 )
 
 // Capability names are the Runtime Provider facts a Node self-checks
@@ -28,6 +28,15 @@ const (
 	CapDiskCapacityQuota     = "disk_capacity_quota"
 	CapExecSupervisor        = "exec_supervisor"
 	CapArbitraryMounts       = "arbitrary_mounts_privileged_mode"
+	// CapResourceMount is the Runtime's ability to bind-mount Resource version
+	// trees read-only. It is optional: a Sandbox without Resources does not
+	// need it, and the Scheduler filters Nodes that do not enforce it when the
+	// Sandbox has Resources (runtime.md §10-11).
+	CapResourceMount = "resource_mount"
+	// CapSnapshotBuild is the Runtime's ability to run a Snapshot build on the
+	// host build API. It is optional: Local Runtime reports it unsupported and
+	// the Scheduler filters build rows to Nodes that enforce it (ADR-0021).
+	CapSnapshotBuild = "snapshot_build"
 )
 
 // Required lists the capabilities the Scheduler needs before it can place a
@@ -44,9 +53,10 @@ var Required = []string{
 type SandboxPhase string
 
 const (
-	SandboxPhaseRunning      SandboxPhase = "running"
-	SandboxPhaseGone         SandboxPhase = "gone"
-	SandboxPhaseCreateFailed SandboxPhase = "create_failed"
+	SandboxPhaseRunning           SandboxPhase = "running"
+	SandboxPhaseFetchingResources SandboxPhase = "fetching_resources"
+	SandboxPhaseGone              SandboxPhase = "gone"
+	SandboxPhaseCreateFailed      SandboxPhase = "create_failed"
 )
 
 // WorkspacePhase is what a Node observes about a Workspace's storage.
@@ -73,8 +83,8 @@ func compatible(cpMajor, cpMinor, agentMajor, agentMinor uint32) (accepted, outd
 // CapabilityReport is the stored form of the Capabilities message. GPUs live
 // in their own table, so they are not repeated here.
 type CapabilityReport struct {
-	Runtime string            `json:"runtime"`
-	Entries []CapabilityEntry `json:"entries"`
+	RuntimeProvider string            `json:"runtime_provider"`
+	Entries         []CapabilityEntry `json:"entries"`
 }
 
 type CapabilityEntry struct {

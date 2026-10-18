@@ -211,6 +211,52 @@ func (q *Queries) CancelSandboxExecs(ctx context.Context, sandboxID uuid.UUID) (
 	return result.RowsAffected(), nil
 }
 
+const cancelSnapshotVersion = `-- name: CancelSnapshotVersion :one
+UPDATE snapshot_versions SET state = 'cancelled'
+WHERE id = $1 AND state = 'building'
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
+`
+
+func (q *Queries) CancelSnapshotVersion(ctx context.Context, id uuid.UUID) (SnapshotVersion, error) {
+	row := q.db.QueryRow(ctx, cancelSnapshotVersion, id)
+	var i SnapshotVersion
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Digest,
+		&i.State,
+		&i.Cause,
+		&i.Source,
+		&i.BuildSandboxID,
+		&i.BuildExecID,
+		&i.Provenance,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.BuildRequest,
+	)
+	return i, err
+}
+
+const clearResourceCurrent = `-- name: ClearResourceCurrent :exec
+UPDATE resources SET current_version_id = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL
+`
+
+func (q *Queries) ClearResourceCurrent(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearResourceCurrent, id)
+	return err
+}
+
+const clearSnapshotCurrent = `-- name: ClearSnapshotCurrent :exec
+UPDATE snapshots SET current_version_id = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL
+`
+
+func (q *Queries) ClearSnapshotCurrent(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearSnapshotCurrent, id)
+	return err
+}
+
 const countActiveExecs = `-- name: CountActiveExecs :one
 SELECT count(*) FROM execs WHERE sandbox_id = $1 AND finished_at IS NULL
 `
@@ -226,7 +272,8 @@ const countActiveSandboxResources = `-- name: CountActiveSandboxResources :one
 SELECT count(*)::bigint AS sandboxes,
        COALESCE(SUM(gpu_count), 0)::bigint AS gpus
 FROM sandboxes
-WHERE owner_id = $1 AND state IN ('pending', 'provisioning', 'ready', 'stopping')
+WHERE owner_id = $1 AND kind = 'user'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping')
 `
 
 type CountActiveSandboxResourcesRow struct {
@@ -235,12 +282,57 @@ type CountActiveSandboxResourcesRow struct {
 }
 
 // An open admission request is part of active usage, so the pending state is
-// the quota hold (ADR-0015).
+// the quota hold (ADR-0015). Builds are system work and never count (ADR-0021).
 func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.UUID) (CountActiveSandboxResourcesRow, error) {
 	row := q.db.QueryRow(ctx, countActiveSandboxResources, ownerID)
 	var i CountActiveSandboxResourcesRow
 	err := row.Scan(&i.Sandboxes, &i.Gpus)
 	return i, err
+}
+
+const countResourceManifestReferences = `-- name: CountResourceManifestReferences :one
+SELECT count(*)::bigint
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3
+`
+
+type CountResourceManifestReferencesParams struct {
+	OwnerID uuid.UUID
+	Address *string
+	ID      uuid.UUID
+}
+
+// Manifest objects are content-addressed, so two versions (or a current and a
+// non-current one) can share one manifest. The sweep only deletes it when no
+// other version of the owner still names the address.
+func (q *Queries) CountResourceManifestReferences(ctx context.Context, arg CountResourceManifestReferencesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countResourceManifestReferences, arg.OwnerID, arg.Address, arg.ID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countResourceUploads = `-- name: CountResourceUploads :one
+SELECT count(*)::bigint FROM uploads WHERE resource_id = $1
+`
+
+func (q *Queries) CountResourceUploads(ctx context.Context, resourceID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countResourceUploads, resourceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countResourceVersions = `-- name: CountResourceVersions :one
+SELECT count(*)::bigint FROM resource_versions WHERE resource_id = $1
+`
+
+func (q *Queries) CountResourceVersions(ctx context.Context, resourceID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countResourceVersions, resourceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const countRunningExecs = `-- name: CountRunningExecs :one
@@ -257,12 +349,69 @@ func (q *Queries) CountRunningExecs(ctx context.Context, sandboxID uuid.UUID) (i
 	return count, err
 }
 
+const countSandboxResources = `-- name: CountSandboxResources :one
+SELECT count(*)::bigint FROM sandbox_resources WHERE sandbox_id = $1
+`
+
+func (q *Queries) CountSandboxResources(ctx context.Context, sandboxID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSandboxResources, sandboxID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countSandboxSnapshotReferences = `-- name: CountSandboxSnapshotReferences :one
+SELECT count(*)::bigint FROM sandboxes
+WHERE kind = 'user' AND state <> 'deleted'
+  AND right(snapshot_digest, length($1::text)) = $1::text
+`
+
+// The suffix is "<repo>@<digest>"; matching the suffix avoids caring which
+// registry address a Sandbox was created against.
+func (q *Queries) CountSandboxSnapshotReferences(ctx context.Context, ref string) (int64, error) {
+	row := q.db.QueryRow(ctx, countSandboxSnapshotReferences, ref)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countSecrets = `-- name: CountSecrets :one
 SELECT count(*)::bigint FROM secrets WHERE owner_id = $1
 `
 
 func (q *Queries) CountSecrets(ctx context.Context, ownerID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countSecrets, ownerID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countSnapshotVersionDigestReferences = `-- name: CountSnapshotVersionDigestReferences :one
+SELECT count(*)::bigint FROM snapshot_versions
+WHERE snapshot_id = $1 AND digest = $2 AND id <> $3
+`
+
+type CountSnapshotVersionDigestReferencesParams struct {
+	SnapshotID uuid.UUID
+	Digest     *string
+	ID         uuid.UUID
+}
+
+// Snapshot digests are unique content too; deleting a version must not remove
+// a manifest another version of the same Snapshot still uses.
+func (q *Queries) CountSnapshotVersionDigestReferences(ctx context.Context, arg CountSnapshotVersionDigestReferencesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countSnapshotVersionDigestReferences, arg.SnapshotID, arg.Digest, arg.ID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countSnapshotVersions = `-- name: CountSnapshotVersions :one
+SELECT count(*)::bigint FROM snapshot_versions WHERE snapshot_id = $1
+`
+
+func (q *Queries) CountSnapshotVersions(ctx context.Context, snapshotID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSnapshotVersions, snapshotID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -370,6 +519,70 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 		&i.Mode,
 		&i.Generation,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createBuildSandbox = `-- name: CreateBuildSandbox :one
+INSERT INTO sandboxes (
+    id, owner_id, kind, name, labels, desired_state, state, snapshot_digest,
+    cpu, memory, gpu_count, idle_stop_seconds, generation, secret_env_ct
+) VALUES ($1, $2, 'build', $3, '{}', 'running', 'pending', $4, $5, $6, 0, 0, 1, $7)
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
+`
+
+type CreateBuildSandboxParams struct {
+	ID             uuid.UUID
+	OwnerID        uuid.UUID
+	Name           string
+	SnapshotDigest string
+	Cpu            float64
+	Memory         int64
+	SecretEnvCt    []byte
+}
+
+// CreateBuildSandbox is the internal row that carries a Snapshot build's
+// Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no
+// Workspace and no Runtime; secret_env_ct holds the build's Secret snapshot.
+func (q *Queries) CreateBuildSandbox(ctx context.Context, arg CreateBuildSandboxParams) (Sandbox, error) {
+	row := q.db.QueryRow(ctx, createBuildSandbox,
+		arg.ID,
+		arg.OwnerID,
+		arg.Name,
+		arg.SnapshotDigest,
+		arg.Cpu,
+		arg.Memory,
+		arg.SecretEnvCt,
+	)
+	var i Sandbox
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Labels,
+		&i.DesiredState,
+		&i.State,
+		&i.Cause,
+		&i.NodeID,
+		&i.SnapshotDigest,
+		&i.Cpu,
+		&i.Memory,
+		&i.GpuCount,
+		&i.IdleStopSeconds,
+		&i.LastActivityAt,
+		&i.TokenCt,
+		&i.SecretEnvCt,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
+		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -590,6 +803,136 @@ func (q *Queries) CreateOIDCUser(ctx context.Context, arg CreateOIDCUserParams) 
 	return i, err
 }
 
+const createPendingResourceVersion = `-- name: CreatePendingResourceVersion :one
+INSERT INTO resource_versions (
+    id, resource_id, provenance, state, publish_workspace_id,
+    publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5)
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+`
+
+type CreatePendingResourceVersionParams struct {
+	ID                    uuid.UUID
+	ResourceID            uuid.UUID
+	Provenance            json.RawMessage
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
+}
+
+// CreatePendingResourceVersion is the Workspace publish path: the version
+// starts pending and the Agent fills in the manifest (node-protocol.md
+// "Workspace publish").
+func (q *Queries) CreatePendingResourceVersion(ctx context.Context, arg CreatePendingResourceVersionParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, createPendingResourceVersion,
+		arg.ID,
+		arg.ResourceID,
+		arg.Provenance,
+		arg.PublishWorkspaceID,
+		arg.PublishIdempotencyKey,
+	)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+	)
+	return i, err
+}
+
+const createResource = `-- name: CreateResource :one
+
+INSERT INTO resources (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at
+`
+
+type CreateResourceParams struct {
+	ID             uuid.UUID
+	OwnerID        uuid.UUID
+	Name           string
+	IdempotencyKey *string
+}
+
+// Resources
+func (q *Queries) CreateResource(ctx context.Context, arg CreateResourceParams) (Resource, error) {
+	row := q.db.QueryRow(ctx, createResource,
+		arg.ID,
+		arg.OwnerID,
+		arg.Name,
+		arg.IdempotencyKey,
+	)
+	var i Resource
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.IdempotencyKey,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createResourceVersion = `-- name: CreateResourceVersion :one
+
+INSERT INTO resource_versions (
+    id, resource_id, address, manifest_key, size, provenance,
+    state, idempotency_key
+) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+`
+
+type CreateResourceVersionParams struct {
+	ID             uuid.UUID
+	ResourceID     uuid.UUID
+	Address        *string
+	ManifestKey    *string
+	Size           int64
+	Provenance     json.RawMessage
+	IdempotencyKey *string
+}
+
+// Resource versions
+func (q *Queries) CreateResourceVersion(ctx context.Context, arg CreateResourceVersionParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, createResourceVersion,
+		arg.ID,
+		arg.ResourceID,
+		arg.Address,
+		arg.ManifestKey,
+		arg.Size,
+		arg.Provenance,
+		arg.IdempotencyKey,
+	)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+	)
+	return i, err
+}
+
 const createSandbox = `-- name: CreateSandbox :one
 
 INSERT INTO sandboxes (
@@ -597,7 +940,7 @@ INSERT INTO sandboxes (
     cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation,
     idempotency_key, secret_env_ct, token_ct, token_key_id
 ) VALUES ($1, $2, $3, $4, 'running', 'pending', $5, $6, $7, $8, $9, $10, 1, $11, $12, $13, $14)
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
 `
 
 type CreateSandboxParams struct {
@@ -662,6 +1005,114 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		&i.WorkspaceID,
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
+	)
+	return i, err
+}
+
+const createSandboxResource = `-- name: CreateSandboxResource :exec
+INSERT INTO sandbox_resources (sandbox_id, resource_version_id, mount)
+VALUES ($1, $2, $3)
+`
+
+type CreateSandboxResourceParams struct {
+	SandboxID         uuid.UUID
+	ResourceVersionID uuid.UUID
+	Mount             string
+}
+
+// Sandbox Resource mounts: versions pinned at create time. The Reconciler
+// sends the address on every create, so a restarted Sandbox mounts what it was
+// created with (runtime.md §11).
+func (q *Queries) CreateSandboxResource(ctx context.Context, arg CreateSandboxResourceParams) error {
+	_, err := q.db.Exec(ctx, createSandboxResource, arg.SandboxID, arg.ResourceVersionID, arg.Mount)
+	return err
+}
+
+const createSnapshot = `-- name: CreateSnapshot :one
+
+INSERT INTO snapshots (id, owner_id, name)
+VALUES ($1, $2, $3)
+RETURNING id, owner_id, name, current_version_id, deleted_at, created_at
+`
+
+type CreateSnapshotParams struct {
+	ID      uuid.UUID
+	OwnerID *uuid.UUID
+	Name    string
+}
+
+// M4 ticket #88: Snapshots and SnapshotVersions (schema.md, ADR-0012).
+func (q *Queries) CreateSnapshot(ctx context.Context, arg CreateSnapshotParams) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, createSnapshot, arg.ID, arg.OwnerID, arg.Name)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createSnapshotVersion = `-- name: CreateSnapshotVersion :one
+INSERT INTO snapshot_versions (
+    id, snapshot_id, digest, state, cause, source,
+    build_sandbox_id, build_exec_id, provenance, idempotency_key, build_request
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10,
+    $11
+)
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
+`
+
+type CreateSnapshotVersionParams struct {
+	ID             uuid.UUID
+	SnapshotID     uuid.UUID
+	Digest         *string
+	State          string
+	Cause          *string
+	Source         string
+	BuildSandboxID *uuid.UUID
+	BuildExecID    *uuid.UUID
+	Provenance     json.RawMessage
+	IdempotencyKey *string
+	BuildRequest   json.RawMessage
+}
+
+func (q *Queries) CreateSnapshotVersion(ctx context.Context, arg CreateSnapshotVersionParams) (SnapshotVersion, error) {
+	row := q.db.QueryRow(ctx, createSnapshotVersion,
+		arg.ID,
+		arg.SnapshotID,
+		arg.Digest,
+		arg.State,
+		arg.Cause,
+		arg.Source,
+		arg.BuildSandboxID,
+		arg.BuildExecID,
+		arg.Provenance,
+		arg.IdempotencyKey,
+		arg.BuildRequest,
+	)
+	var i SnapshotVersion
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Digest,
+		&i.State,
+		&i.Cause,
+		&i.Source,
+		&i.BuildSandboxID,
+		&i.BuildExecID,
+		&i.Provenance,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
@@ -708,6 +1159,42 @@ func (q *Queries) CreateToken(ctx context.Context, arg CreateTokenParams) (ApiTo
 		&i.ExpiresAt,
 		&i.LastUsedAt,
 		&i.IdempotencyKey,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createUpload = `-- name: CreateUpload :one
+
+INSERT INTO uploads (id, resource_id, address, manifest, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, resource_id, address, manifest, expires_at, created_at
+`
+
+type CreateUploadParams struct {
+	ID         uuid.UUID
+	ResourceID uuid.UUID
+	Address    string
+	Manifest   json.RawMessage
+	ExpiresAt  pgtype.Timestamptz
+}
+
+// Upload sessions
+func (q *Queries) CreateUpload(ctx context.Context, arg CreateUploadParams) (Upload, error) {
+	row := q.db.QueryRow(ctx, createUpload,
+		arg.ID,
+		arg.ResourceID,
+		arg.Address,
+		arg.Manifest,
+		arg.ExpiresAt,
+	)
+	var i Upload
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.Manifest,
+		&i.ExpiresAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -834,6 +1321,69 @@ func (q *Queries) DeleteAttachment(ctx context.Context, sandboxID uuid.UUID) err
 	return err
 }
 
+const deleteCASObject = `-- name: DeleteCASObject :exec
+DELETE FROM cas_objects WHERE owner_id = $1 AND sha256 = $2
+`
+
+type DeleteCASObjectParams struct {
+	OwnerID uuid.UUID
+	Sha256  string
+}
+
+func (q *Queries) DeleteCASObject(ctx context.Context, arg DeleteCASObjectParams) error {
+	_, err := q.db.Exec(ctx, deleteCASObject, arg.OwnerID, arg.Sha256)
+	return err
+}
+
+const deleteDeletedResource = `-- name: DeleteDeletedResource :exec
+DELETE FROM resources
+WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL
+`
+
+func (q *Queries) DeleteDeletedResource(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDeletedResource, id)
+	return err
+}
+
+const deleteDeletedSandboxResources = `-- name: DeleteDeletedSandboxResources :execrows
+DELETE FROM sandbox_resources sr
+USING sandboxes sb
+WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted'
+`
+
+// A deleted Sandbox no longer retains versions, but its sandbox_resources
+// rows outlive it (the row is kept for API idempotency). The sweep releases
+// those references before the version/FK checks run.
+func (q *Queries) DeleteDeletedSandboxResources(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeletedSandboxResources)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteDeletedSnapshot = `-- name: DeleteDeletedSnapshot :exec
+DELETE FROM snapshots
+WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL
+`
+
+func (q *Queries) DeleteDeletedSnapshot(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDeletedSnapshot, id)
+	return err
+}
+
+const deleteExpiredUploads = `-- name: DeleteExpiredUploads :execrows
+DELETE FROM uploads WHERE expires_at <= now()
+`
+
+func (q *Queries) DeleteExpiredUploads(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredUploads)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteGPUAllocations = `-- name: DeleteGPUAllocations :exec
 DELETE FROM gpu_allocations WHERE sandbox_id = $1
 `
@@ -877,12 +1427,30 @@ func (q *Queries) DeleteNodeGPUs(ctx context.Context, nodeID uuid.UUID) error {
 	return err
 }
 
+const deleteResourceVersion = `-- name: DeleteResourceVersion :exec
+DELETE FROM resource_versions WHERE id = $1
+`
+
+func (q *Queries) DeleteResourceVersion(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteResourceVersion, id)
+	return err
+}
+
+const deleteResourceVersionObjects = `-- name: DeleteResourceVersionObjects :exec
+DELETE FROM resource_version_objects WHERE version_id = $1
+`
+
+func (q *Queries) DeleteResourceVersionObjects(ctx context.Context, versionID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteResourceVersionObjects, versionID)
+	return err
+}
+
 const deleteSandbox = `-- name: DeleteSandbox :one
 UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
 `
 
 func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -914,6 +1482,8 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.WorkspaceID,
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -943,6 +1513,45 @@ func (q *Queries) DeleteSecret(ctx context.Context, arg DeleteSecretParams) (Sec
 	return i, err
 }
 
+const deleteSnapshot = `-- name: DeleteSnapshot :one
+UPDATE snapshots SET deleted_at = now()
+WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL
+RETURNING id, owner_id, name, current_version_id, deleted_at, created_at
+`
+
+type DeleteSnapshotParams struct {
+	ID      uuid.UUID
+	OwnerID *uuid.UUID
+}
+
+func (q *Queries) DeleteSnapshot(ctx context.Context, arg DeleteSnapshotParams) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, deleteSnapshot, arg.ID, arg.OwnerID)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteSnapshotVersion = `-- name: DeleteSnapshotVersion :exec
+DELETE FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2
+`
+
+type DeleteSnapshotVersionParams struct {
+	ID         uuid.UUID
+	SnapshotID uuid.UUID
+}
+
+func (q *Queries) DeleteSnapshotVersion(ctx context.Context, arg DeleteSnapshotVersionParams) error {
+	_, err := q.db.Exec(ctx, deleteSnapshotVersion, arg.ID, arg.SnapshotID)
+	return err
+}
+
 const deleteToken = `-- name: DeleteToken :execrows
 DELETE FROM api_tokens WHERE id = $1 AND user_id = $2
 `
@@ -958,6 +1567,15 @@ func (q *Queries) DeleteToken(ctx context.Context, arg DeleteTokenParams) (int64
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteUpload = `-- name: DeleteUpload :exec
+DELETE FROM uploads WHERE id = $1
+`
+
+func (q *Queries) DeleteUpload(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUpload, id)
+	return err
 }
 
 const deleteUserSessions = `-- name: DeleteUserSessions :execrows
@@ -991,6 +1609,18 @@ func (q *Queries) EndAdmissionRequest(ctx context.Context, arg EndAdmissionReque
 	return result.RowsAffected(), nil
 }
 
+const failBuildingSnapshotImports = `-- name: FailBuildingSnapshotImports :exec
+UPDATE snapshot_versions SET state = 'failed', cause = 'import_failed'
+WHERE state = 'building' AND source = 'import'
+`
+
+// An import runs in the Control Plane process, so a restart leaves only a
+// building row behind; mark it failed rather than letting it hang.
+func (q *Queries) FailBuildingSnapshotImports(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, failBuildingSnapshotImports)
+	return err
+}
+
 const failPendingSandbox = `-- name: FailPendingSandbox :execrows
 UPDATE sandboxes
 SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
@@ -1012,6 +1642,34 @@ func (q *Queries) FailPendingSandbox(ctx context.Context, arg FailPendingSandbox
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const findPublishObjectOwner = `-- name: FindPublishObjectOwner :one
+SELECT r.owner_id
+FROM resource_version_objects rvo
+JOIN resource_versions rv ON rv.id = rvo.version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL
+  AND w.node_id = $1
+  AND rvo.sha256 = $2
+LIMIT 1
+`
+
+type FindPublishObjectOwnerParams struct {
+	NodeID *uuid.UUID
+	Sha256 string
+}
+
+// FindPublishObjectOwner answers the Presign PUT question: is sha256 one of
+// the objects of a pending publish assigned to this Node, and which owner's
+// CAS key addresses it (ADR-0021)?
+func (q *Queries) FindPublishObjectOwner(ctx context.Context, arg FindPublishObjectOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findPublishObjectOwner, arg.NodeID, arg.Sha256)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
 }
 
 const finishExec = `-- name: FinishExec :execrows
@@ -1072,6 +1730,27 @@ func (q *Queries) GetAttachment(ctx context.Context, sandboxID uuid.UUID) (Attac
 		&i.WorkspaceID,
 		&i.Mode,
 		&i.Generation,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getCASObject = `-- name: GetCASObject :one
+SELECT owner_id, sha256, size, created_at FROM cas_objects WHERE owner_id = $1 AND sha256 = $2
+`
+
+type GetCASObjectParams struct {
+	OwnerID uuid.UUID
+	Sha256  string
+}
+
+func (q *Queries) GetCASObject(ctx context.Context, arg GetCASObjectParams) (CasObject, error) {
+	row := q.db.QueryRow(ctx, getCASObject, arg.OwnerID, arg.Sha256)
+	var i CasObject
+	err := row.Scan(
+		&i.OwnerID,
+		&i.Sha256,
+		&i.Size,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -1258,6 +1937,33 @@ func (q *Queries) GetGitLinkForUpdate(ctx context.Context, arg GetGitLinkForUpda
 	return i, err
 }
 
+const getLiveResourceByName = `-- name: GetLiveResourceByName :one
+SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL
+`
+
+type GetLiveResourceByNameParams struct {
+	OwnerID uuid.UUID
+	Name    string
+}
+
+// GetLiveResourceByName resolves a publish's Resource name without creating
+// it (api.md §3: a name is unique among live Resources of one owner).
+func (q *Queries) GetLiveResourceByName(ctx context.Context, arg GetLiveResourceByNameParams) (Resource, error) {
+	row := q.db.QueryRow(ctx, getLiveResourceByName, arg.OwnerID, arg.Name)
+	var i Resource
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.IdempotencyKey,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getNode = `-- name: GetNode :one
 SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes WHERE id = $1
 `
@@ -1316,8 +2022,212 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 	return i, err
 }
 
+const getPendingWorkspacePublish = `-- name: GetPendingWorkspacePublish :one
+SELECT rv.id, rv.resource_id, rv.address, rv.manifest_key, rv.size, rv.provenance, rv.state, rv.cause, rv.idempotency_key, rv.expires_at, rv.created_at, rv.publish_workspace_id, rv.publish_idempotency_key, w.node_id, r.owner_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.id = $1
+  AND rv.state = 'pending'
+  AND rv.publish_workspace_id IS NOT NULL
+`
+
+type GetPendingWorkspacePublishRow struct {
+	ID                    uuid.UUID
+	ResourceID            uuid.UUID
+	Address               *string
+	ManifestKey           *string
+	Size                  int64
+	Provenance            json.RawMessage
+	State                 string
+	Cause                 *string
+	IdempotencyKey        *string
+	ExpiresAt             pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
+	NodeID                *uuid.UUID
+	OwnerID               uuid.UUID
+}
+
+// GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
+// version must still be pending and its Workspace bound to the calling Node.
+func (q *Queries) GetPendingWorkspacePublish(ctx context.Context, id uuid.UUID) (GetPendingWorkspacePublishRow, error) {
+	row := q.db.QueryRow(ctx, getPendingWorkspacePublish, id)
+	var i GetPendingWorkspacePublishRow
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+		&i.NodeID,
+		&i.OwnerID,
+	)
+	return i, err
+}
+
+const getPlatformSnapshotByName = `-- name: GetPlatformSnapshotByName :one
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+WHERE owner_id IS NULL AND name = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) GetPlatformSnapshotByName(ctx context.Context, name string) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, getPlatformSnapshotByName, name)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getResource = `-- name: GetResource :one
+SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources WHERE id = $1
+`
+
+// GetResource includes tombstones so DELETE can be idempotent; reads hide
+// them in the handler (api.md §1).
+func (q *Queries) GetResource(ctx context.Context, id uuid.UUID) (Resource, error) {
+	row := q.db.QueryRow(ctx, getResource, id)
+	var i Resource
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.IdempotencyKey,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getResourceByIdempotencyKey = `-- name: GetResourceByIdempotencyKey :one
+SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources
+WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL
+`
+
+type GetResourceByIdempotencyKeyParams struct {
+	OwnerID        uuid.UUID
+	IdempotencyKey *string
+}
+
+func (q *Queries) GetResourceByIdempotencyKey(ctx context.Context, arg GetResourceByIdempotencyKeyParams) (Resource, error) {
+	row := q.db.QueryRow(ctx, getResourceByIdempotencyKey, arg.OwnerID, arg.IdempotencyKey)
+	var i Resource
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.IdempotencyKey,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getResourceVersion = `-- name: GetResourceVersion :one
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE id = $1
+`
+
+func (q *Queries) GetResourceVersion(ctx context.Context, id uuid.UUID) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, getResourceVersion, id)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+	)
+	return i, err
+}
+
+const getResourceVersionByIdempotencyKey = `-- name: GetResourceVersionByIdempotencyKey :one
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2
+`
+
+type GetResourceVersionByIdempotencyKeyParams struct {
+	ResourceID     uuid.UUID
+	IdempotencyKey *string
+}
+
+func (q *Queries) GetResourceVersionByIdempotencyKey(ctx context.Context, arg GetResourceVersionByIdempotencyKeyParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, getResourceVersionByIdempotencyKey, arg.ResourceID, arg.IdempotencyKey)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+	)
+	return i, err
+}
+
+const getResourceVersionByPublishIdempotencyKey = `-- name: GetResourceVersionByPublishIdempotencyKey :one
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions
+WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2
+`
+
+type GetResourceVersionByPublishIdempotencyKeyParams struct {
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
+}
+
+func (q *Queries) GetResourceVersionByPublishIdempotencyKey(ctx context.Context, arg GetResourceVersionByPublishIdempotencyKeyParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, getResourceVersionByPublishIdempotencyKey, arg.PublishWorkspaceID, arg.PublishIdempotencyKey)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+	)
+	return i, err
+}
+
 const getSandbox = `-- name: GetSandbox :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id FROM sandboxes WHERE id = $1 AND state <> 'deleted'
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes WHERE id = $1 AND kind = 'user' AND state <> 'deleted'
 `
 
 func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -1349,13 +2259,15 @@ func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error)
 		&i.WorkspaceID,
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
 
 const getSandboxByIdempotencyKey = `-- name: GetSandboxByIdempotencyKey :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id FROM sandboxes
-WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted'
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
+WHERE owner_id = $1 AND kind = 'user' AND idempotency_key = $2 AND state <> 'deleted'
 `
 
 type GetSandboxByIdempotencyKeyParams struct {
@@ -1392,14 +2304,18 @@ func (q *Queries) GetSandboxByIdempotencyKey(ctx context.Context, arg GetSandbox
 		&i.WorkspaceID,
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
 
 const getSandboxIncludingDeleted = `-- name: GetSandboxIncludingDeleted :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id FROM sandboxes WHERE id = $1
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes WHERE id = $1
 `
 
+// GetSandboxIncludingDeleted does not filter kind: a build Exec's log is
+// readable through its owner, and the build row carries that ownership.
 func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) (Sandbox, error) {
 	row := q.db.QueryRow(ctx, getSandboxIncludingDeleted, id)
 	var i Sandbox
@@ -1429,6 +2345,8 @@ func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) 
 		&i.WorkspaceID,
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -1486,6 +2404,131 @@ func (q *Queries) GetSecretByName(ctx context.Context, arg GetSecretByNameParams
 		&i.Size,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getSnapshot = `-- name: GetSnapshot :one
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots WHERE id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) GetSnapshot(ctx context.Context, id uuid.UUID) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, getSnapshot, id)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getSnapshotByName = `-- name: GetSnapshotByName :one
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL
+`
+
+type GetSnapshotByNameParams struct {
+	OwnerID *uuid.UUID
+	Name    string
+}
+
+func (q *Queries) GetSnapshotByName(ctx context.Context, arg GetSnapshotByNameParams) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, getSnapshotByName, arg.OwnerID, arg.Name)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getSnapshotVersion = `-- name: GetSnapshotVersion :one
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2
+`
+
+type GetSnapshotVersionParams struct {
+	ID         uuid.UUID
+	SnapshotID uuid.UUID
+}
+
+func (q *Queries) GetSnapshotVersion(ctx context.Context, arg GetSnapshotVersionParams) (SnapshotVersion, error) {
+	row := q.db.QueryRow(ctx, getSnapshotVersion, arg.ID, arg.SnapshotID)
+	var i SnapshotVersion
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Digest,
+		&i.State,
+		&i.Cause,
+		&i.Source,
+		&i.BuildSandboxID,
+		&i.BuildExecID,
+		&i.Provenance,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.BuildRequest,
+	)
+	return i, err
+}
+
+const getSnapshotVersionByID = `-- name: GetSnapshotVersionByID :one
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions WHERE id = $1
+`
+
+func (q *Queries) GetSnapshotVersionByID(ctx context.Context, id uuid.UUID) (SnapshotVersion, error) {
+	row := q.db.QueryRow(ctx, getSnapshotVersionByID, id)
+	var i SnapshotVersion
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Digest,
+		&i.State,
+		&i.Cause,
+		&i.Source,
+		&i.BuildSandboxID,
+		&i.BuildExecID,
+		&i.Provenance,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.BuildRequest,
+	)
+	return i, err
+}
+
+const getSnapshotVersionByIdempotencyKey = `-- name: GetSnapshotVersionByIdempotencyKey :one
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
+WHERE snapshot_id = $1 AND idempotency_key = $2
+`
+
+type GetSnapshotVersionByIdempotencyKeyParams struct {
+	SnapshotID     uuid.UUID
+	IdempotencyKey *string
+}
+
+func (q *Queries) GetSnapshotVersionByIdempotencyKey(ctx context.Context, arg GetSnapshotVersionByIdempotencyKeyParams) (SnapshotVersion, error) {
+	row := q.db.QueryRow(ctx, getSnapshotVersionByIdempotencyKey, arg.SnapshotID, arg.IdempotencyKey)
+	var i SnapshotVersion
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Digest,
+		&i.State,
+		&i.Cause,
+		&i.Source,
+		&i.BuildSandboxID,
+		&i.BuildExecID,
+		&i.Provenance,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.BuildRequest,
 	)
 	return i, err
 }
@@ -1577,6 +2620,24 @@ func (q *Queries) GetTokenWithUser(ctx context.Context, id uuid.UUID) (GetTokenW
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.UserIsAdmin,
+	)
+	return i, err
+}
+
+const getUpload = `-- name: GetUpload :one
+SELECT id, resource_id, address, manifest, expires_at, created_at FROM uploads WHERE id = $1
+`
+
+func (q *Queries) GetUpload(ctx context.Context, id uuid.UUID) (Upload, error) {
+	row := q.db.QueryRow(ctx, getUpload, id)
+	var i Upload
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.Manifest,
+		&i.ExpiresAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -1833,6 +2894,22 @@ func (q *Queries) InsertNodeGPU(ctx context.Context, arg InsertNodeGPUParams) er
 	return err
 }
 
+const insertResourceVersionObject = `-- name: InsertResourceVersionObject :exec
+INSERT INTO resource_version_objects (version_id, sha256)
+VALUES ($1, $2)
+ON CONFLICT (version_id, sha256) DO NOTHING
+`
+
+type InsertResourceVersionObjectParams struct {
+	VersionID uuid.UUID
+	Sha256    string
+}
+
+func (q *Queries) InsertResourceVersionObject(ctx context.Context, arg InsertResourceVersionObjectParams) error {
+	_, err := q.db.Exec(ctx, insertResourceVersionObject, arg.VersionID, arg.Sha256)
+	return err
+}
+
 const listActiveExecs = `-- name: ListActiveExecs :many
 SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, s.node_id AS sandbox_node_id, s.owner_id AS sandbox_owner_id,
        s.secret_env_ct AS sandbox_secret_env_ct,
@@ -1840,7 +2917,7 @@ SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_secon
        s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
 FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id
-WHERE e.finished_at IS NULL
+WHERE e.finished_at IS NULL AND s.kind = 'user'
 ORDER BY e.id
 `
 
@@ -2025,6 +3102,180 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 	return items, nil
 }
 
+const listBuildRuns = `-- name: ListBuildRuns :many
+SELECT v.id, v.snapshot_id, v.digest, v.state, v.cause, v.source, v.build_sandbox_id, v.build_exec_id, v.provenance, v.idempotency_key, v.created_at, v.build_request, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind,
+       e.id AS exec_id, e.accepted_at AS exec_accepted_at,
+       e.started_at AS exec_started_at, e.deadline_at AS exec_deadline_at,
+       e.cancel_requested_at AS exec_cancel_requested_at,
+       e.finished_at AS exec_finished_at, e.timeout_seconds AS exec_timeout_seconds,
+       e.generation AS exec_generation
+FROM snapshot_versions v
+JOIN sandboxes s ON s.id = v.build_sandbox_id
+JOIN execs e ON e.id = v.build_exec_id
+WHERE v.source = 'build' AND s.kind = 'build'
+  -- A terminal version whose sandbox and Exec are already settled needs no
+  -- more work.
+  AND NOT (s.state = 'stopped' AND e.finished_at IS NOT NULL)
+ORDER BY v.id
+`
+
+type ListBuildRunsRow struct {
+	SnapshotVersion       SnapshotVersion
+	Sandbox               Sandbox
+	ExecID                uuid.UUID
+	ExecAcceptedAt        pgtype.Timestamptz
+	ExecStartedAt         pgtype.Timestamptz
+	ExecDeadlineAt        pgtype.Timestamptz
+	ExecCancelRequestedAt pgtype.Timestamptz
+	ExecFinishedAt        pgtype.Timestamptz
+	ExecTimeoutSeconds    *int32
+	ExecGeneration        int64
+}
+
+// ListBuildRuns is the build sweep's queue: every build version still tied to
+// a live build sandbox or Exec, terminal versions included, so cleanup is
+// retried until it succeeds (ADR-0014: desired state is the queue).
+func (q *Queries) ListBuildRuns(ctx context.Context) ([]ListBuildRunsRow, error) {
+	rows, err := q.db.Query(ctx, listBuildRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBuildRunsRow{}
+	for rows.Next() {
+		var i ListBuildRunsRow
+		if err := rows.Scan(
+			&i.SnapshotVersion.ID,
+			&i.SnapshotVersion.SnapshotID,
+			&i.SnapshotVersion.Digest,
+			&i.SnapshotVersion.State,
+			&i.SnapshotVersion.Cause,
+			&i.SnapshotVersion.Source,
+			&i.SnapshotVersion.BuildSandboxID,
+			&i.SnapshotVersion.BuildExecID,
+			&i.SnapshotVersion.Provenance,
+			&i.SnapshotVersion.IdempotencyKey,
+			&i.SnapshotVersion.CreatedAt,
+			&i.SnapshotVersion.BuildRequest,
+			&i.Sandbox.ID,
+			&i.Sandbox.OwnerID,
+			&i.Sandbox.Name,
+			&i.Sandbox.Labels,
+			&i.Sandbox.DesiredState,
+			&i.Sandbox.State,
+			&i.Sandbox.Cause,
+			&i.Sandbox.NodeID,
+			&i.Sandbox.SnapshotDigest,
+			&i.Sandbox.Cpu,
+			&i.Sandbox.Memory,
+			&i.Sandbox.GpuCount,
+			&i.Sandbox.IdleStopSeconds,
+			&i.Sandbox.LastActivityAt,
+			&i.Sandbox.TokenCt,
+			&i.Sandbox.SecretEnvCt,
+			&i.Sandbox.Generation,
+			&i.Sandbox.IdempotencyKey,
+			&i.Sandbox.CreatedAt,
+			&i.Sandbox.UpdatedAt,
+			&i.Sandbox.DeletedAt,
+			&i.Sandbox.GpuModel,
+			&i.Sandbox.WorkspaceID,
+			&i.Sandbox.WorkspaceMode,
+			&i.Sandbox.TokenKeyID,
+			&i.Sandbox.Conditions,
+			&i.Sandbox.Kind,
+			&i.ExecID,
+			&i.ExecAcceptedAt,
+			&i.ExecStartedAt,
+			&i.ExecDeadlineAt,
+			&i.ExecCancelRequestedAt,
+			&i.ExecFinishedAt,
+			&i.ExecTimeoutSeconds,
+			&i.ExecGeneration,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeletedResources = `-- name: ListDeletedResources :many
+SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at
+LIMIT $1
+`
+
+// Tombstoned Resources keep their versions until no Sandbox references them,
+// then the version, its objects and the manifest go, and finally the row.
+func (q *Queries) ListDeletedResources(ctx context.Context, limit int32) ([]Resource, error) {
+	rows, err := q.db.Query(ctx, listDeletedResources, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Resource{}
+	for rows.Next() {
+		var i Resource
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.CurrentVersionID,
+			&i.IdempotencyKey,
+			&i.DeletedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeletedSnapshots = `-- name: ListDeletedSnapshots :many
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at
+LIMIT $1
+`
+
+// Tombstoned Snapshots drop each version once the last Sandbox reference is
+// gone (registry manifest first), then the row.
+func (q *Queries) ListDeletedSnapshots(ctx context.Context, limit int32) ([]Snapshot, error) {
+	rows, err := q.db.Query(ctx, listDeletedSnapshots, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Snapshot{}
+	for rows.Next() {
+		var i Snapshot
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.CurrentVersionID,
+			&i.DeletedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeletingWorkspaces = `-- name: ListDeletingWorkspaces :many
 SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE state = 'deleting' ORDER BY id
 `
@@ -2158,6 +3409,71 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 	return items, nil
 }
 
+const listExpiredResourceVersions = `-- name: ListExpiredResourceVersions :many
+
+SELECT rv.id, rv.address, rv.manifest_key, rv.state, rv.created_at,
+       (r.current_version_id IS NOT DISTINCT FROM rv.id) AS current, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.deleted_at IS NULL
+  AND rv.created_at < $1
+  AND rv.state <> 'pending'
+  AND (r.current_version_id IS NULL OR r.current_version_id <> rv.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
+ORDER BY rv.created_at
+LIMIT $2
+`
+
+type ListExpiredResourceVersionsParams struct {
+	Cutoff pgtype.Timestamptz
+	Limit  int32
+}
+
+type ListExpiredResourceVersionsRow struct {
+	ID          uuid.UUID
+	Address     *string
+	ManifestKey *string
+	State       string
+	CreatedAt   pgtype.Timestamptz
+	Current     bool
+	OwnerID     uuid.UUID
+}
+
+// M4 ticket #90: Retention, CAS sweep and tombstone cleanup (ADR-0012).
+// ListExpiredResourceVersions is the ResourceVersion TTL sweep. The handler
+// re-applies the eligibility predicate; the filters here keep the batch small.
+func (q *Queries) ListExpiredResourceVersions(ctx context.Context, arg ListExpiredResourceVersionsParams) ([]ListExpiredResourceVersionsRow, error) {
+	rows, err := q.db.Query(ctx, listExpiredResourceVersions, arg.Cutoff, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpiredResourceVersionsRow{}
+	for rows.Next() {
+		var i ListExpiredResourceVersionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Address,
+			&i.ManifestKey,
+			&i.State,
+			&i.CreatedAt,
+			&i.Current,
+			&i.OwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitLinks = `-- name: ListGitLinks :many
 SELECT user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at FROM git_links WHERE user_id = $1 ORDER BY provider_id
 `
@@ -2192,8 +3508,8 @@ func (q *Queries) ListGitLinks(ctx context.Context, userID uuid.UUID) ([]GitLink
 }
 
 const listIdleSandboxes = `-- name: ListIdleSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id FROM sandboxes
-WHERE state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
+WHERE kind = 'user' AND state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
 ORDER BY id
 `
 
@@ -2234,6 +3550,8 @@ func (q *Queries) ListIdleSandboxes(ctx context.Context) ([]Sandbox, error) {
 			&i.WorkspaceID,
 			&i.WorkspaceMode,
 			&i.TokenKeyID,
+			&i.Conditions,
+			&i.Kind,
 		); err != nil {
 			return nil, err
 		}
@@ -2337,6 +3655,74 @@ func (q *Queries) ListNodeGPUs(ctx context.Context, nodeID uuid.UUID) ([]Gpu, er
 	return items, nil
 }
 
+const listNodeSandboxManifestOwner = `-- name: ListNodeSandboxManifestOwner :one
+SELECT r.owner_id
+FROM sandbox_resources sr
+JOIN sandboxes sb ON sb.id = sr.sandbox_id
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE sb.node_id = $1 AND sb.state <> 'deleted' AND rv.address = $2
+LIMIT 1
+`
+
+type ListNodeSandboxManifestOwnerParams struct {
+	NodeID  *uuid.UUID
+	Address *string
+}
+
+func (q *Queries) ListNodeSandboxManifestOwner(ctx context.Context, arg ListNodeSandboxManifestOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, listNodeSandboxManifestOwner, arg.NodeID, arg.Address)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
+}
+
+const listNodeSandboxObjectRefs = `-- name: ListNodeSandboxObjectRefs :many
+
+SELECT DISTINCT r.owner_id, rv.id AS version_id
+FROM sandbox_resources sr
+JOIN sandboxes sb ON sb.id = sr.sandbox_id
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN resource_version_objects rvo ON rvo.version_id = rv.id
+WHERE sb.node_id = $1 AND sb.state <> 'deleted' AND rvo.sha256 = $2
+`
+
+type ListNodeSandboxObjectRefsParams struct {
+	NodeID *uuid.UUID
+	Sha256 string
+}
+
+type ListNodeSandboxObjectRefsRow struct {
+	OwnerID   uuid.UUID
+	VersionID uuid.UUID
+}
+
+// Presign authorization (node-protocol.md "Presign")
+//
+// Only objects and manifests of versions mounted by a Sandbox (including a
+// build row later) allocated to this Node may be signed for GET. CAS keys are
+// owner-scoped, so the caller needs the Resource's owner (ADR-0021).
+func (q *Queries) ListNodeSandboxObjectRefs(ctx context.Context, arg ListNodeSandboxObjectRefsParams) ([]ListNodeSandboxObjectRefsRow, error) {
+	rows, err := q.db.Query(ctx, listNodeSandboxObjectRefs, arg.NodeID, arg.Sha256)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodeSandboxObjectRefsRow{}
+	for rows.Next() {
+		var i ListNodeSandboxObjectRefsRow
+		if err := rows.Scan(&i.OwnerID, &i.VersionID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNodes = `-- name: ListNodes :many
 SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes
 WHERE ($1::uuid IS NULL OR id > $1)
@@ -2388,7 +3774,7 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 }
 
 const listOpenAdmissionRequests = `-- name: ListOpenAdmissionRequests :many
-SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id
+SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind
 FROM admission_requests a
 JOIN sandboxes s ON s.id = a.sandbox_id
 WHERE a.ended_at IS NULL
@@ -2444,6 +3830,52 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 			&i.Sandbox.WorkspaceID,
 			&i.Sandbox.WorkspaceMode,
 			&i.Sandbox.TokenKeyID,
+			&i.Sandbox.Conditions,
+			&i.Sandbox.Kind,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingWorkspacePublishes = `-- name: ListPendingWorkspacePublishes :many
+SELECT rv.id, rv.resource_id, rv.provenance, rv.publish_workspace_id, w.node_id
+FROM resource_versions rv
+JOIN workspaces w ON w.id = rv.publish_workspace_id
+WHERE rv.state = 'pending' AND rv.publish_workspace_id IS NOT NULL
+ORDER BY rv.id
+`
+
+type ListPendingWorkspacePublishesRow struct {
+	ID                 uuid.UUID
+	ResourceID         uuid.UUID
+	Provenance         json.RawMessage
+	PublishWorkspaceID *uuid.UUID
+	NodeID             *uuid.UUID
+}
+
+// ListPendingWorkspacePublishes is the Reconciler's desired-state query. The
+// path lives in provenance (schema.md).
+func (q *Queries) ListPendingWorkspacePublishes(ctx context.Context) ([]ListPendingWorkspacePublishesRow, error) {
+	rows, err := q.db.Query(ctx, listPendingWorkspacePublishes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPendingWorkspacePublishesRow{}
+	for rows.Next() {
+		var i ListPendingWorkspacePublishesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ResourceID,
+			&i.Provenance,
+			&i.PublishWorkspaceID,
+			&i.NodeID,
 		); err != nil {
 			return nil, err
 		}
@@ -2496,8 +3928,9 @@ func (q *Queries) ListProvisioningWorkspaces(ctx context.Context) ([]Workspace, 
 
 const listReconcilableSandboxes = `-- name: ListReconcilableSandboxes :many
 
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id FROM sandboxes
-WHERE state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
+WHERE kind = 'user'
+  AND state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
 ORDER BY id
 `
 
@@ -2538,6 +3971,175 @@ func (q *Queries) ListReconcilableSandboxes(ctx context.Context) ([]Sandbox, err
 			&i.WorkspaceID,
 			&i.WorkspaceMode,
 			&i.TokenKeyID,
+			&i.Conditions,
+			&i.Kind,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listResourceVersionObjects = `-- name: ListResourceVersionObjects :many
+SELECT sha256 FROM resource_version_objects WHERE version_id = $1 ORDER BY sha256
+`
+
+func (q *Queries) ListResourceVersionObjects(ctx context.Context, versionID uuid.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listResourceVersionObjects, versionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var sha256 string
+		if err := rows.Scan(&sha256); err != nil {
+			return nil, err
+		}
+		items = append(items, sha256)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listResourceVersions = `-- name: ListResourceVersions :many
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions
+WHERE resource_id = $1
+  AND ($2::uuid IS NULL OR id < $2)
+ORDER BY id DESC
+LIMIT $3
+`
+
+type ListResourceVersionsParams struct {
+	ResourceID uuid.UUID
+	After      *uuid.UUID
+	Limit      int32
+}
+
+func (q *Queries) ListResourceVersions(ctx context.Context, arg ListResourceVersionsParams) ([]ResourceVersion, error) {
+	rows, err := q.db.Query(ctx, listResourceVersions, arg.ResourceID, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ResourceVersion{}
+	for rows.Next() {
+		var i ResourceVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.ResourceID,
+			&i.Address,
+			&i.ManifestKey,
+			&i.Size,
+			&i.Provenance,
+			&i.State,
+			&i.Cause,
+			&i.IdempotencyKey,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.PublishWorkspaceID,
+			&i.PublishIdempotencyKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listResourceVersionsForCleanup = `-- name: ListResourceVersionsForCleanup :many
+SELECT rv.id, rv.address, rv.manifest_key, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.resource_id = $1
+  AND rv.state <> 'pending'
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
+ORDER BY rv.id
+LIMIT $2
+`
+
+type ListResourceVersionsForCleanupParams struct {
+	ResourceID uuid.UUID
+	Limit      int32
+}
+
+type ListResourceVersionsForCleanupRow struct {
+	ID          uuid.UUID
+	Address     *string
+	ManifestKey *string
+	OwnerID     uuid.UUID
+}
+
+func (q *Queries) ListResourceVersionsForCleanup(ctx context.Context, arg ListResourceVersionsForCleanupParams) ([]ListResourceVersionsForCleanupRow, error) {
+	rows, err := q.db.Query(ctx, listResourceVersionsForCleanup, arg.ResourceID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListResourceVersionsForCleanupRow{}
+	for rows.Next() {
+		var i ListResourceVersionsForCleanupRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Address,
+			&i.ManifestKey,
+			&i.OwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listResources = `-- name: ListResources :many
+SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources
+WHERE owner_id = $1
+  AND deleted_at IS NULL
+  AND ($2::uuid IS NULL OR id > $2)
+ORDER BY id
+LIMIT $3
+`
+
+type ListResourcesParams struct {
+	OwnerID uuid.UUID
+	After   *uuid.UUID
+	Limit   int32
+}
+
+func (q *Queries) ListResources(ctx context.Context, arg ListResourcesParams) ([]Resource, error) {
+	rows, err := q.db.Query(ctx, listResources, arg.OwnerID, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Resource{}
+	for rows.Next() {
+		var i Resource
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.CurrentVersionID,
+			&i.IdempotencyKey,
+			&i.DeletedAt,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2573,9 +4175,43 @@ func (q *Queries) ListSandboxGPUs(ctx context.Context, sandboxID uuid.UUID) ([]s
 	return items, nil
 }
 
+const listSandboxResourceMounts = `-- name: ListSandboxResourceMounts :many
+SELECT sr.mount, rv.address
+FROM sandbox_resources sr
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+WHERE sr.sandbox_id = $1
+ORDER BY sr.mount
+`
+
+type ListSandboxResourceMountsRow struct {
+	Mount   string
+	Address *string
+}
+
+func (q *Queries) ListSandboxResourceMounts(ctx context.Context, sandboxID uuid.UUID) ([]ListSandboxResourceMountsRow, error) {
+	rows, err := q.db.Query(ctx, listSandboxResourceMounts, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSandboxResourceMountsRow{}
+	for rows.Next() {
+		var i ListSandboxResourceMountsRow
+		if err := rows.Scan(&i.Mount, &i.Address); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSandboxes = `-- name: ListSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind FROM sandboxes
 WHERE owner_id = $1
+  AND kind = 'user'
   AND state <> 'deleted'
   AND ($2::text IS NULL OR state = $2)
   AND ($3::uuid IS NULL OR node_id = $3)
@@ -2643,6 +4279,8 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 			&i.WorkspaceID,
 			&i.WorkspaceMode,
 			&i.TokenKeyID,
+			&i.Conditions,
+			&i.Kind,
 		); err != nil {
 			return nil, err
 		}
@@ -2697,6 +4335,204 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Sec
 	return items, nil
 }
 
+const listSnapshotVersions = `-- name: ListSnapshotVersions :many
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
+WHERE snapshot_id = $1
+  AND ($2::uuid IS NULL OR id > $2)
+ORDER BY id
+LIMIT $3
+`
+
+type ListSnapshotVersionsParams struct {
+	SnapshotID uuid.UUID
+	After      *uuid.UUID
+	Limit      int32
+}
+
+func (q *Queries) ListSnapshotVersions(ctx context.Context, arg ListSnapshotVersionsParams) ([]SnapshotVersion, error) {
+	rows, err := q.db.Query(ctx, listSnapshotVersions, arg.SnapshotID, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SnapshotVersion{}
+	for rows.Next() {
+		var i SnapshotVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.SnapshotID,
+			&i.Digest,
+			&i.State,
+			&i.Cause,
+			&i.Source,
+			&i.BuildSandboxID,
+			&i.BuildExecID,
+			&i.Provenance,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+			&i.BuildRequest,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSnapshotVersionsForCleanup = `-- name: ListSnapshotVersionsForCleanup :many
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
+WHERE snapshot_id = $1
+  AND state <> 'building'
+ORDER BY id
+LIMIT $2
+`
+
+type ListSnapshotVersionsForCleanupParams struct {
+	SnapshotID uuid.UUID
+	Limit      int32
+}
+
+// A Snapshot deleted mid-build must keep its building version: the build row
+// still owns the Sandbox and Exec that release its allocation. Only terminal
+// versions are tombstone garbage.
+func (q *Queries) ListSnapshotVersionsForCleanup(ctx context.Context, arg ListSnapshotVersionsForCleanupParams) ([]SnapshotVersion, error) {
+	rows, err := q.db.Query(ctx, listSnapshotVersionsForCleanup, arg.SnapshotID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SnapshotVersion{}
+	for rows.Next() {
+		var i SnapshotVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.SnapshotID,
+			&i.Digest,
+			&i.State,
+			&i.Cause,
+			&i.Source,
+			&i.BuildSandboxID,
+			&i.BuildExecID,
+			&i.Provenance,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+			&i.BuildRequest,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSnapshots = `-- name: ListSnapshots :many
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+WHERE deleted_at IS NULL
+  AND (owner_id = $1 OR owner_id IS NULL)
+  AND ($2::uuid IS NULL OR id > $2)
+ORDER BY id
+LIMIT $3
+`
+
+type ListSnapshotsParams struct {
+	OwnerID *uuid.UUID
+	After   *uuid.UUID
+	Limit   int32
+}
+
+func (q *Queries) ListSnapshots(ctx context.Context, arg ListSnapshotsParams) ([]Snapshot, error) {
+	rows, err := q.db.Query(ctx, listSnapshots, arg.OwnerID, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Snapshot{}
+	for rows.Next() {
+		var i Snapshot
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.CurrentVersionID,
+			&i.DeletedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSweepableCASObjects = `-- name: ListSweepableCASObjects :many
+SELECT c.owner_id, c.sha256, c.created_at
+FROM cas_objects c
+WHERE c.created_at < $1
+  AND NOT EXISTS (
+    SELECT 1
+    FROM resource_version_objects rvo
+    JOIN resource_versions rv ON rv.id = rvo.version_id
+    JOIN resources r ON r.id = rv.resource_id
+    WHERE r.owner_id = c.owner_id AND rvo.sha256 = c.sha256
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM uploads u
+    JOIN resources r ON r.id = u.resource_id
+    WHERE r.owner_id = c.owner_id
+      AND u.expires_at > now()
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(u.manifest->'entries') e
+        WHERE e->>'sha256' = c.sha256
+      )
+  )
+ORDER BY c.created_at
+LIMIT $2
+`
+
+type ListSweepableCASObjectsParams struct {
+	Cutoff pgtype.Timestamptz
+	Limit  int32
+}
+
+type ListSweepableCASObjectsRow struct {
+	OwnerID   uuid.UUID
+	Sha256    string
+	CreatedAt pgtype.Timestamptz
+}
+
+// ListSweepableCASObjects finds objects past the grace window that no version
+// of the same owner references and no unexpired upload will still write. The
+// owner join is what makes the sweep owner-scoped (ADR-0021).
+func (q *Queries) ListSweepableCASObjects(ctx context.Context, arg ListSweepableCASObjectsParams) ([]ListSweepableCASObjectsRow, error) {
+	rows, err := q.db.Query(ctx, listSweepableCASObjects, arg.Cutoff, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSweepableCASObjectsRow{}
+	for rows.Next() {
+		var i ListSweepableCASObjectsRow
+		if err := rows.Scan(&i.OwnerID, &i.Sha256, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTokens = `-- name: ListTokens :many
 SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at FROM api_tokens
 WHERE user_id = $1
@@ -2735,6 +4571,44 @@ func (q *Queries) ListTokens(ctx context.Context, arg ListTokensParams) ([]ApiTo
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnavailableVersionsReferencing = `-- name: ListUnavailableVersionsReferencing :many
+SELECT DISTINCT rv.id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+JOIN resource_version_objects rvo ON rvo.version_id = rv.id
+WHERE r.owner_id = $1
+  AND rv.state = 'unavailable'
+  AND rvo.sha256 = ANY($2::text[])
+`
+
+type ListUnavailableVersionsReferencingParams struct {
+	OwnerID uuid.UUID
+	Sha256  []string
+}
+
+// A successful publish validation proves the uploaded objects are present, so
+// the owner's unavailable versions that reference them are re-checked and may
+// return to ready (api.md §3).
+func (q *Queries) ListUnavailableVersionsReferencing(ctx context.Context, arg ListUnavailableVersionsReferencingParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listUnavailableVersionsReferencing, arg.OwnerID, arg.Sha256)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -2841,6 +4715,26 @@ func (q *Queries) ListWorkspaces(ctx context.Context, arg ListWorkspacesParams) 
 	return items, nil
 }
 
+const lockResource = `-- name: LockResource :one
+SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+`
+
+// LockResource serializes current-pointer moves of one Resource (ADR-0012).
+func (q *Queries) LockResource(ctx context.Context, id uuid.UUID) (Resource, error) {
+	row := q.db.QueryRow(ctx, lockResource, id)
+	var i Resource
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.IdempotencyKey,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const lockUser = `-- name: LockUser :one
 SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `
@@ -2870,6 +4764,88 @@ func (q *Queries) LockUser(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const markBuildSandboxDone = `-- name: MarkBuildSandboxDone :execrows
+UPDATE sandboxes
+SET state = 'stopped', desired_state = 'stopped', updated_at = now()
+WHERE id = $1 AND kind = 'build' AND state <> 'stopped'
+`
+
+// MarkBuildSandboxDone takes a build row out of the admission and reconcile
+// sweeps once its version is terminal. It has no Runtime to stop.
+func (q *Queries) MarkBuildSandboxDone(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markBuildSandboxDone, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markResourceVersionAvailable = `-- name: MarkResourceVersionAvailable :execrows
+UPDATE resource_versions
+SET state = 'ready'
+WHERE id = $1 AND state = 'unavailable'
+`
+
+// MarkResourceVersionAvailable is conditional on unavailable so a concurrent
+// state change is not overwritten.
+func (q *Queries) MarkResourceVersionAvailable(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markResourceVersionAvailable, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markResourceVersionFailed = `-- name: MarkResourceVersionFailed :execrows
+UPDATE resource_versions
+SET state = 'failed', cause = $2
+WHERE id = $1 AND state = 'pending'
+`
+
+type MarkResourceVersionFailedParams struct {
+	ID    uuid.UUID
+	Cause *string
+}
+
+func (q *Queries) MarkResourceVersionFailed(ctx context.Context, arg MarkResourceVersionFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markResourceVersionFailed, arg.ID, arg.Cause)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markResourceVersionReady = `-- name: MarkResourceVersionReady :execrows
+UPDATE resource_versions
+SET state = 'ready', cause = NULL
+WHERE id = $1 AND state = 'pending'
+`
+
+// MarkResourceVersionReady and MarkResourceVersionFailed are conditional on
+// pending so a redelivered command after a restart cannot overwrite a
+// terminal state.
+func (q *Queries) MarkResourceVersionReady(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markResourceVersionReady, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markResourceVersionUnavailable = `-- name: MarkResourceVersionUnavailable :execrows
+UPDATE resource_versions
+SET state = 'unavailable'
+WHERE id = $1 AND state = 'ready'
+`
+
+func (q *Queries) MarkResourceVersionUnavailable(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markResourceVersionUnavailable, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markSandboxDeleted = `-- name: MarkSandboxDeleted :execrows
 UPDATE sandboxes
 SET state = 'deleted', updated_at = now()
@@ -2886,7 +4862,7 @@ func (q *Queries) MarkSandboxDeleted(ctx context.Context, id uuid.UUID) (int64, 
 
 const markSandboxFailed = `-- name: MarkSandboxFailed :execrows
 UPDATE sandboxes
-SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
+SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', updated_at = now()
 WHERE id = $1 AND generation = $2 AND state <> 'deleted'
 `
 
@@ -2907,7 +4883,7 @@ func (q *Queries) MarkSandboxFailed(ctx context.Context, arg MarkSandboxFailedPa
 const markSandboxReady = `-- name: MarkSandboxReady :execrows
 
 UPDATE sandboxes
-SET state = 'ready', cause = NULL, last_activity_at = now(), updated_at = now()
+SET state = 'ready', cause = NULL, conditions = NULL, last_activity_at = now(), updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning')
 `
@@ -2949,7 +4925,7 @@ func (q *Queries) MarkSandboxRuntimeLost(ctx context.Context, arg MarkSandboxRun
 
 const markSandboxStopped = `-- name: MarkSandboxStopped :execrows
 UPDATE sandboxes
-SET state = 'stopped', updated_at = now()
+SET state = 'stopped', conditions = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping')
 `
@@ -2965,6 +4941,70 @@ func (q *Queries) MarkSandboxStopped(ctx context.Context, arg MarkSandboxStopped
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const markSnapshotVersionFailed = `-- name: MarkSnapshotVersionFailed :one
+UPDATE snapshot_versions SET state = 'failed', cause = $1
+WHERE id = $2 AND state = 'building'
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
+`
+
+type MarkSnapshotVersionFailedParams struct {
+	Cause *string
+	ID    uuid.UUID
+}
+
+func (q *Queries) MarkSnapshotVersionFailed(ctx context.Context, arg MarkSnapshotVersionFailedParams) (SnapshotVersion, error) {
+	row := q.db.QueryRow(ctx, markSnapshotVersionFailed, arg.Cause, arg.ID)
+	var i SnapshotVersion
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Digest,
+		&i.State,
+		&i.Cause,
+		&i.Source,
+		&i.BuildSandboxID,
+		&i.BuildExecID,
+		&i.Provenance,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.BuildRequest,
+	)
+	return i, err
+}
+
+const markSnapshotVersionReady = `-- name: MarkSnapshotVersionReady :one
+UPDATE snapshot_versions
+SET state = 'ready', digest = $1, provenance = $2
+WHERE id = $3 AND state = 'building'
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
+`
+
+type MarkSnapshotVersionReadyParams struct {
+	Digest     *string
+	Provenance json.RawMessage
+	ID         uuid.UUID
+}
+
+func (q *Queries) MarkSnapshotVersionReady(ctx context.Context, arg MarkSnapshotVersionReadyParams) (SnapshotVersion, error) {
+	row := q.db.QueryRow(ctx, markSnapshotVersionReady, arg.Digest, arg.Provenance, arg.ID)
+	var i SnapshotVersion
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Digest,
+		&i.State,
+		&i.Cause,
+		&i.Source,
+		&i.BuildSandboxID,
+		&i.BuildExecID,
+		&i.Provenance,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.BuildRequest,
+	)
+	return i, err
 }
 
 const markWorkspaceDeleted = `-- name: MarkWorkspaceDeleted :execrows
@@ -3182,6 +5222,30 @@ func (q *Queries) PurgeExpiredTokens(ctx context.Context) error {
 	return err
 }
 
+const purgeResourceIdempotencyKeys = `-- name: PurgeResourceIdempotencyKeys :exec
+UPDATE resources SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
+`
+
+// PurgeResourceIdempotencyKeys expires Idempotency Keys after 24 hours
+// (defaults.md).
+func (q *Queries) PurgeResourceIdempotencyKeys(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeResourceIdempotencyKeys)
+	return err
+}
+
+const purgeResourceVersionIdempotencyKeys = `-- name: PurgeResourceVersionIdempotencyKeys :exec
+UPDATE resource_versions
+SET idempotency_key = NULL, publish_idempotency_key = NULL
+WHERE (idempotency_key IS NOT NULL OR publish_idempotency_key IS NOT NULL)
+  AND created_at < now() - interval '24 hours'
+`
+
+func (q *Queries) PurgeResourceVersionIdempotencyKeys(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeResourceVersionIdempotencyKeys)
+	return err
+}
+
 const purgeSandboxIdempotencyKeys = `-- name: PurgeSandboxIdempotencyKeys :exec
 UPDATE sandboxes SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
@@ -3260,6 +5324,34 @@ func (q *Queries) RedeemEnrollmentPacket(ctx context.Context, id uuid.UUID) (Enr
 	return i, err
 }
 
+const reusableUpload = `-- name: ReusableUpload :one
+SELECT id, resource_id, address, manifest, expires_at, created_at FROM uploads
+WHERE resource_id = $1 AND address = $2 AND expires_at > now()
+ORDER BY created_at DESC, id
+LIMIT 1
+`
+
+type ReusableUploadParams struct {
+	ResourceID uuid.UUID
+	Address    string
+}
+
+// ReusableUpload is the resume rule: an unexpired session for the same
+// Resource and manifest address is reused (api.md §3).
+func (q *Queries) ReusableUpload(ctx context.Context, arg ReusableUploadParams) (Upload, error) {
+	row := q.db.QueryRow(ctx, reusableUpload, arg.ResourceID, arg.Address)
+	var i Upload
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.Manifest,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const setExecStarted = `-- name: SetExecStarted :exec
 UPDATE execs
 SET started_at = COALESCE(started_at, $2),
@@ -3292,6 +5384,97 @@ type SetNodeCapabilitiesParams struct {
 func (q *Queries) SetNodeCapabilities(ctx context.Context, arg SetNodeCapabilitiesParams) error {
 	_, err := q.db.Exec(ctx, setNodeCapabilities, arg.ID, arg.Capabilities)
 	return err
+}
+
+const setResourceCurrent = `-- name: SetResourceCurrent :one
+UPDATE resources
+SET current_version_id = $2
+WHERE id = $1
+RETURNING id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at
+`
+
+type SetResourceCurrentParams struct {
+	ID               uuid.UUID
+	CurrentVersionID *uuid.UUID
+}
+
+func (q *Queries) SetResourceCurrent(ctx context.Context, arg SetResourceCurrentParams) (Resource, error) {
+	row := q.db.QueryRow(ctx, setResourceCurrent, arg.ID, arg.CurrentVersionID)
+	var i Resource
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.IdempotencyKey,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const setResourceVersionManifest = `-- name: SetResourceVersionManifest :one
+UPDATE resource_versions
+SET address = $2, manifest_key = $3, size = $4
+WHERE id = $1 AND state = 'pending'
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+`
+
+type SetResourceVersionManifestParams struct {
+	ID          uuid.UUID
+	Address     *string
+	ManifestKey *string
+	Size        int64
+}
+
+// SetResourceVersionManifest records what SubmitManifest normalized. Only a
+// pending version can accept a manifest: a terminal one must not be revived.
+func (q *Queries) SetResourceVersionManifest(ctx context.Context, arg SetResourceVersionManifestParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, setResourceVersionManifest,
+		arg.ID,
+		arg.Address,
+		arg.ManifestKey,
+		arg.Size,
+	)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+	)
+	return i, err
+}
+
+const setSandboxConditions = `-- name: SetSandboxConditions :execrows
+UPDATE sandboxes
+SET conditions = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted'
+`
+
+type SetSandboxConditionsParams struct {
+	ID         uuid.UUID
+	Generation int64
+	Conditions json.RawMessage
+}
+
+// SetSandboxConditions writes the Agent-reported condition set under the
+// generation fence.
+func (q *Queries) SetSandboxConditions(ctx context.Context, arg SetSandboxConditionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSandboxConditions, arg.ID, arg.Generation, arg.Conditions)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setSandboxNode = `-- name: SetSandboxNode :execrows
@@ -3389,6 +5572,31 @@ func (q *Queries) SetSandboxWorkspace(ctx context.Context, arg SetSandboxWorkspa
 	return err
 }
 
+const setSnapshotCurrentVersion = `-- name: SetSnapshotCurrentVersion :one
+UPDATE snapshots SET current_version_id = $1
+WHERE id = $2 AND deleted_at IS NULL
+RETURNING id, owner_id, name, current_version_id, deleted_at, created_at
+`
+
+type SetSnapshotCurrentVersionParams struct {
+	VersionID *uuid.UUID
+	ID        uuid.UUID
+}
+
+func (q *Queries) SetSnapshotCurrentVersion(ctx context.Context, arg SetSnapshotCurrentVersionParams) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, setSnapshotCurrentVersion, arg.VersionID, arg.ID)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const setUserQuota = `-- name: SetUserQuota :one
 UPDATE users
 SET gpu_quota = $2, sandbox_quota = $3, updated_at = now()
@@ -3472,6 +5680,28 @@ func (q *Queries) SetWorkspaceNode(ctx context.Context, arg SetWorkspaceNodePara
 	return result.RowsAffected(), nil
 }
 
+const softDeleteResource = `-- name: SoftDeleteResource :one
+UPDATE resources
+SET deleted_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at
+`
+
+func (q *Queries) SoftDeleteResource(ctx context.Context, id uuid.UUID) (Resource, error) {
+	row := q.db.QueryRow(ctx, softDeleteResource, id)
+	var i Resource
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.IdempotencyKey,
+		&i.DeletedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const softDeleteUser = `-- name: SoftDeleteUser :one
 UPDATE users
 SET deleted_at = now(), updated_at = now()
@@ -3507,7 +5737,7 @@ UPDATE sandboxes
 SET desired_state = 'running', state = 'pending', cause = NULL,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state = 'stopped'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
 `
 
 func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -3539,6 +5769,8 @@ func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, erro
 		&i.WorkspaceID,
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -3548,7 +5780,7 @@ UPDATE sandboxes
 SET desired_state = 'stopped', state = 'stopping',
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state IN ('pending', 'provisioning', 'ready')
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind
 `
 
 func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -3580,6 +5812,8 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.WorkspaceID,
 		&i.WorkspaceMode,
 		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -3727,6 +5961,25 @@ func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPassword
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const upsertCASObject = `-- name: UpsertCASObject :exec
+
+INSERT INTO cas_objects (owner_id, sha256, size)
+VALUES ($1, $2, $3)
+ON CONFLICT (owner_id, sha256) DO NOTHING
+`
+
+type UpsertCASObjectParams struct {
+	OwnerID uuid.UUID
+	Sha256  string
+	Size    int64
+}
+
+// CAS objects (owner-scoped, ADR-0021)
+func (q *Queries) UpsertCASObject(ctx context.Context, arg UpsertCASObjectParams) error {
+	_, err := q.db.Exec(ctx, upsertCASObject, arg.OwnerID, arg.Sha256, arg.Size)
+	return err
 }
 
 const upsertGitLink = `-- name: UpsertGitLink :one
