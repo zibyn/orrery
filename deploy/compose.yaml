@@ -75,6 +75,22 @@ services:
       timeout: 3s
       retries: 60
 
+  # An unauthenticated local image source for e2e. Platform Snapshot import
+  # must not depend on Docker Hub availability or anonymous rate limits;
+  # scripts/e2e.sh pushes the default base image here before the server starts.
+  registry-source:
+    image: registry:3
+    profiles: ["e2e"]
+    volumes:
+      - registry-source-data:/var/lib/registry
+    ports:
+      - "15001:5000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5000/v2/"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
   dex:
     image: ghcr.io/dexidp/dex:v2.41.1
     # The e2e-only profile keeps the reference deployment free of a test IdP.
@@ -199,4 +215,5 @@ services:
 
 volumes:
   gitea-data:
+  registry-source-data:
   rustfs-data:

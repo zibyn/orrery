@@ -129,25 +129,14 @@ export STARS_DEX_DIR="$PWD/.e2e/dex"
 
 # Every Sandbox without an explicit snapshot runs the deployment default
 # platform Snapshot (api.md §3, defaults.md). The Control Plane imports it into
-# the platform registry at startup, so the source must be pinned by digest.
-# A registry hiccup must not fail the run when the image is already local.
-if ! docker pull alpine:3.22 >/dev/null 2>&1; then
-  echo "warning: could not pull alpine:3.22; using the local image" >&2
+# the platform registry at startup. The source is the local unauthenticated
+# registry-source service, so the run never depends on Docker Hub availability
+# or anonymous rate limits; the image is pushed there below, before the server
+# starts.
+if ! docker image inspect alpine:3.22 >/dev/null 2>&1; then
+  docker pull alpine:3.22 >/dev/null
 fi
-# The Agent pulls platform images as 127.0.0.1:15000/platform/...@digest, and
-# Docker attaches every pulled RepoDigest to the matching image id. Select the
-# Docker Hub digest explicitly instead of taking index 0.
-STARS_E2E_ALPINE_REF="$(docker image inspect alpine:3.22 \
-  --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
-  grep -E '^(docker\.io/)?(library/)?alpine@sha256:' | head -n1 || true)"
-if [ -z "$STARS_E2E_ALPINE_REF" ] || [ "$STARS_E2E_ALPINE_REF" = "<no value>" ]; then
-  echo "alpine:3.22 has no RepoDigest; platform Snapshot import needs ref@sha256:…" >&2
-  exit 1
-fi
-export STARS_E2E_ALPINE_REF
-export STARS_PLATFORM_SNAPSHOTS="${STARS_PLATFORM_SNAPSHOTS:-default=${STARS_E2E_ALPINE_REF}}"
 export STARS_DEFAULT_SNAPSHOT="${STARS_DEFAULT_SNAPSHOT:-default}"
-echo "platform Snapshot: ${STARS_DEFAULT_SNAPSHOT}=${STARS_E2E_ALPINE_REF}"
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -225,7 +214,7 @@ export STARS_GIT_PROVIDERS_FILE=/git/providers.json
 # scenarios, and the Control Plane imports STARS_PLATFORM_SNAPSHOTS at
 # startup, so both must be serving first. The registry answers 401 without
 # credentials once it is serving.
-"${COMPOSE[@]}" up -d rustfs rustfs-init registry
+"${COMPOSE[@]}" up -d rustfs rustfs-init registry registry-source
 for _ in $(seq 1 120); do
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:19000/health" || true)"
   [ "$code" = "200" ] && break
@@ -246,6 +235,34 @@ if [ "$code" != "401" ]; then
   "${COMPOSE[@]}" logs --no-color registry >&2 || true
   exit 1
 fi
+for _ in $(seq 1 120); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:15001/v2/" || true)"
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+if [ "$code" != "200" ]; then
+  echo "registry-source did not become ready (last status: ${code:-none})" >&2
+  "${COMPOSE[@]}" logs --no-color registry-source >&2 || true
+  exit 1
+fi
+
+# Push the default base image into the local source registry and pin its
+# digest. The Control Plane reaches the source as registry-source:5000, so the
+# server-side import never touches Docker Hub.
+SOURCE_REGISTRY="127.0.0.1:15001"
+docker tag alpine:3.22 "${SOURCE_REGISTRY}/alpine:3.22"
+docker push "${SOURCE_REGISTRY}/alpine:3.22" >/dev/null
+pushed_ref="$(docker image inspect "${SOURCE_REGISTRY}/alpine:3.22" \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
+  grep -E '@sha256:' | head -n1 || true)"
+if [ -z "$pushed_ref" ]; then
+  echo "the local source registry did not return a digest for alpine:3.22" >&2
+  exit 1
+fi
+STARS_E2E_ALPINE_REF="registry-source:5000/alpine@${pushed_ref##*@}"
+export STARS_E2E_ALPINE_REF
+export STARS_PLATFORM_SNAPSHOTS="${STARS_PLATFORM_SNAPSHOTS:-default=${STARS_E2E_ALPINE_REF}}"
+echo "platform Snapshot: ${STARS_DEFAULT_SNAPSHOT}=${STARS_E2E_ALPINE_REF}"
 
 "${COMPOSE[@]}" up -d --build
 
