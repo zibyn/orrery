@@ -1,3 +1,7 @@
 .e2e/
 .e2e-run.log
 /bin/
+
+# Python
+__pycache__/
+*.pyc
