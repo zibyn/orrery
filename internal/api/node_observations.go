@@ -57,7 +57,9 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 			return
 		}
 		if rows > 0 {
-			n.releaseCompute(ctx, id)
+			if err := releaseRuntime(ctx, n.s.q, id); err != nil {
+				n.s.log.Warn("release runtime", "sandbox_id", id, "error", err)
+			}
 			n.s.reconcile.notify()
 		}
 	case nodeproto.SandboxPhaseGone:
@@ -122,12 +124,6 @@ func (n *nodeService) recordExecObserved(ctx context.Context, nodeID uuid.UUID, 
 		ID: id, StartedAt: pgtype.Timestamptz{Time: started, Valid: true},
 	}); err != nil {
 		n.s.log.Warn("record Exec started", "exec_id", id, "error", err)
-	}
-}
-
-func (n *nodeService) releaseCompute(ctx context.Context, id uuid.UUID) {
-	if err := releaseCompute(ctx, n.s.q, id); err != nil {
-		n.s.log.Warn("release compute", "sandbox_id", id, "error", err)
 	}
 }
 

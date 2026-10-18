@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -141,7 +142,7 @@ func finalizeGone(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) er
 	if err == nil {
 		workspace = &ws
 	}
-	if err := releaseCompute(ctx, q, sandboxID); err != nil {
+	if err := releaseRuntime(ctx, q, sandboxID); err != nil {
 		return err
 	}
 	switch finalizeAction(SandboxState(sb.State), SandboxDesiredState(sb.DesiredState), workspace) {
@@ -153,4 +154,18 @@ func finalizeGone(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) er
 		return err
 	}
 	return nil
+}
+
+// releaseRuntime drops the Allocation, the GPU claims and the Attachment,
+// which exist only while a runtime does. Both are attempted so one failure
+// does not hide the other.
+func releaseRuntime(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) error {
+	var errs []error
+	if err := q.ReleaseCompute(ctx, sandboxID); err != nil {
+		errs = append(errs, fmt.Errorf("release allocation: %w", err))
+	}
+	if err := q.DeleteAttachment(ctx, sandboxID); err != nil {
+		errs = append(errs, fmt.Errorf("release attachment: %w", err))
+	}
+	return errors.Join(errs...)
 }

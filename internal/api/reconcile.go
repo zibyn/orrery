@@ -382,7 +382,7 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 		r.s.log.Warn("reconcile: mark stopped", "sandbox_id", sandboxID, "error", err)
 		return
 	}
-	if err := releaseCompute(ctx, q, sandboxID); err != nil {
+	if err := releaseRuntime(ctx, q, sandboxID); err != nil {
 		r.s.log.Warn("reconcile: release compute", "sandbox_id", sandboxID, "error", err)
 		return
 	}
@@ -629,7 +629,7 @@ func (r *reconciler) fail(ctx context.Context, sb store.Sandbox, cause string) {
 		return
 	}
 	if rows > 0 {
-		if err := releaseCompute(ctx, q, sb.ID); err != nil {
+		if err := releaseRuntime(ctx, q, sb.ID); err != nil {
 			r.s.log.Warn("reconcile: release compute", "sandbox_id", sb.ID, "error", err)
 			return
 		}
@@ -767,18 +767,4 @@ func (h *nodeHub) failed(nodeID uuid.UUID, commandID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.sent[nodeID], commandID)
-}
-
-// releaseCompute drops the Allocation and the Attachment, which exist only
-// while a runtime does. Both are attempted so one failure does not hide the
-// other.
-func releaseCompute(ctx context.Context, q *store.Queries, id uuid.UUID) error {
-	var errs []error
-	if err := q.ReleaseCompute(ctx, id); err != nil {
-		errs = append(errs, fmt.Errorf("release allocation: %w", err))
-	}
-	if err := q.DeleteAttachment(ctx, id); err != nil {
-		errs = append(errs, fmt.Errorf("release attachment: %w", err))
-	}
-	return errors.Join(errs...)
 }

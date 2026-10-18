@@ -506,7 +506,7 @@ func (r *reconciler) failAdmission(ctx context.Context, q *store.Queries, sb sto
 		r.endAdmission(ctx, q, sb.ID, "canceled")
 		return
 	}
-	if err := releaseCompute(ctx, q, sb.ID); err != nil {
+	if err := releaseRuntime(ctx, q, sb.ID); err != nil {
 		r.s.log.Warn("reconcile: release compute", "sandbox_id", sb.ID, "error", err)
 	}
 	r.endAdmission(ctx, q, sb.ID, cause)

@@ -149,7 +149,7 @@ func (n *nodeService) finishBuildObserved(ctx context.Context, version store.Sna
 		n.s.log.Warn("finish build Exec", "exec_id", *version.BuildExecID, "error", err)
 		return
 	}
-	if err := releaseCompute(ctx, q, sb.ID); err != nil {
+	if err := releaseRuntime(ctx, q, sb.ID); err != nil {
 		n.s.log.Warn("release build compute", "sandbox_id", sb.ID, "error", err)
 		return
 	}
