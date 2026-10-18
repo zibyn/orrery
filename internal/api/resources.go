@@ -137,8 +137,7 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request, p 
 			})
 		})
 	if err != nil {
-		if uniqueViolation(err) == "resources_owner_name" {
-			writeProblem(w, "conflict", "a Resource with that name already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Resource", err)

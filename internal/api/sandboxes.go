@@ -332,8 +332,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			})
 		})
 	if err != nil {
-		if uniqueViolation(err) == "sandboxes_owner_name" {
-			writeProblem(w, "conflict", "a Sandbox with that name already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Sandbox", err)
@@ -372,8 +371,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		SandboxID: sandbox.ID, WorkspaceID: workspaceID, Mode: attachMode,
 		Generation: sandbox.Generation,
 	}); err != nil {
-		if uniqueViolation(err) == "attachments_workspace_rw" {
-			writeProblem(w, "conflict", "the Workspace already has a read-write Attachment")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Attachment", err)
@@ -754,8 +752,7 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
 		SandboxID: id, WorkspaceID: ws.ID, Mode: sb.WorkspaceMode, Generation: started.Generation,
 	}); err != nil {
-		if uniqueViolation(err) == "attachments_workspace_rw" {
-			writeProblem(w, "conflict", "the Workspace already has a read-write Attachment")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "re-create Attachment", err)

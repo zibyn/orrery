@@ -85,12 +85,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 			})
 		})
 	if err != nil {
-		switch uniqueViolation(err) {
-		case "users_name_key":
-			writeProblem(w, "conflict", "a User with that name already exists")
-			return
-		case "users_email_unique":
-			writeProblem(w, "conflict", "a User with that email already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create user", err)
@@ -234,11 +229,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		updated, err = s.q.UpdateUser(ctx, params)
 	}
 	if err != nil {
-		if constraint := uniqueViolation(err); constraint == "users_name_key" {
-			writeProblem(w, "conflict", "a User with that name already exists")
-			return
-		} else if constraint == "users_email_unique" {
-			writeProblem(w, "conflict", "a User with that email already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "update user", err)

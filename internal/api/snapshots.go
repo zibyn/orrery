@@ -157,8 +157,7 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request, p 
 		ID: id, OwnerID: &p.user.ID, Name: req.Name,
 	})
 	if err != nil {
-		if uniqueViolation(err) == "snapshots_owner_name" {
-			writeProblem(w, "conflict", "a Snapshot with that name already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Snapshot", err)

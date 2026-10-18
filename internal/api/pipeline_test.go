@@ -156,6 +156,23 @@ func TestLoadVisible(t *testing.T) {
 	}
 }
 
+func TestWriteConstraintProblem(t *testing.T) {
+	rec := httptest.NewRecorder()
+	err := &pgconn.PgError{Code: "23505", ConstraintName: "users_name_key"}
+	if !writeConstraintProblem(rec, err) || rec.Code != http.StatusConflict {
+		t.Fatalf("known constraint status=%d, want 409", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	err = &pgconn.PgError{Code: "23505", ConstraintName: "some_other_constraint"}
+	if writeConstraintProblem(rec, err) {
+		t.Fatal("writeConstraintProblem handled an unknown constraint")
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("unknown constraint wrote %q", rec.Body.String())
+	}
+}
+
 func TestReplayOr(t *testing.T) {
 	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	key := "key"

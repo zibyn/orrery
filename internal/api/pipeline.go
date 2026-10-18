@@ -36,6 +36,34 @@ func ownerOrAdmin(p *principal, owner uuid.UUID) bool {
 	return p.isAdmin() || p.user.ID == owner
 }
 
+type constraintProblem struct {
+	Code   string
+	Detail string
+}
+
+// constraintProblems maps the unique constraints an HTTP handler can resolve
+// to their problem response. Paths that need the raw error (OIDC binding, the
+// platform Snapshot importer) keep using uniqueViolation directly.
+var constraintProblems = map[string]constraintProblem{
+	"users_name_key":           {"conflict", "a User with that name already exists"},
+	"users_email_unique":       {"conflict", "a User with that email already exists"},
+	"sandboxes_owner_name":     {"conflict", "a Sandbox with that name already exists"},
+	"attachments_workspace_rw": {"conflict", "the Workspace already has a read-write Attachment"},
+	"snapshots_owner_name":     {"conflict", "a Snapshot with that name already exists"},
+	"resources_owner_name":     {"conflict", "a Resource with that name already exists"},
+}
+
+// writeConstraintProblem writes the problem for a known unique-constraint
+// violation and reports whether it wrote one.
+func writeConstraintProblem(w http.ResponseWriter, err error) bool {
+	problem, ok := constraintProblems[uniqueViolation(err)]
+	if !ok {
+		return false
+	}
+	writeProblem(w, problem.Code, problem.Detail)
+	return true
+}
+
 // readPage parses limit and cursor, writes the standard 400s, fetches one row
 // past the page (the caller receives limit+1 and must pass it to the query),
 // and returns the trimmed page with its next cursor.
