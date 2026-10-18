@@ -1,22 +1,13 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 )
 
 // publishFollowTimeout bounds waiting for the Agent to finish a publish.
 const publishFollowTimeout = 10 * time.Minute
-
-type workspacePublishVersion struct {
-	ID         string  `json:"id"`
-	ResourceID string  `json:"resource_id"`
-	State      string  `json:"state"`
-	Cause      *string `json:"cause"`
-}
 
 func runWorkspace(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -32,12 +23,20 @@ func runWorkspace(c *client, args []string, stderr io.Writer) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: stars-sandbox workspace declare-lost <id>")
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/workspaces/"+args[1]+"/declare-lost", nil, "")
+		workspace, err := c.DeclareWorkspaceLost(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return c.print(workspace)
 	case "abandon":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: stars-sandbox workspace abandon <id>")
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/workspaces/"+args[1]+"/abandon", nil, "")
+		workspace, err := c.AbandonWorkspace(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return c.print(workspace)
 	default:
 		return fmt.Errorf("unknown workspace command %q", args[0])
 	}
@@ -46,17 +45,9 @@ func runWorkspace(c *client, args []string, stderr io.Writer) error {
 // publishWorkspace starts a publish and follows the pending ResourceVersion
 // until it is terminal (api.md §3).
 func publishWorkspace(c *client, workspaceID, path, name string) error {
-	status, data, err := c.send(http.MethodPost, "/api/v1/workspaces/"+workspaceID+"/publish", nil,
-		map[string]string{"path": path, "resource": name}, "")
+	version, err := c.PublishWorkspace(ctx, workspaceID, path, name)
 	if err != nil {
 		return err
-	}
-	if status != http.StatusAccepted {
-		return problemError(status, data)
-	}
-	var version workspacePublishVersion
-	if err := json.Unmarshal(data, &version); err != nil {
-		return fmt.Errorf("decode ResourceVersion: %w", err)
 	}
 	deadline := time.Now().Add(publishFollowTimeout)
 	for version.State == "pending" {
@@ -64,15 +55,12 @@ func publishWorkspace(c *client, workspaceID, path, name string) error {
 			return fmt.Errorf("publish %s did not finish within %s", version.ID, publishFollowTimeout)
 		}
 		time.Sleep(250 * time.Millisecond)
-		data, err = c.do(http.MethodGet, "/api/v1/resources/"+version.ResourceID+"/versions/"+version.ID, nil, nil, "")
+		version, err = c.GetResourceVersion(ctx, version.ResourceID, version.ID)
 		if err != nil {
 			return err
 		}
-		if err := json.Unmarshal(data, &version); err != nil {
-			return fmt.Errorf("decode ResourceVersion: %w", err)
-		}
 	}
-	if err := c.print(data); err != nil {
+	if err := c.print(version); err != nil {
 		return err
 	}
 	if version.State == "failed" {

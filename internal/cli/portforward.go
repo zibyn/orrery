@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -44,23 +43,12 @@ func runPortForward(c *client, args []string) error {
 
 func forwardToSandbox(c *client, sandboxID string, port int, local net.Conn) {
 	defer local.Close() //nolint:errcheck // connection lifetime
-	u, err := url.Parse(strings.TrimRight(c.base, "/"))
-	if err != nil {
-		return
-	}
-	origin := u.Scheme + "://" + u.Host
-	if u.Scheme == "https" {
-		u.Scheme = "wss"
-	} else {
-		u.Scheme = "ws"
-	}
-	u.Path = "/api/v1/sandboxes/" + url.PathEscape(sandboxID) + "/ports/" + strconv.Itoa(port) + "/tunnel"
-	config, err := websocket.NewConfig(u.String(), origin)
+	config, err := websocket.NewConfig(c.TunnelURL(sandboxID, port), c.Origin())
 	if err != nil {
 		return
 	}
 	config.Protocol = []string{"sandbox.v1"}
-	config.Header.Set("Authorization", "Bearer "+c.token)
+	config.Header.Set("Authorization", "Bearer "+c.Token())
 	ws, err := websocket.DialConfig(config)
 	if err != nil {
 		return

@@ -3,11 +3,11 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	starsclient "github.com/zibyn/stars-sandbox/client"
 	"github.com/zibyn/stars-sandbox/internal/castransfer"
 	"github.com/zibyn/stars-sandbox/internal/manifest"
 )
@@ -33,7 +34,11 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: stars-sandbox resource create <name>")
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/resources", map[string]string{"name": fs.Arg(0)}, "")
+		resource, err := c.CreateResource(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		return c.print(resource)
 	case "ls":
 		fs := flag.NewFlagSet("resource ls", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -54,7 +59,11 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return c.sendAndPrint(http.MethodDelete, "/api/v1/resources/"+resource.ID, nil, "")
+		deleted, err := c.DeleteResource(ctx, resource.ID)
+		if err != nil {
+			return err
+		}
+		return c.print(deleted)
 	case "versions":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: stars-sandbox resource versions <name|id>")
@@ -68,7 +77,7 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		version, _, err := getResourceVersion(c, resource, "")
+		version, err := getResourceVersion(c, resource, "")
 		if err != nil {
 			return err
 		}
@@ -88,84 +97,33 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 	}
 }
 
-// resourceRef is the id and current pointer of a Resource.
-type resourceRef struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	CurrentVersionID *string `json:"current_version_id"`
-}
-
-type resourceVersionRef struct {
-	ID         string  `json:"id"`
-	ResourceID string  `json:"resource_id"`
-	Address    *string `json:"address"`
-	Size       int64   `json:"size"`
-	State      string  `json:"state"`
-	CreatedAt  string  `json:"created_at"`
-}
-
 // resolveResource accepts an id directly or lists pages until the name matches.
-func resolveResource(c *client, arg string) (resourceRef, error) {
+func resolveResource(c *client, arg string) (*starsclient.Resource, error) {
 	if _, err := uuid.Parse(arg); err == nil {
-		data, err := c.do(http.MethodGet, "/api/v1/resources/"+arg, nil, nil, "")
-		if err != nil {
-			return resourceRef{}, err
-		}
-		var resource resourceRef
-		return resource, json.Unmarshal(data, &resource)
+		return c.GetResource(ctx, arg)
 	}
 	cursor := ""
 	for {
-		query := url.Values{"limit": {"200"}}
-		if cursor != "" {
-			query.Set("cursor", cursor)
-		}
-		data, err := c.do(http.MethodGet, "/api/v1/resources", query, nil, "")
+		page, err := c.ListResources(ctx, 200, cursor)
 		if err != nil {
-			return resourceRef{}, err
-		}
-		var page struct {
-			Items      []resourceRef `json:"items"`
-			NextCursor *string       `json:"next_cursor"`
-		}
-		if err := json.Unmarshal(data, &page); err != nil {
-			return resourceRef{}, fmt.Errorf("decode Resource list: %w", err)
+			return nil, err
 		}
 		for _, item := range page.Items {
 			if item.Name == arg {
-				return item, nil
+				return &item, nil
 			}
 		}
 		if page.NextCursor == nil {
-			return resourceRef{}, fmt.Errorf("no Resource named %q", arg)
+			return nil, fmt.Errorf("no Resource named %q", arg)
 		}
 		cursor = *page.NextCursor
 	}
 }
 
 func listResources(c *client, limit int, cursor string) error {
-	query := url.Values{}
-	if limit > 0 {
-		query.Set("limit", fmt.Sprint(limit))
-	}
-	if cursor != "" {
-		query.Set("cursor", cursor)
-	}
-	data, err := c.do(http.MethodGet, "/api/v1/resources", query, nil, "")
+	page, err := c.ListResources(ctx, limit, cursor)
 	if err != nil {
 		return err
-	}
-	var page struct {
-		Items []struct {
-			ID               string  `json:"id"`
-			Name             string  `json:"name"`
-			CurrentVersionID *string `json:"current_version_id"`
-			CreatedAt        string  `json:"created_at"`
-		} `json:"items"`
-		NextCursor *string `json:"next_cursor"`
-	}
-	if err := json.Unmarshal(data, &page); err != nil {
-		return fmt.Errorf("decode Resource list: %w", err)
 	}
 	tw := tabwriter.NewWriter(c.out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tNAME\tCURRENT\tCREATED")
@@ -190,16 +148,9 @@ func listResourceVersions(c *client, ref string) error {
 	if err != nil {
 		return err
 	}
-	data, err := c.do(http.MethodGet, "/api/v1/resources/"+resource.ID+"/versions", url.Values{"limit": {"200"}}, nil, "")
+	page, err := c.ListResourceVersions(ctx, resource.ID, 200, "")
 	if err != nil {
 		return err
-	}
-	var page struct {
-		Items      []resourceVersionRef `json:"items"`
-		NextCursor *string              `json:"next_cursor"`
-	}
-	if err := json.Unmarshal(data, &page); err != nil {
-		return fmt.Errorf("decode ResourceVersion list: %w", err)
 	}
 	tw := tabwriter.NewWriter(c.out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tADDRESS\tSIZE\tSTATE\tCREATED")
@@ -224,22 +175,14 @@ func listResourceVersions(c *client, ref string) error {
 }
 
 // getResourceVersion resolves an explicit version, or the current one.
-func getResourceVersion(c *client, resource resourceRef, version string) (json.RawMessage, resourceVersionRef, error) {
+func getResourceVersion(c *client, resource *starsclient.Resource, version string) (*starsclient.ResourceVersion, error) {
 	if version == "" {
 		if resource.CurrentVersionID == nil {
-			return nil, resourceVersionRef{}, fmt.Errorf("Resource %q has no current version", resource.Name)
+			return nil, fmt.Errorf("Resource %q has no current version", resource.Name)
 		}
 		version = *resource.CurrentVersionID
 	}
-	data, err := c.do(http.MethodGet, "/api/v1/resources/"+resource.ID+"/versions/"+version, nil, nil, "")
-	if err != nil {
-		return nil, resourceVersionRef{}, err
-	}
-	var ref resourceVersionRef
-	if err := json.Unmarshal(data, &ref); err != nil {
-		return nil, resourceVersionRef{}, fmt.Errorf("decode ResourceVersion: %w", err)
-	}
-	return data, ref, nil
+	return c.GetResourceVersion(ctx, resource.ID, version)
 }
 
 // splitResourceVersion recognizes NAME@<version-uuid>; anything else is a
@@ -256,22 +199,19 @@ func splitResourceVersion(arg string) (string, string) {
 }
 
 // ensureResource returns the named Resource, creating it when absent.
-func ensureResource(c *client, name string) (resourceRef, error) {
+func ensureResource(c *client, name string) (*starsclient.Resource, error) {
 	if _, err := uuid.Parse(name); err != nil {
 		// A name: reuse an existing Resource before creating one.
 		if resource, err := resolveResource(c, name); err == nil {
 			return resource, nil
 		}
-		status, data, err := c.send(http.MethodPost, "/api/v1/resources", nil, map[string]string{"name": name}, "")
-		if err != nil {
-			return resourceRef{}, err
+		resource, err := c.CreateResource(ctx, name)
+		if err == nil {
+			return resource, nil
 		}
-		if status == http.StatusCreated || status == http.StatusOK {
-			var resource resourceRef
-			return resource, json.Unmarshal(data, &resource)
-		}
-		if status != http.StatusConflict {
-			return resourceRef{}, problemError(status, data)
+		var problem *starsclient.Error
+		if !errors.As(err, &problem) || problem.Status != http.StatusConflict {
+			return nil, err
 		}
 		// A concurrent create won the name; resolve it again below.
 	}
@@ -282,9 +222,9 @@ func ensureResource(c *client, name string) (resourceRef, error) {
 	// The argument may be a bare id that does not exist yet, which cannot be
 	// created: names are the only handle POST /resources takes.
 	if _, parseErr := uuid.Parse(name); parseErr == nil {
-		return resourceRef{}, err
+		return nil, err
 	}
-	return resourceRef{}, fmt.Errorf("create Resource %q: %w", name, err)
+	return nil, fmt.Errorf("create Resource %q: %w", name, err)
 }
 
 // buildManifest walks root deterministically. Symlinks are recorded, never
@@ -322,19 +262,9 @@ func pushResource(c *client, dir, name string) error {
 	if err != nil {
 		return err
 	}
-	data, err := c.do(http.MethodPost, "/api/v1/resources/"+resource.ID+"/uploads", nil, m, "")
+	upload, err := c.CreateResourceUpload(ctx, resource.ID, m)
 	if err != nil {
 		return err
-	}
-	var upload struct {
-		UploadID string `json:"upload_id"`
-		Puts     []struct {
-			SHA256 string `json:"sha256"`
-			URL    string `json:"url"`
-		} `json:"puts"`
-	}
-	if err := json.Unmarshal(data, &upload); err != nil {
-		return fmt.Errorf("decode upload session: %w", err)
 	}
 	for _, put := range upload.Puts {
 		path, ok := files[put.SHA256]
@@ -345,9 +275,7 @@ func pushResource(c *client, dir, name string) error {
 			return err
 		}
 	}
-	version, err := c.do(http.MethodPost, "/api/v1/resources/"+resource.ID+"/versions", nil, map[string]string{
-		"upload_id": upload.UploadID,
-	}, "")
+	version, err := c.PublishResourceUpload(ctx, resource.ID, upload.UploadID)
 	if err != nil {
 		return err
 	}
@@ -385,7 +313,7 @@ func pullResource(c *client, ref, dest string) error {
 	if version == "" {
 		return fmt.Errorf("Resource %q has no current version", resource.Name)
 	}
-	raw, err := c.do(http.MethodGet, "/api/v1/resources/"+resource.ID+"/versions/"+version+"/manifest", nil, nil, "")
+	raw, err := c.ResourceManifest(ctx, resource.ID, version)
 	if err != nil {
 		return err
 	}
@@ -401,17 +329,9 @@ func pullResource(c *client, ref, dest string) error {
 	for _, object := range objects {
 		digests = append(digests, object.SHA256)
 	}
-	data, err := c.do(http.MethodPost, "/api/v1/resources/"+resource.ID+"/versions/"+version+"/downloads", nil, map[string]any{
-		"sha256": digests,
-	}, "")
+	downloads, err := c.CreateResourceDownloads(ctx, resource.ID, version, digests)
 	if err != nil {
 		return err
-	}
-	var downloads struct {
-		URLs []string `json:"urls"`
-	}
-	if err := json.Unmarshal(data, &downloads); err != nil {
-		return fmt.Errorf("decode download URLs: %w", err)
 	}
 	if len(downloads.URLs) != len(digests) {
 		return fmt.Errorf("got %d download URLs for %d objects", len(downloads.URLs), len(digests))

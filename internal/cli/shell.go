@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -15,6 +13,7 @@ import (
 	"golang.org/x/net/websocket"
 	"golang.org/x/term"
 
+	starsclient "github.com/zibyn/stars-sandbox/client"
 	"github.com/zibyn/stars-sandbox/internal/ptywire"
 )
 
@@ -31,14 +30,12 @@ func runShell(c *client, args []string, stderr io.Writer) error {
 		argv = []string{"sh"}
 	}
 	rows, cols := terminalSize()
-	body := map[string]any{"argv": argv, "pty": map[string]int{"rows": rows, "cols": cols}}
-	data, err := c.do(http.MethodPost, "/api/v1/sandboxes/"+url.PathEscape(sandboxID)+"/execs", nil, body, "")
+	created, err := c.CreateExec(ctx, sandboxID, starsclient.ExecRequest{
+		Argv: argv,
+		PTY:  &starsclient.PTY{Rows: uint16(rows), Cols: uint16(cols)},
+	}, "")
 	if err != nil {
 		return err
-	}
-	var created execState
-	if err := json.Unmarshal(data, &created); err != nil {
-		return fmt.Errorf("decode Exec: %w", err)
 	}
 	if err := c.waitExecStarted(created.ID); err != nil {
 		return err
@@ -123,13 +120,9 @@ func runShell(c *client, args []string, stderr io.Writer) error {
 // start-up, so dialling earlier gets a 404 (api.md §4).
 func (c *client) waitExecStarted(id string) error {
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		data, err := c.do(http.MethodGet, "/api/v1/execs/"+url.PathEscape(id), nil, nil, "")
+		e, err := c.GetExec(ctx, id)
 		if err != nil {
 			return err
-		}
-		var e execState
-		if err := json.Unmarshal(data, &e); err != nil {
-			return fmt.Errorf("decode Exec: %w", err)
 		}
 		if e.State != "pending" {
 			return nil
@@ -139,22 +132,12 @@ func (c *client) waitExecStarted(id string) error {
 }
 
 func (c *client) dialPTY(id string) (*websocket.Conn, error) {
-	u, err := url.Parse(c.base)
-	if err != nil {
-		return nil, err
-	}
-	if u.Scheme == "https" {
-		u.Scheme = "wss"
-	} else {
-		u.Scheme = "ws"
-	}
-	u.Path = "/api/v1/execs/" + url.PathEscape(id) + "/pty"
-	config, err := websocket.NewConfig(u.String(), c.base)
+	config, err := websocket.NewConfig(c.PTYURL(id), c.BaseURL())
 	if err != nil {
 		return nil, err
 	}
 	config.Protocol = []string{"sandbox.v1"}
-	config.Header.Set("Authorization", "Bearer "+c.token)
+	config.Header.Set("Authorization", "Bearer "+c.Token())
 	return websocket.DialConfig(config)
 }
 
