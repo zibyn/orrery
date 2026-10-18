@@ -22,6 +22,11 @@ type Client struct {
 	transfers *http.Client
 }
 
+// waitForTimeout is the per-call deadline for GET ?wait_for=. The API
+// long-polls for up to 60 seconds, so the default 30-second JSON timeout
+// would cut a valid wait short.
+const waitForTimeout = 90 * time.Second
+
 // New creates a Client. baseURL is the API origin, e.g. https://stars.example.
 func New(baseURL, token string) *Client {
 	return &Client{
@@ -43,6 +48,7 @@ type Error struct {
 	AuthorizeURL string
 }
 
+// Error implements error. It prefers "code: detail", then whichever is set.
 func (e *Error) Error() string {
 	switch {
 	case e.Code == "":
@@ -97,26 +103,10 @@ func (c *Client) TunnelURL(sandboxID string, port int) string {
 
 // do performs one JSON request and decodes a successful answer into out.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any, idempotencyKey string) error {
-	status, data, err := c.send(ctx, method, path, query, body, idempotencyKey)
-	if err != nil {
-		return err
-	}
-	if status < 200 || status >= 300 {
-		return parseError(status, data)
-	}
-	if out != nil && len(data) > 0 {
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("decode response: %w", err)
-		}
-	}
-	return nil
+	return c.doWithHeaders(ctx, method, path, query, body, out, idempotencyKey, nil)
 }
 
-func (c *Client) send(ctx context.Context, method, path string, query url.Values, body any, idempotencyKey string) (int, []byte, error) {
-	return c.sendHeaders(ctx, method, path, query, body, idempotencyKey, nil)
-}
-
-func (c *Client) sendHeaders(ctx context.Context, method, path string, query url.Values, body any, idempotencyKey string, headers map[string]string) (int, []byte, error) {
+func (c *Client) sendHeaders(hc *http.Client, ctx context.Context, method, path string, query url.Values, body any, idempotencyKey string, headers map[string]string) (int, []byte, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -141,7 +131,7 @@ func (c *Client) sendHeaders(ctx context.Context, method, path string, query url
 			req.Header.Set(name, value)
 		}
 	}
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}

@@ -57,14 +57,30 @@ func (c *Client) FollowOutput(ctx context.Context, execID string, stdout, stderr
 	}
 }
 
-// writeFrame writes one output frame and returns the next byte offset.
-func writeFrame(stdout, stderr io.Writer, f Frame) int64 {
-	data := []byte(f.Data)
+// decoded returns the frame's output bytes.
+func (f Frame) decoded() []byte {
 	if f.Encoding == "base64" {
 		if raw, err := base64.StdEncoding.DecodeString(f.Data); err == nil {
-			data = raw
+			return raw
 		}
 	}
+	return []byte(f.Data)
+}
+
+// End returns the byte offset just past the frame: the next `after` value
+// (api.md §4).
+func (f Frame) End() int64 {
+	return f.Seq + frameHeaderSize + int64(len(f.decoded()))
+}
+
+// Size returns the number of output bytes the frame carries.
+func (f Frame) Size() int64 {
+	return int64(len(f.decoded()))
+}
+
+// writeFrame writes one output frame and returns the next byte offset.
+func writeFrame(stdout, stderr io.Writer, f Frame) int64 {
+	data := f.decoded()
 	switch f.Stream {
 	case "stderr":
 		_, _ = stderr.Write(data)
@@ -73,5 +89,5 @@ func writeFrame(stdout, stderr io.Writer, f Frame) int64 {
 	default:
 		_, _ = stdout.Write(data)
 	}
-	return f.Seq + frameHeaderSize + int64(len(data))
+	return f.End()
 }

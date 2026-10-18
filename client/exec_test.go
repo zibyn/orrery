@@ -63,6 +63,19 @@ func TestFollowOutputWritesFramesAndReturnsFinalState(t *testing.T) {
 	}
 }
 
+func TestFrameEndAndSizeDecodeBase64(t *testing.T) {
+	frame := Frame{Seq: 7, Stream: "stdout", Data: base64.StdEncoding.EncodeToString([]byte{0xff, 0x00}), Encoding: "base64"}
+	if got := frame.Size(); got != 2 {
+		t.Fatalf("Size() = %d, want 2", got)
+	}
+	if got := frame.End(); got != 7+5+2 {
+		t.Fatalf("End() = %d, want 14", got)
+	}
+	if got := (Frame{Seq: 0, Data: "hi"}).End(); got != 7 {
+		t.Fatalf("plain End() = %d, want 7", got)
+	}
+}
+
 func TestRunExecWithoutWaitReturnsImmediately(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(Exec{ID: "e1", State: "pending"})

@@ -230,10 +230,10 @@ func runLogin(base, configPath string, args []string, stdin io.Reader, stdout, s
 	if err != nil {
 		return fmt.Errorf("%w (if this User does not log in with a password, run again without --username and finish in the Web console)", err)
 	}
-	if out.Token == "" {
+	if out.Plaintext == "" {
 		return fmt.Errorf("login response did not contain a token")
 	}
-	if err := writeConfig(configPath, fileConfig{APIURL: base, Token: out.Token}); err != nil {
+	if err := writeConfig(configPath, fileConfig{APIURL: base, Token: out.Plaintext}); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "logged in as %s; token %q written to %s\n", *username, *name, configPath)

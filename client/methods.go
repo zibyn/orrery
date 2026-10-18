@@ -420,6 +420,13 @@ func (c *Client) GetSandbox(ctx context.Context, id, waitFor string) (*Sandbox, 
 	q := url.Values{}
 	if waitFor != "" {
 		q.Set("wait_for", waitFor)
+		// A shallow copy keeps the transport and only raises this call's
+		// deadline past the server's 60-second long poll.
+		hc := *c.http
+		hc.Timeout = waitForTimeout
+		var out Sandbox
+		err := c.doWithClient(&hc, ctx, http.MethodGet, "/api/v1/sandboxes/"+url.PathEscape(id), q, nil, &out, "", nil)
+		return &out, err
 	}
 	var out Sandbox
 	err := c.do(ctx, http.MethodGet, "/api/v1/sandboxes/"+url.PathEscape(id), q, nil, &out, "")
@@ -527,7 +534,13 @@ func (c *Client) CreatePortTicket(ctx context.Context, sandboxID string, port in
 
 // doWithHeaders is do with extra request headers (If-Match).
 func (c *Client) doWithHeaders(ctx context.Context, method, path string, query url.Values, body, out any, idempotencyKey string, headers map[string]string) error {
-	status, data, err := c.sendHeaders(ctx, method, path, query, body, idempotencyKey, headers)
+	return c.doWithClient(c.http, ctx, method, path, query, body, out, idempotencyKey, headers)
+}
+
+// doWithClient is the single status-check and decode path; hc carries the
+// per-call timeout.
+func (c *Client) doWithClient(hc *http.Client, ctx context.Context, method, path string, query url.Values, body, out any, idempotencyKey string, headers map[string]string) error {
+	status, data, err := c.sendHeaders(hc, ctx, method, path, query, body, idempotencyKey, headers)
 	if err != nil {
 		return err
 	}

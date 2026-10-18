@@ -86,6 +86,18 @@ func TestSendCarriesAuthBodyAndIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestCreatedTokenEmbedsTokenAndDecodesPlaintext(t *testing.T) {
+	var got CreatedToken
+	body := `{"id":"t1","kind":"api","name":"ci","scope":"user",` +
+		`"created_at":"2026-01-01T00:00:00Z","token":"sst_secret"}`
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "t1" || got.Name != "ci" || got.Scope != "user" || got.Plaintext != "sst_secret" {
+		t.Fatalf("CreatedToken = %+v", got)
+	}
+}
+
 func TestGetSandboxQueriesWaitFor(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("wait_for"); got != "ready" {

@@ -47,15 +47,12 @@ type Token struct {
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
+// CreatedToken is a Token together with its plaintext value, which the API
+// returns only at creation time.
 type CreatedToken struct {
-	ID         string     `json:"id"`
-	Kind       string     `json:"kind"`
-	Name       string     `json:"name"`
-	Scope      string     `json:"scope"`
-	ExpiresAt  *time.Time `json:"expires_at"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	Token      string     `json:"token"`
+	Token
+	// Plaintext is the bearer value; the API never returns it again.
+	Plaintext string `json:"token"`
 }
 
 type TokenList struct {
