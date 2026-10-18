@@ -8,12 +8,6 @@ import (
 	"strconv"
 )
 
-// podmanRootlessSocket is the rootless Podman compat API socket for a user
-// (runtime.md §9). Podman is supported rootless only.
-func podmanRootlessSocket(uid int) string {
-	return fmt.Sprintf("/run/user/%d/podman/podman.sock", uid)
-}
-
 // podmanUIDFromSocket returns the invoking user's uid when socket is a
 // rootless Podman compat socket.
 func podmanUIDFromSocket(socket string) (int, bool) {
