@@ -157,7 +157,12 @@ if ! docker image inspect alpine:3.22 >/dev/null 2>&1; then
 fi
 export STARS_DEFAULT_SNAPSHOT="${STARS_DEFAULT_SNAPSHOT:-default}"
 
+CONSOLE_AGENT_PID=""
 cleanup() {
+  if [ -n "$CONSOLE_AGENT_PID" ]; then
+    kill "$CONSOLE_AGENT_PID" >/dev/null 2>&1 || true
+    wait "$CONSOLE_AGENT_PID" 2>/dev/null || true
+  fi
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$TMPDIR" >/dev/null 2>&1 || true
 }
@@ -367,6 +372,84 @@ DOCKER_SOCKET=""
 case "${DOCKER_HOST:-}" in
   unix://*) DOCKER_SOCKET="${DOCKER_HOST#unix://}" ;;
 esac
+
+# make e2e-console: Compose starts no Node Agent, so the Playwright Sandbox
+# would never leave pending. Bootstrap the admin, mint an admin Token, enroll a
+# local Agent and wait until the Control Plane reports it ready, then drive the
+# embedded console with Playwright. The Go e2e path below is untouched when
+# STARS_E2E_CONSOLE is unset.
+run_console_e2e() {
+  local state="$TMPDIR/console-agent/identity.json"
+  local data_root="$TMPDIR/console-agent/data"
+  local log="$TMPDIR/console-agent/agent.log"
+  local admin_token packet node_name admin_id ready pnpm
+  mkdir -p "$TMPDIR/console-agent" "$data_root"
+
+  printf '%s\n' admin-password-123 | "${COMPOSE[@]}" exec -T server \
+    stars-sandbox-server bootstrap --username admin --email admin@example.com --password-stdin \
+    >/dev/null 2>&1 || true
+
+  admin_token="$(curl -fsS -H 'Content-Type: application/json' \
+    -d '{"username":"admin","password":"admin-password-123","token":{"name":"e2e-console","scope":"admin"}}' \
+    "$API_URL/api/v1/sessions" |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')"
+  # A fresh admin has the deployment default quota of zero Sandboxes.
+  admin_id="$(curl -fsS -H "Authorization: Bearer $admin_token" "$API_URL/api/v1/users/me" |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+  curl -fsS -X PUT -H "Authorization: Bearer $admin_token" -H 'Content-Type: application/json' \
+    -d '{"gpus":0,"sandboxes":10}' "$API_URL/api/v1/users/$admin_id/quota" >/dev/null
+  packet="$(curl -fsS -X POST -H "Authorization: Bearer $admin_token" \
+    "$API_URL/api/v1/enrollment-packets" |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["packet"])')"
+
+  node_name="e2e-console-$(date +%s)"
+  .e2e/stars-sandbox-agent enroll --server "$NODE_URL" --ca "$PWD/.e2e/tls/server.crt" \
+    --packet "$packet" --name "$node_name" --state "$state"
+  local run_args=(run --ca "$PWD/.e2e/tls/server.crt" --state "$state" --data-root "$data_root")
+  [ -n "$DOCKER_SOCKET" ] && run_args+=(--docker "$DOCKER_SOCKET")
+  .e2e/stars-sandbox-agent "${run_args[@]}" >"$log" 2>&1 &
+  CONSOLE_AGENT_PID=$!
+
+  ready=""
+  for _ in $(seq 1 120); do
+    ready="$(curl -fsS -H "Authorization: Bearer $admin_token" "$API_URL/api/v1/nodes?limit=100" |
+      python3 -c '
+import json, sys
+name = sys.argv[1]
+print("ready" if any(n["name"] == name and n["status"] == "ready" for n in json.load(sys.stdin)["items"]) else "")
+' "$node_name" 2>/dev/null || true)"
+    [ "$ready" = "ready" ] && break
+    if ! kill -0 "$CONSOLE_AGENT_PID" 2>/dev/null; then
+      echo "console Agent exited before becoming ready" >&2
+      cat "$log" >&2 || true
+      return 1
+    fi
+    sleep 1
+  done
+  if [ "$ready" != "ready" ]; then
+    echo "console Agent did not become ready" >&2
+    cat "$log" >&2 || true
+    return 1
+  fi
+
+  pnpm="${PNPM:-$(command -v pnpm || true)}"
+  if [ -z "$pnpm" ]; then
+    echo "pnpm not found; install pnpm 12.4.2 or set PNPM=/path/to/pnpm" >&2
+    return 1
+  fi
+  (
+    cd web
+    "$pnpm" install --frozen-lockfile
+    "$pnpm" exec playwright install chromium
+    STARS_E2E_API_URL="$API_URL" STARS_E2E_APPS_DOMAIN="$STARS_APPS_DOMAIN" \
+      "$pnpm" exec playwright test
+  )
+}
+
+if [ -n "${STARS_E2E_CONSOLE:-}" ]; then
+  run_console_e2e
+  exit 0
+fi
 
 STARS_E2E_API_URL="$API_URL" \
 STARS_E2E_ACCESS_URL="$STARS_ACCESS_URL" \
