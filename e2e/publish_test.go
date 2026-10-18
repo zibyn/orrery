@@ -125,6 +125,9 @@ printf 'hello stars\n' > /workspace/src/hello.txt
 printf '#!/bin/sh\necho run\n' > /workspace/src/bin/run.sh
 chmod +x /workspace/src/bin/run.sh
 ln -s hello.txt /workspace/src/link
+# Exec runs as root; make the tree removable by the test user's TempDir
+# cleanup. The executable bit recorded by the manifest is unaffected.
+chmod -R a+rwX /workspace/src
 `)
 
 	name := fmt.Sprintf("ws-publish-%d", suffix)
