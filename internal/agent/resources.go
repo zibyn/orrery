@@ -112,6 +112,16 @@ func (r *Runtime) ensureResourceVersion(ctx context.Context, address string) (st
 		return "", err
 	}
 
+	// Fetch and assembly hold the cache lock together: eviction runs under the
+	// same lock, so it cannot reclaim a just-downloaded object before its hard
+	// link exists (runtime.md §11). A concurrent caller that built the tree
+	// while this one waited is reused.
+	resourceTreeMu.Lock()
+	defer resourceTreeMu.Unlock()
+	if _, err := os.Stat(tree); err == nil {
+		return tree, nil
+	}
+
 	var m manifest.Manifest
 	err := retryResourceFetch(ctx, resourceFetchBackoff, func() error {
 		fetched, err := r.fetchResourceManifest(ctx, address)
@@ -309,10 +319,8 @@ func copyWithMode(src, dst string, mode os.FileMode) error {
 
 // assembleTree builds the version tree from hard links in a temporary
 // directory and renames it into place. The caller has already downloaded every
-// referenced object.
+// referenced object and holds resourceTreeMu.
 func (c *resourceCache) assembleTree(address string, m manifest.Manifest) (string, error) {
-	resourceTreeMu.Lock()
-	defer resourceTreeMu.Unlock()
 	final := c.versionPath(address)
 	if _, err := os.Stat(final); err == nil {
 		return final, nil
