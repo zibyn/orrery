@@ -290,6 +290,33 @@ func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.
 	return i, err
 }
 
+const countNodeNonTerminalSandboxes = `-- name: CountNodeNonTerminalSandboxes :one
+SELECT count(*)::bigint FROM sandboxes
+WHERE node_id = $1 AND state NOT IN ('deleted', 'failed')
+`
+
+func (q *Queries) CountNodeNonTerminalSandboxes(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countNodeNonTerminalSandboxes, nodeID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countNodeNonTerminalWorkspaces = `-- name: CountNodeNonTerminalWorkspaces :one
+SELECT count(*)::bigint FROM workspaces
+WHERE node_id = $1 AND state NOT IN ('deleted', 'failed', 'lost')
+`
+
+// Deletion requires no non-terminal Workspace (deleted, failed and lost are
+// terminal) and no non-terminal Sandbox, build rows included (only deleted and
+// failed are terminal; a stopped Sandbox still blocks) (api.md §3).
+func (q *Queries) CountNodeNonTerminalWorkspaces(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countNodeNonTerminalWorkspaces, nodeID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countResourceManifestReferences = `-- name: CountResourceManifestReferences :one
 SELECT count(*)::bigint
 FROM resource_versions rv
@@ -705,7 +732,7 @@ const createNode = `-- name: CreateNode :one
 INSERT INTO nodes (
     id, name, token_hash, agent_version, proto_major, proto_minor, last_seen_at
 ) VALUES ($1, $2, $3, $4, $5, $6, now())
-RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu
+RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at
 `
 
 type CreateNodeParams struct {
@@ -745,6 +772,7 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 		&i.ReservedMemory,
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -2112,7 +2140,7 @@ func (q *Queries) GetLiveResourceByName(ctx context.Context, arg GetLiveResource
 }
 
 const getNode = `-- name: GetNode :one
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes WHERE id = $1
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at FROM nodes WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
@@ -2136,12 +2164,13 @@ func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
 		&i.ReservedMemory,
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getNodeByName = `-- name: GetNodeByName :one
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes WHERE name = $1
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at FROM nodes WHERE name = $1
 `
 
 func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) {
@@ -2165,6 +2194,7 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 		&i.ReservedMemory,
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -3132,7 +3162,7 @@ func (q *Queries) ListActiveExecs(ctx context.Context) ([]ListActiveExecsRow, er
 }
 
 const listAllNodes = `-- name: ListAllNodes :many
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes ORDER BY id
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at FROM nodes WHERE deleted_at IS NULL ORDER BY id
 `
 
 func (q *Queries) ListAllNodes(ctx context.Context) ([]Node, error) {
@@ -3162,6 +3192,7 @@ func (q *Queries) ListAllNodes(ctx context.Context) ([]Node, error) {
 			&i.ReservedMemory,
 			&i.CpuPerGpu,
 			&i.MemoryPerGpu,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3876,8 +3907,9 @@ func (q *Queries) ListNodeSandboxObjectRefs(ctx context.Context, arg ListNodeSan
 }
 
 const listNodes = `-- name: ListNodes :many
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu FROM nodes
-WHERE ($1::uuid IS NULL OR id > $1)
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at FROM nodes
+WHERE deleted_at IS NULL
+  AND ($1::uuid IS NULL OR id > $1)
 ORDER BY id
 LIMIT $2
 `
@@ -3914,6 +3946,7 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 			&i.ReservedMemory,
 			&i.CpuPerGpu,
 			&i.MemoryPerGpu,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -5403,6 +5436,40 @@ func (q *Queries) NodePlacement(ctx context.Context, nodeID uuid.UUID) (NodePlac
 	return i, err
 }
 
+const pauseNode = `-- name: PauseNode :one
+
+UPDATE nodes SET paused = true WHERE id = $1 AND deleted_at IS NULL RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at
+`
+
+// Node pause/resume/delete (#94)
+// A tombstoned Node is hidden everywhere GetNode is used, so a second delete
+// or an Agent reconnect after deletion is not found.
+func (q *Queries) PauseNode(ctx context.Context, id uuid.UUID) (Node, error) {
+	row := q.db.QueryRow(ctx, pauseNode, id)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.TokenHash,
+		&i.Paused,
+		&i.LostAt,
+		&i.AgentVersion,
+		&i.ProtoMajor,
+		&i.ProtoMinor,
+		&i.LastSeenAt,
+		&i.RuntimeHealth,
+		&i.Capabilities,
+		&i.Hardware,
+		&i.CreatedAt,
+		&i.ReservedCpu,
+		&i.ReservedMemory,
+		&i.CpuPerGpu,
+		&i.MemoryPerGpu,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const purgeAuditRecords = `-- name: PurgeAuditRecords :exec
 DELETE FROM audit_records
 WHERE id IN (
@@ -5561,6 +5628,36 @@ func (q *Queries) RedeemEnrollmentPacket(ctx context.Context, id uuid.UUID) (Enr
 		&i.UsedAt,
 		&i.CreatedBy,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const resumeNode = `-- name: ResumeNode :one
+UPDATE nodes SET paused = false WHERE id = $1 AND deleted_at IS NULL RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at
+`
+
+func (q *Queries) ResumeNode(ctx context.Context, id uuid.UUID) (Node, error) {
+	row := q.db.QueryRow(ctx, resumeNode, id)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.TokenHash,
+		&i.Paused,
+		&i.LostAt,
+		&i.AgentVersion,
+		&i.ProtoMajor,
+		&i.ProtoMinor,
+		&i.LastSeenAt,
+		&i.RuntimeHealth,
+		&i.Capabilities,
+		&i.Hardware,
+		&i.CreatedAt,
+		&i.ReservedCpu,
+		&i.ReservedMemory,
+		&i.CpuPerGpu,
+		&i.MemoryPerGpu,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -6059,6 +6156,21 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.Runtime,
 	)
 	return i, err
+}
+
+const tombstoneNode = `-- name: TombstoneNode :execrows
+UPDATE nodes SET deleted_at = now(), token_hash = ''
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+// Deleting a Node clears its token (bytea NOT NULL, so an empty value, which
+// no token hash matches) and keeps the row as a tombstone (ADR-0014).
+func (q *Queries) TombstoneNode(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, tombstoneNode, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchPendingSandbox = `-- name: TouchPendingSandbox :execrows

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
 	"github.com/zibyn/stars-sandbox/internal/nodeproto"
@@ -102,7 +103,7 @@ func TestNodeSchedulable(t *testing.T) {
 		want          bool
 	}{
 		{"ready takes a new Workspace", ready, false, true},
-		{"paused refuses a new Workspace", paused, false, false},
+		{"paused refuses a new Workspace or a build (no bound Workspace)", paused, false, false},
 		{"paused runs a Sandbox for its bound Workspace", paused, true, true},
 		{"unavailable takes nothing", unavailable, true, false},
 		{"paused does not bypass an unhealthy Runtime", pausedUnavailable, true, false},
@@ -114,6 +115,25 @@ func TestNodeSchedulable(t *testing.T) {
 				t.Fatalf("nodeSchedulable = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// Deleting a Node has to end its live Control stream: close fires the
+// connection's done channel exactly once, so Control returns UNAUTHENTICATED
+// (ADR-0014, api.md §3).
+func TestNodeHubClose(t *testing.T) {
+	hub := newNodeHub()
+	id := uuid.New()
+	conn := &agentConn{nodeID: id, send: make(chan *nodev1.ControlMessage, 1), done: make(chan struct{})}
+	hub.register(conn)
+
+	hub.close(id)
+	hub.close(id) // idempotent: a second close must not panic
+
+	select {
+	case <-conn.done:
+	default:
+		t.Fatal("close did not end the connection")
 	}
 }
 
