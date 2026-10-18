@@ -1,40 +1,14 @@
 package cli
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	starsclient "github.com/zibyn/stars-sandbox/client"
 )
-
-type execFrame struct {
-	Seq      int64  `json:"seq"`
-	Stream   string `json:"stream"`
-	Data     string `json:"data"`
-	Encoding string `json:"encoding"`
-}
-
-type execState struct {
-	ID           string          `json:"id"`
-	State        string          `json:"state"`
-	LogTruncated bool            `json:"log_truncated"`
-	Result       json.RawMessage `json:"result"`
-}
-
-type execResult struct {
-	Cause    string `json:"cause"`
-	ExitCode *int32 `json:"exit_code"`
-	Signal   *int32 `json:"signal"`
-}
 
 type stringList []string
 
@@ -61,7 +35,11 @@ func runExec(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: stars-sandbox exec cancel <id>")
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/execs/"+url.PathEscape(fs.Arg(0))+"/cancel", nil, "")
+		e, err := c.CancelExec(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		return c.print(e)
 	default:
 		return fmt.Errorf("unknown exec command %q", args[0])
 	}
@@ -86,63 +64,51 @@ func runExecRun(c *client, args []string, stderr io.Writer) error {
 	// The Sandbox id comes before the program: flag.Parse leaves the first
 	// non-flag in NArg, so take it and treat the rest as argv.
 	sandboxID := fs.Arg(0)
-	argv := fs.Args()[1:]
-	body := map[string]any{"argv": argv}
+	req := starsclient.ExecRequest{Argv: fs.Args()[1:]}
 	if *cwd != "" {
-		body["cwd"] = *cwd
+		req.Cwd = *cwd
 	}
 	if *timeout > 0 {
-		body["timeout"] = *timeout
+		req.Timeout = timeout
 	}
 	if *useStdin {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
 		}
-		body["stdin"] = string(data)
+		stdin := string(data)
+		req.Stdin = &stdin
 	}
 	if len(env) > 0 {
-		vars := map[string]string{}
+		req.Env = map[string]string{}
 		for _, pair := range env {
 			k, v, ok := strings.Cut(pair, "=")
 			if !ok || k == "" {
 				return fmt.Errorf("--env must be KEY=VALUE, got %q", pair)
 			}
-			vars[k] = v
+			req.Env[k] = v
 		}
-		body["env"] = vars
 	}
-	data, err := c.do(http.MethodPost, "/api/v1/sandboxes/"+url.PathEscape(sandboxID)+"/execs",
-		nil, body, *idem)
+	created, err := c.CreateExec(ctx, sandboxID, req, *idem)
 	if err != nil {
 		return err
-	}
-	var created execState
-	if err := json.Unmarshal(data, &created); err != nil {
-		return fmt.Errorf("decode Exec: %w", err)
 	}
 	if *noFollow {
-		return c.print(data)
+		return c.print(created)
 	}
-	state, err := c.followExec(created.ID, 0, c.out, stderr)
+	final, err := c.FollowOutput(ctx, created.ID, c.out, stderr)
 	if err != nil {
 		return err
 	}
-	var result *execResult
-	if state.Result != nil {
-		var r execResult
-		if json.Unmarshal(state.Result, &r) == nil {
-			result = &r
-		}
-	}
-	printExecResult(stderr, created.ID, state.State, result)
-	if result != nil && result.Cause == "exited" && result.ExitCode != nil && *result.ExitCode != 0 {
-		return fmt.Errorf("command exited with status %d", *result.ExitCode)
+	printExecResult(stderr, created.ID, final.State, final.Result)
+	if final.Result != nil && final.Result.Cause == "exited" &&
+		final.Result.ExitCode != nil && *final.Result.ExitCode != 0 {
+		return fmt.Errorf("command exited with status %d", *final.Result.ExitCode)
 	}
 	return nil
 }
 
-func printExecResult(w io.Writer, id, state string, r *execResult) {
+func printExecResult(w io.Writer, id, state string, r *starsclient.ExecResult) {
 	if r == nil {
 		fmt.Fprintf(w, "exec %s: %s\n", id, state)
 		return
@@ -155,68 +121,4 @@ func printExecResult(w io.Writer, id, state string, r *execResult) {
 	default:
 		fmt.Fprintf(w, "exec %s: %s\n", id, r.Cause)
 	}
-}
-
-// followExec polls output pages until a page is empty and the Exec is
-// finished. Frames are written as they arrive.
-// ponytail: polls instead of the follow WebSocket; reuse the socket if 100 ms
-// latency matters.
-func (c *client) followExec(id string, after int64, stdout, stderr io.Writer) (execState, error) {
-	for {
-		frames, err := c.execPage(id, after)
-		if err != nil {
-			return execState{}, err
-		}
-		for _, f := range frames {
-			after = writeExecFrame(stdout, stderr, f)
-		}
-		if len(frames) > 0 {
-			continue
-		}
-		data, err := c.do(http.MethodGet, "/api/v1/execs/"+url.PathEscape(id), nil, nil, "")
-		if err != nil {
-			return execState{}, err
-		}
-		var e execState
-		if err := json.Unmarshal(data, &e); err != nil {
-			return execState{}, fmt.Errorf("decode Exec: %w", err)
-		}
-		if e.State == "finished" {
-			return e, nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func (c *client) execPage(id string, after int64) ([]execFrame, error) {
-	q := url.Values{}
-	q.Set("after", strconv.FormatInt(after, 10))
-	data, err := c.do(http.MethodGet, "/api/v1/execs/"+url.PathEscape(id)+"/output", q, nil, "")
-	if err != nil {
-		return nil, err
-	}
-	var frames []execFrame
-	if err := json.Unmarshal(data, &frames); err != nil {
-		return nil, fmt.Errorf("decode output: %w", err)
-	}
-	return frames, nil
-}
-
-// writeExecFrame writes one frame and returns the next byte offset.
-func writeExecFrame(stdout, stderr io.Writer, f execFrame) int64 {
-	data := []byte(f.Data)
-	if f.Encoding == "base64" {
-		if raw, err := base64.StdEncoding.DecodeString(f.Data); err == nil {
-			data = raw
-		}
-	}
-	switch f.Stream {
-	case "stderr":
-		_, _ = stderr.Write(data)
-	case "truncated":
-		fmt.Fprintln(stderr, "\n[output truncated]")
-	default:
-		_, _ = stdout.Write(data)
-	}
-	return f.Seq + supervisor.HeaderSize + int64(len(data))
 }

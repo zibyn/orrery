@@ -1,12 +1,10 @@
 package cli
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,29 +55,16 @@ func runFiles(c *client, args []string, stderr io.Writer) error {
 }
 
 func listFiles(c *client, id uuid.UUID, path string) error {
-	data, err := c.do(http.MethodGet, "/api/v1/sandboxes/"+id.String()+"/files", url.Values{"path": {path}}, nil, "")
+	list, err := c.ListFiles(ctx, id.String(), path)
 	if err != nil {
 		return err
-	}
-	var list struct {
-		Items []struct {
-			Path       string `json:"path"`
-			Name       string `json:"name"`
-			Type       string `json:"type"`
-			Size       int64  `json:"size"`
-			Mode       uint32 `json:"mode"`
-			LinkTarget string `json:"link_target"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(data, &list); err != nil {
-		return fmt.Errorf("decode file list: %w", err)
 	}
 	tw := tabwriter.NewWriter(c.out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TYPE\tSIZE\tMODE\tPATH")
 	for _, item := range list.Items {
 		name := item.Path
-		if item.Type == "symlink" && item.LinkTarget != "" {
-			name += " -> " + item.LinkTarget
+		if item.Type == "symlink" && item.LinkTarget != nil && *item.LinkTarget != "" {
+			name += " -> " + *item.LinkTarget
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%04o\t%s\n", item.Type, item.Size, item.Mode, name)
 	}
@@ -162,67 +147,9 @@ func downloadTo(c *client, id uuid.UUID, path, dst string) error {
 }
 
 func downloadFile(c *client, id uuid.UUID, path string, dst io.Writer) error {
-	req, err := c.fileRequest(http.MethodGet, id, "/content", path)
-	if err != nil {
-		return err
-	}
-	resp, err := transferClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if err := fileStatus(resp); err != nil {
-		return err
-	}
-	_, err = io.Copy(dst, resp.Body)
-	return err
+	return c.ReadFile(ctx, id.String(), path, dst, "")
 }
 
 func uploadFile(c *client, id uuid.UUID, path string, src io.Reader, size int64) error {
-	req, err := c.fileRequest(http.MethodPut, id, "/content", path)
-	if err != nil {
-		return err
-	}
-	req.Body = io.NopCloser(src)
-	req.ContentLength = size
-	resp, err := transferClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return fileStatus(resp)
-}
-
-func (c *client) fileRequest(method string, id uuid.UUID, suffix, path string) (*http.Request, error) {
-	q := url.Values{}
-	if path != "" {
-		q.Set("path", path)
-	}
-	endpoint := strings.TrimRight(c.base, "/") + "/api/v1/sandboxes/" + id.String() + "/files" + suffix + "?" + q.Encode()
-	req, err := http.NewRequest(method, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	return req, nil
-}
-
-func fileStatus(resp *http.Response) error {
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	var p struct {
-		Code   string `json:"code"`
-		Detail string `json:"detail"`
-	}
-	if json.Unmarshal(data, &p) == nil && p.Code != "" {
-		if p.Detail == "" {
-			return fmt.Errorf("%s", p.Code)
-		}
-		return fmt.Errorf("%s: %s", p.Code, p.Detail)
-	}
-	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	return c.WriteFile(ctx, id.String(), path, src, size)
 }

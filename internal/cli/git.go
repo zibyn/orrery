@@ -2,14 +2,15 @@ package cli
 
 import (
 	"bufio"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
+
+	starsclient "github.com/zibyn/stars-sandbox/client"
 )
 
 // runGit manages the caller's Git Account Links (ADR-0013).
@@ -27,7 +28,11 @@ func runGit(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 0 {
 			return fmt.Errorf("usage: stars-sandbox git links")
 		}
-		return c.getAndPrint("/api/v1/users/me/git-links", nil)
+		links, err := c.ListGitLinks(ctx)
+		if err != nil {
+			return err
+		}
+		return c.print(links)
 	case "unlink":
 		fs := flag.NewFlagSet("git unlink", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -37,8 +42,11 @@ func runGit(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: stars-sandbox git unlink <provider-id>")
 		}
-		return c.sendAndPrint(http.MethodDelete,
-			"/api/v1/users/me/git-links/"+url.PathEscape(fs.Arg(0)), nil, "")
+		link, err := c.DeleteGitLink(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		return c.print(link)
 	default:
 		return fmt.Errorf("unknown git command %q", args[0])
 	}
@@ -63,34 +71,22 @@ func runGitCredential(c *client, args []string, stdout, stderr io.Writer) error 
 		return fmt.Errorf("unknown git-credential action %q", action)
 	}
 
-	body := map[string]string{}
+	body := starsclient.GitCredentialRequest{}
 	if host := input["host"]; host != "" {
-		body["host"] = host
+		body.Host = host
 	}
-	status, data, err := c.send(http.MethodPost, "/api/v1/git/credential", nil, body, "")
+	cred, err := c.GitCredential(ctx, body)
 	if err != nil {
+		// A missing link is not a helper failure: name the console page on
+		// stderr and let git try the next helper (api.md §3).
+		var problem *starsclient.Error
+		if errors.As(err, &problem) && problem.Status == http.StatusNotFound {
+			if problem.AuthorizeURL != "" {
+				fmt.Fprintf(stderr, "authorize this Sandbox's owner for Git at %s\n", problem.AuthorizeURL)
+			}
+			return nil
+		}
 		return err
-	}
-	// A missing link is not a helper failure: name the console page on stderr
-	// and let git try the next helper (api.md §3).
-	if status == http.StatusNotFound {
-		var p struct {
-			AuthorizeURL string `json:"authorize_url"`
-		}
-		if json.Unmarshal(data, &p) == nil && p.AuthorizeURL != "" {
-			fmt.Fprintf(stderr, "authorize this Sandbox's owner for Git at %s\n", p.AuthorizeURL)
-		}
-		return nil
-	}
-	if status < 200 || status >= 300 {
-		return problemError(status, data)
-	}
-	var cred struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := json.Unmarshal(data, &cred); err != nil {
-		return fmt.Errorf("decode Git credential: %w", err)
 	}
 	fmt.Fprintf(stdout, "username=%s\npassword=%s\n", cred.Username, cred.Password)
 	return nil

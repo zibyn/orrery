@@ -2,20 +2,21 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"golang.org/x/term"
+
+	starsclient "github.com/zibyn/stars-sandbox/client"
 )
 
 // The external CLI speaks only the public REST API (ADR-0017).
@@ -24,11 +25,17 @@ type fileConfig struct {
 	Token  string `json:"token"`
 }
 
+// ctx is the process-wide context for API calls; the CLI has no cancellation.
+var ctx = context.Background()
+
+// client pairs the SDK with the writer command output goes to.
 type client struct {
-	base  string
-	token string
-	http  *http.Client
-	out   io.Writer
+	*starsclient.Client
+	out io.Writer
+}
+
+func newClient(base, token string, out io.Writer) *client {
+	return &client{Client: starsclient.New(base, token), out: out}
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -72,7 +79,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: no API token configured; set STARS_SANDBOX_TOKEN, pass --token, or write one to %s\n", path)
 		return 1
 	}
-	c := &client{base: base, token: tok, http: &http.Client{Timeout: 30 * time.Second}, out: stdout}
+	c := newClient(base, tok, stdout)
 
 	switch rest[0] {
 	case "user":
@@ -211,20 +218,14 @@ func runLogin(base, configPath string, args []string, stdin io.Reader, stdout, s
 	if *name == "" {
 		*name = "cli-" + time.Now().UTC().Format("20060102T150405Z")
 	}
-	c := &client{base: base, http: &http.Client{Timeout: 30 * time.Second}, out: stdout}
-	data, err := c.do(http.MethodPost, "/api/v1/sessions", nil, map[string]any{
-		"username": *username,
-		"password": password,
-		"token":    map[string]any{"name": *name, "scope": *scope},
-	}, "")
+	c := starsclient.New(base, "")
+	out, err := c.CreateSession(ctx, starsclient.SessionRequest{
+		Username: *username,
+		Password: password,
+		Token:    &starsclient.TokenRequest{Name: *name, Scope: *scope},
+	})
 	if err != nil {
 		return fmt.Errorf("%w (if this User does not log in with a password, run again without --username and finish in the Web console)", err)
-	}
-	var out struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return fmt.Errorf("decode login response: %w", err)
 	}
 	if out.Token == "" {
 		return fmt.Errorf("login response did not contain a token")
@@ -251,16 +252,10 @@ func consoleLogin(base, configPath string, stdin io.Reader, stdout, stderr io.Wr
 		return fmt.Errorf("no token pasted")
 	}
 	// Validate before storing: a typo must not replace a working config.
-	c := &client{base: base, token: token, http: &http.Client{Timeout: 30 * time.Second}, out: stdout}
-	data, err := c.do(http.MethodGet, "/api/v1/users/me", nil, nil, "")
+	c := starsclient.New(base, token)
+	me, err := c.Me(ctx)
 	if err != nil {
 		return fmt.Errorf("the token was rejected: %w", err)
-	}
-	var me struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(data, &me); err != nil {
-		return fmt.Errorf("decode user: %w", err)
 	}
 	if err := writeConfig(configPath, fileConfig{APIURL: base, Token: token}); err != nil {
 		return err
@@ -350,83 +345,20 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (c *client) do(method, path string, query url.Values, body any, idempotencyKey string) ([]byte, error) {
-	status, data, err := c.send(method, path, query, body, idempotencyKey)
+// print writes v as indented JSON, matching the server's own shape.
+func (c *client) print(v any) error {
+	data, err := json.Marshal(v)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if status < 200 || status >= 300 {
-		return nil, problemError(status, data)
-	}
-	return data, nil
-}
-
-// send performs a request and returns its status and body even on failure, so
-// callers that read problem extensions (the credential helper) can inspect it.
-func (c *client) send(method, path string, query url.Values, body any, idempotencyKey string) (int, []byte, error) {
-	endpoint := strings.TrimRight(c.base, "/") + path
-	if len(query) > 0 {
-		endpoint += "?" + query.Encode()
-	}
-	var payload io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return 0, nil, err
-		}
-		payload = bytes.NewReader(encoded)
-	}
-	req, err := http.NewRequest(method, endpoint, payload)
-	if err != nil {
-		return 0, nil, err
-	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if idempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", idempotencyKey)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, nil, err
-	}
-	return resp.StatusCode, data, nil
-}
-
-// problemError turns a problem+json body into an error, falling back to the
-// status line for a body that is not one.
-func problemError(status int, data []byte) error {
-	var p struct {
-		Code   string `json:"code"`
-		Detail string `json:"detail"`
-	}
-	if json.Unmarshal(data, &p) == nil && p.Code != "" {
-		if p.Detail == "" {
-			return fmt.Errorf("%s", p.Code)
-		}
-		return fmt.Errorf("%s: %s", p.Code, p.Detail)
-	}
-	return fmt.Errorf("HTTP %d: %s", status, strings.TrimSpace(string(data)))
-}
-
-func (c *client) print(data []byte) error {
-	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		_, writeErr := c.out.Write(data)
 		return writeErr
 	}
 	enc := json.NewEncoder(c.out)
 	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+	return enc.Encode(decoded)
 }
 
 func runUser(c *client, args []string, stderr io.Writer) error {
@@ -442,14 +374,11 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		q := url.Values{}
-		if *limit > 0 {
-			q.Set("limit", fmt.Sprint(*limit))
+		page, err := c.ListUsers(ctx, *limit, *cursor)
+		if err != nil {
+			return err
 		}
-		if *cursor != "" {
-			q.Set("cursor", *cursor)
-		}
-		return c.getAndPrint("/api/v1/users", q)
+		return c.print(page)
 	case "get":
 		fs := flag.NewFlagSet("user get", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -460,10 +389,19 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 			return fmt.Errorf("usage: stars-sandbox user get <id|me>")
 		}
 		id := fs.Arg(0)
+		var (
+			user *starsclient.User
+			err  error
+		)
 		if id == "me" {
-			return c.getAndPrint("/api/v1/users/me", nil)
+			user, err = c.Me(ctx)
+		} else {
+			user, err = c.GetUser(ctx, id)
 		}
-		return c.getAndPrint("/api/v1/users/"+url.PathEscape(id), nil)
+		if err != nil {
+			return err
+		}
+		return c.print(user)
 	case "create":
 		fs := flag.NewFlagSet("user create", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -484,14 +422,18 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		body := map[string]any{"name": *name, "login_type": *loginType, "is_admin": *isAdmin}
+		req := starsclient.CreateUserRequest{Name: *name, LoginType: *loginType, IsAdmin: *isAdmin}
 		if *email != "" {
-			body["email"] = *email
+			req.Email = email
 		}
 		if pw != "" {
-			body["password"] = pw
+			req.Password = &pw
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/users", body, *idem)
+		user, err := c.CreateUser(ctx, req, *idem)
+		if err != nil {
+			return err
+		}
+		return c.print(user)
 	case "update":
 		fs := flag.NewFlagSet("user update", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -507,29 +449,33 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: stars-sandbox user update <id> [flags]")
 		}
-		body := map[string]any{}
+		var req starsclient.UpdateUserRequest
 		set := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		if set["name"] {
-			body["name"] = *name
+			req.Name = name
 		}
 		if set["email"] {
-			body["email"] = *email
+			req.Email = email
 		}
 		if set["login-type"] {
-			body["login_type"] = *loginType
+			req.LoginType = loginType
 		}
 		if set["is-admin"] {
-			body["is_admin"] = *isAdmin
+			req.IsAdmin = isAdmin
 		}
 		if set["password"] || set["password-stdin"] {
 			pw, err := resolvePassword(*password, *passwordStdin)
 			if err != nil {
 				return err
 			}
-			body["password"] = pw
+			req.Password = &pw
 		}
-		return c.sendAndPrint(http.MethodPatch, "/api/v1/users/"+url.PathEscape(fs.Arg(0)), body, "")
+		user, err := c.UpdateUser(ctx, fs.Arg(0), req)
+		if err != nil {
+			return err
+		}
+		return c.print(user)
 	case "delete":
 		fs := flag.NewFlagSet("user delete", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -539,7 +485,11 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: stars-sandbox user delete <id>")
 		}
-		return c.sendAndPrint(http.MethodDelete, "/api/v1/users/"+url.PathEscape(fs.Arg(0)), nil, "")
+		user, err := c.DeleteUser(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		return c.print(user)
 	case "quota":
 		fs := flag.NewFlagSet("user quota", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -554,9 +504,11 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 		if *gpus < 0 || *sandboxes < 0 {
 			return fmt.Errorf("--gpus and --sandboxes are required and must be non-negative")
 		}
-		return c.sendAndPrint(http.MethodPut, "/api/v1/users/"+url.PathEscape(fs.Arg(0))+"/quota", map[string]any{
-			"gpus": *gpus, "sandboxes": *sandboxes,
-		}, "")
+		user, err := c.SetUserQuota(ctx, fs.Arg(0), int32(*gpus), int32(*sandboxes))
+		if err != nil {
+			return err
+		}
+		return c.print(user)
 	default:
 		return fmt.Errorf("unknown user command %q", args[0])
 	}
@@ -575,14 +527,11 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		q := url.Values{}
-		if *limit > 0 {
-			q.Set("limit", fmt.Sprint(*limit))
+		page, err := c.ListTokens(ctx, *limit, *cursor)
+		if err != nil {
+			return err
 		}
-		if *cursor != "" {
-			q.Set("cursor", *cursor)
-		}
-		return c.getAndPrint("/api/v1/users/me/tokens", q)
+		return c.print(page)
 	case "create":
 		fs := flag.NewFlagSet("token create", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -596,15 +545,19 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 		if *name == "" {
 			return fmt.Errorf("--name is required")
 		}
-		body := map[string]any{"name": *name, "scope": *scope}
+		req := starsclient.TokenRequest{Name: *name, Scope: *scope}
 		if *expiresAt != "" {
 			t, err := time.Parse(time.RFC3339, *expiresAt)
 			if err != nil {
 				return fmt.Errorf("--expires-at must be RFC 3339: %w", err)
 			}
-			body["expires_at"] = t
+			req.ExpiresAt = &t
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/users/me/tokens", body, *idem)
+		token, err := c.CreateToken(ctx, req, *idem)
+		if err != nil {
+			return err
+		}
+		return c.print(token)
 	case "revoke":
 		fs := flag.NewFlagSet("token revoke", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -614,34 +567,24 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: stars-sandbox token revoke <id>")
 		}
-		return c.sendAndPrint(http.MethodDelete, "/api/v1/users/me/tokens/"+url.PathEscape(fs.Arg(0)), nil, "")
+		token, err := c.RevokeToken(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		return c.print(token)
 	default:
 		// `token <provider>` fetches a Git credential for the Sandbox's owner.
 		// The API Token verbs above keep their names. Only the token goes to
 		// stdout, so GH_TOKEN=$(stars-sandbox token github) works (api.md §3).
 		if len(args) == 1 && !strings.HasPrefix(args[0], "-") {
-			status, data, err := c.send(http.MethodPost, "/api/v1/git/credential", nil,
-				map[string]string{"provider": args[0]}, "")
+			cred, err := c.GitCredential(ctx, starsclient.GitCredentialRequest{Provider: args[0]})
 			if err != nil {
-				return err
-			}
-			if status == http.StatusNotFound {
-				var problem struct {
-					AuthorizeURL string `json:"authorize_url"`
-				}
-				if json.Unmarshal(data, &problem) == nil && problem.AuthorizeURL != "" {
+				var problem *starsclient.Error
+				if errors.As(err, &problem) && problem.Status == http.StatusNotFound && problem.AuthorizeURL != "" {
 					return fmt.Errorf("no Git account is linked for %s; authorize at %s",
 						args[0], problem.AuthorizeURL)
 				}
-			}
-			if status < 200 || status >= 300 {
-				return problemError(status, data)
-			}
-			var cred struct {
-				Password string `json:"password"`
-			}
-			if err := json.Unmarshal(data, &cred); err != nil {
-				return fmt.Errorf("decode Git credential: %w", err)
+				return err
 			}
 			if cred.Password == "" {
 				return fmt.Errorf("the API returned an empty Git token")
@@ -672,15 +615,22 @@ func runSecret(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return c.sendAndPrint(http.MethodPut, "/api/v1/secrets/"+url.PathEscape(fs.Arg(0)),
-			map[string]string{"value": value}, "")
+		secret, err := c.PutSecret(ctx, fs.Arg(0), value)
+		if err != nil {
+			return err
+		}
+		return c.print(secret)
 	case "list":
 		fs := flag.NewFlagSet("secret list", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return c.getAndPrint("/api/v1/secrets", nil)
+		page, err := c.ListSecrets(ctx, 0, "")
+		if err != nil {
+			return err
+		}
+		return c.print(page)
 	case "rm":
 		fs := flag.NewFlagSet("secret rm", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -690,7 +640,11 @@ func runSecret(c *client, args []string, stderr io.Writer) error {
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: stars-sandbox secret rm <name>")
 		}
-		return c.sendAndPrint(http.MethodDelete, "/api/v1/secrets/"+url.PathEscape(fs.Arg(0)), nil, "")
+		secret, err := c.DeleteSecret(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		return c.print(secret)
 	default:
 		return fmt.Errorf("unknown secret command %q", args[0])
 	}
@@ -734,22 +688,14 @@ func runAudit(c *client, args []string, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	q := url.Values{}
-	for name, value := range map[string]string{
-		"actor": *actor, "action": *action, "target": *target,
-		"target_type": *targetType, "from": *from, "to": *to,
-	} {
-		if value != "" {
-			q.Set(name, value)
-		}
+	page, err := c.ListAudit(ctx, starsclient.AuditParams{
+		Actor: *actor, Action: *action, Target: *target, TargetType: *targetType,
+		From: *from, To: *to, Limit: *limit, Cursor: *cursor,
+	})
+	if err != nil {
+		return err
 	}
-	if *limit > 0 {
-		q.Set("limit", fmt.Sprint(*limit))
-	}
-	if *cursor != "" {
-		q.Set("cursor", *cursor)
-	}
-	return c.getAndPrint("/api/v1/audit", q)
+	return c.print(page)
 }
 
 func resolvePassword(value string, fromStdin bool) (string, error) {
@@ -760,20 +706,4 @@ func resolvePassword(value string, fromStdin bool) (string, error) {
 		return value, nil
 	}
 	return readLine(os.Stdin)
-}
-
-func (c *client) getAndPrint(path string, query url.Values) error {
-	data, err := c.do(http.MethodGet, path, query, nil, "")
-	if err != nil {
-		return err
-	}
-	return c.print(data)
-}
-
-func (c *client) sendAndPrint(method, path string, body any, idempotencyKey string) error {
-	data, err := c.do(method, path, nil, body, idempotencyKey)
-	if err != nil {
-		return err
-	}
-	return c.print(data)
 }

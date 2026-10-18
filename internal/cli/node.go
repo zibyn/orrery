@@ -3,7 +3,8 @@ package cli
 import (
 	"fmt"
 	"io"
-	"net/http"
+
+	starsclient "github.com/zibyn/stars-sandbox/client"
 )
 
 // runNode is the admin Node lifecycle surface (api.md §3, ADR-0014).
@@ -19,17 +20,37 @@ func runNode(c *client, args []string, stderr io.Writer) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: stars-sandbox node %s <id>", args[0])
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/nodes/"+args[1]+"/"+args[0], nil, "")
+		var (
+			node *starsclient.Node
+			err  error
+		)
+		if args[0] == "pause" {
+			node, err = c.PauseNode(ctx, args[1])
+		} else {
+			node, err = c.ResumeNode(ctx, args[1])
+		}
+		if err != nil {
+			return err
+		}
+		return c.print(node)
 	case "delete":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: stars-sandbox node delete <id>")
 		}
-		return c.sendAndPrint(http.MethodDelete, "/api/v1/nodes/"+args[1], nil, "")
+		node, err := c.DeleteNode(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return c.print(node)
 	case "declare-lost":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: stars-sandbox node declare-lost <id>")
 		}
-		return c.sendAndPrint(http.MethodPost, "/api/v1/nodes/"+args[1]+"/declare-lost", nil, "")
+		node, err := c.DeclareNodeLost(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return c.print(node)
 	default:
 		return fmt.Errorf("unknown node command %q", args[0])
 	}
