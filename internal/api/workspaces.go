@@ -88,11 +88,9 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 			OwnerID: p.user.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent Workspace", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, existing))
+	if replayOr(s, w, "look up idempotent Workspace", key, lookup, func(ws store.Workspace) {
+		writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, ws))
+	}) {
 		return
 	}
 	id, err := uuid.NewV7()
@@ -100,15 +98,18 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 		s.internal(w, "generate Workspace id", err)
 		return
 	}
-	ws, err := s.q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
-		ID: id, OwnerID: p.user.ID, Kind: "persistent", IdempotencyKey: key,
-	})
+	ws, replayed, err := createIdempotent(key, "workspaces_owner_idempotency", lookup,
+		func() (store.Workspace, error) {
+			return s.q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
+				ID: id, OwnerID: p.user.ID, Kind: "persistent", IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "workspaces_owner_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, existing))
-			return
-		}
 		s.internal(w, "create Workspace", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, ws))
 		return
 	}
 	s.audit(ctx, p, "workspace.create", "workspace", id.String(), map[string]any{"kind": ws.Kind})
@@ -117,24 +118,16 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 }
 
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list Workspaces", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Workspace, error) {
+			return s.q.ListWorkspaces(ctx, store.ListWorkspacesParams{
+				OwnerID: p.user.ID, After: after, Limit: limit,
+			})
+		},
+		func(ws store.Workspace) string { return EncodeCursor(ws.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListWorkspaces(r.Context(), store.ListWorkspacesParams{
-		OwnerID: p.user.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Workspaces", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(ws store.Workspace) string { return EncodeCursor(ws.ID) })
 	list := workspaceList{Items: make([]workspaceDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		list.Items = append(list.Items, s.workspaceToDTO(r.Context(), row))
@@ -306,16 +299,11 @@ func (s *Server) handleAbandonWorkspace(w http.ResponseWriter, r *http.Request, 
 
 // getOwnedWorkspace hides another User's Workspace behind 404 (api.md §1).
 func (s *Server) getOwnedWorkspace(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Workspace, bool) {
-	ws, err := s.q.GetWorkspace(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, ws.OwnerID)) {
-		writeProblem(w, "not_found", "no such Workspace")
-		return store.Workspace{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Workspace", err)
-		return store.Workspace{}, false
-	}
-	return ws, true
+	return loadVisible(s, w, ctx, p, id, "Workspace",
+		func(ctx context.Context, id uuid.UUID) (store.Workspace, uuid.UUID, error) {
+			ws, err := s.q.GetWorkspace(ctx, id)
+			return ws, ws.OwnerID, err
+		})
 }
 
 func (s *Server) workspaceToDTO(ctx context.Context, ws store.Workspace) workspaceDTO {

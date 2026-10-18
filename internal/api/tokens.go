@@ -64,47 +64,40 @@ func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req crea
 	if err != nil {
 		return store.ApiToken{}, "", false, err
 	}
-	token, err := s.q.CreateToken(ctx, store.CreateTokenParams{
-		ID:             id,
-		UserID:         userID,
-		Kind:           "token",
-		Name:           req.Name,
-		SecretHash:     hash,
-		Scope:          req.Scope,
-		ExpiresAt:      timestamptzPtr(req.ExpiresAt),
-		IdempotencyKey: key,
-	})
+	token, replayed, err := createIdempotent(key, "api_tokens_idempotency_key_unique", lookup,
+		func() (store.ApiToken, error) {
+			return s.q.CreateToken(ctx, store.CreateTokenParams{
+				ID:             id,
+				UserID:         userID,
+				Kind:           "token",
+				Name:           req.Name,
+				SecretHash:     hash,
+				Scope:          req.Scope,
+				ExpiresAt:      timestamptzPtr(req.ExpiresAt),
+				IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "api_tokens_idempotency_key_unique", lookup); replayed {
-			return existing, "", true, nil
-		}
 		if uniqueViolation(err) == "api_tokens_name_unique" {
 			return store.ApiToken{}, "", false, errTokenNameTaken
 		}
 		return store.ApiToken{}, "", false, err
 	}
+	if replayed {
+		return token, "", true, nil
+	}
 	return token, raw, false, nil
 }
 
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list tokens", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.ApiToken, error) {
+			return s.q.ListTokens(ctx, store.ListTokensParams{UserID: p.user.ID, After: after, Limit: limit})
+		},
+		func(t store.ApiToken) string { return EncodeCursor(t.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListTokens(r.Context(), store.ListTokensParams{
-		UserID: p.user.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list tokens", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(t store.ApiToken) string { return EncodeCursor(t.ID) })
 	out := tokenList{Items: make([]tokenDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		out.Items = append(out.Items, tokenToDTO(row))

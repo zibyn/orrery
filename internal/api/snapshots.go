@@ -101,7 +101,7 @@ func snapshotVisible(p *principal, snap store.Snapshot) bool {
 	if snap.OwnerID == nil {
 		return true
 	}
-	return p != nil && (*snap.OwnerID == p.user.ID || p.isAdmin())
+	return p != nil && ownerOrAdmin(p, *snap.OwnerID)
 }
 
 // loadSnapshot resolves a path id and writes not_found for a missing or
@@ -131,7 +131,7 @@ func (s *Server) requireWritableSnapshot(w http.ResponseWriter, p *principal, sn
 		writeProblem(w, "permission_denied", "platform Snapshots cannot be changed")
 		return false
 	}
-	if *snap.OwnerID != p.user.ID && !p.isAdmin() {
+	if !ownerOrAdmin(p, *snap.OwnerID) {
 		writeProblem(w, "not_found", "no such Snapshot")
 		return false
 	}
@@ -157,8 +157,7 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request, p 
 		ID: id, OwnerID: &p.user.ID, Name: req.Name,
 	})
 	if err != nil {
-		if uniqueViolation(err) == "snapshots_owner_name" {
-			writeProblem(w, "conflict", "a Snapshot with that name already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Snapshot", err)
@@ -169,24 +168,16 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request, p 
 }
 
 func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	page, next, ok := readPage(s, w, r, "list Snapshots", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Snapshot, error) {
+			return s.q.ListSnapshots(ctx, store.ListSnapshotsParams{
+				OwnerID: &p.user.ID, After: after, Limit: limit,
+			})
+		},
+		func(s store.Snapshot) string { return EncodeCursor(s.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListSnapshots(r.Context(), store.ListSnapshotsParams{
-		OwnerID: &p.user.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Snapshots", err)
-		return
-	}
-	page, next := trimPage(rows, limit, func(s store.Snapshot) string { return EncodeCursor(s.ID) })
 	items := make([]snapshotDTO, 0, len(page))
 	for _, row := range page {
 		items = append(items, snapshotToDTO(row))
@@ -246,11 +237,9 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	// The idempotent answer is the version DTO.
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent SnapshotVersion", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
+	if replayOr(s, w, "look up idempotent SnapshotVersion", key, lookup, func(v store.SnapshotVersion) {
+		writeJSON(w, http.StatusOK, snapshotVersionToDTO(v))
+	}) {
 		return
 	}
 	var req createSnapshotVersionRequest
@@ -291,16 +280,19 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		s.internal(w, "generate SnapshotVersion id", err)
 		return
 	}
-	version, err := s.q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
-		ID: id, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),
-		Source: "import", IdempotencyKey: key,
-	})
+	version, replayed, err := createIdempotent(key, "snapshot_versions_idempotency", lookup,
+		func() (store.SnapshotVersion, error) {
+			return s.q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
+				ID: id, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),
+				Source: "import", IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "snapshot_versions_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-			return
-		}
 		s.internal(w, "create SnapshotVersion", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, snapshotVersionToDTO(version))
 		return
 	}
 	s.audit(ctx, p, "snapshot.version.create", "snapshot", snap.ID.String(), map[string]any{
@@ -422,24 +414,16 @@ func (s *Server) handleListSnapshotVersions(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	limit, ok := parseLimit(r)
+	page, next, ok := readPage(s, w, r, "list SnapshotVersions", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.SnapshotVersion, error) {
+			return s.q.ListSnapshotVersions(ctx, store.ListSnapshotVersionsParams{
+				SnapshotID: snap.ID, After: after, Limit: limit,
+			})
+		},
+		func(v store.SnapshotVersion) string { return EncodeCursor(v.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListSnapshotVersions(r.Context(), store.ListSnapshotVersionsParams{
-		SnapshotID: snap.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list SnapshotVersions", err)
-		return
-	}
-	page, next := trimPage(rows, limit, func(v store.SnapshotVersion) string { return EncodeCursor(v.ID) })
 	items := make([]snapshotVersionDTO, 0, len(page))
 	for _, row := range page {
 		items = append(items, snapshotVersionToDTO(row))

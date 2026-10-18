@@ -120,11 +120,9 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request, p 
 			OwnerID: p.user.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent Resource", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, resourceToDTO(existing))
+	if replayOr(s, w, "look up idempotent Resource", key, lookup, func(r store.Resource) {
+		writeJSON(w, http.StatusOK, resourceToDTO(r))
+	}) {
 		return
 	}
 	id, err := uuid.NewV7()
@@ -132,19 +130,21 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request, p 
 		s.internal(w, "generate Resource id", err)
 		return
 	}
-	resource, err := s.q.CreateResource(ctx, store.CreateResourceParams{
-		ID: id, OwnerID: p.user.ID, Name: request.Name, IdempotencyKey: key,
-	})
+	resource, replayed, err := createIdempotent(key, "resources_owner_idempotency", lookup,
+		func() (store.Resource, error) {
+			return s.q.CreateResource(ctx, store.CreateResourceParams{
+				ID: id, OwnerID: p.user.ID, Name: request.Name, IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "resources_owner_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, resourceToDTO(existing))
-			return
-		}
-		if uniqueViolation(err) == "resources_owner_name" {
-			writeProblem(w, "conflict", "a Resource with that name already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Resource", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, resourceToDTO(resource))
 		return
 	}
 	s.audit(ctx, p, "resource.create", "resource", id.String(), map[string]any{"name": resource.Name})
@@ -152,24 +152,16 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request, p 
 }
 
 func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list Resources", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Resource, error) {
+			return s.q.ListResources(ctx, store.ListResourcesParams{
+				OwnerID: p.user.ID, After: after, Limit: limit,
+			})
+		},
+		func(resource store.Resource) string { return EncodeCursor(resource.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListResources(r.Context(), store.ListResourcesParams{
-		OwnerID: p.user.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Resources", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(resource store.Resource) string { return EncodeCursor(resource.ID) })
 	list := resourceList{Items: make([]resourceDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		list.Items = append(list.Items, resourceToDTO(row))
@@ -217,16 +209,11 @@ func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request, p 
 // getOwnedResource hides another User's Resource behind 404 (api.md §1). It
 // includes tombstones; callers decide whether one is visible.
 func (s *Server) getOwnedResource(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Resource, bool) {
-	resource, err := s.q.GetResource(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, resource.OwnerID)) {
-		writeProblem(w, "not_found", "no such Resource")
-		return store.Resource{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Resource", err)
-		return store.Resource{}, false
-	}
-	return resource, true
+	return loadVisible(s, w, ctx, p, id, "Resource",
+		func(ctx context.Context, id uuid.UUID) (store.Resource, uuid.UUID, error) {
+			resource, err := s.q.GetResource(ctx, id)
+			return resource, resource.OwnerID, err
+		})
 }
 
 // getLiveResource is the read/upload path: a tombstoned Resource is gone.
@@ -465,11 +452,9 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 			ResourceID: resource.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent ResourceVersion", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, resourceVersionToDTO(existing))
+	if replayOr(s, w, "look up idempotent ResourceVersion", key, lookup, func(v store.ResourceVersion) {
+		writeJSON(w, http.StatusOK, resourceVersionToDTO(v))
+	}) {
 		return
 	}
 
@@ -495,17 +480,20 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
-	version, err := q.CreateResourceVersion(ctx, store.CreateResourceVersionParams{
-		ID: versionID, ResourceID: resource.ID,
-		Address: &address, ManifestKey: &manifestKey, Size: manifest.TotalSize(m),
-		Provenance: provenance, IdempotencyKey: key,
-	})
+	version, replayed, err := createIdempotent(key, "resource_versions_resource_idempotency", lookup,
+		func() (store.ResourceVersion, error) {
+			return q.CreateResourceVersion(ctx, store.CreateResourceVersionParams{
+				ID: versionID, ResourceID: resource.ID,
+				Address: &address, ManifestKey: &manifestKey, Size: manifest.TotalSize(m),
+				Provenance: provenance, IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "resource_versions_resource_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, resourceVersionToDTO(existing))
-			return
-		}
 		s.internal(w, "create ResourceVersion", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, resourceVersionToDTO(version))
 		return
 	}
 	for _, object := range manifest.FileObjects(m) {
@@ -598,26 +586,16 @@ func (s *Server) handleListResourceVersions(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list ResourceVersions", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.ResourceVersion, error) {
+			return s.q.ListResourceVersions(ctx, store.ListResourceVersionsParams{
+				ResourceID: resource.ID, After: after, Limit: limit,
+			})
+		},
+		func(version store.ResourceVersion) string { return EncodeCursor(version.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListResourceVersions(ctx, store.ListResourceVersionsParams{
-		ResourceID: resource.ID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list ResourceVersions", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(version store.ResourceVersion) string {
-		return EncodeCursor(version.ID)
-	})
 	list := resourceVersionList{Items: make([]resourceVersionDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		list.Items = append(list.Items, resourceVersionToDTO(row))

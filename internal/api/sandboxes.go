@@ -136,11 +136,9 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			OwnerID: p.user.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent Sandbox", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
+	if replayOr(s, w, "look up idempotent Sandbox", key, lookup, func(sb store.Sandbox) {
+		writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, sb))
+	}) {
 		return
 	}
 
@@ -299,7 +297,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			s.internal(w, "get Workspace", err)
 			return
 		}
-		if !s.ownerOrAdmin(p, ws.OwnerID) {
+		if !ownerOrAdmin(p, ws.OwnerID) {
 			writeProblem(w, "not_found", "no such Workspace")
 			return
 		}
@@ -323,23 +321,25 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !ok {
 		return
 	}
-	sandbox, err := q.CreateSandbox(ctx, store.CreateSandboxParams{
-		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels, Runtime: runtime,
-		SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
-		GpuCount: gpuCount, GpuModel: gpuModel,
-		IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
-		TokenCt: tokenCt, TokenKeyID: tokenKeyID,
-	})
+	sandbox, replayed, err := createIdempotent(key, "sandboxes_owner_idempotency", lookup,
+		func() (store.Sandbox, error) {
+			return q.CreateSandbox(ctx, store.CreateSandboxParams{
+				ID: id, OwnerID: p.user.ID, Name: name, Labels: labels, Runtime: runtime,
+				SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
+				GpuCount: gpuCount, GpuModel: gpuModel,
+				IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
+				TokenCt: tokenCt, TokenKeyID: tokenKeyID,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "sandboxes_owner_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
-			return
-		}
-		if uniqueViolation(err) == "sandboxes_owner_name" {
-			writeProblem(w, "conflict", "a Sandbox with that name already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Sandbox", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, sandbox))
 		return
 	}
 	for _, resource := range resources {
@@ -371,8 +371,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		SandboxID: sandbox.ID, WorkspaceID: workspaceID, Mode: attachMode,
 		Generation: sandbox.Generation,
 	}); err != nil {
-		if uniqueViolation(err) == "attachments_workspace_rw" {
-			writeProblem(w, "conflict", "the Workspace already has a read-write Attachment")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Attachment", err)
@@ -753,8 +752,7 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
 		SandboxID: id, WorkspaceID: ws.ID, Mode: sb.WorkspaceMode, Generation: started.Generation,
 	}); err != nil {
-		if uniqueViolation(err) == "attachments_workspace_rw" {
-			writeProblem(w, "conflict", "the Workspace already has a read-write Attachment")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "re-create Attachment", err)
@@ -863,20 +861,11 @@ func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request, p *
 }
 
 func (s *Server) getOwnedSandbox(w http.ResponseWriter, ctx context.Context, p *principal, id uuid.UUID) (store.Sandbox, bool) {
-	sb, err := s.q.GetSandbox(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, sb.OwnerID)) {
-		writeProblem(w, "not_found", "no such Sandbox")
-		return store.Sandbox{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Sandbox", err)
-		return store.Sandbox{}, false
-	}
-	return sb, true
-}
-
-func (s *Server) ownerOrAdmin(p *principal, owner uuid.UUID) bool {
-	return p.isAdmin() || p.user.ID == owner
+	return loadVisible(s, w, ctx, p, id, "Sandbox",
+		func(ctx context.Context, id uuid.UUID) (store.Sandbox, uuid.UUID, error) {
+			sb, err := s.q.GetSandbox(ctx, id)
+			return sb, sb.OwnerID, err
+		})
 }
 
 // waitForSandbox polls until the wanted state, a terminal state, or the

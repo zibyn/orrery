@@ -25,11 +25,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 			CreatedBy: &p.user.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent user", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, userToDTO(existing))
+	if replayOr(s, w, "look up idempotent user", key, lookup, func(u store.User) {
+		writeJSON(w, http.StatusOK, userToDTO(u))
+	}) {
 		return
 	}
 
@@ -71,32 +69,30 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "generate user id", err)
 		return
 	}
-	user, err := s.q.CreateUser(ctx, store.CreateUserParams{
-		ID:             id,
-		Name:           req.Name,
-		Email:          email,
-		IsAdmin:        req.IsAdmin,
-		LoginType:      req.LoginType,
-		PasswordHash:   passwordHash,
-		GpuQuota:       s.cfg.DefaultGPUQuota,
-		SandboxQuota:   s.cfg.DefaultSandboxQuota,
-		IdempotencyKey: key,
-		CreatedBy:      &p.user.ID,
-	})
+	user, replayed, err := createIdempotent(key, "users_idempotency_key_unique", lookup,
+		func() (store.User, error) {
+			return s.q.CreateUser(ctx, store.CreateUserParams{
+				ID:             id,
+				Name:           req.Name,
+				Email:          email,
+				IsAdmin:        req.IsAdmin,
+				LoginType:      req.LoginType,
+				PasswordHash:   passwordHash,
+				GpuQuota:       s.cfg.DefaultGPUQuota,
+				SandboxQuota:   s.cfg.DefaultSandboxQuota,
+				IdempotencyKey: key,
+				CreatedBy:      &p.user.ID,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "users_idempotency_key_unique", lookup); replayed {
-			writeJSON(w, http.StatusOK, userToDTO(existing))
-			return
-		}
-		switch uniqueViolation(err) {
-		case "users_name_key":
-			writeProblem(w, "conflict", "a User with that name already exists")
-			return
-		case "users_email_unique":
-			writeProblem(w, "conflict", "a User with that email already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create user", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, userToDTO(user))
 		return
 	}
 	s.audit(r.Context(), p, "user.create", "user", user.ID.String(), map[string]any{
@@ -108,22 +104,14 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request, p *principal) {
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list users", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.User, error) {
+			return s.q.ListUsers(ctx, store.ListUsersParams{After: after, Limit: limit})
+		},
+		func(u store.User) string { return EncodeCursor(u.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListUsers(r.Context(), store.ListUsersParams{After: after, Limit: limit + 1})
-	if err != nil {
-		s.internal(w, "list users", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(u store.User) string { return EncodeCursor(u.ID) })
 	out := userList{Items: make([]userDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		out.Items = append(out.Items, userToDTO(row))
@@ -241,11 +229,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		updated, err = s.q.UpdateUser(ctx, params)
 	}
 	if err != nil {
-		if constraint := uniqueViolation(err); constraint == "users_name_key" {
-			writeProblem(w, "conflict", "a User with that name already exists")
-			return
-		} else if constraint == "users_email_unique" {
-			writeProblem(w, "conflict", "a User with that email already exists")
+		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "update user", err)

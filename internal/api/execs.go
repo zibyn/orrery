@@ -154,11 +154,9 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 			SandboxID: sandboxID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent Exec", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, execToDTO(existing))
+	if replayOr(s, w, "look up idempotent Exec", key, lookup, func(e store.Exec) {
+		writeJSON(w, http.StatusOK, execToDTO(e))
+	}) {
 		return
 	}
 	if SandboxState(sb.State) != SandboxReady || SandboxDesiredState(sb.DesiredState) != SandboxDesiredRunning {
@@ -229,17 +227,20 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	if req.Stdin != nil && pty == nil { // PTY mode ignores stdin (api.md §4)
 		stdin = []byte(*req.Stdin)
 	}
-	exec, err := s.q.CreateExec(ctx, store.CreateExecParams{
-		ID: id, SandboxID: sandboxID, Argv: argv, Env: env, Cwd: req.Cwd,
-		Stdin: stdin, TimeoutSeconds: timeout, Generation: sb.Generation,
-		IdempotencyKey: key, Pty: pty,
-	})
+	exec, replayed, err := createIdempotent(key, "execs_sandbox_idempotency", lookup,
+		func() (store.Exec, error) {
+			return s.q.CreateExec(ctx, store.CreateExecParams{
+				ID: id, SandboxID: sandboxID, Argv: argv, Env: env, Cwd: req.Cwd,
+				Stdin: stdin, TimeoutSeconds: timeout, Generation: sb.Generation,
+				IdempotencyKey: key, Pty: pty,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "execs_sandbox_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, execToDTO(existing))
-			return
-		}
 		s.internal(w, "create Exec", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, execToDTO(exec))
 		return
 	}
 	s.activity.touch(sandboxID)
@@ -256,24 +257,16 @@ func (s *Server) handleListExecs(w http.ResponseWriter, r *http.Request, p *prin
 	if _, ok := s.getOwnedSandbox(w, r.Context(), p, sandboxID); !ok {
 		return
 	}
-	limit, ok := parseLimit(r)
+	rows, next, ok := readPage(s, w, r, "list Execs", parseCursor,
+		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.Exec, error) {
+			return s.q.ListExecs(ctx, store.ListExecsParams{
+				SandboxID: sandboxID, After: after, Limit: limit,
+			})
+		},
+		func(e store.Exec) string { return EncodeCursor(e.ID) })
 	if !ok {
-		writeProblem(w, "invalid_request", "limit must be between 1 and 200")
 		return
 	}
-	after, ok := parseCursor(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "invalid cursor")
-		return
-	}
-	rows, err := s.q.ListExecs(r.Context(), store.ListExecsParams{
-		SandboxID: sandboxID, After: after, Limit: limit + 1,
-	})
-	if err != nil {
-		s.internal(w, "list Execs", err)
-		return
-	}
-	rows, next := trimPage(rows, limit, func(e store.Exec) string { return EncodeCursor(e.ID) })
 	list := execList{Items: make([]execDTO, 0, len(rows)), NextCursor: next}
 	for _, row := range rows {
 		list.Items = append(list.Items, execToDTO(row))
@@ -440,27 +433,20 @@ func (s *Server) getOwnedExec(w http.ResponseWriter, r *http.Request, p *princip
 		return store.Exec{}, false
 	}
 	ctx := r.Context()
-	e, err := s.q.GetExec(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeProblem(w, "not_found", "no such Exec")
-		return store.Exec{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Exec", err)
-		return store.Exec{}, false
-	}
-	// An Exec outlives its Sandbox: the log is durable, so ownership is read from
-	// the row even after the Sandbox is deleted.
-	sb, err := s.q.GetSandboxIncludingDeleted(ctx, e.SandboxID)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !s.ownerOrAdmin(p, sb.OwnerID)) {
-		writeProblem(w, "not_found", "no such Exec")
-		return store.Exec{}, false
-	}
-	if err != nil {
-		s.internal(w, "get Exec Sandbox", err)
-		return store.Exec{}, false
-	}
-	return e, true
+	return loadVisible(s, w, ctx, p, id, "Exec",
+		func(ctx context.Context, id uuid.UUID) (store.Exec, uuid.UUID, error) {
+			e, err := s.q.GetExec(ctx, id)
+			if err != nil {
+				return store.Exec{}, uuid.Nil, err
+			}
+			// An Exec outlives its Sandbox: the log is durable, so ownership is
+			// read from the row even after the Sandbox is deleted.
+			sb, err := s.q.GetSandboxIncludingDeleted(ctx, e.SandboxID)
+			if err != nil {
+				return store.Exec{}, uuid.Nil, err
+			}
+			return e, sb.OwnerID, nil
+		})
 }
 
 func parseAfter(r *http.Request) (int64, bool) {
