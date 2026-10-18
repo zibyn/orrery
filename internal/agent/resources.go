@@ -107,6 +107,10 @@ func (r *Runtime) ensureResourceVersion(ctx context.Context, address string) (st
 	cache := newResourceCache(r.dataRoot)
 	tree := cache.versionPath(address)
 	if _, err := os.Stat(tree); err == nil {
+		// The tree's mtime is its LRU clock for eviction (runtime.md §11);
+		// mounting it counts as a use.
+		now := time.Now()
+		_ = os.Chtimes(tree, now, now)
 		return tree, nil
 	} else if !os.IsNotExist(err) {
 		return "", err
