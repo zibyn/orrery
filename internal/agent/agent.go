@@ -336,6 +336,9 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 
 	runner := newCommandRunner(streamCtx, rt, send)
 	rt.connect(nodev1.NewNodeClient(conn), send)
+	// Cache eviction owns its own loop (runtime.md §11): a Node below the disk
+	// watermark reclaims LRU cache without touching Sandbox lifecycle.
+	go rt.evictLoop(streamCtx, opts.DiskWatermark)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {

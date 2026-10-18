@@ -236,6 +236,26 @@ func (q *Queries) CancelSnapshotVersion(ctx context.Context, id uuid.UUID) (Snap
 	return i, err
 }
 
+const clearResourceCurrent = `-- name: ClearResourceCurrent :exec
+UPDATE resources SET current_version_id = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL
+`
+
+func (q *Queries) ClearResourceCurrent(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearResourceCurrent, id)
+	return err
+}
+
+const clearSnapshotCurrent = `-- name: ClearSnapshotCurrent :exec
+UPDATE snapshots SET current_version_id = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL
+`
+
+func (q *Queries) ClearSnapshotCurrent(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearSnapshotCurrent, id)
+	return err
+}
+
 const countActiveExecs = `-- name: CountActiveExecs :one
 SELECT count(*) FROM execs WHERE sandbox_id = $1 AND finished_at IS NULL
 `
@@ -268,6 +288,51 @@ func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.
 	return i, err
 }
 
+const countResourceManifestReferences = `-- name: CountResourceManifestReferences :one
+SELECT count(*)::bigint
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3
+`
+
+type CountResourceManifestReferencesParams struct {
+	OwnerID uuid.UUID
+	Address *string
+	ID      uuid.UUID
+}
+
+// Manifest objects are content-addressed, so two versions (or a current and a
+// non-current one) can share one manifest. The sweep only deletes it when no
+// other version of the owner still names the address.
+func (q *Queries) CountResourceManifestReferences(ctx context.Context, arg CountResourceManifestReferencesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countResourceManifestReferences, arg.OwnerID, arg.Address, arg.ID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countResourceUploads = `-- name: CountResourceUploads :one
+SELECT count(*)::bigint FROM uploads WHERE resource_id = $1
+`
+
+func (q *Queries) CountResourceUploads(ctx context.Context, resourceID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countResourceUploads, resourceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countResourceVersions = `-- name: CountResourceVersions :one
+SELECT count(*)::bigint FROM resource_versions WHERE resource_id = $1
+`
+
+func (q *Queries) CountResourceVersions(ctx context.Context, resourceID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countResourceVersions, resourceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countRunningExecs = `-- name: CountRunningExecs :one
 SELECT count(*) FROM execs
 WHERE sandbox_id = $1 AND finished_at IS NULL AND started_at IS NOT NULL
@@ -295,7 +360,7 @@ func (q *Queries) CountSandboxResources(ctx context.Context, sandboxID uuid.UUID
 
 const countSandboxSnapshotReferences = `-- name: CountSandboxSnapshotReferences :one
 SELECT count(*)::bigint FROM sandboxes
-WHERE deleted_at IS NULL
+WHERE state <> 'deleted'
   AND right(snapshot_digest, length($1::text)) = $1::text
 `
 
@@ -314,6 +379,37 @@ SELECT count(*)::bigint FROM secrets WHERE owner_id = $1
 
 func (q *Queries) CountSecrets(ctx context.Context, ownerID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countSecrets, ownerID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countSnapshotVersionDigestReferences = `-- name: CountSnapshotVersionDigestReferences :one
+SELECT count(*)::bigint FROM snapshot_versions
+WHERE snapshot_id = $1 AND digest = $2 AND id <> $3
+`
+
+type CountSnapshotVersionDigestReferencesParams struct {
+	SnapshotID uuid.UUID
+	Digest     *string
+	ID         uuid.UUID
+}
+
+// Snapshot digests are unique content too; deleting a version must not remove
+// a manifest another version of the same Snapshot still uses.
+func (q *Queries) CountSnapshotVersionDigestReferences(ctx context.Context, arg CountSnapshotVersionDigestReferencesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countSnapshotVersionDigestReferences, arg.SnapshotID, arg.Digest, arg.ID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countSnapshotVersions = `-- name: CountSnapshotVersions :one
+SELECT count(*)::bigint FROM snapshot_versions WHERE snapshot_id = $1
+`
+
+func (q *Queries) CountSnapshotVersions(ctx context.Context, snapshotID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSnapshotVersions, snapshotID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -1168,6 +1264,55 @@ func (q *Queries) DeleteCASObject(ctx context.Context, arg DeleteCASObjectParams
 	return err
 }
 
+const deleteDeletedResource = `-- name: DeleteDeletedResource :exec
+DELETE FROM resources
+WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL
+`
+
+func (q *Queries) DeleteDeletedResource(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDeletedResource, id)
+	return err
+}
+
+const deleteDeletedSandboxResources = `-- name: DeleteDeletedSandboxResources :execrows
+DELETE FROM sandbox_resources sr
+USING sandboxes sb
+WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted'
+`
+
+// A deleted Sandbox no longer retains versions, but its sandbox_resources
+// rows outlive it (the row is kept for API idempotency). The sweep releases
+// those references before the version/FK checks run.
+func (q *Queries) DeleteDeletedSandboxResources(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeletedSandboxResources)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteDeletedSnapshot = `-- name: DeleteDeletedSnapshot :exec
+DELETE FROM snapshots
+WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL
+`
+
+func (q *Queries) DeleteDeletedSnapshot(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDeletedSnapshot, id)
+	return err
+}
+
+const deleteExpiredUploads = `-- name: DeleteExpiredUploads :execrows
+DELETE FROM uploads WHERE expires_at <= now()
+`
+
+func (q *Queries) DeleteExpiredUploads(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredUploads)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteGPUAllocations = `-- name: DeleteGPUAllocations :exec
 DELETE FROM gpu_allocations WHERE sandbox_id = $1
 `
@@ -1208,6 +1353,15 @@ DELETE FROM gpus WHERE node_id = $1
 
 func (q *Queries) DeleteNodeGPUs(ctx context.Context, nodeID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, deleteNodeGPUs, nodeID)
+	return err
+}
+
+const deleteResourceVersion = `-- name: DeleteResourceVersion :exec
+DELETE FROM resource_versions WHERE id = $1
+`
+
+func (q *Queries) DeleteResourceVersion(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteResourceVersion, id)
 	return err
 }
 
@@ -2893,6 +3047,79 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 	return items, nil
 }
 
+const listDeletedResources = `-- name: ListDeletedResources :many
+SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at
+LIMIT $1
+`
+
+// Tombstoned Resources keep their versions until no Sandbox references them,
+// then the version, its objects and the manifest go, and finally the row.
+func (q *Queries) ListDeletedResources(ctx context.Context, limit int32) ([]Resource, error) {
+	rows, err := q.db.Query(ctx, listDeletedResources, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Resource{}
+	for rows.Next() {
+		var i Resource
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.CurrentVersionID,
+			&i.IdempotencyKey,
+			&i.DeletedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeletedSnapshots = `-- name: ListDeletedSnapshots :many
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at
+LIMIT $1
+`
+
+// Tombstoned Snapshots drop each version once the last Sandbox reference is
+// gone (registry manifest first), then the row.
+func (q *Queries) ListDeletedSnapshots(ctx context.Context, limit int32) ([]Snapshot, error) {
+	rows, err := q.db.Query(ctx, listDeletedSnapshots, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Snapshot{}
+	for rows.Next() {
+		var i Snapshot
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.CurrentVersionID,
+			&i.DeletedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeletingWorkspaces = `-- name: ListDeletingWorkspaces :many
 SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE state = 'deleting' ORDER BY id
 `
@@ -3015,6 +3242,71 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 			&i.Generation,
 			&i.IdempotencyKey,
 			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpiredResourceVersions = `-- name: ListExpiredResourceVersions :many
+
+SELECT rv.id, rv.address, rv.manifest_key, rv.state, rv.created_at,
+       (r.current_version_id IS NOT DISTINCT FROM rv.id) AS current, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.deleted_at IS NULL
+  AND rv.created_at < $1
+  AND rv.state <> 'pending'
+  AND (r.current_version_id IS NULL OR r.current_version_id <> rv.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
+ORDER BY rv.created_at
+LIMIT $2
+`
+
+type ListExpiredResourceVersionsParams struct {
+	Cutoff pgtype.Timestamptz
+	Limit  int32
+}
+
+type ListExpiredResourceVersionsRow struct {
+	ID          uuid.UUID
+	Address     *string
+	ManifestKey *string
+	State       string
+	CreatedAt   pgtype.Timestamptz
+	Current     bool
+	OwnerID     uuid.UUID
+}
+
+// M4 ticket #90: Retention, CAS sweep and tombstone cleanup (ADR-0012).
+// ListExpiredResourceVersions is the ResourceVersion TTL sweep. The handler
+// re-applies the eligibility predicate; the filters here keep the batch small.
+func (q *Queries) ListExpiredResourceVersions(ctx context.Context, arg ListExpiredResourceVersionsParams) ([]ListExpiredResourceVersionsRow, error) {
+	rows, err := q.db.Query(ctx, listExpiredResourceVersions, arg.Cutoff, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpiredResourceVersionsRow{}
+	for rows.Next() {
+		var i ListExpiredResourceVersionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Address,
+			&i.ManifestKey,
+			&i.State,
+			&i.CreatedAt,
+			&i.Current,
+			&i.OwnerID,
 		); err != nil {
 			return nil, err
 		}
@@ -3604,6 +3896,58 @@ func (q *Queries) ListResourceVersions(ctx context.Context, arg ListResourceVers
 	return items, nil
 }
 
+const listResourceVersionsForCleanup = `-- name: ListResourceVersionsForCleanup :many
+SELECT rv.id, rv.address, rv.manifest_key, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.resource_id = $1
+  AND rv.state <> 'pending'
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
+ORDER BY rv.id
+LIMIT $2
+`
+
+type ListResourceVersionsForCleanupParams struct {
+	ResourceID uuid.UUID
+	Limit      int32
+}
+
+type ListResourceVersionsForCleanupRow struct {
+	ID          uuid.UUID
+	Address     *string
+	ManifestKey *string
+	OwnerID     uuid.UUID
+}
+
+func (q *Queries) ListResourceVersionsForCleanup(ctx context.Context, arg ListResourceVersionsForCleanupParams) ([]ListResourceVersionsForCleanupRow, error) {
+	rows, err := q.db.Query(ctx, listResourceVersionsForCleanup, arg.ResourceID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListResourceVersionsForCleanupRow{}
+	for rows.Next() {
+		var i ListResourceVersionsForCleanupRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Address,
+			&i.ManifestKey,
+			&i.OwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listResources = `-- name: ListResources :many
 SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources
 WHERE owner_id = $1
@@ -3875,6 +4219,50 @@ func (q *Queries) ListSnapshotVersions(ctx context.Context, arg ListSnapshotVers
 	return items, nil
 }
 
+const listSnapshotVersionsForCleanup = `-- name: ListSnapshotVersionsForCleanup :many
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at FROM snapshot_versions
+WHERE snapshot_id = $1
+ORDER BY id
+LIMIT $2
+`
+
+type ListSnapshotVersionsForCleanupParams struct {
+	SnapshotID uuid.UUID
+	Limit      int32
+}
+
+func (q *Queries) ListSnapshotVersionsForCleanup(ctx context.Context, arg ListSnapshotVersionsForCleanupParams) ([]SnapshotVersion, error) {
+	rows, err := q.db.Query(ctx, listSnapshotVersionsForCleanup, arg.SnapshotID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SnapshotVersion{}
+	for rows.Next() {
+		var i SnapshotVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.SnapshotID,
+			&i.Digest,
+			&i.State,
+			&i.Cause,
+			&i.Source,
+			&i.BuildSandboxID,
+			&i.BuildExecID,
+			&i.Provenance,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSnapshots = `-- name: ListSnapshots :many
 SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
 WHERE deleted_at IS NULL
@@ -3907,6 +4295,66 @@ func (q *Queries) ListSnapshots(ctx context.Context, arg ListSnapshotsParams) ([
 			&i.DeletedAt,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSweepableCASObjects = `-- name: ListSweepableCASObjects :many
+SELECT c.owner_id, c.sha256, c.created_at
+FROM cas_objects c
+WHERE c.created_at < $1
+  AND NOT EXISTS (
+    SELECT 1
+    FROM resource_version_objects rvo
+    JOIN resource_versions rv ON rv.id = rvo.version_id
+    JOIN resources r ON r.id = rv.resource_id
+    WHERE r.owner_id = c.owner_id AND rvo.sha256 = c.sha256
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM uploads u
+    JOIN resources r ON r.id = u.resource_id
+    WHERE r.owner_id = c.owner_id
+      AND u.expires_at > now()
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(u.manifest->'entries') e
+        WHERE e->>'sha256' = c.sha256
+      )
+  )
+ORDER BY c.created_at
+LIMIT $2
+`
+
+type ListSweepableCASObjectsParams struct {
+	Cutoff pgtype.Timestamptz
+	Limit  int32
+}
+
+type ListSweepableCASObjectsRow struct {
+	OwnerID   uuid.UUID
+	Sha256    string
+	CreatedAt pgtype.Timestamptz
+}
+
+// ListSweepableCASObjects finds objects past the grace window that no version
+// of the same owner references and no unexpired upload will still write. The
+// owner join is what makes the sweep owner-scoped (ADR-0021).
+func (q *Queries) ListSweepableCASObjects(ctx context.Context, arg ListSweepableCASObjectsParams) ([]ListSweepableCASObjectsRow, error) {
+	rows, err := q.db.Query(ctx, listSweepableCASObjects, arg.Cutoff, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSweepableCASObjectsRow{}
+	for rows.Next() {
+		var i ListSweepableCASObjectsRow
+		if err := rows.Scan(&i.OwnerID, &i.Sha256, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

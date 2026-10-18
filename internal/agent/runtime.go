@@ -217,6 +217,17 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	if err := r.writeWorkspaceRefFile(id, workspaceRef{ID: workspaceID.String(), Mode: mode}); err != nil {
 		return "runtime_create_failed", err
 	}
+	// The pin record is written before the trees are fetched: eviction must
+	// never mistake a tree being assembled for this Sandbox for garbage. It
+	// survives StopSandbox (a stopped Sandbox still references these) and is
+	// only dropped when the Sandbox is known to be gone; see sandboxPins.
+	pins := sandboxPins{ImageDigest: cmd.imageDigest}
+	for _, resource := range cmd.resources {
+		pins.Resources = append(pins.Resources, resource.address)
+	}
+	if err := writeSandboxPins(sandboxPath(r.dataRoot, id), pins); err != nil {
+		return "runtime_create_failed", err
+	}
 	name := containerName(id)
 
 	if running, exists, err := r.d.inspectContainer(ctx, name); err == nil && exists {

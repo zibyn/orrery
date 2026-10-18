@@ -1111,8 +1111,147 @@ WHERE state = 'building' AND source = 'import';
 -- registry address a Sandbox was created against.
 -- name: CountSandboxSnapshotReferences :one
 SELECT count(*)::bigint FROM sandboxes
-WHERE deleted_at IS NULL
+WHERE state <> 'deleted'
   AND right(snapshot_digest, length(sqlc.arg('ref')::text)) = sqlc.arg('ref')::text;
 
 -- name: GetSnapshotVersionByID :one
 SELECT * FROM snapshot_versions WHERE id = $1;
+
+-- M4 ticket #90: Retention, CAS sweep and tombstone cleanup (ADR-0012).
+
+-- ListExpiredResourceVersions is the ResourceVersion TTL sweep. The handler
+-- re-applies the eligibility predicate; the filters here keep the batch small.
+-- name: ListExpiredResourceVersions :many
+SELECT rv.id, rv.address, rv.manifest_key, rv.state, rv.created_at,
+       (r.current_version_id IS NOT DISTINCT FROM rv.id) AS current, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.deleted_at IS NULL
+  AND rv.created_at < sqlc.arg('cutoff')
+  AND rv.state <> 'pending'
+  AND (r.current_version_id IS NULL OR r.current_version_id <> rv.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
+ORDER BY rv.created_at
+LIMIT sqlc.arg('limit');
+
+-- name: DeleteResourceVersion :exec
+DELETE FROM resource_versions WHERE id = $1;
+
+-- name: DeleteExpiredUploads :execrows
+DELETE FROM uploads WHERE expires_at <= now();
+
+-- ListSweepableCASObjects finds objects past the grace window that no version
+-- of the same owner references and no unexpired upload will still write. The
+-- owner join is what makes the sweep owner-scoped (ADR-0021).
+-- name: ListSweepableCASObjects :many
+SELECT c.owner_id, c.sha256, c.created_at
+FROM cas_objects c
+WHERE c.created_at < sqlc.arg('cutoff')
+  AND NOT EXISTS (
+    SELECT 1
+    FROM resource_version_objects rvo
+    JOIN resource_versions rv ON rv.id = rvo.version_id
+    JOIN resources r ON r.id = rv.resource_id
+    WHERE r.owner_id = c.owner_id AND rvo.sha256 = c.sha256
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM uploads u
+    JOIN resources r ON r.id = u.resource_id
+    WHERE r.owner_id = c.owner_id
+      AND u.expires_at > now()
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(u.manifest->'entries') e
+        WHERE e->>'sha256' = c.sha256
+      )
+  )
+ORDER BY c.created_at
+LIMIT sqlc.arg('limit');
+
+-- Tombstoned Resources keep their versions until no Sandbox references them,
+-- then the version, its objects and the manifest go, and finally the row.
+-- name: ListDeletedResources :many
+SELECT * FROM resources
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at
+LIMIT $1;
+
+-- name: ClearResourceCurrent :exec
+UPDATE resources SET current_version_id = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL;
+
+-- name: ListResourceVersionsForCleanup :many
+SELECT rv.id, rv.address, rv.manifest_key, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.resource_id = $1
+  AND rv.state <> 'pending'
+  AND NOT EXISTS (
+    SELECT 1 FROM sandbox_resources sr
+    JOIN sandboxes sb ON sb.id = sr.sandbox_id
+    WHERE sr.resource_version_id = rv.id AND sb.state <> 'deleted'
+  )
+ORDER BY rv.id
+LIMIT $2;
+
+-- name: CountResourceVersions :one
+SELECT count(*)::bigint FROM resource_versions WHERE resource_id = $1;
+
+-- name: CountResourceUploads :one
+SELECT count(*)::bigint FROM uploads WHERE resource_id = $1;
+
+-- name: DeleteDeletedResource :exec
+DELETE FROM resources
+WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL;
+
+-- Tombstoned Snapshots drop each version once the last Sandbox reference is
+-- gone (registry manifest first), then the row.
+-- name: ListDeletedSnapshots :many
+SELECT * FROM snapshots
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at
+LIMIT $1;
+
+-- name: ClearSnapshotCurrent :exec
+UPDATE snapshots SET current_version_id = NULL
+WHERE id = $1 AND deleted_at IS NOT NULL;
+
+-- name: ListSnapshotVersionsForCleanup :many
+SELECT * FROM snapshot_versions
+WHERE snapshot_id = $1
+ORDER BY id
+LIMIT $2;
+
+-- name: CountSnapshotVersions :one
+SELECT count(*)::bigint FROM snapshot_versions WHERE snapshot_id = $1;
+
+-- name: DeleteDeletedSnapshot :exec
+DELETE FROM snapshots
+WHERE id = $1 AND deleted_at IS NOT NULL AND current_version_id IS NULL;
+
+-- Manifest objects are content-addressed, so two versions (or a current and a
+-- non-current one) can share one manifest. The sweep only deletes it when no
+-- other version of the owner still names the address.
+-- name: CountResourceManifestReferences :one
+SELECT count(*)::bigint
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3;
+
+-- Snapshot digests are unique content too; deleting a version must not remove
+-- a manifest another version of the same Snapshot still uses.
+-- name: CountSnapshotVersionDigestReferences :one
+SELECT count(*)::bigint FROM snapshot_versions
+WHERE snapshot_id = $1 AND digest = $2 AND id <> $3;
+
+-- A deleted Sandbox no longer retains versions, but its sandbox_resources
+-- rows outlive it (the row is kept for API idempotency). The sweep releases
+-- those references before the version/FK checks run.
+-- name: DeleteDeletedSandboxResources :execrows
+DELETE FROM sandbox_resources sr
+USING sandboxes sb
+WHERE sb.id = sr.sandbox_id AND sb.state = 'deleted';
