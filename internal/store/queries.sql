@@ -744,3 +744,22 @@ LIMIT sqlc.arg('limit');
 
 -- name: DeleteSecret :one
 DELETE FROM secrets WHERE owner_id = $1 AND name = $2 RETURNING *;
+
+-- Git account links
+
+-- name: UpsertGitLink :one
+INSERT INTO git_links (user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (user_id, provider_id) DO UPDATE
+SET access_token_ct = EXCLUDED.access_token_ct,
+    refresh_token_ct = EXCLUDED.refresh_token_ct,
+    key_id = EXCLUDED.key_id,
+    expires_at = EXCLUDED.expires_at,
+    updated_at = now()
+RETURNING *;
+
+-- name: ListGitLinks :many
+SELECT * FROM git_links WHERE user_id = $1 ORDER BY provider_id;
+
+-- name: DeleteGitLink :one
+DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING *;

@@ -28,6 +28,22 @@ export type CreatedToken = {
   created_at: string
 }
 
+export type ListResponse<T> = {
+  items: T[]
+  next_cursor: string | null
+}
+
+export type GitProvider = {
+  id: string
+  type: string
+  host: string
+}
+
+export type GitLink = {
+  provider_id: string
+  linked_at: string
+}
+
 type Problem = { code?: string; detail?: string }
 
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {

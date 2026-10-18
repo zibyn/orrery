@@ -23,6 +23,25 @@ services:
     ports:
       - "15556:5556"
 
+  # The e2e Git backend. scripts/e2e.sh creates the administrator, the OAuth2
+  # application and the link-flow user through the Gitea CLI and API before the
+  # Control Plane starts.
+  gitea:
+    image: gitea/gitea:1.24.6
+    # The e2e Git backend; the reference deployment does not start it.
+    profiles: ["e2e"]
+    environment:
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__server__ROOT_URL: "${STARS_GITEA_URL:-http://127.0.0.1:13000}/"
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__oauth2__ENABLED: "true"
+    volumes:
+      - gitea-data:/data
+    ports:
+      - "13000:3000"
+
   server:
     build:
       context: ..
@@ -49,10 +68,12 @@ services:
       STARS_OIDC_CLIENT_SECRET_FILE: "${STARS_OIDC_CLIENT_SECRET_FILE:-}"
       STARS_OIDC_ALLOW_SIGNUPS: "${STARS_OIDC_ALLOW_SIGNUPS:-}"
       STARS_OIDC_EMAIL_DOMAINS: "${STARS_OIDC_EMAIL_DOMAINS:-}"
+      STARS_GIT_PROVIDERS_FILE: "${STARS_GIT_PROVIDERS_FILE:-}"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
       - "${STARS_ENCRYPTION_KEYS_DIR:-./keys}:/keys:ro"
       - "${STARS_OIDC_SECRET_DIR:-./oidc}:/oidc:ro"
+      - "${STARS_GIT_PROVIDERS_DIR:-./git}:/git:ro"
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,3 +108,6 @@ services:
         condition: service_healthy
     ports:
       - "18082:8080"
+
+volumes:
+  gitea-data:

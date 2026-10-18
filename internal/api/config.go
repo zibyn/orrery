@@ -48,8 +48,11 @@ type Config struct {
 	// means those features answer with an explicit error (defaults.md).
 	EncryptionKeys *keyring.Keyring
 	// AccessURL is the externally reachable `api` address. It becomes
-	// STARS_URL in every Exec; empty leaves STARS_URL out (defaults.md).
+	// STARS_URL in every Exec and the base of Git OAuth URLs; empty turns Git
+	// account linking off (defaults.md).
 	AccessURL string
+	// GitProviders is the deployment's OAuth applications (ADR-0013).
+	GitProviders []GitProvider
 	// OIDC is the single external issuer (ADR-0020). An empty IssuerURL turns
 	// OIDC off.
 	OIDC OIDCConfig
@@ -112,6 +115,11 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if err := cfg.loadOIDC(); err != nil {
 		return Config{}, err
+	}
+	if path := os.Getenv("STARS_GIT_PROVIDERS_FILE"); path != "" {
+		if cfg.GitProviders, err = loadGitProviders(path); err != nil {
+			return Config{}, err
+		}
 	}
 	if path := os.Getenv("STARS_ENCRYPTION_KEYS_FILE"); path != "" {
 		if cfg.EncryptionKeys, err = keyring.LoadFile(path); err != nil {

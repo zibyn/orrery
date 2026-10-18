@@ -3,12 +3,46 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 )
+
+// runGit manages the caller's Git Account Links (ADR-0013).
+func runGit(c *client, args []string, stderr io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: stars-sandbox git links|unlink <provider-id>")
+	}
+	switch args[0] {
+	case "links":
+		fs := flag.NewFlagSet("git links", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("usage: stars-sandbox git links")
+		}
+		return c.getAndPrint("/api/v1/users/me/git-links", nil)
+	case "unlink":
+		fs := flag.NewFlagSet("git unlink", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: stars-sandbox git unlink <provider-id>")
+		}
+		return c.sendAndPrint(http.MethodDelete,
+			"/api/v1/users/me/git-links/"+url.PathEscape(fs.Arg(0)), nil, "")
+	default:
+		return fmt.Errorf("unknown git command %q", args[0])
+	}
+}
 
 // runGitCredential implements the helper git starts through
 // `credential.helper` (gitcredentials(7)). The helper reads git's

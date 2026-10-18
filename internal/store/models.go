@@ -105,6 +105,17 @@ type ExecLogChunk struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type GitLink struct {
+	UserID         uuid.UUID
+	ProviderID     string
+	AccessTokenCt  []byte
+	RefreshTokenCt []byte
+	KeyID          string
+	ExpiresAt      pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type Gpu struct {
 	Uuid   string
 	NodeID uuid.UUID

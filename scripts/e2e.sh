@@ -28,7 +28,7 @@ API_URL="http://127.0.0.1:18080"
 NODE_URL="127.0.0.1:18081"
 COMPOSE_FILE="$PWD/deploy/compose.yaml"
 COMPOSE_PROJECT="stars-sandbox-e2e"
-COMPOSE=(docker compose --profile oidc -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
+COMPOSE=(docker compose --profile oidc --profile e2e -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
 
 # The node listener always uses TLS (ADR-0014); a throwaway self-signed cert is
 # enough for the black-box tests. Backdate it: a remote Node whose clock is a
@@ -122,6 +122,69 @@ trap cleanup EXIT
 # A killed previous run leaves a volume whose postgres-init.sql never ran, so
 # stars_oidc would be missing. Start from a clean volume every time.
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+
+# Gitea is the e2e Git backend. It needs its administrator, its OAuth2
+# application and a user for the browser half of the link flow before the
+# Control Plane starts, because the provider file names the application's
+# secret (ADR-0013).
+export STARS_GITEA_URL="http://${HOST_GATEWAY}:13000"
+GITEA_ADMIN="gitea-admin"
+GITEA_ADMIN_PASSWORD="gitea-admin-password-123"
+GITEA_USER="gitea-user"
+GITEA_USER_PASSWORD="gitea-user-password-123"
+mkdir -p .e2e/git
+"${COMPOSE[@]}" up -d postgres gitea
+code=""
+for _ in $(seq 1 120); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:13000/api/healthz" || true)"
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+if [ "$code" != "200" ]; then
+  echo "gitea did not become ready (last status: ${code:-none})" >&2
+  "${COMPOSE[@]}" logs --no-color gitea >&2 || true
+  exit 1
+fi
+"${COMPOSE[@]}" exec -T -u git gitea gitea admin user create \
+  --username "$GITEA_ADMIN" --password "$GITEA_ADMIN_PASSWORD" \
+  --email gitea-admin@example.com --admin --must-change-password=false >/dev/null
+"${COMPOSE[@]}" exec -T -u git gitea gitea admin user create \
+  --username "$GITEA_USER" --password "$GITEA_USER_PASSWORD" \
+  --email gitea-user@example.com --must-change-password=false >/dev/null
+GITEA_TOKEN="$("${COMPOSE[@]}" exec -T -u git gitea gitea admin user generate-access-token \
+  --username "$GITEA_ADMIN" --token-name e2e --scopes all --raw | tail -n1 | tr -d '\r')"
+if [ -z "$GITEA_TOKEN" ]; then
+  echo "could not create a Gitea API token" >&2
+  exit 1
+fi
+GITEA_APP="$(curl -fsS -H "Authorization: token $GITEA_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"stars-sandbox\",\"redirect_uris\":[\"${STARS_ACCESS_URL%/}/api/v1/external-auth/gitea/callback\"],\"confidential_client\":true,\"skip_secondary_authorization\":true}" \
+  "http://127.0.0.1:13000/api/v1/user/applications/oauth2")"
+read -r GITEA_CLIENT_ID GITEA_CLIENT_SECRET < <(printf '%s' "$GITEA_APP" |
+  python3 -c 'import json, sys; app = json.load(sys.stdin); print(app["client_id"], app["client_secret"])')
+if [ -z "$GITEA_CLIENT_ID" ] || [ -z "$GITEA_CLIENT_SECRET" ]; then
+  echo "could not create the Gitea OAuth2 application: $GITEA_APP" >&2
+  exit 1
+fi
+printf '%s' "$GITEA_CLIENT_SECRET" > .e2e/git/gitea-secret
+# The server container runs as an unprivileged user; this is a throwaway
+# client secret for the e2e deployment.
+chmod 644 .e2e/git/gitea-secret
+python3 - "$GITEA_CLIENT_ID" "$STARS_GITEA_URL" > .e2e/git/providers.json <<'PY'
+import json, sys
+client_id, base_url = sys.argv[1], sys.argv[2]
+print(json.dumps([{
+    "id": "gitea",
+    "type": "gitea",
+    "client_id": client_id,
+    "client_secret_file": "/git/gitea-secret",
+    "base_url": base_url,
+    "scopes": ["read:repository", "write:repository"],
+}], indent=2))
+PY
+export STARS_GIT_PROVIDERS_DIR="$PWD/.e2e/git"
+export STARS_GIT_PROVIDERS_FILE=/git/providers.json
+
 "${COMPOSE[@]}" up -d --build
 
 code=""
@@ -168,6 +231,10 @@ STARS_E2E_ACCESS_URL="$STARS_ACCESS_URL" \
 STARS_E2E_OIDC_ACCESS_URL="$STARS_OIDC_ACCESS_URL" \
 STARS_E2E_OIDC_ISSUER_URL="$STARS_OIDC_ISSUER_URL" \
 STARS_E2E_DEX_URL="http://127.0.0.1:15556/dex" \
+STARS_E2E_GITEA_URL="$STARS_GITEA_URL" \
+STARS_E2E_GITEA_USER="$GITEA_USER" \
+STARS_E2E_GITEA_PASSWORD="$GITEA_USER_PASSWORD" \
+STARS_E2E_GIT_PROVIDER="gitea" \
 STARS_E2E_CLI="$PWD/.e2e/stars-sandbox" \
 STARS_E2E_AGENT="$PWD/.e2e/stars-sandbox-agent" \
 STARS_E2E_NODE_URL="$NODE_URL" \

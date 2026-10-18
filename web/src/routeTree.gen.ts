@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthedCliAuthRouteImport } from './routes/_authed.cli-auth'
+import { Route as AuthedGitRouteImport } from './routes/_authed.git'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -33,16 +34,23 @@ const AuthedCliAuthRoute = AuthedCliAuthRouteImport.update({
   path: '/cli-auth',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedGitRoute = AuthedGitRouteImport.update({
+  id: '/git',
+  path: '/git',
+  getParentRoute: () => AuthedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/cli-auth': typeof AuthedCliAuthRoute
+  '/git': typeof AuthedGitRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/cli-auth': typeof AuthedCliAuthRoute
+  '/git': typeof AuthedGitRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -50,13 +58,20 @@ export interface FileRoutesById {
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
   '/_authed/cli-auth': typeof AuthedCliAuthRoute
+  '/_authed/git': typeof AuthedGitRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/cli-auth'
+  fullPaths: '/' | '/login' | '/cli-auth' | '/git'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/cli-auth'
-  id: '__root__' | '/' | '/_authed' | '/login' | '/_authed/cli-auth'
+  to: '/' | '/login' | '/cli-auth' | '/git'
+  id:
+    | '__root__'
+    | '/'
+    | '/_authed'
+    | '/login'
+    | '/_authed/cli-auth'
+    | '/_authed/git'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -95,15 +110,24 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedCliAuthRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/git': {
+      id: '/_authed/git'
+      path: '/git'
+      fullPath: '/git'
+      preLoaderRoute: typeof AuthedGitRouteImport
+      parentRoute: typeof AuthedRoute
+    }
   }
 }
 
 interface AuthedRouteChildren {
   AuthedCliAuthRoute: typeof AuthedCliAuthRoute
+  AuthedGitRoute: typeof AuthedGitRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedCliAuthRoute: AuthedCliAuthRoute,
+  AuthedGitRoute: AuthedGitRoute,
 }
 
 const AuthedRouteWithChildren =

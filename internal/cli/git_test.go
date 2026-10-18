@@ -119,3 +119,36 @@ func TestTokenProvider(t *testing.T) {
 		t.Fatalf("request provider = %q, want github", got)
 	}
 }
+
+// `git links` lists the caller's links and `git unlink` deletes one by
+// provider id (ticket #79).
+func TestGitLinksAndUnlink(t *testing.T) {
+	var deleted string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/users/me/git-links", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[{"provider_id":"gitea","linked_at":"2026-10-18T00:00:00Z"}],"next_cursor":null}`))
+	})
+	mux.HandleFunc("DELETE /api/v1/users/me/git-links/{provider}", func(w http.ResponseWriter, r *http.Request) {
+		deleted = r.PathValue("provider")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"provider_id":"gitea","linked_at":"2026-10-18T00:00:00Z"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	code, stdout, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "ssk_test", "git", "links")
+	if code != 0 {
+		t.Fatalf("git links: exit %d, %s", code, stderr)
+	}
+	if !strings.Contains(stdout, `"provider_id": "gitea"`) {
+		t.Fatalf("git links stdout = %q", stdout)
+	}
+
+	code, _, stderr = runCLI(t, nil, "--api-url", srv.URL, "--token", "ssk_test", "git", "unlink", "gitea")
+	if code != 0 {
+		t.Fatalf("git unlink: exit %d, %s", code, stderr)
+	}
+	if deleted != "gitea" {
+		t.Fatalf("deleted provider = %q, want gitea", deleted)
+	}
+}

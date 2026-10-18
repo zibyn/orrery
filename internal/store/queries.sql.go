@@ -843,6 +843,31 @@ func (q *Queries) DeleteGPUAllocations(ctx context.Context, sandboxID uuid.UUID)
 	return err
 }
 
+const deleteGitLink = `-- name: DeleteGitLink :one
+DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at
+`
+
+type DeleteGitLinkParams struct {
+	UserID     uuid.UUID
+	ProviderID string
+}
+
+func (q *Queries) DeleteGitLink(ctx context.Context, arg DeleteGitLinkParams) (GitLink, error) {
+	row := q.db.QueryRow(ctx, deleteGitLink, arg.UserID, arg.ProviderID)
+	var i GitLink
+	err := row.Scan(
+		&i.UserID,
+		&i.ProviderID,
+		&i.AccessTokenCt,
+		&i.RefreshTokenCt,
+		&i.KeyID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const deleteNodeGPUs = `-- name: DeleteNodeGPUs :exec
 DELETE FROM gpus WHERE node_id = $1
 `
@@ -2072,6 +2097,39 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 			&i.Generation,
 			&i.IdempotencyKey,
 			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitLinks = `-- name: ListGitLinks :many
+SELECT user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at FROM git_links WHERE user_id = $1 ORDER BY provider_id
+`
+
+func (q *Queries) ListGitLinks(ctx context.Context, userID uuid.UUID) ([]GitLink, error) {
+	rows, err := q.db.Query(ctx, listGitLinks, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GitLink{}
+	for rows.Next() {
+		var i GitLink
+		if err := rows.Scan(
+			&i.UserID,
+			&i.ProviderID,
+			&i.AccessTokenCt,
+			&i.RefreshTokenCt,
+			&i.KeyID,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3617,6 +3675,52 @@ func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPassword
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const upsertGitLink = `-- name: UpsertGitLink :one
+
+INSERT INTO git_links (user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (user_id, provider_id) DO UPDATE
+SET access_token_ct = EXCLUDED.access_token_ct,
+    refresh_token_ct = EXCLUDED.refresh_token_ct,
+    key_id = EXCLUDED.key_id,
+    expires_at = EXCLUDED.expires_at,
+    updated_at = now()
+RETURNING user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at
+`
+
+type UpsertGitLinkParams struct {
+	UserID         uuid.UUID
+	ProviderID     string
+	AccessTokenCt  []byte
+	RefreshTokenCt []byte
+	KeyID          string
+	ExpiresAt      pgtype.Timestamptz
+}
+
+// Git account links
+func (q *Queries) UpsertGitLink(ctx context.Context, arg UpsertGitLinkParams) (GitLink, error) {
+	row := q.db.QueryRow(ctx, upsertGitLink,
+		arg.UserID,
+		arg.ProviderID,
+		arg.AccessTokenCt,
+		arg.RefreshTokenCt,
+		arg.KeyID,
+		arg.ExpiresAt,
+	)
+	var i GitLink
+	err := row.Scan(
+		&i.UserID,
+		&i.ProviderID,
+		&i.AccessTokenCt,
+		&i.RefreshTokenCt,
+		&i.KeyID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

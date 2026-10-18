@@ -93,6 +93,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runPortForward(c, rest[1:])
 	case "git-credential":
 		err = runGitCredential(c, rest[1:], stdout, stderr)
+	case "git":
+		err = runGit(c, rest[1:], stderr)
 	default:
 		err = fmt.Errorf("unknown command %q", rest[0])
 	}
@@ -112,6 +114,8 @@ commands:
   token list|create|revoke
   token <provider>                  fetch a Git credential by provider id
   git-credential get|store|erase    git credential helper (Sandbox only)
+  git links                         list linked Git providers
+  git unlink <provider-id>          unlink a Git account
   secret set [--file PATH] <name>   write a value from stdin or a file
   secret list
   secret rm <name>
@@ -143,6 +147,8 @@ examples:
   stars-sandbox files ls <sandbox-id> src
   stars-sandbox files cp ./config.toml <sandbox-id>:src/config.toml
   stars-sandbox files cp <sandbox-id>:out/report.txt .
+  stars-sandbox git links
+  stars-sandbox git unlink gitea
   stars-sandbox port-forward <sandbox-id> 8080:3000
 `)
 }
