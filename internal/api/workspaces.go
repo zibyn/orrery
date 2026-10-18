@@ -170,6 +170,23 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request, p
 		writeJSON(w, http.StatusAccepted, s.workspaceToDTO(ctx, ws))
 		return
 	}
+	// A lost Workspace has no live storage to clean up: it reaches deleted
+	// without a Node command (ADR-0014).
+	if WorkspaceState(ws.State) == WorkspaceLost {
+		if _, err := s.q.MarkWorkspaceDeleted(ctx, store.MarkWorkspaceDeletedParams{
+			ID: ws.ID, Generation: ws.Generation,
+		}); err != nil {
+			s.internal(w, "delete Workspace", err)
+			return
+		}
+		if current, err := s.q.GetWorkspace(ctx, ws.ID); err == nil {
+			ws = current
+		}
+		s.audit(ctx, p, "workspace.delete", "workspace", ws.ID.String(), nil)
+		s.changed(ctx)
+		writeJSON(w, http.StatusAccepted, s.workspaceToDTO(ctx, ws))
+		return
+	}
 	if _, err := s.q.SetWorkspaceDeleting(ctx, ws.ID); err != nil {
 		s.internal(w, "delete Workspace", err)
 		return
@@ -180,6 +197,111 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request, p
 	s.audit(ctx, p, "workspace.delete", "workspace", ws.ID.String(), nil)
 	s.changed(ctx)
 	writeJSON(w, http.StatusAccepted, s.workspaceToDTO(ctx, ws))
+}
+
+// handleDeclareWorkspaceLost is the admin act for one Workspace on a live Node
+// whose storage failed (ADR-0014). Its Sandboxes fail with workspace_lost, and
+// the Reconciler later tears their Runtimes down through the stop path.
+func (s *Server) handleDeclareWorkspaceLost(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "invalid_request", "id must be a UUID")
+		return
+	}
+	ctx := r.Context()
+	ws, err := s.q.GetWorkspace(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "not_found", "no such Workspace")
+		return
+	}
+	if err != nil {
+		s.internal(w, "get Workspace", err)
+		return
+	}
+	switch WorkspaceState(ws.State) {
+	case WorkspaceProvisioning, WorkspaceReady:
+	default:
+		writeProblem(w, "conflict", "only a provisioning or ready Workspace can be declared lost")
+		return
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.internal(w, "declare Workspace lost", err)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	lost, err := q.MarkWorkspaceLost(ctx, id)
+	if err != nil {
+		s.internal(w, "declare Workspace lost", err)
+		return
+	}
+	if lost == 0 {
+		writeProblem(w, "conflict", "the Workspace is no longer provisioning or ready")
+		return
+	}
+	if _, err := q.FailSandboxesOnWorkspaceLost(ctx, &id); err != nil {
+		s.internal(w, "declare Workspace lost", err)
+		return
+	}
+	if _, err := q.FinishExecsOnWorkspaceLost(ctx, &id); err != nil {
+		s.internal(w, "declare Workspace lost", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.internal(w, "declare Workspace lost", err)
+		return
+	}
+	s.audit(ctx, p, "workspace.declare_lost", "workspace", id.String(), nil)
+	s.changed(ctx)
+
+	if ws, err = s.q.GetWorkspace(ctx, id); err != nil {
+		s.internal(w, "get Workspace", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, ws))
+}
+
+// handleAbandonWorkspace drops the cleanup of a Workspace stuck in deleting,
+// reaching deleted without a Node command (api.md §3).
+func (s *Server) handleAbandonWorkspace(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "invalid_request", "id must be a UUID")
+		return
+	}
+	ctx := r.Context()
+	ws, err := s.q.GetWorkspace(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "not_found", "no such Workspace")
+		return
+	}
+	if err != nil {
+		s.internal(w, "get Workspace", err)
+		return
+	}
+	if WorkspaceState(ws.State) != WorkspaceDeleting {
+		writeProblem(w, "conflict", "only a deleting Workspace can be abandoned")
+		return
+	}
+	rows, err := s.q.MarkWorkspaceAbandoned(ctx, id)
+	if err != nil {
+		s.internal(w, "abandon Workspace", err)
+		return
+	}
+	if rows == 0 {
+		writeProblem(w, "conflict", "the Workspace is no longer deleting")
+		return
+	}
+	s.audit(ctx, p, "workspace.abandon", "workspace", id.String(), nil)
+	s.changed(ctx)
+
+	if ws, err = s.q.GetWorkspace(ctx, id); err != nil {
+		s.internal(w, "get Workspace", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, ws))
 }
 
 // getOwnedWorkspace hides another User's Workspace behind 404 (api.md §1).

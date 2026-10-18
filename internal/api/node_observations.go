@@ -94,10 +94,20 @@ func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, gener
 		n.s.reconcile.notify()
 		return
 	}
+	sb, err := n.s.q.GetSandbox(ctx, id)
+	if err != nil {
+		return
+	}
+	// A Sandbox failed by a Workspace loss keeps its failed cause; the Runtime
+	// being gone is what releases its compute (ADR-0017).
+	if SandboxState(sb.State) == SandboxFailed {
+		n.releaseCompute(ctx, id)
+		n.s.reconcile.notify()
+		return
+	}
 	// A deleted Sandbox waits for its runtime to be gone before the Workspace
 	// can be removed.
-	sb, err := n.s.q.GetSandbox(ctx, id)
-	if err != nil || SandboxDesiredState(sb.DesiredState) != SandboxDesiredDeleted {
+	if SandboxDesiredState(sb.DesiredState) != SandboxDesiredDeleted {
 		return
 	}
 	tx, err := n.s.pool.Begin(ctx)
