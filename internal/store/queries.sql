@@ -410,13 +410,13 @@ WHERE id = $1 AND desired_state = 'deleted';
 
 -- name: MarkSandboxReady :execrows
 UPDATE sandboxes
-SET state = 'ready', cause = NULL, last_activity_at = now(), updated_at = now()
+SET state = 'ready', cause = NULL, conditions = NULL, last_activity_at = now(), updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning');
 
 -- name: MarkSandboxFailed :execrows
 UPDATE sandboxes
-SET state = 'failed', cause = $3, desired_state = 'stopped', updated_at = now()
+SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', updated_at = now()
 WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
 -- name: MarkSandboxRuntimeLost :execrows
@@ -442,9 +442,33 @@ WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'run
 
 -- name: MarkSandboxStopped :execrows
 UPDATE sandboxes
-SET state = 'stopped', updated_at = now()
+SET state = 'stopped', conditions = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping');
+
+-- Sandbox Resource mounts: versions pinned at create time. The Reconciler
+-- sends the address on every create, so a restarted Sandbox mounts what it was
+-- created with (runtime.md §11).
+-- name: CreateSandboxResource :exec
+INSERT INTO sandbox_resources (sandbox_id, resource_version_id, mount)
+VALUES ($1, $2, $3);
+
+-- name: ListSandboxResourceMounts :many
+SELECT sr.mount, rv.address
+FROM sandbox_resources sr
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+WHERE sr.sandbox_id = $1
+ORDER BY sr.mount;
+
+-- name: CountSandboxResources :one
+SELECT count(*)::bigint FROM sandbox_resources WHERE sandbox_id = $1;
+
+-- SetSandboxConditions writes the Agent-reported condition set under the
+-- generation fence.
+-- name: SetSandboxConditions :execrows
+UPDATE sandboxes
+SET conditions = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
 -- Admission requests
 
@@ -782,6 +806,10 @@ RETURNING *;
 -- name: GetResource :one
 SELECT * FROM resources WHERE id = $1;
 
+-- name: GetResourceByName :one
+SELECT * FROM resources
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL;
+
 -- name: GetResourceByIdempotencyKey :one
 SELECT * FROM resources
 WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
@@ -883,3 +911,32 @@ LIMIT 1;
 
 -- name: DeleteUpload :exec
 DELETE FROM uploads WHERE id = $1;
+
+-- Presign authorization (node-protocol.md "Presign")
+--
+-- Only objects and manifests of versions mounted by a Sandbox (including a
+-- build row later) allocated to this Node may be signed for GET. CAS keys are
+-- owner-scoped, so the caller needs the Resource's owner (ADR-0021).
+
+-- name: ListNodeSandboxObjectRefs :many
+SELECT DISTINCT r.owner_id, rv.id AS version_id
+FROM sandbox_resources sr
+JOIN sandboxes sb ON sb.id = sr.sandbox_id
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+JOIN resources r ON r.id = rv.resource_id
+JOIN resource_version_objects rvo ON rvo.version_id = rv.id
+WHERE sb.node_id = $1 AND sb.state <> 'deleted' AND rvo.sha256 = $2;
+
+-- name: ListNodeSandboxManifestOwner :one
+SELECT r.owner_id
+FROM sandbox_resources sr
+JOIN sandboxes sb ON sb.id = sr.sandbox_id
+JOIN resource_versions rv ON rv.id = sr.resource_version_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE sb.node_id = $1 AND sb.state <> 'deleted' AND rv.address = $2
+LIMIT 1;
+
+-- name: MarkResourceVersionUnavailable :execrows
+UPDATE resource_versions
+SET state = 'unavailable'
+WHERE id = $1 AND state = 'ready';
