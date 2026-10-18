@@ -162,11 +162,11 @@ func (r *reconciler) execs(ctx context.Context) {
 		switch execStep(facts, connected, delivered) {
 		case execRuntimeLost:
 			// The Runtime is gone, so every remaining Exec failed with it.
-			r.finishExec(ctx, e.ID, "runtime_lost")
+			r.finishExec(ctx, e.ID, ExecRuntimeLost)
 		case execFinishCanceled:
 			// The command never reached the Supervisor; there is nothing to
 			// signal.
-			r.finishExec(ctx, e.ID, "canceled")
+			r.finishExec(ctx, e.ID, ExecCanceled)
 		case execSendCancel:
 			id := commandID("cancel-exec", e.ID, e.Generation)
 			r.send(ctx, row.SandboxNodeID, id, &nodev1.ControlMessage{
@@ -190,13 +190,13 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	e := row.Exec
 	var argv []string
 	if err := json.Unmarshal(e.Argv, &argv); err != nil || len(argv) == 0 {
-		r.finishExec(ctx, e.ID, "start_failed")
+		r.finishExec(ctx, e.ID, ExecStartFailed)
 		return
 	}
 	env := map[string]string{}
 	if len(e.Env) > 0 {
 		if err := json.Unmarshal(e.Env, &env); err != nil {
-			r.finishExec(ctx, e.ID, "start_failed")
+			r.finishExec(ctx, e.ID, ExecStartFailed)
 			return
 		}
 	}
@@ -205,7 +205,7 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	secretEnv, err := decryptSecretEnv(r.s.cfg.EncryptionKeys, row.SandboxOwnerID, row.SandboxSecretEnvCt)
 	if err != nil {
 		r.s.log.Warn("reconcile: decrypt Secrets", "exec_id", e.ID, "error", err)
-		r.finishExec(ctx, e.ID, "start_failed")
+		r.finishExec(ctx, e.ID, ExecStartFailed)
 		return
 	}
 	// The Sandbox Token travels in secret_env, not in CreateSandbox, so a
@@ -214,7 +214,7 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 		row.SandboxTokenCt, row.SandboxTokenKeyID)
 	if err != nil {
 		r.s.log.Warn("reconcile: open Sandbox Token", "exec_id", e.ID, "error", err)
-		r.finishExec(ctx, e.ID, "start_failed")
+		r.finishExec(ctx, e.ID, ExecStartFailed)
 		return
 	}
 	if secretEnv == nil {
@@ -234,7 +234,7 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	if hasPTY(e.Pty) {
 		var size ptySize
 		if err := json.Unmarshal(e.Pty, &size); err != nil {
-			r.finishExec(ctx, e.ID, "start_failed")
+			r.finishExec(ctx, e.ID, ExecStartFailed)
 			return
 		}
 		pty = &nodev1.PtySpec{Rows: int32(size.Rows), Cols: int32(size.Cols)}
@@ -250,8 +250,8 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	})
 }
 
-func (r *reconciler) finishExec(ctx context.Context, id uuid.UUID, cause string) {
-	if _, err := r.s.q.FinishExec(ctx, store.FinishExecParams{ID: id, Cause: &cause}); err != nil {
+func (r *reconciler) finishExec(ctx context.Context, id uuid.UUID, cause ExecCause) {
+	if err := finishExec(ctx, r.s.q, id, cause, nil, nil); err != nil {
 		r.s.log.Warn("reconcile: finish Exec", "exec_id", id, "error", err)
 	}
 }

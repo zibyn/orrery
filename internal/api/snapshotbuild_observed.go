@@ -143,9 +143,9 @@ func (n *nodeService) finishBuildObserved(ctx context.Context, version store.Sna
 	}
 	execCause := execCauseForVersionCause(cause)
 	if ready != nil {
-		execCause = "exited"
+		execCause = ExecExited
 	}
-	if _, err := q.FinishExec(ctx, store.FinishExecParams{ID: *version.BuildExecID, Cause: &execCause}); err != nil {
+	if err := finishExec(ctx, q, *version.BuildExecID, execCause, nil, nil); err != nil {
 		n.s.log.Warn("finish build Exec", "exec_id", *version.BuildExecID, "error", err)
 		return
 	}

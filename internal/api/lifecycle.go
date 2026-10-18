@@ -169,3 +169,48 @@ func releaseRuntime(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) 
 	}
 	return errors.Join(errs...)
 }
+
+// ExecCause is the platform cause of an Exec's terminal result (api.md §4).
+// The Agent reports its own causes on the wire; these are the closed set the
+// Control Plane stores and serves.
+type ExecCause string
+
+const (
+	ExecExited      ExecCause = "exited"
+	ExecCanceled    ExecCause = "canceled"
+	ExecTimedOut    ExecCause = "timed_out"
+	ExecOOMKilled   ExecCause = "oom_killed"
+	ExecRuntimeLost ExecCause = "runtime_lost"
+	ExecNodeLost    ExecCause = "node_lost"
+	ExecPTYIdle     ExecCause = "pty_idle"
+	ExecStartFailed ExecCause = "start_failed"
+)
+
+// execCauseNames is the wire enum in lifecycle order, used by the OpenAPI
+// document.
+var execCauseNames = []string{
+	string(ExecExited), string(ExecCanceled), string(ExecTimedOut),
+	string(ExecOOMKilled), string(ExecRuntimeLost), string(ExecNodeLost),
+	string(ExecPTYIdle), string(ExecStartFailed),
+}
+
+// finishExec records an Exec's terminal result. The Control Plane passes a
+// cause alone; the Supervisor's exit code and signal come through Output.
+// A second finish is a no-op at the database.
+func finishExec(ctx context.Context, q *store.Queries, execID uuid.UUID, cause ExecCause, exitCode, signal *int32) error {
+	c := string(cause)
+	_, err := q.FinishExec(ctx, store.FinishExecParams{
+		ID: execID, Cause: &c, ExitCode: exitCode, Signal: signal,
+	})
+	return err
+}
+
+// finishSandboxExecs ends every unfinished Exec of a Sandbox up to a
+// generation; the Runtime that could still produce their output is gone.
+func finishSandboxExecs(ctx context.Context, q *store.Queries, sandboxID uuid.UUID, cause ExecCause, generation int64) error {
+	c := string(cause)
+	_, err := q.FinishSandboxExecs(ctx, store.FinishSandboxExecsParams{
+		SandboxID: sandboxID, Cause: &c, Generation: generation,
+	})
+	return err
+}

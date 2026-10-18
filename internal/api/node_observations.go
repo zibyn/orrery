@@ -70,9 +70,7 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, generation int64) {
 	// The runtime can no longer produce output; an Exec still marked active is
 	// lost with it (api.md §4).
-	if _, err := n.s.q.FinishSandboxExecs(ctx, store.FinishSandboxExecsParams{
-		SandboxID: id, Cause: strPtr("runtime_lost"), Generation: generation,
-	}); err != nil {
+	if err := finishSandboxExecs(ctx, n.s.q, id, ExecRuntimeLost, generation); err != nil {
 		n.s.log.Warn("finish lost Execs", "sandbox_id", id, "error", err)
 	}
 	if _, err := n.s.q.MarkSandboxStopped(ctx, store.MarkSandboxStoppedParams{

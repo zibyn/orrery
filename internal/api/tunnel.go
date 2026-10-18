@@ -324,7 +324,7 @@ func serveExitOnly(w http.ResponseWriter, r *http.Request, e store.Exec) {
 			return nil
 		},
 		Handler: func(conn *websocket.Conn) {
-			frame := map[string]any{"type": "exit", "cause": "exited"}
+			frame := map[string]any{"type": "exit", "cause": string(ExecExited)}
 			if e.Cause != nil {
 				frame["cause"] = *e.Cause
 			}

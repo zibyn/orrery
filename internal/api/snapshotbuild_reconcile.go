@@ -57,7 +57,7 @@ func (r *reconciler) build(ctx context.Context, row store.ListBuildRunsRow, now 
 		if _, err := r.s.q.CancelSnapshotVersion(ctx, version.ID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			r.s.log.Warn("reconcile: cancel build version", "version_id", version.ID, "error", err)
 		}
-		r.cleanupBuild(ctx, row, "canceled")
+		r.cleanupBuild(ctx, row, ExecCanceled)
 		return
 	}
 	if buildExpired(row, now) {
@@ -166,7 +166,7 @@ func (r *reconciler) buildCommand(ctx context.Context, row store.ListBuildRunsRo
 // cleanupBuild stops the build on the Node (best effort) and releases the
 // build row once its version is terminal. Every step is idempotent, so the
 // sweep retries until it succeeds.
-func (r *reconciler) cleanupBuild(ctx context.Context, row store.ListBuildRunsRow, cause string) {
+func (r *reconciler) cleanupBuild(ctx context.Context, row store.ListBuildRunsRow, cause ExecCause) {
 	if !row.ExecFinishedAt.Valid {
 		id := commandID("cancel-exec", row.ExecID, row.ExecGeneration)
 		r.send(ctx, row.Sandbox.NodeID, id, &nodev1.ControlMessage{
@@ -182,9 +182,7 @@ func (r *reconciler) cleanupBuild(ctx context.Context, row store.ListBuildRunsRo
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := r.s.q.WithTx(tx)
 	if !row.ExecFinishedAt.Valid {
-		if _, err := q.FinishExec(ctx, store.FinishExecParams{
-			ID: row.ExecID, Cause: &cause,
-		}); err != nil {
+		if err := finishExec(ctx, q, row.ExecID, cause, nil, nil); err != nil {
 			r.s.log.Warn("reconcile: finish build Exec", "exec_id", row.ExecID, "error", err)
 			return
 		}
@@ -228,25 +226,25 @@ func versionCauseForSandbox(sb store.Sandbox) string {
 	return "build_failed"
 }
 
-func execCauseForVersion(version store.SnapshotVersion) string {
+func execCauseForVersion(version store.SnapshotVersion) ExecCause {
 	if version.State == string(SnapshotVersionCancelled) {
-		return "canceled"
+		return ExecCanceled
 	}
 	if version.State == string(SnapshotVersionFailed) && version.Cause != nil {
 		return execCauseForVersionCause(*version.Cause)
 	}
-	return "exited"
+	return ExecExited
 }
 
-func execCauseForVersionCause(cause string) string {
+func execCauseForVersionCause(cause string) ExecCause {
 	switch cause {
 	case "timed_out":
-		return "timed_out"
+		return ExecTimedOut
 	case "build_interrupted":
-		return "runtime_lost"
+		return ExecRuntimeLost
 	case "node_lost":
-		return "node_lost"
+		return ExecNodeLost
 	default:
-		return "exited"
+		return ExecExited
 	}
 }
