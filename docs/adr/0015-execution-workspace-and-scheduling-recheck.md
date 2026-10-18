@@ -1,6 +1,6 @@
 # ADR-0015: Execution, Workspace and scheduling rechecked against Coder and Daytona
 
-- Status: accepted; Runtime death, PTY logging and Paused Node amended by ADR-0017; per-GPU share default amended by `docs/spec/defaults.md`
+- Status: accepted; Runtime death, PTY logging and Paused Node amended by ADR-0017; per-GPU share default amended by `docs/spec/defaults.md`; placement among feasible Nodes amended in place by #92
 - Date: 2026-10-17
 
 ## Context
@@ -27,6 +27,7 @@ Three kinds of gap did not survive the recheck: TTL leases that contradict our o
 
 **Scheduling.**
 - Priorities are only `user` and the platform-internal `system`; `high` is removed. Neither vendor has a caller-selectable priority.
+- Among feasible Nodes, a GPU request is packed onto the Node left with the fewest free GPUs of the requested model; a GPU-less request prefers Nodes without GPUs, then the first feasible one. Ties break by the Node's `created_at`. The policy is not configurable.
 - User Quota bounds GPU count and concurrent Sandboxes only. A stopped Workspace's disk counts toward the Node's disk budget, not User Quota.
 - Quota is checked only at admission. Lowering a quota never cancels queued holds or running Sandboxes.
 - Every admission request has a deadline, defaulting to a deployment value; reaching it ends the request `admission_timeout` and releases its hold. `#34`'s "no implicit TTL on queueing" is withdrawn: a request bound to a paused or unreachable Node would otherwise wait and hold quota forever.

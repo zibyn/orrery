@@ -1,6 +1,6 @@
 # ADR-0014: Control Plane and Node operations
 
-- Status: accepted; amended by ADR-0016 and ADR-0017
+- Status: accepted; amended by ADR-0016 and ADR-0017; one Runtime per Node, lost, deletion and paused builds amended in place by #92
 - Date: 2026-10-17
 
 ## Context
@@ -15,11 +15,15 @@
 
 **Migrations.** golang-migrate at startup under `pg_advisory_xact_lock`, forward-only with no down migrations. Rollback is restoring a backup. Upgrade is: stop the Control Plane, back up PostgreSQL, start the new version. Backup and availability of PostgreSQL and the object store belong to the deployment; the recovery point is whatever its backups give.
 
-**Node admission.** Only `admin` issues an Enrollment Packet, through REST or the CLI, and issuing is audited. Redeeming it yields a per-Node token stored hashed (ADR-0017). A Node is schedulable as soon as its stream is open and it has reported Runtime Capabilities; there is no approval step. One Node Agent per host, and a Node is that Agent.
+**Node admission.** Only `admin` issues an Enrollment Packet, through REST or the CLI, and issuing is audited. Redeeming it yields a per-Node token stored hashed (ADR-0017). A Node is schedulable as soon as its stream is open and it has reported Runtime Capabilities; there is no approval step. One Node Agent per host, and a Node is that Agent. A Node has exactly one Runtime Provider, chosen by Agent configuration (`--runtime docker|podman|local` with its socket).
 
-**Liveness.** The Node Agent heartbeats on its stream and the Control Plane records `last_seen_at`. Node Unreachable is derived when read (no heartbeat for twice the interval), never stored. The heartbeat carries Runtime health, and an unhealthy Runtime receives no new placement. Unreachable stops new placement only; running Execs follow `#33` and are not failed. A Node is never declared `lost` by a timer: `lost` is an explicit `admin` act, because `#32` requires confirmation that it cannot recover. Deleting a Node is a separate act and requires it to be paused with no non-terminal Workspace.
+**Liveness.** The Node Agent heartbeats on its stream and the Control Plane records `last_seen_at`. Node Unreachable is derived when read (no heartbeat for twice the interval), never stored. The heartbeat carries Runtime health, and an unhealthy Runtime receives no new placement. Unreachable stops new placement only; running Execs follow `#33` and are not failed. A Node is never declared `lost` by a timer: `lost` is an explicit `admin` act, because `#32` requires confirmation that it cannot recover.
 
-**Paused Node.** A server-side `paused` flag: no new Workspaces are placed there, while Workspaces already bound to it can still start Sandboxes, so their owners can move data out. Running Sandboxes are not evicted. "Drained" is a queryable fact (paused and no running Sandbox), not a state. No eviction, no forced drain.
+Declaring a reachable Node lost is refused with `conflict`; a live Node whose storage failed uses the per-Workspace declaration instead. The declaration is irreversible: it clears the Node's token and pauses it, so a reconnecting Agent receives `UNAUTHENTICATED` and drops its identity, and the host can only come back by enrolling as a new Node. In one transaction it fails every non-deleted Sandbox on the Node (`stopped` ones and `pending` ones bound there included) with `node_lost`, releasing their Allocations and GPUs and ending their read-write Attachments; ends unfinished Execs with `node_lost`; moves `deleting` Workspaces to `deleted` and every other non-terminal Workspace to `lost`; fails running builds with `node_lost`; and fails the ResourceVersion of every running publish with cause `node_lost`. Deleting a `lost` Workspace makes it `deleted` without a command to the Node.
+
+Deleting a Node is a separate act. It requires the Node to be paused with no non-terminal Workspace and no non-terminal Sandbox, build rows included. The row stays as a tombstone with `deleted_at` and no token, its GPU rows are removed, and it is hidden from the Node list and the capacity view; tombstones are never purged. A still-connected Agent receives `UNAUTHENTICATED` and its stream is closed.
+
+**Paused Node.** A server-side `paused` flag: no new Workspaces and no builds are placed there, while Workspaces already bound to it can still start Sandboxes, so their owners can move data out. Running Sandboxes are not evicted. "Drained" is a queryable fact (paused and no running Sandbox), not a state. No eviction, no forced drain.
 
 **Agent restart and upgrade.** An operator action: package manager or redeploy, then `SIGTERM`, replace the binary, start. No self-update and no signature verification. The first `SIGTERM` exits gracefully, a second forces. Exiting stops neither Runtimes nor Execs: each Exec runs under its Exec Supervisor (ADR-0009), which keeps writing output and exit status to the Node, and the restarted Agent adopts the Runtimes through reconciliation and resumes each Exec's output from its last stored sequence. On Local Runtime the supervisor is a detached host process and behaves the same.
 

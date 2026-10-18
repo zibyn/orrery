@@ -1,6 +1,6 @@
 # ADR-0017: The whole system, completed against Coder and Daytona
 
-- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021)
+- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92
 - Date: 2026-10-17
 
 ## Context
@@ -11,11 +11,11 @@ After the per-ticket rechecks (ADR-0015, ADR-0016), the whole system was audited
 
 ### Lifecycle
 
-**Sandbox.** States are `pending` (queued for admission) → `provisioning` → `ready` → `stopping` → `stopped`, plus `deleting` → `deleted`, plus terminal `failed` with a cause: `admission_timeout`, `unsatisfiable`, `quota_exceeded`, `runtime_create_failed`, `image_pull_failed`, `resource_fetch_failed` (added in place by #82), `node_lost`. `start` on a `stopped` Sandbox re-enters admission at `pending`. Stopping or deleting releases the Sandbox's compute and its read-write Attachment; a start that finds another holder of the read-write Attachment fails with `conflict`. Deleting a Sandbox with running Execs cancels them and then deletes, as both vendors force-delete; ADR-0010's `conflict` on unfinished Execs is withdrawn.
+**Sandbox.** States are `pending` (queued for admission) → `provisioning` → `ready` → `stopping` → `stopped`, plus `deleting` → `deleted`, plus terminal `failed` with a cause: `admission_timeout`, `unsatisfiable`, `quota_exceeded`, `runtime_create_failed`, `image_pull_failed`, `resource_fetch_failed` (added in place by #82), `workspace_lost` (added in place by #92), `node_lost`. `start` on a `stopped` Sandbox re-enters admission at `pending`. Stopping or deleting releases the Sandbox's compute and its read-write Attachment; a start that finds another holder of the read-write Attachment fails with `conflict`. Deleting a Sandbox with running Execs cancels them and then deletes, as both vendors force-delete; ADR-0010's `conflict` on unfinished Execs is withdrawn.
 
-**Runtime death on a live Node.** When the Node Agent reports that a Runtime is gone (OOM-killed container, daemon restart, host reboot), its running Execs end with `runtime_lost`, and the Sandbox becomes `stopped` with that cause and releases its resources. An unreachable Node releases nothing and is only marked unavailable; once `admin` declares it lost, its Sandboxes become `failed` with `node_lost`.
+**Runtime death on a live Node.** When the Node Agent reports that a Runtime is gone (OOM-killed container, daemon restart, host reboot), its running Execs end with `runtime_lost`, and the Sandbox becomes `stopped` with that cause and releases its resources. An unreachable Node releases nothing and is only marked unavailable; once `admin` declares it lost, its Sandboxes become `failed` with `node_lost`, and the rest of the cascade is ADR-0014's Liveness.
 
-**Workspace.** Provisioning that exhausts its retries ends `failed`. `admin` may declare one Workspace lost on a live Node whose storage failed.
+**Workspace.** Provisioning that exhausts its retries ends `failed`. `admin` may declare one Workspace lost on a live Node whose storage failed; the Sandboxes attached to it, running or stopped, become `failed` with `workspace_lost`, and the Reconciler stops their Runtimes, so their Execs end with `runtime_lost`.
 
 ### Exec and PTY
 
@@ -23,7 +23,7 @@ PTY output is not an Execution Log: it lives only in the Node's ring buffer, and
 
 ### Nodes and surfaces
 
-**Node identity.** Redeeming an Enrollment Packet yields a per-Node token, stored hashed; deleting the Node row revokes it. There is no private CA, no mTLS and no certificate renewal; ADR-0010's asymmetric failure rule still governs the Agent. Both vendors use a bearer key per runner or provisioner.
+**Node identity.** Redeeming an Enrollment Packet yields a per-Node token, stored hashed; deleting the Node or declaring it lost clears it. There is no private CA, no mTLS and no certificate renewal; ADR-0010's asymmetric failure rule still governs the Agent. Both vendors use a bearer key per runner or provisioner.
 
 **Listeners.** Two: `api` serves REST, the Gateway (Data Plane and port forwarding) and `/metrics`, which requires an `admin` token; `node` serves the Agent stream and Enrollment Packet redemption, both over TLS.
 
@@ -31,7 +31,7 @@ PTY output is not an Execution Log: it lives only in the Node's ring buffer, and
 
 **Health and versions.** The heartbeat carries Runtime health; a Node whose Runtime is unhealthy receives no new placement. An Agent whose Protobuf minor is newer than the Control Plane's is refused, which enforces "Control Plane first".
 
-**Paused and deleted Nodes.** Paused blocks new Workspaces only; Workspaces already bound there can still start Sandboxes, so their owners can archive them out. Deleting a Node requires it to be paused with no non-terminal Workspace, and is a separate act from declaring it lost.
+**Paused and deleted Nodes.** Paused blocks new Workspaces and builds only; Workspaces already bound there can still start Sandboxes, so their owners can archive them out. Deleting a Node requires it to be paused with no non-terminal Workspace and no non-terminal Sandbox, build rows included, leaves a tombstone (ADR-0014), and is a separate act from declaring it lost.
 
 **Periodic work.** Periodic tasks take `pg_try_advisory_xact_lock`. Purge covers every table with expiring rows (Execution Logs, Audit Records, expired versions, used or expired Enrollment Packets, expired API Tokens and Idempotency Keys, terminal admission requests) in batches. Execution Log tables are never `UNLOGGED`; log retention defaults to 30 days.
 
@@ -51,7 +51,7 @@ The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port 
 
 **The Node's Resource cache** counts toward its disk budget, and unreferenced entries are evicted LRU below the disk watermark. Provisioning completes only after inputs are fetched, with a visible condition meanwhile. (Amended in place by #82:) Objects are cached by SHA-256 and executable bit as read-only files; a version tree is assembled from hard links and bind-mounted read-only at `/resources/<mount>`. Eviction is by version tree, and an object goes once no tree links it. Docker images no Sandbox on the Node references, stopped ones included, and the BuildKit cache count toward the same budget and are evicted with it. Fetching retries with the Workspace provisioning backoff; when it is exhausted the Sandbox ends `failed` with `resource_fetch_failed`. Local Runtime reports `resource_mount` as `unsupported`.
 
-**Snapshot.** Any `ref@sha256:` may be imported into the platform registry (amended in place by #82), and a build may start from any base; platform images are recommended defaults, not a whitelist. A SnapshotVersion is deleted only explicitly, never by TTL, and a stopped Sandbox counts as a reference. Registry blob GC is an operations procedure, not part of the design. A build is a `system`-priority job on a Node: the Node Agent calls the Docker or Podman build API, as ADR-0012's "`docker build`, then push" says. It still passes Scheduler admission and holds an Allocation; an internal Sandbox row with no Runtime container carries the Allocation and an Exec whose Execution Log is the build log, and a failed build ends the SnapshotVersion `failed`. (Amended in place by #82: a build was a platform-internal `system`-priority Sandbox, but BuildKit-rootless and buildah cannot start in an unprivileged container under the default seccomp profile; ADR-0021.) Build-time secrets are the caller's Secrets, and a build that uses any runs without the build cache. Local Nodes report `snapshot_build` as `unsupported`. A Sandbox without a Snapshot uses the deployment's default platform Snapshot.
+**Snapshot.** Any `ref@sha256:` may be imported into the platform registry (amended in place by #82), and a build may start from any base; platform images are recommended defaults, not a whitelist. A SnapshotVersion is deleted only explicitly, never by TTL, and a stopped Sandbox counts as a reference. Registry blob GC is an operations procedure, not part of the design. A build is a `system`-priority job on a Node: the Node Agent drives a BuildKit endpoint (ADR-0021, amended in place by #92). It still passes Scheduler admission and holds an Allocation; an internal Sandbox row with no Runtime container carries the Allocation and an Exec whose Execution Log is the build log, and a failed build ends the SnapshotVersion `failed`. (Amended in place by #82: a build was a platform-internal `system`-priority Sandbox, but BuildKit-rootless and buildah cannot start in an unprivileged container under the default seccomp profile; ADR-0021.) Build-time secrets are the caller's Secrets, and a build that uses any runs without the build cache. Whether a Node can build is its self-checked `snapshot_build`, independent of its Runtime. A `container` Sandbox without a Snapshot uses the deployment's default platform Snapshot; a `local` one has none (ADR-0009).
 
 **On restart** Secrets are re-resolved by name; ResourceVersions and the Snapshot digest stay as pinned at creation.
 
@@ -89,7 +89,7 @@ A Web console is part of the system as a separate module, implemented later. It 
 
 - Every failure has a terminal state and every hold is released by an event; nothing waits on a timer that the design forbids.
 - A dev server, TensorBoard or Jupyter in a Sandbox is reachable by its owner without opening a port on the Sandbox.
-- Deleting a Node row is the whole revocation story; a leaked registry credential needs an operator rotation.
+- Deleting a Node is the whole revocation story; a leaked registry credential needs an operator rotation.
 - Sandbox Tokens and port-forward tickets mean `api` must be reachable from Sandboxes and browsers alike.
 
 ## Rejected alternatives

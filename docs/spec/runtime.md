@@ -82,11 +82,15 @@ Agent 对它掌握的每个 Sandbox 扫描 `run/*`，对每个目录做如下判
 | 没有 `exit`，连不上 socket，Runtime 还活着 | Supervisor 死了。Agent 代写 `exit`，cause 为 `runtime_lost` |
 | Runtime 已经没了 | 所有未结束的 Exec，由 Agent 代写 `exit`，cause 为 `runtime_lost`（ADR-0017） |
 
+Agent 只接管带本 Node `stars.node=<node_id>` 标签的 Runtime 实例；其余带 `stars.managed` 的容器（例如宿主以新身份重新注册前、上一个身份留下的）直接 `rm -f`。Workspace 目录不动，只记一条日志：宣告 lost 可能是误判，那里也许是最后一份数据。
+
 ## 9. Docker 与 Podman
 
 两者共用同一个 Docker Engine API 客户端，区别只是 socket 不同。Podman 的兼容 API 支持 detach exec 和 CDI。
 
+- **Podman 只支持 rootless**。Agent 仍以 root 运行，连接 `/run/user/<uid>/podman/podman.sock`。`/.stars/run` 和 Workspace 在宿主上的属主按 rootless 的 uid 映射设置。端口转发进入网络命名空间时用 inspect 里的 `NetworkSettings.SandboxKey`，不用 PID。
 - **Create**：先用 Node 的 registry 凭据按 digest 拉取镜像（失败时为 `image_pull_failed`）。然后创建容器，配置如下：
+  - 标签 `stars.managed` 和 `stars.node=<node_id>`（§8）；
   - Entrypoint 设为 `/.stars/bin/supervisor init`，Cmd 留空，`Init: false`；
   - 挂载按 §2；
   - `CgroupnsMode: private` 必须显式传，因为默认值随版本和配置而变；
@@ -101,12 +105,15 @@ Agent 对它掌握的每个 Sandbox 扫描 `run/*`，对每个目录做如下判
 
 ## 10. Local Runtime
 
+Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用，与 Coder 的 External workspace 一致（ADR-0009）。以后要升级，就是改成每个 User 一个宿主 uid、Workspace 目录 0700，再加 systemd 加固，接口不变。
+
 - **Create**：先执行 `systemctl set-property --runtime stars-sb-<id>.slice CPUQuota= MemoryMax= TasksMax=`，再执行 `systemd-run --unit=stars-sb-<id> --slice=stars-sb-<id>.slice supervisor init` 起占位进程。占位进程就是这个 Runtime 实例，只要它在，slice 就不会因为空闲被回收。回读直接读宿主上这个 slice 的 cgroup 文件。
-- **Exec**：执行 `systemd-run --unit=stars-exec-<exec_id> --slice=stars-sb-<id>.slice --uid=<Node 配置的非特权用户> supervisor run <exec_id>`。这是一个瞬态 service，与 Agent 进程无关；cwd 是 Workspace 在宿主上的路径。Agent 拒绝以 root 运行 Local Exec。瞬态 service 成功退出后，systemd 会直接卸载这个单元，不留退出状态，所以退出状态以 `exit` 文件为准。
+- **Exec**：执行 `systemd-run --unit=stars-exec-<exec_id> --slice=stars-sb-<id>.slice --uid=<Node 配置的非特权用户> supervisor run <exec_id>`。这是一个瞬态 service，与 Agent 进程无关。Agent 拒绝以 root 运行 Local Exec。瞬态 service 成功退出后，systemd 会直接卸载这个单元，不留退出状态，所以退出状态以 `exit` 文件为准。
+- **路径**：没有 §2 的挂载。cwd 是 Workspace 在宿主上的路径，同时设置 `STARS_WORKSPACE` 为这个路径；`PATH` 追加和 credential helper 用 Agent 自己的 bin 目录（`node-protocol.md`）；Supervisor 的记录目录是 `<data-root>/sandboxes/<id>/run`，`<data-root>` 即 Agent 的 `--data-root`。
 - **Inspect**：看占位 unit 是否 active。
 - **Stop**：`systemctl stop stars-sb-<id>.slice`，停掉 slice 里的所有单元。
-- **GPU**：只靠 `CUDA_VISIBLE_DEVICES`，属于 `best_effort`（ADR-0009）。
-- **Resource 与构建**：`resource_mount` 和 `snapshot_build` 都报 `unsupported`。
+- **GPU**：瞬态单元带 `DevicePolicy=closed` 和 `DeviceAllow`（所分配卡的 `/dev/nvidia<N>`，以及 `/dev/nvidiactl`、`/dev/nvidia-uvm`），同时设置 `CUDA_VISIBLE_DEVICES`。注册时由能力自检验证：通过就报 `enforced`，否则报 `best_effort`。`runtime: local` 的请求接受 `best_effort`（ADR-0009）。
+- **Resource 与构建**：`resource_mount` 报 `unsupported`；`snapshot_build` 由 §12 的自检决定。
 
 ## 11. Node 的 Resource 缓存
 
@@ -117,10 +124,13 @@ Agent 对它掌握的每个 Sandbox 扫描 `run/*`，对每个目录做如下判
 
 ## 12. 构建
 
-构建不起容器，由 Agent 调用宿主 Docker/Podman 的构建 API（buildx）完成（ADR-0021）。
+构建不起容器。Agent 用 BuildKit 的 Go 客户端对一个 BuildKit 端点执行 `Solve`（dockerfile frontend），端点由 Agent 配置 `--buildkit <addr>` 给出（ADR-0021）。`runtime=docker` 时默认用 dockerd 内置的 BuildKit，也可以指向宿主上的 rootful buildkitd。
 
-- **资源限制**：Agent 仿照 Local Runtime 建一个带 CPU/内存上限的 slice（`stars-build-<version_id>.slice`，上限见 `defaults.md`），构建以 `--cgroup-parent` 指向它。实现时要验证 RUN 进程确实落在这个 slice 里；如果没有，改用 Node 级的构建上限。
-- **输入**：没有默认构建上下文。`contexts` 的每一项经 §11 的缓存拼出版本树，以 `--build-context <name>=<dir>` 传入；`base` 以命名上下文 `base` 注入（`docker-image://<registry>/…@<digest>`）。Dockerfile 的 `FROM` 也可以写外部 `ref@digest`。
-- **Secret**：经 `--secret id=<id>` 传入，Dockerfile 用 `RUN --mount=type=secret` 读取。带 Secret 的构建一律 `--no-cache`：secret mount 不进缓存键，否则别的 User 用同一份 Dockerfile 就能命中缓存，拿到用 Secret 生成的层。
+- **能力**：Node 能否构建与它用哪种 Runtime 无关，Podman 和 Local Node 配了 buildkitd 也能构建。`snapshot_build` 由注册时的自检决定：连不上端点或自检失败就报 `unsupported`。
+- **待验证**：实现时先验证 Go 客户端能否经 dockerd 的 `/grpc` 驱动它内置的 BuildKit。如果不行，Docker Node 改走 `ImageBuild` 加 session（Daytona 的做法），输入、凭据和资源的传法不变。
+- **资源限制**：Agent 仿照 Local Runtime 建一个带 CPU/内存上限的 slice（`stars-build-<version_id>.slice`，上限见 `defaults.md`），用 frontend 属性 `cgroup-parent` 指向它。实现时要验证 RUN 进程确实落在这个 slice 里；如果没有，改用 Node 级的构建上限。
+- **输入**：没有默认构建上下文。`contexts` 的每一项经 §11 的缓存拼出版本树，经 session 的 `LocalMounts` 作为命名上下文 `context:<name>` 提供；`base` 以 `context:base=docker-image://<registry>/…@<digest>` 注入。Dockerfile 的 `FROM` 也可以写外部 `ref@digest`。
+- **凭据**：拉取 `base` 和推送用的 registry 凭据由 session 的 authprovider 提供。
+- **Secret**：由 session 的 secretsprovider 提供，Dockerfile 用 `RUN --mount=type=secret,id=<id>` 读取。带 Secret 的构建一律 `no-cache`：secret 不进缓存键，而 buildkitd 的缓存由所有客户端共用，否则别的 User 用同一份 Dockerfile 就能命中缓存，拿到用 Secret 生成的层。
 - **输出**：构建输出按帧写进构建 Exec 的 `run/<exec_id>/output`，和普通 Exec 一样上送。成功后推到 `push_repository`，上报 digest 和 BuildKit 实际解析出的 FROM digest。
 - **结束**：超时以 `failed/timed_out` 结束；`CancelExec` 中止构建会话，以 `cancelled` 结束；Agent 重启时进行中的构建以 `failed/build_interrupted` 结束，不自动重试。Node 不可达时构建保持 `building`，Node 被宣告 lost 后为 `failed/node_lost`。

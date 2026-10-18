@@ -26,10 +26,10 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `unauthenticated` | 401 | 没有 token、token 无效、过期或已吊销 |
 | `permission_denied` | 403 | token 的 scope 不够；修改平台 Snapshot |
 | `not_found` | 404 | 不存在，或不属于调用方 |
-| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、删除 current 版本、删除被引用的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
+| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、宣告可达的 Node lost、删除 current 版本、删除被引用的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
 | `precondition_failed` | 412 | `If-Match` 不匹配 |
 | `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
-| `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力 |
+| `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `rate_limited` | 429 | 登录失败次数超限；带 `Retry-After` |
 | `internal` | 500 | 平台缺陷 |
@@ -37,7 +37,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
-生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
+生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`workspace_lost`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
 
 ## 3. 资源与路径
 
@@ -67,11 +67,11 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /workspaces` · `GET /workspaces` · `GET /workspaces/{id}` · `DELETE /workspaces/{id}` | 只创建持久 Workspace；临时 Workspace 随 Sandbox 隐式创建（ADR-0018） |
+| `POST /workspaces` · `GET /workspaces` · `GET /workspaces/{id}` · `DELETE /workspaces/{id}` | 只创建持久 Workspace；临时 Workspace 随 Sandbox 隐式创建（ADR-0018）。删除 `lost` 的 Workspace 直接变成 `deleted`，不向 Node 下发命令 |
 | `POST /workspaces/{id}/publish` | `{path, resource}` → `202` 和一个 `pending` 的 ResourceVersion；变成 `ready` 时移动 current 指针，失败时不动（ADR-0012、`node-protocol.md`）。接受 `Idempotency-Key`；不要求有运行中的 Sandbox；Node 不可达返回 `503` |
-| `POST /workspaces/{id}/declare-lost` · `POST /workspaces/{id}/abandon` | **admin**。存活 Node 上的单个 Workspace 宣告 lost；放弃卡在 `deleting` 的清理 |
+| `POST /workspaces/{id}/declare-lost` · `POST /workspaces/{id}/abandon` | **admin**。存活 Node 上的单个 Workspace 宣告 lost：挂着它的 Sandbox（运行中的和 stopped 的）变成 `failed/workspace_lost`，Reconciler 停掉它们的 Runtime，其中的 Exec 以 `runtime_lost` 结束。放弃卡在 `deleting` 的清理 |
 
-字段：`kind`（`ephemeral`/`persistent`）、`node_id`、`state`（`provisioning`、`ready`、`deleting`、`deleted`、`failed`、`lost`）、`unavailable`（由 Node 可达性派生）、`conditions`（如 `provisioning_stalled`）。
+字段：`kind`（`ephemeral`/`persistent`）、`node_id`、`state`（`provisioning`、`ready`、`deleting`、`deleted`、`failed`、`lost`；后三个是终态）、`unavailable`（由 Node 可达性派生）、`conditions`（如 `provisioning_stalled`）。
 
 **Sandbox**
 
@@ -90,15 +90,23 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 ```
 name?, labels?
+runtime?: container|local       # 默认 container；调用方分不出 Docker 和 Podman
 workspace?: {id, mode: rw|ro}     # 不写就隐式创建临时 Workspace，rw
-snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；不写就用 STARS_DEFAULT_SNAPSHOT
+snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 STARS_DEFAULT_SNAPSHOT，local 没有 Snapshot
 resources?: [{resource, version?, mount?}]   # 创建时解析成具体版本，只读挂载到 /resources/<mount>；mount 是单段名字，默认取 Resource 名
 secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}
 idle_stop?: 秒数，默认 900，0 表示关闭
 ```
 
-每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009）。响应字段另有 `state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。Local Runtime 不支持 Resource 挂载，带 `resources` 时返回 `422 unsupported`。
+每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009）。响应字段另有 `runtime`、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
+
+`runtime`（ADR-0009）：
+
+- `container` 只放到 Docker 或 Podman 的 Node 上，`local` 只放到 Local Node 上；重启后仍作为准入约束。
+- `local` 带了 `snapshot` 或 `resources` 时返回 `422 unsupported`。
+- Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `STARS_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。
+- Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用。GPU 可见性为 `best_effort` 时也接受。
 
 **Exec**：`GET /execs/{id}` · `POST /execs/{id}/cancel` · `GET /execs/{id}/output` · `GET /execs/{id}/pty`，见 §4。
 
@@ -107,9 +115,29 @@ idle_stop?: 秒数，默认 900，0 表示关闭
 | 方法与路径 | 说明 |
 |---|---|
 | `POST /enrollment-packets` | **admin**。返回一次性 Packet，写审计 |
-| `GET /nodes` · `GET /nodes/{id}` · `DELETE /nodes/{id}` | **admin**。删除要求 Node 已 paused 且没有非终态 Workspace，否则 `409` |
-| `POST /nodes/{id}/pause` · `/resume` · `/declare-lost` | **admin** |
+| `GET /nodes` · `GET /nodes/{id}` · `DELETE /nodes/{id}` | **admin**。删除见下 |
+| `POST /nodes/{id}/pause` · `/resume` · `/declare-lost` | **admin**。宣告 lost 见下 |
 | `GET /capacity` | 所有 scope 可读：每个 Node 的 GPU 型号、总数、已分配、状态（`ready`、`paused`、`unavailable`、`outdated`、`lost`） |
+
+Paused Node 不接收新的 Workspace 和构建。
+
+**宣告 lost**（ADR-0014）：
+
+- Node 当前可达时返回 `409`；存活 Node 的存储坏了，用 Workspace 级的 `declare-lost`。
+- 不可撤回：同时清空 Node Token 并置 `paused`。Agent 重连时收到 `UNAUTHENTICATED`，清掉本地身份；这台宿主只能作为新 Node 重新注册。
+- 级联在一个事务里完成：
+  - 这台 Node 上所有未 `deleted` 的 Sandbox（含 `stopped`，以及已绑定到这台 Node 的 `pending`）变成 `failed/node_lost`，释放 Allocation 和 GPU，结束读写 Attachment；
+  - 未结束的 Exec 以 `node_lost` 结束；
+  - `deleting` 的 Workspace 直接变成 `deleted`，其余非终态的 Workspace 变成 `lost`；
+  - 进行中的构建变成 `failed/node_lost`；
+  - 进行中的 publish：对应的 ResourceVersion 变成 `failed`，cause 为 `node_lost`。
+
+**删除 Node**：
+
+- 前提：已 paused，没有非终态的 Workspace，也没有非终态的 Sandbox（含构建行），否则 `409`。
+- 这一行留作墓碑：写 `deleted_at`，清空 Node Token，删掉它的 `gpus` 行；墓碑不清理。
+- 删除后的 Node 不出现在 `GET /nodes` 和 `/capacity` 里。
+- 还连着的 Agent 收到 `UNAUTHENTICATED`，流被关闭。
 
 **Resource**
 
@@ -146,7 +174,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
   - `contexts?: {name: resource[@version]}`，创建时解析为具体版本，作为命名上下文传入。
   - `base?` 是平台内的 Snapshot 引用（同 Sandbox 的 `snapshot`），以命名上下文 `base` 注入；`FROM` 也可以写外部 `ref@digest`。
   - `secrets?: {id: secret_name}`，Dockerfile 用 `RUN --mount=type=secret,id=<id>` 读取；带 `secrets` 的构建不用缓存。
-  - 构建以 `system` 优先级准入，资源上限和超时见 `defaults.md`，不计入 User Quota；Local Node 不能构建。provenance 记录 BuildKit 实际解析出的 FROM digest 和各 context 的版本地址。执行细节见 `runtime.md` §12。
+  - 构建以 `system` 优先级准入，资源上限和超时见 `defaults.md`，不计入 User Quota；只放到 `snapshot_build` 为 `enforced` 的 Node 上，与 Node 用哪种 Runtime 无关。provenance 记录 BuildKit 实际解析出的 FROM digest 和各 context 的版本地址。执行细节见 `runtime.md` §12。
 
 构建中的 SnapshotVersion 带 `build_exec_id`，构建日志用 `GET /execs/{id}/output` 读。
 
