@@ -155,7 +155,7 @@ The facts a Node Agent self-checks and reports about what a Runtime Provider can
 _Avoid_: provider promise, static feature list
 
 **Lease**:
-A fenced claim over a mutable Workspace or schedulable compute resource. It ends by an explicit act, never by expiry; its fencing token rejects work from a holder that has been superseded.
+A fenced claim over a mutable Workspace or schedulable compute resource. It ends by an explicit act, never by expiry; its fencing token rejects work from a holder that has been superseded. Attachment and Allocation generations are monotonic counters, not fences: the Control Plane is their only writer. The row version admission compares as a CAS guard is `sandboxes.generation`.
 _Avoid_: timed lock, TTL
 
 **User**:
