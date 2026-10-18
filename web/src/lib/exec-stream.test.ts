@@ -113,4 +113,25 @@ describe('parseArgv', () => {
     expect(parseArgv('')).toEqual([])
     expect(parseArgv('   ')).toEqual([])
   })
+
+  it('keeps quoted arguments together', () => {
+    expect(parseArgv('/bin/sh -c "echo hello world"')).toEqual([
+      '/bin/sh',
+      '-c',
+      'echo hello world',
+    ])
+    expect(parseArgv(`sh -c 'printf "%s" hi'`)).toEqual(['sh', '-c', 'printf "%s" hi'])
+  })
+
+  it('supports backslash escaping outside and inside double quotes', () => {
+    expect(parseArgv('echo hello\\ world')).toEqual(['echo', 'hello world'])
+    expect(parseArgv('echo "a\\"b"')).toEqual(['echo', 'a"b'])
+    // Single quotes are literal, as in a shell.
+    expect(parseArgv("echo 'a\\b'")).toEqual(['echo', 'a\\b'])
+  })
+
+  it('keeps empty quoted arguments and accepts an unterminated quote', () => {
+    expect(parseArgv('cmd ""')).toEqual(['cmd', ''])
+    expect(parseArgv("cmd 'unterminated")).toEqual(['cmd', 'unterminated'])
+  })
 })

@@ -47,8 +47,51 @@ export function execListPollInterval(items: Pick<{ state: ExecState }, 'state'>[
   return items?.some((exec) => exec.state !== 'finished') ? 5000 : false
 }
 
+// The argv field is editable (api.md §8), so accept the shell quoting a user
+// would expect: single quotes are literal, double quotes and bare text honour
+// a backslash escape, and an unterminated quote runs to the end.
 export function parseArgv(text: string): string[] {
-  return text.split(/\s+/).filter(Boolean)
+  const args: string[] = []
+  let current = ''
+  let inToken = false
+  let quote: '"' | "'" | null = null
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (quote) {
+      if (char === quote) {
+        quote = null
+      } else if (char === '\\' && quote === '"' && index + 1 < text.length) {
+        current += text[index + 1]
+        index += 1
+      } else {
+        current += char
+      }
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      inToken = true
+      continue
+    }
+    if (char === '\\' && index + 1 < text.length) {
+      current += text[index + 1]
+      index += 1
+      inToken = true
+      continue
+    }
+    if (/\s/.test(char)) {
+      if (inToken) {
+        args.push(current)
+        current = ''
+        inToken = false
+      }
+      continue
+    }
+    current += char
+    inToken = true
+  }
+  if (inToken) args.push(current)
+  return args
 }
 
 // The console is same-origin with the API (api.md §8); only the ws scheme
