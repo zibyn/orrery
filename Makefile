@@ -6,10 +6,10 @@ build:
 	$(GO) build ./...
 
 web:
-	cd web && npm ci && npm run build
+	cd web && pnpm install --frozen-lockfile && pnpm build
 
 web-check:
-	cd web && npm ci && npm run typecheck && npm test
+	cd web && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
 
 # Plain `go build` serves the committed placeholder; this embeds the real
 # console (api.md §8).
