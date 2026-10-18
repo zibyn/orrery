@@ -360,8 +360,11 @@ func TestRetireNode(t *testing.T) {
 	var sbNew sandboxView
 	mustJSON(t, data, &sbNew)
 	sbNew = waitForSandboxReady(t, admin, sbNew.ID)
+	// cp -a copies the read-only mount's mode onto /workspace; restore write
+	// permission so t.TempDir's cleanup can remove the tree (as the publish
+	// scenario does).
 	runExecScript(t, admin, sbNew.ID,
-		`cp -a /resources/archive/. /workspace/ && test "$(cat /workspace/data.txt)" = "retire me"`)
+		`cp -a /resources/archive/. /workspace/ && chmod -R a+rwX /workspace && test "$(cat /workspace/data.txt)" = "retire me"`)
 
 	// The stopped Sandbox is the last blocker.
 	deleteSandbox(t, admin, sbStopped.ID)
