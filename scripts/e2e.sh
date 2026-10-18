@@ -247,8 +247,9 @@ if [ "$code" != "200" ]; then
 fi
 
 # Push the default base image into the local source registry and pin its
-# digest. The Control Plane reaches the source as registry-source:5000, so the
-# server-side import never touches Docker Hub.
+# digest. The Control Plane reaches the source by its Compose-network IP: the
+# registry client treats RFC1918 addresses as plain HTTP, while a bare service
+# name would be tried over HTTPS. Docker Hub is never contacted.
 SOURCE_REGISTRY="127.0.0.1:15001"
 docker tag alpine:3.22 "${SOURCE_REGISTRY}/alpine:3.22"
 docker push "${SOURCE_REGISTRY}/alpine:3.22" >/dev/null
@@ -259,7 +260,13 @@ if [ -z "$pushed_ref" ]; then
   echo "the local source registry did not return a digest for alpine:3.22" >&2
   exit 1
 fi
-STARS_E2E_ALPINE_REF="registry-source:5000/alpine@${pushed_ref##*@}"
+SOURCE_HOST="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+  "${COMPOSE_PROJECT}-registry-source-1" 2>/dev/null || true)"
+if [ -z "$SOURCE_HOST" ]; then
+  echo "could not find the registry-source container address" >&2
+  exit 1
+fi
+STARS_E2E_ALPINE_REF="${SOURCE_HOST}:5000/alpine@${pushed_ref##*@}"
 export STARS_E2E_ALPINE_REF
 export STARS_PLATFORM_SNAPSHOTS="${STARS_PLATFORM_SNAPSHOTS:-default=${STARS_E2E_ALPINE_REF}}"
 echo "platform Snapshot: ${STARS_DEFAULT_SNAPSHOT}=${STARS_E2E_ALPINE_REF}"
