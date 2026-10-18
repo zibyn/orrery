@@ -88,11 +88,9 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 			OwnerID: p.user.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent Workspace", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, existing))
+	if replayOr(s, w, "look up idempotent Workspace", key, lookup, func(ws store.Workspace) {
+		writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, ws))
+	}) {
 		return
 	}
 	id, err := uuid.NewV7()
@@ -100,15 +98,18 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 		s.internal(w, "generate Workspace id", err)
 		return
 	}
-	ws, err := s.q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
-		ID: id, OwnerID: p.user.ID, Kind: "persistent", IdempotencyKey: key,
-	})
+	ws, replayed, err := createIdempotent(key, "workspaces_owner_idempotency", lookup,
+		func() (store.Workspace, error) {
+			return s.q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
+				ID: id, OwnerID: p.user.ID, Kind: "persistent", IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "workspaces_owner_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, existing))
-			return
-		}
 		s.internal(w, "create Workspace", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, s.workspaceToDTO(ctx, ws))
 		return
 	}
 	s.audit(ctx, p, "workspace.create", "workspace", id.String(), map[string]any{"kind": ws.Kind})

@@ -25,11 +25,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 			CreatedBy: &p.user.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent user", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, userToDTO(existing))
+	if replayOr(s, w, "look up idempotent user", key, lookup, func(u store.User) {
+		writeJSON(w, http.StatusOK, userToDTO(u))
+	}) {
 		return
 	}
 
@@ -71,23 +69,22 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "generate user id", err)
 		return
 	}
-	user, err := s.q.CreateUser(ctx, store.CreateUserParams{
-		ID:             id,
-		Name:           req.Name,
-		Email:          email,
-		IsAdmin:        req.IsAdmin,
-		LoginType:      req.LoginType,
-		PasswordHash:   passwordHash,
-		GpuQuota:       s.cfg.DefaultGPUQuota,
-		SandboxQuota:   s.cfg.DefaultSandboxQuota,
-		IdempotencyKey: key,
-		CreatedBy:      &p.user.ID,
-	})
+	user, replayed, err := createIdempotent(key, "users_idempotency_key_unique", lookup,
+		func() (store.User, error) {
+			return s.q.CreateUser(ctx, store.CreateUserParams{
+				ID:             id,
+				Name:           req.Name,
+				Email:          email,
+				IsAdmin:        req.IsAdmin,
+				LoginType:      req.LoginType,
+				PasswordHash:   passwordHash,
+				GpuQuota:       s.cfg.DefaultGPUQuota,
+				SandboxQuota:   s.cfg.DefaultSandboxQuota,
+				IdempotencyKey: key,
+				CreatedBy:      &p.user.ID,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "users_idempotency_key_unique", lookup); replayed {
-			writeJSON(w, http.StatusOK, userToDTO(existing))
-			return
-		}
 		switch uniqueViolation(err) {
 		case "users_name_key":
 			writeProblem(w, "conflict", "a User with that name already exists")
@@ -97,6 +94,10 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 			return
 		}
 		s.internal(w, "create user", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, userToDTO(user))
 		return
 	}
 	s.audit(r.Context(), p, "user.create", "user", user.ID.String(), map[string]any{

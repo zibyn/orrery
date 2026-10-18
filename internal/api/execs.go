@@ -154,11 +154,9 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 			SandboxID: sandboxID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent Exec", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, execToDTO(existing))
+	if replayOr(s, w, "look up idempotent Exec", key, lookup, func(e store.Exec) {
+		writeJSON(w, http.StatusOK, execToDTO(e))
+	}) {
 		return
 	}
 	if SandboxState(sb.State) != SandboxReady || SandboxDesiredState(sb.DesiredState) != SandboxDesiredRunning {
@@ -229,17 +227,20 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	if req.Stdin != nil && pty == nil { // PTY mode ignores stdin (api.md §4)
 		stdin = []byte(*req.Stdin)
 	}
-	exec, err := s.q.CreateExec(ctx, store.CreateExecParams{
-		ID: id, SandboxID: sandboxID, Argv: argv, Env: env, Cwd: req.Cwd,
-		Stdin: stdin, TimeoutSeconds: timeout, Generation: sb.Generation,
-		IdempotencyKey: key, Pty: pty,
-	})
+	exec, replayed, err := createIdempotent(key, "execs_sandbox_idempotency", lookup,
+		func() (store.Exec, error) {
+			return s.q.CreateExec(ctx, store.CreateExecParams{
+				ID: id, SandboxID: sandboxID, Argv: argv, Env: env, Cwd: req.Cwd,
+				Stdin: stdin, TimeoutSeconds: timeout, Generation: sb.Generation,
+				IdempotencyKey: key, Pty: pty,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "execs_sandbox_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, execToDTO(existing))
-			return
-		}
 		s.internal(w, "create Exec", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, execToDTO(exec))
 		return
 	}
 	s.activity.touch(sandboxID)

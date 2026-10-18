@@ -136,11 +136,9 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			OwnerID: p.user.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent Sandbox", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
+	if replayOr(s, w, "look up idempotent Sandbox", key, lookup, func(sb store.Sandbox) {
+		writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, sb))
+	}) {
 		return
 	}
 
@@ -323,23 +321,26 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !ok {
 		return
 	}
-	sandbox, err := q.CreateSandbox(ctx, store.CreateSandboxParams{
-		ID: id, OwnerID: p.user.ID, Name: name, Labels: labels, Runtime: runtime,
-		SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
-		GpuCount: gpuCount, GpuModel: gpuModel,
-		IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
-		TokenCt: tokenCt, TokenKeyID: tokenKeyID,
-	})
+	sandbox, replayed, err := createIdempotent(key, "sandboxes_owner_idempotency", lookup,
+		func() (store.Sandbox, error) {
+			return q.CreateSandbox(ctx, store.CreateSandboxParams{
+				ID: id, OwnerID: p.user.ID, Name: name, Labels: labels, Runtime: runtime,
+				SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
+				GpuCount: gpuCount, GpuModel: gpuModel,
+				IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
+				TokenCt: tokenCt, TokenKeyID: tokenKeyID,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "sandboxes_owner_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, existing))
-			return
-		}
 		if uniqueViolation(err) == "sandboxes_owner_name" {
 			writeProblem(w, "conflict", "a Sandbox with that name already exists")
 			return
 		}
 		s.internal(w, "create Sandbox", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, s.sandboxToDTO(ctx, sandbox))
 		return
 	}
 	for _, resource := range resources {

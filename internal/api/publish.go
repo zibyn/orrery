@@ -119,11 +119,9 @@ func (s *Server) handlePublishWorkspace(w http.ResponseWriter, r *http.Request, 
 			PublishWorkspaceID: &ws.ID, PublishIdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent publish", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusAccepted, resourceVersionToDTO(existing))
+	if replayOr(s, w, "look up idempotent publish", key, lookup, func(v store.ResourceVersion) {
+		writeJSON(w, http.StatusAccepted, resourceVersionToDTO(v))
+	}) {
 		return
 	}
 	if !workspaceUsable(ws) {
@@ -169,19 +167,22 @@ func (s *Server) handlePublishWorkspace(w http.ResponseWriter, r *http.Request, 
 		s.internal(w, "generate ResourceVersion id", err)
 		return
 	}
-	version, err := s.q.CreatePendingResourceVersion(ctx, store.CreatePendingResourceVersionParams{
-		ID:                    versionID,
-		ResourceID:            resource.ID,
-		Provenance:            workspaceProvenance(ws.ID, publishPath),
-		PublishWorkspaceID:    &ws.ID,
-		PublishIdempotencyKey: key,
-	})
+	version, replayed, err := createIdempotent(key, "resource_versions_publish_idempotency", lookup,
+		func() (store.ResourceVersion, error) {
+			return s.q.CreatePendingResourceVersion(ctx, store.CreatePendingResourceVersionParams{
+				ID:                    versionID,
+				ResourceID:            resource.ID,
+				Provenance:            workspaceProvenance(ws.ID, publishPath),
+				PublishWorkspaceID:    &ws.ID,
+				PublishIdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "resource_versions_publish_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusAccepted, resourceVersionToDTO(existing))
-			return
-		}
 		s.internal(w, "create pending ResourceVersion", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusAccepted, resourceVersionToDTO(version))
 		return
 	}
 	s.changed(ctx)

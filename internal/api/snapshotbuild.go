@@ -300,22 +300,25 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 		s.internal(w, "encode build request", err)
 		return
 	}
-	version, err := q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
-		ID: versionID, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),
-		Source: "build", BuildSandboxID: &sandboxID, BuildExecID: &execID,
-		IdempotencyKey: key, BuildRequest: data,
-	})
-	if err != nil {
-		lookup := func() (store.SnapshotVersion, error) {
-			return s.q.GetSnapshotVersionByIdempotencyKey(ctx, store.GetSnapshotVersionByIdempotencyKeyParams{
-				SnapshotID: snap.ID, IdempotencyKey: key,
+	lookup := func() (store.SnapshotVersion, error) {
+		return s.q.GetSnapshotVersionByIdempotencyKey(ctx, store.GetSnapshotVersionByIdempotencyKeyParams{
+			SnapshotID: snap.ID, IdempotencyKey: key,
+		})
+	}
+	version, replayed, err := createIdempotent(key, "snapshot_versions_idempotency", lookup,
+		func() (store.SnapshotVersion, error) {
+			return q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
+				ID: versionID, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),
+				Source: "build", BuildSandboxID: &sandboxID, BuildExecID: &execID,
+				IdempotencyKey: key, BuildRequest: data,
 			})
-		}
-		if existing, replayed := replayConflict(key, err, "snapshot_versions_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-			return
-		}
+		})
+	if err != nil {
 		s.internal(w, "create build SnapshotVersion", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, snapshotVersionToDTO(version))
 		return
 	}
 	deadline := time.Now().Add(s.cfg.BuildTimeout)

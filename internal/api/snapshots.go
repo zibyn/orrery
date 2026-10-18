@@ -246,11 +246,9 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	// The idempotent answer is the version DTO.
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent SnapshotVersion", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
+	if replayOr(s, w, "look up idempotent SnapshotVersion", key, lookup, func(v store.SnapshotVersion) {
+		writeJSON(w, http.StatusOK, snapshotVersionToDTO(v))
+	}) {
 		return
 	}
 	var req createSnapshotVersionRequest
@@ -291,16 +289,19 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		s.internal(w, "generate SnapshotVersion id", err)
 		return
 	}
-	version, err := s.q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
-		ID: id, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),
-		Source: "import", IdempotencyKey: key,
-	})
+	version, replayed, err := createIdempotent(key, "snapshot_versions_idempotency", lookup,
+		func() (store.SnapshotVersion, error) {
+			return s.q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
+				ID: id, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),
+				Source: "import", IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "snapshot_versions_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, snapshotVersionToDTO(existing))
-			return
-		}
 		s.internal(w, "create SnapshotVersion", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, snapshotVersionToDTO(version))
 		return
 	}
 	s.audit(ctx, p, "snapshot.version.create", "snapshot", snap.ID.String(), map[string]any{

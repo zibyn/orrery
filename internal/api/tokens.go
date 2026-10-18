@@ -64,24 +64,27 @@ func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req crea
 	if err != nil {
 		return store.ApiToken{}, "", false, err
 	}
-	token, err := s.q.CreateToken(ctx, store.CreateTokenParams{
-		ID:             id,
-		UserID:         userID,
-		Kind:           "token",
-		Name:           req.Name,
-		SecretHash:     hash,
-		Scope:          req.Scope,
-		ExpiresAt:      timestamptzPtr(req.ExpiresAt),
-		IdempotencyKey: key,
-	})
+	token, replayed, err := createIdempotent(key, "api_tokens_idempotency_key_unique", lookup,
+		func() (store.ApiToken, error) {
+			return s.q.CreateToken(ctx, store.CreateTokenParams{
+				ID:             id,
+				UserID:         userID,
+				Kind:           "token",
+				Name:           req.Name,
+				SecretHash:     hash,
+				Scope:          req.Scope,
+				ExpiresAt:      timestamptzPtr(req.ExpiresAt),
+				IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "api_tokens_idempotency_key_unique", lookup); replayed {
-			return existing, "", true, nil
-		}
 		if uniqueViolation(err) == "api_tokens_name_unique" {
 			return store.ApiToken{}, "", false, errTokenNameTaken
 		}
 		return store.ApiToken{}, "", false, err
+	}
+	if replayed {
+		return token, "", true, nil
 	}
 	return token, raw, false, nil
 }

@@ -120,11 +120,9 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request, p 
 			OwnerID: p.user.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent Resource", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, resourceToDTO(existing))
+	if replayOr(s, w, "look up idempotent Resource", key, lookup, func(r store.Resource) {
+		writeJSON(w, http.StatusOK, resourceToDTO(r))
+	}) {
 		return
 	}
 	id, err := uuid.NewV7()
@@ -132,19 +130,22 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request, p 
 		s.internal(w, "generate Resource id", err)
 		return
 	}
-	resource, err := s.q.CreateResource(ctx, store.CreateResourceParams{
-		ID: id, OwnerID: p.user.ID, Name: request.Name, IdempotencyKey: key,
-	})
+	resource, replayed, err := createIdempotent(key, "resources_owner_idempotency", lookup,
+		func() (store.Resource, error) {
+			return s.q.CreateResource(ctx, store.CreateResourceParams{
+				ID: id, OwnerID: p.user.ID, Name: request.Name, IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "resources_owner_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, resourceToDTO(existing))
-			return
-		}
 		if uniqueViolation(err) == "resources_owner_name" {
 			writeProblem(w, "conflict", "a Resource with that name already exists")
 			return
 		}
 		s.internal(w, "create Resource", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, resourceToDTO(resource))
 		return
 	}
 	s.audit(ctx, p, "resource.create", "resource", id.String(), map[string]any{"name": resource.Name})
@@ -465,11 +466,9 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 			ResourceID: resource.ID, IdempotencyKey: key,
 		})
 	}
-	if existing, replayed, err := replayExisting(key, lookup); err != nil {
-		s.internal(w, "look up idempotent ResourceVersion", err)
-		return
-	} else if replayed {
-		writeJSON(w, http.StatusOK, resourceVersionToDTO(existing))
+	if replayOr(s, w, "look up idempotent ResourceVersion", key, lookup, func(v store.ResourceVersion) {
+		writeJSON(w, http.StatusOK, resourceVersionToDTO(v))
+	}) {
 		return
 	}
 
@@ -495,17 +494,20 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
-	version, err := q.CreateResourceVersion(ctx, store.CreateResourceVersionParams{
-		ID: versionID, ResourceID: resource.ID,
-		Address: &address, ManifestKey: &manifestKey, Size: manifest.TotalSize(m),
-		Provenance: provenance, IdempotencyKey: key,
-	})
+	version, replayed, err := createIdempotent(key, "resource_versions_resource_idempotency", lookup,
+		func() (store.ResourceVersion, error) {
+			return q.CreateResourceVersion(ctx, store.CreateResourceVersionParams{
+				ID: versionID, ResourceID: resource.ID,
+				Address: &address, ManifestKey: &manifestKey, Size: manifest.TotalSize(m),
+				Provenance: provenance, IdempotencyKey: key,
+			})
+		})
 	if err != nil {
-		if existing, replayed := replayConflict(key, err, "resource_versions_resource_idempotency", lookup); replayed {
-			writeJSON(w, http.StatusOK, resourceVersionToDTO(existing))
-			return
-		}
 		s.internal(w, "create ResourceVersion", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, resourceVersionToDTO(version))
 		return
 	}
 	for _, object := range manifest.FileObjects(m) {
