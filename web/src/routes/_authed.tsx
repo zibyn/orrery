@@ -1,6 +1,9 @@
-import { createFileRoute, Outlet, redirect } from '@tanstack/react-router'
+import { useMutation } from '@tanstack/react-query'
+import { createFileRoute, Link, Outlet, redirect } from '@tanstack/react-router'
 
-import { ApiError, getMe } from '@/api'
+import { api, ApiError, getMe } from '@/api'
+import { Button } from '@/components/ui/button'
+import { forgetCurrentSession } from '@/lib/current-session'
 
 // Every page under _authed needs a Session. A 401 sends the browser to the
 // login page with the current location as ?return= (ADR-0020).
@@ -12,10 +15,92 @@ export const Route = createFileRoute('/_authed')({
       return { user }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
+        forgetCurrentSession()
         throw redirect({ to: '/login', search: { return: location.href } })
       }
       throw err
     }
   },
-  component: Outlet,
+  component: AuthedShell,
 })
+
+// The console pages of api.md §8. Admin pages are UI-gated on is_admin; the
+// server still enforces scope.
+const NAV = [
+  { to: '/sandboxes', label: 'Sandboxes' },
+  { to: '/snapshots', label: 'Snapshots' },
+  { to: '/git', label: 'Git account links' },
+  { to: '/cli-auth', label: 'CLI authorization' },
+  { to: '/secrets', label: 'Secrets' },
+  { to: '/account', label: 'Account' },
+] as const
+
+// Admin pages are UI-gated on is_admin; the server still enforces scope (api.md §8).
+const ADMIN_NAV = [
+  { to: '/admin/users', label: 'Users' },
+  { to: '/admin/nodes', label: 'Nodes' },
+  { to: '/admin/audit', label: 'Audit' },
+] as const
+
+const navLinkClass =
+  'rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'
+
+function AuthedShell() {
+  const { user } = Route.useRouteContext()
+  const logout = useMutation({
+    mutationFn: () => api('DELETE', '/sessions/current'),
+    onSuccess: () => {
+      forgetCurrentSession()
+      window.location.assign('/login')
+    },
+  })
+
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <header className="border-b border-border">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-4 px-4 py-3">
+          <Link to="/sandboxes" className="font-semibold">
+            stars-sandbox
+          </Link>
+          <nav className="flex flex-1 flex-wrap items-center gap-1">
+            {NAV.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className={navLinkClass}
+                activeProps={{ className: `${navLinkClass} bg-muted text-foreground` }}
+              >
+                {item.label}
+              </Link>
+            ))}
+            {user.is_admin &&
+              ADMIN_NAV.map((item) => (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  className={navLinkClass}
+                  activeProps={{ className: `${navLinkClass} bg-muted text-foreground` }}
+                >
+                  {item.label}
+                </Link>
+              ))}
+          </nav>
+          <div className="flex items-center gap-3 text-sm">
+            <span className="text-muted-foreground">{user.name}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={logout.isPending}
+              onClick={() => logout.mutate()}
+            >
+              Sign out
+            </Button>
+          </div>
+        </div>
+      </header>
+      <main className="mx-auto max-w-5xl px-4 py-8">
+        <Outlet />
+      </main>
+    </div>
+  )
+}

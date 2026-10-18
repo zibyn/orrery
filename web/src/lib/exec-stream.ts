@@ -1,0 +1,181 @@
+import type { ExecOutputFrame, ExecResult, ExecResultFrame, ExecState } from '@/api'
+
+// Every stored frame is a 5-byte header (stream byte plus a big-endian length)
+// followed by its payload; `seq` is the frame's offset in the record
+// (runtime.md §3, api.md §4).
+const FRAME_HEADER_BYTES = 5
+
+export const TRUNCATION_NOTICE = '[output truncated — full log available via the CLI]'
+
+export function decodeFrame(frame: ExecOutputFrame): string {
+  if (frame.encoding !== 'base64') return frame.data
+  const binary = atob(frame.data)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
+}
+
+export function frameText(frame: ExecOutputFrame): string {
+  if (frame.stream === 'truncated') return `\r\n\x1b[33m${TRUNCATION_NOTICE}\x1b[0m\r\n`
+  return decodeFrame(frame)
+}
+
+export function frameEnd(frame: ExecOutputFrame): number {
+  // The offset counts record bytes: decoded bytes for base64 frames, UTF-8
+  // bytes otherwise, even when the payload is not valid UTF-8.
+  const bytes =
+    frame.encoding === 'base64'
+      ? atob(frame.data).length
+      : new TextEncoder().encode(frame.data).length
+  return frame.seq + FRAME_HEADER_BYTES + bytes
+}
+
+export function isResultFrame(value: unknown): value is ExecResultFrame {
+  return typeof value === 'object' && value !== null && (value as { type?: unknown }).type === 'result'
+}
+
+export function formatExecResult(result: ExecResult & { log_truncated?: boolean }): string {
+  const suffix =
+    result.exit_code !== undefined
+      ? ` (exit code ${result.exit_code})`
+      : result.signal !== undefined
+        ? ` (signal ${result.signal})`
+        : ''
+  return `${result.cause}${suffix}${result.log_truncated ? ' · log truncated' : ''}`
+}
+
+export function execListPollInterval(items: Pick<{ state: ExecState }, 'state'>[] | undefined) {
+  return items?.some((exec) => exec.state !== 'finished') ? 5000 : false
+}
+
+// The argv field is editable (api.md §8), so accept the shell quoting a user
+// would expect: single quotes are literal, double quotes and bare text honour
+// a backslash escape, and an unterminated quote runs to the end.
+export function parseArgv(text: string): string[] {
+  const args: string[] = []
+  let current = ''
+  let inToken = false
+  let quote: '"' | "'" | null = null
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (quote) {
+      if (char === quote) {
+        quote = null
+      } else if (char === '\\' && quote === '"' && index + 1 < text.length) {
+        current += text[index + 1]
+        index += 1
+      } else {
+        current += char
+      }
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      inToken = true
+      continue
+    }
+    if (char === '\\' && index + 1 < text.length) {
+      current += text[index + 1]
+      index += 1
+      inToken = true
+      continue
+    }
+    if (/\s/.test(char)) {
+      if (inToken) {
+        args.push(current)
+        current = ''
+        inToken = false
+      }
+      continue
+    }
+    current += char
+    inToken = true
+  }
+  if (inToken) args.push(current)
+  return args
+}
+
+// The console is same-origin with the API (api.md §8); only the ws scheme
+// changes with the page.
+export function consoleWebSocketUrl(path: string): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/api/v1${path}`
+}
+
+export type FollowOutputHandlers = {
+  write: (text: string) => void
+  result: (frame: ExecResultFrame) => void
+  error: (message: string) => void
+  open?: () => void
+}
+
+export type FollowOutputOptions = {
+  after?: number
+  retries?: number
+  retryDelayMs?: number
+  closedMessage: string
+  failedMessage?: string
+}
+
+// Follows GET /execs/{id}/output?follow=true: parses each frame, classifies the
+// terminal result frame and writes data frames to the terminal. The returned
+// cleanup closes the socket. Reconnects resume from the last byte offset, so a
+// caller that wants a bounded retry just sets `retries`.
+export function followExecOutput(
+  execId: string,
+  handlers: FollowOutputHandlers,
+  options: FollowOutputOptions,
+): () => void {
+  const retries = options.retries ?? 0
+  const retryDelayMs = options.retryDelayMs ?? 1000
+  const failedMessage = options.failedMessage
+  let after = options.after ?? 0
+  let closed = false
+  let finished = false
+  let attempts = 0
+  let retryTimer: number | undefined
+  let socket: WebSocket | null = null
+
+  const connect = () => {
+    socket = new WebSocket(consoleWebSocketUrl(`/execs/${execId}/output?after=${after}&follow=true`))
+    socket.onopen = () => {
+      if (!closed) handlers.open?.()
+    }
+    socket.onmessage = (event) => {
+      let frame: unknown
+      try {
+        frame = JSON.parse(String(event.data))
+      } catch {
+        return
+      }
+      if (isResultFrame(frame)) {
+        finished = true
+        handlers.result(frame)
+        return
+      }
+      const output = frame as ExecOutputFrame
+      handlers.write(frameText(output))
+      after = frameEnd(output)
+    }
+    socket.onclose = () => {
+      if (closed || finished) return
+      if (attempts < retries) {
+        attempts += 1
+        retryTimer = window.setTimeout(connect, retryDelayMs)
+        return
+      }
+      handlers.error(options.closedMessage)
+    }
+    if (failedMessage) {
+      socket.onerror = () => {
+        if (!closed && !finished) handlers.error(failedMessage)
+      }
+    }
+  }
+  connect()
+
+  return () => {
+    closed = true
+    window.clearTimeout(retryTimer)
+    socket?.close()
+  }
+}

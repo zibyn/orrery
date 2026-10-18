@@ -32,7 +32,7 @@ function GitPage() {
   return (
     <div className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 px-4 py-12">
       <div>
-        <h1 className="text-2xl font-semibold">Git accounts</h1>
+        <h1 className="text-2xl font-semibold">Git account links</h1>
         <p className="text-sm text-muted-foreground">
           Link an account so git inside your Sandboxes can clone and push on your behalf.
         </p>
