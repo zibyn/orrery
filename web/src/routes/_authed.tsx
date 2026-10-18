@@ -28,6 +28,7 @@ export const Route = createFileRoute('/_authed')({
 // pages are gated on is_admin when they land (api.md §8).
 const NAV = [
   { to: '/sandboxes', label: 'Sandboxes' },
+  { to: '/snapshots', label: 'Snapshots' },
   { to: '/git', label: 'Git accounts' },
   { to: '/cli-auth', label: 'CLI authorization' },
   { to: '/secrets', label: 'Secrets' },

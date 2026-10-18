@@ -116,6 +116,21 @@ export type Snapshot = {
   deleted_at?: string
 }
 
+export type SnapshotVersionState = 'building' | 'ready' | 'failed' | 'cancelled'
+
+export type SnapshotVersion = {
+  id: string
+  snapshot_id: string
+  digest: string | null
+  state: SnapshotVersionState
+  cause: string | null
+  source: 'import' | 'build'
+  build_sandbox_id?: string
+  build_exec_id?: string
+  provenance?: Record<string, unknown>
+  created_at: string | null
+}
+
 export type Workspace = {
   id: string
   kind: 'ephemeral' | 'persistent'
