@@ -275,6 +275,7 @@ message OutputAck {
 
 message HelloAck {
   bool accepted = 1;
-  // Empty until the OCI registry exists (M4).
+  // Docker config.json auth document for the platform registry (ADR-0014);
+  // empty when the deployment has no registry.
   string registry_credential = 2;
 }

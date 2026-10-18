@@ -2353,7 +2353,8 @@ func (x *OutputAck) GetStoredSeq() int64 {
 type HelloAck struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Accepted bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
-	// Empty until the OCI registry exists (M4).
+	// Docker config.json auth document for the platform registry (ADR-0014);
+	// empty when the deployment has no registry.
 	RegistryCredential string `protobuf:"bytes,2,opt,name=registry_credential,json=registryCredential,proto3" json:"registry_credential,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
