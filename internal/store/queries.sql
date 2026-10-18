@@ -769,3 +769,104 @@ SELECT * FROM git_links WHERE user_id = $1 AND provider_id = $2 FOR UPDATE;
 
 -- name: DeleteGitLink :one
 DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING *;
+
+-- M4 ticket #88: Snapshots and SnapshotVersions (schema.md, ADR-0012).
+
+-- name: CreateSnapshot :one
+INSERT INTO snapshots (id, owner_id, name)
+VALUES (sqlc.arg('id'), sqlc.narg('owner_id'), sqlc.arg('name'))
+RETURNING *;
+
+-- name: GetSnapshot :one
+SELECT * FROM snapshots WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: GetSnapshotByName :one
+SELECT * FROM snapshots
+WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL;
+
+-- name: GetPlatformSnapshotByName :one
+SELECT * FROM snapshots
+WHERE owner_id IS NULL AND name = $1 AND deleted_at IS NULL;
+
+-- name: ListSnapshots :many
+SELECT * FROM snapshots
+WHERE deleted_at IS NULL
+  AND (owner_id = sqlc.arg('owner_id') OR owner_id IS NULL)
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- name: DeleteSnapshot :one
+UPDATE snapshots SET deleted_at = now()
+WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: SetSnapshotCurrentVersion :one
+UPDATE snapshots SET current_version_id = sqlc.arg('version_id')
+WHERE id = sqlc.arg('id') AND deleted_at IS NULL
+RETURNING *;
+
+-- name: CreateSnapshotVersion :one
+INSERT INTO snapshot_versions (
+    id, snapshot_id, digest, state, cause, source,
+    build_sandbox_id, build_exec_id, provenance, idempotency_key
+) VALUES (
+    sqlc.arg('id'), sqlc.arg('snapshot_id'), sqlc.narg('digest'), sqlc.arg('state'),
+    sqlc.narg('cause'), sqlc.arg('source'), sqlc.narg('build_sandbox_id'),
+    sqlc.narg('build_exec_id'), sqlc.narg('provenance'), sqlc.narg('idempotency_key')
+)
+RETURNING *;
+
+-- name: GetSnapshotVersion :one
+SELECT * FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2;
+
+-- name: GetSnapshotVersionByIdempotencyKey :one
+SELECT * FROM snapshot_versions
+WHERE snapshot_id = $1 AND idempotency_key = $2;
+
+-- name: ListSnapshotVersions :many
+SELECT * FROM snapshot_versions
+WHERE snapshot_id = sqlc.arg('snapshot_id')
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- name: MarkSnapshotVersionReady :one
+UPDATE snapshot_versions SET state = 'ready', digest = sqlc.arg('digest')
+WHERE id = sqlc.arg('id') AND state = 'building'
+RETURNING *;
+
+-- name: MarkSnapshotVersionFailed :one
+UPDATE snapshot_versions SET state = 'failed', cause = sqlc.arg('cause')
+WHERE id = sqlc.arg('id') AND state = 'building'
+RETURNING *;
+
+-- name: CancelSnapshotVersion :one
+UPDATE snapshot_versions SET state = 'cancelled'
+WHERE id = sqlc.arg('id') AND state = 'building'
+RETURNING *;
+
+-- name: DeleteSnapshotVersion :exec
+DELETE FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2;
+
+-- An import runs in the Control Plane process, so a restart leaves only a
+-- building row behind; mark it failed rather than letting it hang.
+-- name: FailBuildingSnapshotImports :exec
+UPDATE snapshot_versions SET state = 'failed', cause = 'import_failed'
+WHERE state = 'building' AND source = 'import';
+
+-- name: GetReadyPlatformSnapshotVersionByDigest :one
+SELECT sv.* FROM snapshot_versions sv
+JOIN snapshots s ON s.id = sv.snapshot_id
+WHERE s.owner_id IS NULL AND s.name = $1 AND s.deleted_at IS NULL
+  AND sv.state = 'ready' AND sv.digest = $2;
+
+-- The suffix is "<repo>@<digest>"; matching the suffix avoids caring which
+-- registry address a Sandbox was created against.
+-- name: CountSandboxSnapshotReferences :one
+SELECT count(*)::bigint FROM sandboxes
+WHERE deleted_at IS NULL
+  AND right(snapshot_digest, length(sqlc.arg('ref')::text)) = sqlc.arg('ref')::text;
+
+-- name: GetSnapshotVersionByID :one
+SELECT * FROM snapshot_versions WHERE id = $1;

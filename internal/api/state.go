@@ -37,6 +37,16 @@ const (
 	WorkspaceLost         WorkspaceState = "lost"
 )
 
+// SnapshotVersionState is the lifecycle of an import or build (api.md §3).
+type SnapshotVersionState string
+
+const (
+	SnapshotVersionBuilding  SnapshotVersionState = "building"
+	SnapshotVersionReady     SnapshotVersionState = "ready"
+	SnapshotVersionFailed    SnapshotVersionState = "failed"
+	SnapshotVersionCancelled SnapshotVersionState = "cancelled"
+)
+
 // The wire names in lifecycle order, used by the OpenAPI document.
 var (
 	sandboxStateNames = []string{
@@ -47,5 +57,9 @@ var (
 	workspaceStateNames = []string{
 		string(WorkspaceProvisioning), string(WorkspaceReady), string(WorkspaceDeleting),
 		string(WorkspaceDeleted), string(WorkspaceFailed), string(WorkspaceLost),
+	}
+	snapshotVersionStateNames = []string{
+		string(SnapshotVersionBuilding), string(SnapshotVersionReady),
+		string(SnapshotVersionFailed), string(SnapshotVersionCancelled),
 	}
 )
