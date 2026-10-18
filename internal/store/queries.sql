@@ -769,3 +769,117 @@ SELECT * FROM git_links WHERE user_id = $1 AND provider_id = $2 FOR UPDATE;
 
 -- name: DeleteGitLink :one
 DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING *;
+
+-- Resources
+
+-- name: CreateResource :one
+INSERT INTO resources (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- GetResource includes tombstones so DELETE can be idempotent; reads hide
+-- them in the handler (api.md §1).
+-- name: GetResource :one
+SELECT * FROM resources WHERE id = $1;
+
+-- name: GetResourceByIdempotencyKey :one
+SELECT * FROM resources
+WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
+
+-- name: ListResources :many
+SELECT * FROM resources
+WHERE owner_id = sqlc.arg('owner_id')
+  AND deleted_at IS NULL
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- LockResource serializes current-pointer moves of one Resource (ADR-0012).
+-- name: LockResource :one
+SELECT * FROM resources WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
+-- name: SoftDeleteResource :one
+UPDATE resources
+SET deleted_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: SetResourceCurrent :one
+UPDATE resources
+SET current_version_id = $2
+WHERE id = $1
+RETURNING *;
+
+-- PurgeResourceIdempotencyKeys expires Idempotency Keys after 24 hours
+-- (defaults.md).
+-- name: PurgeResourceIdempotencyKeys :exec
+UPDATE resources SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
+-- Resource versions
+
+-- name: CreateResourceVersion :one
+INSERT INTO resource_versions (
+    id, resource_id, address, manifest_key, size, provenance,
+    state, idempotency_key
+) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
+RETURNING *;
+
+-- name: GetResourceVersion :one
+SELECT * FROM resource_versions WHERE id = $1;
+
+-- name: GetResourceVersionByIdempotencyKey :one
+SELECT * FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2;
+
+-- name: ListResourceVersions :many
+SELECT * FROM resource_versions
+WHERE resource_id = $1
+  AND (sqlc.narg('after')::uuid IS NULL OR id < sqlc.narg('after'))
+ORDER BY id DESC
+LIMIT sqlc.arg('limit');
+
+-- name: PurgeResourceVersionIdempotencyKeys :exec
+UPDATE resource_versions SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
+-- name: InsertResourceVersionObject :exec
+INSERT INTO resource_version_objects (version_id, sha256)
+VALUES ($1, $2)
+ON CONFLICT (version_id, sha256) DO NOTHING;
+
+-- name: ListResourceVersionObjects :many
+SELECT sha256 FROM resource_version_objects WHERE version_id = $1 ORDER BY sha256;
+
+-- CAS objects (owner-scoped, ADR-0021)
+
+-- name: UpsertCASObject :exec
+INSERT INTO cas_objects (owner_id, sha256, size)
+VALUES ($1, $2, $3)
+ON CONFLICT (owner_id, sha256) DO NOTHING;
+
+-- name: GetCASObject :one
+SELECT * FROM cas_objects WHERE owner_id = $1 AND sha256 = $2;
+
+-- name: DeleteCASObject :exec
+DELETE FROM cas_objects WHERE owner_id = $1 AND sha256 = $2;
+
+-- Upload sessions
+
+-- name: CreateUpload :one
+INSERT INTO uploads (id, resource_id, address, manifest, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: GetUpload :one
+SELECT * FROM uploads WHERE id = $1;
+
+-- ReusableUpload is the resume rule: an unexpired session for the same
+-- Resource and manifest address is reused (api.md §3).
+-- name: ReusableUpload :one
+SELECT * FROM uploads
+WHERE resource_id = $1 AND address = $2 AND expires_at > now()
+ORDER BY created_at DESC, id
+LIMIT 1;
+
+-- name: DeleteUpload :exec
+DELETE FROM uploads WHERE id = $1;
