@@ -606,6 +606,7 @@ func writeBuildMarker(path string, marker buildMarker) error {
 // back to the Node-wide limit instead of failing.
 func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64, memory int64) (string, func()) {
 	if cpu <= 0 || memory <= 0 {
+		slog.Warn("build has no limits; it is bounded only by the Node-wide limit", "cpu", cpu, "memory", memory)
 		return "", func() {}
 	}
 	slice := "stars-build-" + versionID + ".slice"

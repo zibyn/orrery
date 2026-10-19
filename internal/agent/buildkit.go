@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -36,11 +37,15 @@ func (r *Runtime) buildkitAvailable(ctx context.Context) bool {
 	defer cancel()
 	c, err := r.buildkitClient(ctx)
 	if err != nil {
+		slog.Warn("BuildKit self-check failed; snapshot_build stays unsupported", "error", err)
 		return false
 	}
 	defer c.Close() //nolint:errcheck // probe only
-	_, err = c.ListWorkers(ctx)
-	return err == nil
+	if _, err = c.ListWorkers(ctx); err != nil {
+		slog.Warn("BuildKit self-check failed; snapshot_build stays unsupported", "error", err)
+		return false
+	}
+	return true
 }
 
 func dockerGRPCDialer(socket string) func(context.Context, string) (net.Conn, error) {
