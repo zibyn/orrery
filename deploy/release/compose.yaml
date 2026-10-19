@@ -1,0 +1,104 @@
+# The release deployment of a Control Plane host (ADR-0023). deploy/install.sh
+# downloads this file from the release tag into /etc/stars-sandbox/ and writes
+# .env beside it; nothing here is a credential. deploy/compose.yaml stays the
+# e2e deployment.
+name: stars-sandbox
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stars
+      POSTGRES_PASSWORD: "${STARS_POSTGRES_PASSWORD:?}"
+      POSTGRES_DB: stars
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stars -d stars"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  rustfs:
+    image: rustfs/rustfs:1.0.2
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: "${STARS_S3_ACCESS_KEY:?}"
+      RUSTFS_SECRET_KEY: "${STARS_S3_SECRET_KEY:?}"
+    volumes:
+      - rustfs-data:/data
+    # Nodes and presigned URLs reach it here; proxy mode binds loopback only.
+    ports:
+      - "${STARS_BIND:-}19000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  rustfs-init:
+    image: amazon/aws-cli:2.17.0
+    environment:
+      AWS_ACCESS_KEY_ID: "${STARS_S3_ACCESS_KEY:?}"
+      AWS_SECRET_ACCESS_KEY: "${STARS_S3_SECRET_KEY:?}"
+      AWS_DEFAULT_REGION: "${STARS_S3_REGION:-us-east-1}"
+      S3_BUCKET: "${STARS_S3_BUCKET:-stars}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket "$$S3_BUCKET" 2>/dev/null; do
+          aws --endpoint-url http://rustfs:9000 s3 mb "s3://$$S3_BUCKET" 2>/dev/null || sleep 1
+        done
+    depends_on:
+      rustfs:
+        condition: service_healthy
+
+  # Host networking lets the registry sign blob redirects for, and reach, the
+  # same public object-store address Nodes use (ADR-0014). install.sh writes
+  # its config, which carries the listen address, TLS and credentials.
+  registry:
+    image: registry:3
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./registry:/etc/distribution:ro
+      - ./tls:/tls:ro
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
+
+  server:
+    image: "ghcr.io/zibyn/stars-sandbox-server:${STARS_VERSION:?}"
+    restart: unless-stopped
+    # Every STARS_* setting (defaults.md) lives in .env.
+    env_file: .env
+    environment:
+      STARS_API_ADDR: ":8080"
+      STARS_NODE_ADDR: ":8081"
+      STARS_NODE_TLS_CERT: /tls/server.crt
+      STARS_NODE_TLS_KEY: /tls/server.key
+      STARS_ENCRYPTION_KEYS_FILE: /keys/encryption
+      STARS_S3_ENDPOINT: http://rustfs:9000
+      # Self-signed mode: trust the generated CA for registry pushes, in
+      # addition to the system roots.
+      SSL_CERT_DIR: /ca
+    volumes:
+      - ./tls:/tls:ro
+      - ./ca:/ca:ro
+      - ./keys:/keys:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+      registry:
+        condition: service_started
+    ports:
+      - "${STARS_BIND:-}18080:8080"
+      # Agents always connect directly over TLS; never proxied (ADR-0023).
+      - "18081:8081"
+
+volumes:
+  postgres-data:
+  rustfs-data:
