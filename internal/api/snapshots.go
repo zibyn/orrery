@@ -280,7 +280,7 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		s.internal(w, "generate SnapshotVersion id", err)
 		return
 	}
-	version, replayed, err := createIdempotent(key, "snapshot_versions_idempotency", lookup,
+	version, replayed, err := createIdempotent(key, lookup,
 		func() (store.SnapshotVersion, error) {
 			return s.q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
 				ID: id, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),

@@ -167,7 +167,7 @@ func (s *Server) handlePublishWorkspace(w http.ResponseWriter, r *http.Request, 
 		s.internal(w, "generate ResourceVersion id", err)
 		return
 	}
-	version, replayed, err := createIdempotent(key, "resource_versions_publish_idempotency", lookup,
+	version, replayed, err := createIdempotent(key, lookup,
 		func() (store.ResourceVersion, error) {
 			return s.q.CreatePendingResourceVersion(ctx, store.CreatePendingResourceVersionParams{
 				ID:                    versionID,

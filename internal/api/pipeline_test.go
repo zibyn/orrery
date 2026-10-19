@@ -17,13 +17,12 @@ import (
 )
 
 func TestCreateIdempotent(t *testing.T) {
-	const constraint = "widgets_owner_idempotency"
 	key := "key"
-	duplicate := &pgconn.PgError{Code: "23505", ConstraintName: constraint}
+	duplicate := &pgconn.PgError{Code: "23505", ConstraintName: "widgets_owner_idempotency"}
 
 	t.Run("insert wins", func(t *testing.T) {
 		lookupCalled := false
-		row, replayed, err := createIdempotent(&key, constraint,
+		row, replayed, err := createIdempotent(&key,
 			func() (string, error) { lookupCalled = true; return "", nil },
 			func() (string, error) { return "new", nil })
 		if err != nil || replayed || row != "new" || lookupCalled {
@@ -32,7 +31,7 @@ func TestCreateIdempotent(t *testing.T) {
 	})
 
 	t.Run("concurrent winner replays", func(t *testing.T) {
-		row, replayed, err := createIdempotent(&key, constraint,
+		row, replayed, err := createIdempotent(&key,
 			func() (string, error) { return "winner", nil },
 			func() (string, error) { return "", duplicate })
 		if err != nil || !replayed || row != "winner" {
@@ -40,9 +39,28 @@ func TestCreateIdempotent(t *testing.T) {
 		}
 	})
 
+	t.Run("name conflict replays", func(t *testing.T) {
+		nameDuplicate := &pgconn.PgError{Code: "23505", ConstraintName: "widgets_owner_name"}
+		row, replayed, err := createIdempotent(&key,
+			func() (string, error) { return "winner", nil },
+			func() (string, error) { return "", nameDuplicate })
+		if err != nil || !replayed || row != "winner" {
+			t.Fatalf("createIdempotent = (%q, %v, %v), want (%q, true, nil)", row, replayed, err, "winner")
+		}
+	})
+
+	t.Run("lookup miss passes the conflict through", func(t *testing.T) {
+		_, replayed, err := createIdempotent(&key,
+			func() (string, error) { return "", pgx.ErrNoRows },
+			func() (string, error) { return "", duplicate })
+		if !errors.Is(err, duplicate) || replayed {
+			t.Fatalf("createIdempotent err = %v, replayed=%v; want the original conflict", err, replayed)
+		}
+	})
+
 	t.Run("other error passes through", func(t *testing.T) {
 		boom := errors.New("boom")
-		_, replayed, err := createIdempotent(&key, constraint,
+		_, replayed, err := createIdempotent(&key,
 			func() (string, error) { t.Fatal("lookup must not run"); return "", nil },
 			func() (string, error) { return "", boom })
 		if !errors.Is(err, boom) || replayed {
@@ -51,7 +69,7 @@ func TestCreateIdempotent(t *testing.T) {
 	})
 
 	t.Run("nil key never replays", func(t *testing.T) {
-		row, replayed, err := createIdempotent[string](nil, constraint,
+		row, replayed, err := createIdempotent[string](nil,
 			func() (string, error) { t.Fatal("lookup must not run"); return "", nil },
 			func() (string, error) { return "new", nil })
 		if err != nil || replayed || row != "new" {

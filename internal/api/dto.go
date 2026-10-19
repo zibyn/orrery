@@ -277,12 +277,14 @@ func replayExisting[T any](key *string, lookup func() (T, error)) (T, bool, erro
 	return row, true, nil
 }
 
-// replayConflict resolves a create that lost the idempotency unique index to
-// a concurrent request; the winner's row is the answer. Other creation errors
+// replayConflict resolves a create that lost any unique index to a concurrent
+// request with the same Idempotency-Key; the winner's row is the answer. The
+// index does not matter: a different key never finds a row, and a same-key
+// create that also collides on a name is still a replay. Other creation errors
 // are left for the caller to classify.
-func replayConflict[T any](key *string, err error, constraint string, lookup func() (T, error)) (T, bool) {
+func replayConflict[T any](key *string, err error, lookup func() (T, error)) (T, bool) {
 	var zero T
-	if key == nil || uniqueViolation(err) != constraint {
+	if key == nil || uniqueViolation(err) == "" {
 		return zero, false
 	}
 	row, lookupErr := lookup()

@@ -47,13 +47,22 @@ func TestReplayConflict(t *testing.T) {
 	duplicate := &pgconn.PgError{Code: "23505", ConstraintName: "things_idempotency"}
 	lookup := func() (int, error) { return 7, nil }
 
-	if row, replayed := replayConflict(&key, duplicate, "things_idempotency", lookup); !replayed || row != 7 {
+	if row, replayed := replayConflict(&key, duplicate, lookup); !replayed || row != 7 {
 		t.Fatalf("conflict = %d, %v; want 7, true", row, replayed)
 	}
-	if _, replayed := replayConflict(&key, duplicate, "other_constraint", lookup); replayed {
-		t.Fatal("a different unique constraint must not replay")
+	// Any unique index replays: when concurrent same-key creates also share a
+	// name, the loser may hit the name index first (#127).
+	nameDuplicate := &pgconn.PgError{Code: "23505", ConstraintName: "things_name"}
+	if row, replayed := replayConflict(&key, nameDuplicate, lookup); !replayed || row != 7 {
+		t.Fatalf("name conflict = %d, %v; want 7, true", row, replayed)
 	}
-	if _, replayed := replayConflict(nil, duplicate, "things_idempotency", lookup); replayed {
+	if _, replayed := replayConflict(&key, duplicate, func() (int, error) { return 0, pgx.ErrNoRows }); replayed {
+		t.Fatal("a lookup miss must not replay")
+	}
+	if _, replayed := replayConflict(nil, duplicate, lookup); replayed {
 		t.Fatal("a nil key must not replay")
+	}
+	if _, replayed := replayConflict(&key, errors.New("boom"), lookup); replayed {
+		t.Fatal("a non-unique error must not replay")
 	}
 }

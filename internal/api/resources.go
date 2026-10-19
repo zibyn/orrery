@@ -130,7 +130,7 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request, p 
 		s.internal(w, "generate Resource id", err)
 		return
 	}
-	resource, replayed, err := createIdempotent(key, "resources_owner_idempotency", lookup,
+	resource, replayed, err := createIdempotent(key, lookup,
 		func() (store.Resource, error) {
 			return s.q.CreateResource(ctx, store.CreateResourceParams{
 				ID: id, OwnerID: p.user.ID, Name: request.Name, IdempotencyKey: key,
@@ -480,7 +480,7 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
-	version, replayed, err := createIdempotent(key, "resource_versions_resource_idempotency", lookup,
+	version, replayed, err := createIdempotent(key, lookup,
 		func() (store.ResourceVersion, error) {
 			return q.CreateResourceVersion(ctx, store.CreateResourceVersionParams{
 				ID: versionID, ResourceID: resource.ID,

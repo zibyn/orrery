@@ -69,7 +69,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "generate user id", err)
 		return
 	}
-	user, replayed, err := createIdempotent(key, "users_idempotency_key_unique", lookup,
+	user, replayed, err := createIdempotent(key, lookup,
 		func() (store.User, error) {
 			return s.q.CreateUser(ctx, store.CreateUserParams{
 				ID:             id,

@@ -65,7 +65,7 @@ func (s *Server) issueNamedToken(ctx context.Context, userID uuid.UUID, req crea
 	if err != nil {
 		return store.ApiToken{}, "", false, err
 	}
-	token, replayed, err := createIdempotent(key, "api_tokens_idempotency_key_unique", lookup,
+	token, replayed, err := createIdempotent(key, lookup,
 		func() (store.ApiToken, error) {
 			return s.insertToken(ctx, store.CreateTokenParams{
 				ID:             id,
