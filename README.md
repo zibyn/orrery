@@ -42,7 +42,7 @@
 
 ### Web 控制台
 
-与 API 同源，由 `stars-sandbox-server` 在 `/` 下提供；Sandbox 创建、终端、文件浏览、Snapshot、用户与节点管理都在这里。
+与 API 同源，由 `stars-sandbox-server` 在 `/` 下提供；Sandbox 创建、终端、文件浏览、Snapshot、用户与节点管理都在这里。控制台支持中文和英文，可在侧栏、移动端顶栏或登录页切换；偏好存在浏览器本地（`PARAGLIDE_LOCALE`），不进入 URL。
 
 ### CLI
 
@@ -133,7 +133,7 @@ make e2e-console  # 同一部署上跑 Playwright
 | `internal/` | Control Plane、Node Agent、API、调度、Exec、CLI、MCP |
 | `client/` | Go SDK |
 | `sdk/python/` | Python SDK |
-| `web/` | Web 控制台（React + Vite） |
+| `web/` | Web 控制台（React + Vite + Paraglide） |
 | `proto/` | Node Agent gRPC 协议 |
 | `deploy/` | compose、安装脚本、release 配置 |
 | `e2e/` | 黑盒场景测试 |
