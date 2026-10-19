@@ -33,7 +33,10 @@ func TestSnapshotBuildRun(t *testing.T) {
 
 	nodeName := fmt.Sprintf("e2e-build-node-%d", suffix)
 	state, dataRoot := enrollAgent(t, admin, nodeName)
-	startAgent(t, state, dataRoot)
+	// The build ceiling is 4 CPU (defaults.md) and CI runners have exactly
+	// four, so the default 1-CPU reserve for the host would leave the build
+	// Sandbox infeasible forever.
+	startAgentWith(t, state, dataRoot, "--reserve-cpu", "0")
 	waitForNodeReady(t, admin, nodeName)
 	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
