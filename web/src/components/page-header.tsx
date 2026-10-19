@@ -2,8 +2,8 @@ import type * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
-// One heading block per page: optional breadcrumb/back line, title,
-// description, inline meta and right-aligned actions.
+// One heading block per page: optional breadcrumb line, title, description,
+// inline meta and right-aligned actions.
 export function PageHeader({
   title,
   description,

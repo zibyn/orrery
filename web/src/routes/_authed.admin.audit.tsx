@@ -1,23 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { Filter } from 'lucide-react'
+import { Filter, ScrollText } from 'lucide-react'
 import { useState, type ChangeEvent } from 'react'
 
 import { api, type AuditRecord, type ListResponse } from '@/api'
+import { Breadcrumbs } from '@/components/breadcrumbs'
+import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 import { auditPath, toRfc3339, type AuditFilters } from '@/lib/audit'
 import { useLocale } from '@/lib/i18n'
 import { formatLocalDateTime } from '@/lib/tokens'
@@ -50,7 +44,13 @@ function AuditPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title={m.audit_title()} description={m.audit_description()} />
+      <PageHeader
+        above={
+          <Breadcrumbs items={[{ label: m.nav_group_admin() }, { label: m.audit_title() }]} />
+        }
+        title={m.audit_title()}
+        description={m.audit_description()}
+      />
 
       <Card>
         <CardHeader>
@@ -115,45 +115,34 @@ function AuditPage() {
       )}
 
       {records.data && records.data.items.length > 0 && (
-        <Card className="overflow-hidden">
-          <CardContent className="px-0 py-0">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-5">{m.audit_at()}</TableHead>
-                  <TableHead>{m.audit_actor()}</TableHead>
-                  <TableHead>{m.audit_action()}</TableHead>
-                  <TableHead>{m.audit_target()}</TableHead>
-                  <TableHead className="pr-5">{m.audit_detail()}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {records.data.items.map((record) => (
-                  <TableRow key={record.id} className="align-top" data-testid="audit-row">
-                    <TableCell className="pl-5 text-xs whitespace-nowrap">
-                      {formatLocalDateTime(record.at)}
-                    </TableCell>
-                    <TableCell className="text-sm">{record.actor_name ?? '—'}</TableCell>
-                    <TableCell className="font-mono text-xs whitespace-nowrap">
-                      {record.action}
-                    </TableCell>
-                    <TableCell>
-                      <span className="block text-xs">{record.target_type}</span>
-                      <span className="block font-mono text-xs text-muted-foreground">
-                        {record.target_id}
-                      </span>
-                    </TableCell>
-                    <TableCell className="pr-5">
-                      <pre className="max-w-md overflow-x-auto font-mono text-xs text-muted-foreground">
-                        {JSON.stringify(record.detail)}
-                      </pre>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        <ListCard>
+          {records.data.items.map((record) => (
+            <ListRow
+              key={record.id}
+              data-testid="audit-row"
+              icon={<ScrollText />}
+              title={
+                <>
+                  <span className="font-mono text-xs">{record.action}</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    {formatLocalDateTime(record.at)}
+                  </span>
+                </>
+              }
+              description={
+                <>
+                  <span>
+                    {record.actor_name ?? '—'} · {record.target_type}{' '}
+                    <span className="font-mono">{record.target_id}</span>
+                  </span>
+                  <pre className="mt-1 max-w-full overflow-x-auto font-mono">
+                    {JSON.stringify(record.detail)}
+                  </pre>
+                </>
+              }
+            />
+          ))}
+        </ListCard>
       )}
 
       <div className="flex gap-2">

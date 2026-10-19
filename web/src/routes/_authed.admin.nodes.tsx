@@ -3,20 +3,13 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Pause, Play, Server, Trash } from 'lucide-react'
 
 import { api, type CapacityNode, type ListResponse, type Node } from '@/api'
+import { Breadcrumbs } from '@/components/breadcrumbs'
 import { EmptyState } from '@/components/empty-state'
+import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 import { mergeNodeCapacity, nodeListPollInterval } from '@/lib/nodes'
 import { useLocale } from '@/lib/i18n'
 import { m } from '@/paraglide/messages'
@@ -61,6 +54,9 @@ function NodesPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
+        above={
+          <Breadcrumbs items={[{ label: m.nav_group_admin() }, { label: m.nodes_title() }]} />
+        }
         title={m.nodes_title()}
         description={m.nodes_description()}
         meta={
@@ -90,103 +86,84 @@ function NodesPage() {
       )}
 
       {rows.length > 0 && (
-        <Card className="overflow-hidden">
-          <CardHeader>
-            <CardTitle>{m.nodes_enrolled()}</CardTitle>
-            <CardDescription>{m.nodes_enrolled_description()}</CardDescription>
-          </CardHeader>
-          <CardContent className="px-0 pb-0">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-5">{m.sandbox_node()}</TableHead>
-                  <TableHead>{m.nodes_status()}</TableHead>
-                  <TableHead>{m.nodes_gpus()}</TableHead>
-                  <TableHead className="pr-5 text-right">{m.nodes_actions()}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((row) => (
-                  <TableRow key={row.id} data-testid="node-row">
-                    <TableCell className="pl-5">
-                      <span className="block text-sm font-medium">{row.name}</span>
-                      <span className="block font-mono text-xs text-muted-foreground">
-                        {row.id}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge state={row.status} />
-                    </TableCell>
-                    <TableCell>
-                      {row.gpus.length === 0 ? (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      ) : (
-                        <div className="flex flex-col gap-1.5">
-                          {row.gpus.map((gpu) => (
-                            <div key={gpu.model} className="flex items-center gap-2">
-                              <span className="w-28 truncate text-xs">{gpu.model}</span>
-                              <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
-                                <span
-                                  className="block h-full rounded-full bg-brand"
-                                  style={{
-                                    width: `${gpu.total > 0 ? (gpu.allocated / gpu.total) * 100 : 0}%`,
-                                  }}
-                                />
-                              </span>
-                              <span className="font-mono text-xs text-muted-foreground">
-                                {gpu.allocated}/{gpu.total}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="pr-5">
-                      <div className="flex items-center justify-end gap-2">
-                        {row.paused ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={action.isPending || remove.isPending || row.status === 'lost'}
-                            onClick={() => action.mutate({ id: row.id, verb: 'resume' })}
-                          >
-                            <Play />
-                            {m.nodes_resume()}
-                          </Button>
-                        ) : (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={
-                              action.isPending || remove.isPending || row.paused === null
-                            }
-                            onClick={() => action.mutate({ id: row.id, verb: 'pause' })}
-                          >
-                            <Pause />
-                            {m.nodes_pause()}
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={action.isPending || remove.isPending}
-                          onClick={() => {
-                            if (window.confirm(m.nodes_delete_confirm({ name: row.name }))) {
-                              remove.mutate(row.id)
-                            }
-                          }}
-                        >
-                          <Trash />
-                          {m.common_delete()}
-                        </Button>
+        <ListCard>
+          {rows.map((row) => (
+            <ListRow
+              key={row.id}
+              data-testid="node-row"
+              icon={<Server />}
+              title={
+                <>
+                  <span className="truncate text-sm font-medium">{row.name}</span>
+                  <StatusBadge state={row.status} />
+                </>
+              }
+              description={
+                <div className="flex flex-col gap-1.5">
+                  <span className="font-mono">{row.id}</span>
+                  {row.gpus.length === 0 ? (
+                    <span>—</span>
+                  ) : (
+                    row.gpus.map((gpu) => (
+                      <div key={gpu.model} className="flex items-center gap-2">
+                        <span className="w-28 truncate">{gpu.model}</span>
+                        <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
+                          <span
+                            className="block h-full rounded-full bg-brand"
+                            style={{
+                              width: `${gpu.total > 0 ? (gpu.allocated / gpu.total) * 100 : 0}%`,
+                            }}
+                          />
+                        </span>
+                        <span className="font-mono text-muted-foreground">
+                          {gpu.allocated}/{gpu.total}
+                        </span>
                       </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+                    ))
+                  )}
+                </div>
+              }
+              trailing={
+                <>
+                  {row.paused ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={action.isPending || remove.isPending || row.status === 'lost'}
+                      onClick={() => action.mutate({ id: row.id, verb: 'resume' })}
+                    >
+                      <Play />
+                      {m.nodes_resume()}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={action.isPending || remove.isPending || row.paused === null}
+                      onClick={() => action.mutate({ id: row.id, verb: 'pause' })}
+                    >
+                      <Pause />
+                      {m.nodes_pause()}
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={action.isPending || remove.isPending}
+                    onClick={() => {
+                      if (window.confirm(m.nodes_delete_confirm({ name: row.name }))) {
+                        remove.mutate(row.id)
+                      }
+                    }}
+                  >
+                    <Trash />
+                    {m.common_delete()}
+                  </Button>
+                </>
+              }
+            />
+          ))}
+        </ListCard>
       )}
     </div>
   )

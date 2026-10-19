@@ -4,6 +4,7 @@ import { GitBranch, Link2, Unlink } from 'lucide-react'
 
 import { api, type GitLink, type GitProvider, type ListResponse } from '@/api'
 import { EmptyState } from '@/components/empty-state'
+import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -37,7 +38,7 @@ function GitPage() {
   const linked = new Set(links.data?.items.map((link) => link.provider_id))
 
   return (
-    <div className="flex max-w-3xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <PageHeader title={m.git_title()} description={m.git_description()} />
 
       {(providers.isPending || links.isPending) && (
@@ -63,40 +64,41 @@ function GitPage() {
       )}
 
       {providers.data && providers.data.items.length > 0 && (
-        <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+        <ListCard>
           {providers.data.items.map((provider) => (
-            <div key={provider.id} className="flex items-center gap-3 px-4 py-3">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-muted-foreground">
-                <GitBranch className="size-4" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{provider.id}</p>
-                <p className="truncate text-xs text-muted-foreground">
+            <ListRow
+              key={provider.id}
+              icon={<GitBranch />}
+              title={<span className="truncate text-sm font-medium">{provider.id}</span>}
+              description={
+                <>
                   {provider.type} · {provider.host}
-                </p>
-              </div>
-              {linked.has(provider.id) ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={unlink.isPending}
-                  onClick={() => unlink.mutate(provider.id)}
-                >
-                  <Unlink />
-                  {m.git_unlink()}
-                </Button>
-              ) : (
-                <a
-                  className={buttonVariants({ size: 'sm' })}
-                  href={`/api/v1/git-providers/${encodeURIComponent(provider.id)}/authorize`}
-                >
-                  <Link2 />
-                  {m.git_link()}
-                </a>
-              )}
-            </div>
+                </>
+              }
+              trailing={
+                linked.has(provider.id) ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={unlink.isPending}
+                    onClick={() => unlink.mutate(provider.id)}
+                  >
+                    <Unlink />
+                    {m.git_unlink()}
+                  </Button>
+                ) : (
+                  <a
+                    className={buttonVariants({ size: 'sm' })}
+                    href={`/api/v1/git-providers/${encodeURIComponent(provider.id)}/authorize`}
+                  >
+                    <Link2 />
+                    {m.git_link()}
+                  </a>
+                )
+              }
+            />
           ))}
-        </div>
+        </ListCard>
       )}
     </div>
   )

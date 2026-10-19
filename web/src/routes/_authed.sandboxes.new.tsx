@@ -1,7 +1,6 @@
 import { useForm } from '@tanstack/react-form'
 import { useQuery } from '@tanstack/react-query'
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft } from 'lucide-react'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState, type ReactNode } from 'react'
 
 import {
@@ -13,6 +12,7 @@ import {
   type Snapshot,
   type Workspace,
 } from '@/api'
+import { Breadcrumbs } from '@/components/breadcrumbs'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { Button } from '@/components/ui/button'
@@ -118,13 +118,12 @@ function NewSandboxPage() {
     <div className="flex max-w-3xl flex-col gap-6">
       <PageHeader
         above={
-          <Link
-            to="/sandboxes"
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="size-3.5" />
-            {m.sandbox_back()}
-          </Link>
+          <Breadcrumbs
+            items={[
+              { label: m.nav_sandboxes(), to: '/sandboxes' },
+              { label: m.new_title() },
+            ]}
+          />
         }
         title={m.new_title()}
         description={m.new_description()}

@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Play, ScrollText, Square, Terminal, Trash } from 'lucide-react'
+import { Play, ScrollText, Square, Terminal, Trash } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { api, type Sandbox } from '@/api'
+import { Breadcrumbs } from '@/components/breadcrumbs'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { SandboxFiles } from '@/components/sandbox-files'
@@ -69,13 +70,12 @@ function SandboxDetailPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Link
-            to="/sandboxes"
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="size-3.5" />
-            {m.sandbox_back()}
-          </Link>
+          <Breadcrumbs
+            items={[
+              { label: m.nav_sandboxes(), to: '/sandboxes' },
+              { label: current?.name ?? id },
+            ]}
+          />
         }
         title={current?.name ?? id}
         meta={

@@ -18,6 +18,7 @@ test('admin creates a User, sets quota, resets the password, and audits it', asy
   const initialPassword = 'initial-password-123'
   const resetPassword = 'reset-password-1234'
 
+  await page.getByRole('button', { name: 'New User' }).click()
   await page.getByLabel('Name', { exact: true }).fill(name)
   await page.getByLabel('Email (optional)').fill(`${name}@example.com`)
   await page.getByLabel('Password (at least 12 characters)').fill(initialPassword)
@@ -34,14 +35,16 @@ test('admin creates a User, sets quota, resets the password, and audits it', asy
   const row = page.getByTestId('user-row').filter({ hasText: name })
   await expect(row).toBeVisible()
 
-  await row.getByLabel(`GPU quota for ${name}`).fill('2')
-  await row.getByLabel(`Sandbox quota for ${name}`).fill('3')
-  await row.getByRole('button', { name: 'Set quota' }).click()
+  await row.getByRole('button', { name: 'Edit' }).click()
+  await page.getByLabel(`GPU quota for ${name}`).fill('2')
+  await page.getByLabel(`Sandbox quota for ${name}`).fill('3')
+  await page.getByRole('button', { name: 'Set quota' }).click()
   await expect(row.getByText('Limits 2 GPUs / 3 Sandboxes')).toBeVisible()
 
-  await row.getByLabel(`New password for ${name}`).fill(resetPassword)
-  await row.getByRole('button', { name: 'Reset password' }).click()
-  await expect(row.getByLabel(`New password for ${name}`)).toHaveValue('')
+  await page.getByLabel(`New password for ${name}`).fill(resetPassword)
+  await page.getByRole('button', { name: 'Reset password' }).click()
+  await expect(page.getByLabel(`New password for ${name}`)).toHaveValue('')
+  await page.getByRole('button', { name: 'Close' }).click()
 
   // The new User signs in with the reset password in a fresh browser context,
   // so the admin Session cannot stand in for it.

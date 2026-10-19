@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { ArrowLeft, Terminal } from 'lucide-react'
+import { Terminal } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Terminal as XTerminal } from '@xterm/xterm'
 
 import { api, type Exec, type ExecResultFrame, type ListResponse } from '@/api'
+import { Breadcrumbs } from '@/components/breadcrumbs'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
@@ -52,14 +53,13 @@ function ExecsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Link
-            to="/sandboxes/$id"
-            params={{ id }}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="size-3.5" />
-            {m.execs_back()}
-          </Link>
+          <Breadcrumbs
+            items={[
+              { label: m.nav_sandboxes(), to: '/sandboxes' },
+              { label: id, to: '/sandboxes/$id', params: { id } },
+              { label: m.execs_title() },
+            ]}
+          />
         }
         title={m.execs_title()}
         actions={
