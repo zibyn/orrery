@@ -4,6 +4,7 @@ import { Layers } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot } from '@/api'
 import { EmptyState } from '@/components/empty-state'
+import { ListCard, ListRow, listTitleClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { useLocale } from '@/lib/i18n'
@@ -57,40 +58,40 @@ function SnapshotsPage() {
       )}
 
       {snapshots.data && snapshots.data.items.length > 0 && (
-        <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+        <ListCard>
           {snapshots.data.items.map((snapshot) => (
-            <div
+            <ListRow
               key={snapshot.id}
-              className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40"
               data-testid={`snapshot-${snapshot.id}`}
-            >
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-muted-foreground">
-                <Layers className="size-4" />
-              </span>
-              <div className="min-w-0 flex-1">
+              icon={<Layers />}
+              title={
                 <Link
                   to="/snapshots/$id"
                   params={{ id: snapshot.id }}
-                  className="text-sm font-medium hover:underline"
+                  className={`${listTitleClass} hover:underline`}
                 >
                   {snapshot.name}
                 </Link>
-                <p className="truncate text-xs text-muted-foreground">
+              }
+              description={
+                <>
                   {snapshotOwnerLabel(snapshot, user.id)} ·{' '}
                   {m.common_created({ time: formatTimestamp(snapshot.created_at) })}
-                </p>
-              </div>
-              <div className="hidden min-w-0 flex-col items-end gap-0.5 sm:flex">
-                <span className="text-[11px] text-muted-foreground">
-                  {m.snapshots_current_version()}
-                </span>
-                <span className="max-w-48 truncate font-mono text-xs">
-                  {snapshot.current_version_id ?? '—'}
-                </span>
-              </div>
-            </div>
+                </>
+              }
+              trailing={
+                <div className="hidden min-w-0 flex-col items-end gap-0.5 sm:flex">
+                  <span className="text-[11px] text-muted-foreground">
+                    {m.snapshots_current_version()}
+                  </span>
+                  <span className="max-w-48 truncate font-mono text-xs">
+                    {snapshot.current_version_id ?? '—'}
+                  </span>
+                </div>
+              }
+            />
           ))}
-        </div>
+        </ListCard>
       )}
     </div>
   )

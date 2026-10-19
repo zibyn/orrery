@@ -1,10 +1,11 @@
 import { useMutation } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { ArrowLeft, ScrollText } from 'lucide-react'
+import { ScrollText } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { Terminal as XTerminal } from '@xterm/xterm'
 
 import { api, type CreateExecRequest, type Exec, type PtyExitFrame } from '@/api'
+import { Breadcrumbs } from '@/components/breadcrumbs'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
@@ -156,14 +157,13 @@ function TerminalPage() {
     <div className="flex flex-col gap-4">
       <PageHeader
         above={
-          <Link
-            to="/sandboxes/$id"
-            params={{ id }}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="size-3.5" />
-            {m.terminal_back()}
-          </Link>
+          <Breadcrumbs
+            items={[
+              { label: m.nav_sandboxes(), to: '/sandboxes' },
+              { label: id, to: '/sandboxes/$id', params: { id } },
+              { label: m.terminal_title() },
+            ]}
+          />
         }
         title={m.terminal_title()}
         actions={

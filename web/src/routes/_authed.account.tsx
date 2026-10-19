@@ -6,12 +6,14 @@ import { useState, type ReactNode } from 'react'
 import { z } from 'zod'
 
 import { api, type CreatedToken, type ListResponse, type Token, type User } from '@/api'
+import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { TokenReveal } from '@/components/token-reveal'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Drawer } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { matchesCurrentSession, readCurrentSessionId, forgetCurrentSession } from '@/lib/current-session'
@@ -59,6 +61,7 @@ function AccountPage() {
   // stored, so no row is marked (api.md §8).
   const [currentId] = useState(readCurrentSessionId)
   const [created, setCreated] = useState<CreatedToken | null>(null)
+  const [tokenOpen, setTokenOpen] = useState(false)
   const [tokenError, setTokenError] = useState('')
   const [passwordError, setPasswordError] = useState('')
 
@@ -112,6 +115,7 @@ function AccountPage() {
         })
         setCreated(token)
         createForm.reset()
+        setTokenOpen(false)
       } catch (err) {
         setTokenError(messageOf(err))
       }
@@ -144,6 +148,17 @@ function AccountPage() {
       <PageHeader
         title={m.account_title()}
         description={m.account_description({ name: user.name })}
+        actions={
+          <Button
+            onClick={() => {
+              setTokenError('')
+              setTokenOpen(true)
+            }}
+          >
+            <Plus />
+            {m.account_create_token()}
+          </Button>
+        }
       />
 
       {created && (
@@ -158,122 +173,125 @@ function AccountPage() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{m.account_create_token()}</CardTitle>
-          <CardDescription>{m.account_create_token_description()}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form
-            className="flex flex-wrap items-end gap-3"
-            onSubmit={(e) => {
-              e.preventDefault()
-              createForm.handleSubmit()
-            }}
-          >
-            <createForm.Field name="name">
-              {(field) => (
-                <Field label={m.common_name()} htmlFor={field.name}>
-                  <Input
-                    id={field.name}
-                    className="w-44"
-                    value={field.state.value}
-                    onChange={(e) => field.handleChange(e.target.value)}
-                    placeholder="laptop-cli"
-                    autoComplete="off"
-                  />
-                </Field>
-              )}
-            </createForm.Field>
-            <createForm.Field name="scope">
-              {(field) => (
-                <Field label={m.account_scope()} htmlFor={field.name}>
-                  <select
-                    id={field.name}
-                    className={`${selectClass} w-32`}
-                    value={field.state.value}
-                    onChange={(e) => field.handleChange(e.target.value as NewToken['scope'])}
-                  >
-                    {scopeOptions.map((scope) => (
-                      <option key={scope} value={scope}>
-                        {scopeLabel(scope)}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              )}
-            </createForm.Field>
-            <createForm.Field name="expires_at">
-              {(field) => (
-                <Field label={m.account_expires()} htmlFor={field.name}>
-                  <Input
-                    id={field.name}
-                    type="datetime-local"
-                    className="w-52"
-                    value={field.state.value}
-                    onChange={(e) => field.handleChange(e.target.value)}
-                  />
-                </Field>
-              )}
-            </createForm.Field>
-            <Button type="submit" disabled={createToken.isPending}>
-              <Plus />
-              {createToken.isPending ? m.account_creating() : m.account_create_token()}
+      <Drawer
+        open={tokenOpen}
+        onOpenChange={setTokenOpen}
+        title={m.account_create_token()}
+        description={m.account_create_token_description()}
+        footer={
+          <>
+            <Button type="button" variant="ghost" onClick={() => setTokenOpen(false)}>
+              {m.common_cancel()}
             </Button>
-          </form>
+            <Button type="submit" form="create-token-form" disabled={createToken.isPending}>
+              <Plus />
+              {createToken.isPending ? m.account_creating() : m.common_create()}
+            </Button>
+          </>
+        }
+      >
+        <form
+          id="create-token-form"
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            createForm.handleSubmit()
+          }}
+        >
+          <createForm.Field name="name">
+            {(field) => (
+              <Field label={m.common_name()} htmlFor={field.name}>
+                <Input
+                  id={field.name}
+                  value={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.value)}
+                  placeholder="laptop-cli"
+                  autoComplete="off"
+                />
+              </Field>
+            )}
+          </createForm.Field>
+          <createForm.Field name="scope">
+            {(field) => (
+              <Field label={m.account_scope()} htmlFor={field.name}>
+                <select
+                  id={field.name}
+                  className={selectClass}
+                  value={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.value as NewToken['scope'])}
+                >
+                  {scopeOptions.map((scope) => (
+                    <option key={scope} value={scope}>
+                      {scopeLabel(scope)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </createForm.Field>
+          <createForm.Field name="expires_at">
+            {(field) => (
+              <Field label={m.account_expires()} htmlFor={field.name}>
+                <Input
+                  id={field.name}
+                  type="datetime-local"
+                  value={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.value)}
+                />
+              </Field>
+            )}
+          </createForm.Field>
           {tokenError && (
-            <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">
+            <p className="text-sm whitespace-pre-line text-destructive" role="alert">
               {tokenError}
             </p>
           )}
-        </CardContent>
-      </Card>
+        </form>
+      </Drawer>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{m.account_my_tokens()}</CardTitle>
-          <CardDescription>{m.account_my_tokens_description()}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {tokens.isPending && (
-            <p className="text-sm text-muted-foreground">{m.common_loading()}</p>
-          )}
-          {tokens.error && (
-            <p className="text-sm text-destructive" role="alert">
-              {m.account_tokens_load_error()}: <Problem error={tokens.error} />
-            </p>
-          )}
-          {tokens.data?.items.length === 0 && (
-            <p className="text-sm text-muted-foreground">{m.account_no_tokens()}</p>
-          )}
+      <section className="flex flex-col gap-3">
+        <div>
+          <h2 className="text-sm font-semibold tracking-tight">{m.account_my_tokens()}</h2>
+          <p className="text-xs text-muted-foreground">{m.account_my_tokens_description()}</p>
+        </div>
 
-          {tokens.data && tokens.data.items.length > 0 && (
-            <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
-              {tokens.data.items.map((token) => (
-                <li key={token.id} className="flex items-center gap-3 px-3 py-2.5">
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-muted-foreground">
-                    <KeyRound className="size-4" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-sm font-medium">{token.name}</span>
-                      <Badge variant={token.kind === 'session' ? 'secondary' : 'outline'}>
-                        {kindLabel(token.kind)}
+        {tokens.isPending && (
+          <p className="text-sm text-muted-foreground">{m.common_loading()}</p>
+        )}
+        {tokens.error && (
+          <p className="text-sm text-destructive" role="alert">
+            {m.account_tokens_load_error()}: <Problem error={tokens.error} />
+          </p>
+        )}
+        {tokens.data?.items.length === 0 && (
+          <p className="text-sm text-muted-foreground">{m.account_no_tokens()}</p>
+        )}
+
+        {tokens.data && tokens.data.items.length > 0 && (
+          <ListCard>
+            {tokens.data.items.map((token) => (
+              <ListRow
+                key={token.id}
+                icon={<KeyRound />}
+                title={
+                  <>
+                    <span className="truncate text-sm font-medium">{token.name}</span>
+                    <Badge variant={token.kind === 'session' ? 'secondary' : 'outline'}>
+                      {kindLabel(token.kind)}
+                    </Badge>
+                    {matchesCurrentSession(token, currentId) && (
+                      <Badge variant="success" data-testid="current-session">
+                        {m.common_current()}
                       </Badge>
-                      {matchesCurrentSession(token, currentId) && (
-                        <Badge variant="success" data-testid="current-session">
-                          {m.common_current()}
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {m.account_token_meta({
-                        scope: scopeLabel(token.scope),
-                        expires: formatTimestamp(token.expires_at),
-                        lastUsed: formatTimestamp(token.last_used_at),
-                      })}
-                    </p>
-                  </div>
+                    )}
+                  </>
+                }
+                description={m.account_token_meta({
+                  scope: scopeLabel(token.scope),
+                  expires: formatTimestamp(token.expires_at),
+                  lastUsed: formatTimestamp(token.last_used_at),
+                })}
+                trailing={
                   <Button
                     variant="ghost"
                     size="sm"
@@ -282,12 +300,12 @@ function AccountPage() {
                   >
                     {m.account_revoke()}
                   </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+                }
+              />
+            ))}
+          </ListCard>
+        )}
+      </section>
 
       {user.login_type === 'password' && (
         <Card>

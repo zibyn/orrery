@@ -1,16 +1,18 @@
 import { useForm } from '@tanstack/react-form'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { Plus, ShieldCheck, Trash } from 'lucide-react'
+import { Pencil, Plus, ShieldCheck, Trash } from 'lucide-react'
 import { useState } from 'react'
 import { z } from 'zod'
 
 import { api, type ListResponse, type QuotaUsage, type User } from '@/api'
+import { Breadcrumbs } from '@/components/breadcrumbs'
+import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Drawer } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useLocale } from '@/lib/i18n'
@@ -59,6 +61,8 @@ function UsersPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user: me } = Route.useRouteContext()
   const queryClient = useQueryClient()
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createError, setCreateError] = useState('')
 
   const users = useQuery({
     queryKey: ['users'],
@@ -91,8 +95,12 @@ function UsersPage() {
       is_admin: false,
     },
     onSubmit: async ({ value }) => {
+      setCreateError('')
       const parsed = createUserSchema.safeParse(value)
-      if (!parsed.success) return
+      if (!parsed.success) {
+        setCreateError(parsed.error.issues[0]?.message ?? m.common_invalid_input())
+        return
+      }
       const { name, email, login_type, password, is_admin } = parsed.data
       try {
         await create.mutateAsync({
@@ -103,8 +111,9 @@ function UsersPage() {
           ...(login_type === 'password' ? { password } : {}),
         })
         form.reset()
+        setCreateOpen(false)
       } catch {
-        // The mutation error renders above the form.
+        // The mutation error renders inside the drawer.
       }
     },
   })
@@ -112,6 +121,9 @@ function UsersPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
+        above={
+          <Breadcrumbs items={[{ label: m.nav_group_admin() }, { label: m.users_title() }]} />
+        }
         title={m.users_title()}
         description={m.users_description()}
         meta={
@@ -126,116 +138,132 @@ function UsersPage() {
             </span>
           ) : undefined
         }
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{m.users_new_title()}</CardTitle>
-          <CardDescription>{m.users_new_description()}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form
-            className="flex flex-col gap-4"
-            onSubmit={(e) => {
-              e.preventDefault()
-              form.handleSubmit()
+        actions={
+          <Button
+            onClick={() => {
+              setCreateError('')
+              setCreateOpen(true)
             }}
           >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <form.Field name="name">
-                {(field) => (
-                  <Field label={m.common_name()} htmlFor="new-user-name">
-                    <Input
-                      id="new-user-name"
-                      value={field.state.value}
-                      onChange={(e) => field.handleChange(e.target.value)}
-                    />
-                  </Field>
-                )}
-              </form.Field>
-              <form.Field name="email">
-                {(field) => (
-                  <Field label={m.users_email_optional()} htmlFor="new-user-email">
-                    <Input
-                      id="new-user-email"
-                      type="email"
-                      value={field.state.value}
-                      onChange={(e) => field.handleChange(e.target.value)}
-                    />
-                  </Field>
-                )}
-              </form.Field>
-            </div>
+            <Plus />
+            {m.users_new_title()}
+          </Button>
+        }
+      />
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <form.Field name="login_type">
-                {(field) => (
-                  <Field label={m.users_login_type()} htmlFor="new-user-login-type">
-                    <select
-                      id="new-user-login-type"
-                      className={selectClass}
-                      value={field.state.value}
-                      onChange={(e) => field.handleChange(e.target.value as LoginType)}
-                    >
-                      {LOGIN_TYPES.map((type) => (
-                        <option key={type} value={type}>
-                          {loginTypeLabel(type)}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                )}
-              </form.Field>
-              <form.Subscribe selector={(state) => state.values.login_type}>
-                {(loginType) =>
-                  loginType === 'password' ? (
-                    <form.Field name="password">
-                      {(field) => (
-                        <Field label={m.users_password_label()} htmlFor="new-user-password">
-                          <Input
-                            id="new-user-password"
-                            type="password"
-                            autoComplete="new-password"
-                            value={field.state.value}
-                            onChange={(e) => field.handleChange(e.target.value)}
-                          />
-                        </Field>
-                      )}
-                    </form.Field>
-                  ) : null
-                }
-              </form.Subscribe>
-            </div>
-
-            <form.Field name="is_admin">
-              {(field) => (
-                <label className="flex w-fit items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    className="size-4 accent-brand"
-                    checked={field.state.value}
-                    onChange={(e) => field.handleChange(e.target.checked)}
-                  />
-                  {m.user_administrator()}
-                </label>
-              )}
-            </form.Field>
-
-            {create.error && (
-              <p className="text-sm text-destructive" role="alert" data-testid="create-user-error">
-                <Problem error={create.error} />
-              </p>
+      <Drawer
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        title={m.users_new_title()}
+        description={m.users_new_description()}
+        footer={
+          <>
+            <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>
+              {m.common_cancel()}
+            </Button>
+            <Button
+              type="submit"
+              form="create-user-form"
+              disabled={form.state.isSubmitting || create.isPending}
+            >
+              <Plus />
+              {m.users_create()}
+            </Button>
+          </>
+        }
+      >
+        <form
+          id="create-user-form"
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            form.handleSubmit()
+          }}
+        >
+          <form.Field name="name">
+            {(field) => (
+              <Field label={m.common_name()} htmlFor="new-user-name">
+                <Input
+                  id="new-user-name"
+                  value={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.value)}
+                />
+              </Field>
             )}
+          </form.Field>
+          <form.Field name="email">
+            {(field) => (
+              <Field label={m.users_email_optional()} htmlFor="new-user-email">
+                <Input
+                  id="new-user-email"
+                  type="email"
+                  value={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.value)}
+                />
+              </Field>
+            )}
+          </form.Field>
 
-            <div>
-              <Button type="submit" disabled={form.state.isSubmitting || create.isPending}>
-                <Plus />
-                {m.users_create()}
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
+          <form.Field name="login_type">
+            {(field) => (
+              <Field label={m.users_login_type()} htmlFor="new-user-login-type">
+                <select
+                  id="new-user-login-type"
+                  className={selectClass}
+                  value={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.value as LoginType)}
+                >
+                  {LOGIN_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {loginTypeLabel(type)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </form.Field>
+
+          <form.Subscribe selector={(state) => state.values.login_type}>
+            {(loginType) =>
+              loginType === 'password' ? (
+                <form.Field name="password">
+                  {(field) => (
+                    <Field label={m.users_password_label()} htmlFor="new-user-password">
+                      <Input
+                        id="new-user-password"
+                        type="password"
+                        autoComplete="new-password"
+                        value={field.state.value}
+                        onChange={(e) => field.handleChange(e.target.value)}
+                      />
+                    </Field>
+                  )}
+                </form.Field>
+              ) : null
+            }
+          </form.Subscribe>
+
+          <form.Field name="is_admin">
+            {(field) => (
+              <label className="flex w-fit items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-brand"
+                  checked={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.checked)}
+                />
+                {m.user_administrator()}
+              </label>
+            )}
+          </form.Field>
+
+          {(createError || create.error) && (
+            <p className="text-sm text-destructive" role="alert" data-testid="create-user-error">
+              {createError || <Problem error={create.error} />}
+            </p>
+          )}
+        </form>
+      </Drawer>
 
       {users.isPending && (
         <p className="py-8 text-sm text-muted-foreground">{m.users_loading()}</p>
@@ -246,12 +274,12 @@ function UsersPage() {
         </p>
       )}
 
-      {users.data && (
-        <ul className="flex flex-col gap-3">
+      {users.data && users.data.items.length > 0 && (
+        <ListCard>
           {users.data.items.map((user) => (
             <UserRow key={user.id} user={user} isSelf={user.id === me.id} />
           ))}
-        </ul>
+        </ListCard>
       )}
     </div>
   )
@@ -259,6 +287,7 @@ function UsersPage() {
 
 function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
   const queryClient = useQueryClient()
+  const [editOpen, setEditOpen] = useState(false)
   const [loginType, setLoginType] = useState<LoginType>(user.login_type)
   const [isAdmin, setIsAdmin] = useState(user.is_admin)
   const [gpus, setGpus] = useState(String(user.quota.gpus))
@@ -292,58 +321,70 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
     onSuccess: invalidate,
   })
 
-  const error = update.error ?? quota.error ?? reset.error ?? remove.error
+  const error = update.error ?? quota.error ?? reset.error
 
   return (
-    <li data-testid="user-row">
-      <Card>
-        <CardHeader className="flex-row items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <span
-              aria-hidden="true"
-              className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium"
+    <>
+      <ListRow
+        data-testid="user-row"
+        icon={<span aria-hidden="true">{user.name.slice(0, 1).toUpperCase()}</span>}
+        title={
+          <>
+            <span className="truncate text-sm font-medium">{user.name}</span>
+            {user.is_admin && (
+              <Badge variant="secondary">
+                <ShieldCheck />
+                {m.users_badge_admin()}
+              </Badge>
+            )}
+            {isSelf && <Badge variant="outline">{m.users_badge_you()}</Badge>}
+            {user.deleted_at && <Badge variant="destructive">{m.users_badge_deleted()}</Badge>}
+          </>
+        }
+        description={
+          <>
+            {user.email ?? m.users_no_email()} · <span className="font-mono">{user.id}</span> ·{' '}
+            {m.users_limits({ gpus: user.quota.gpus, sandboxes: user.quota.sandboxes })}
+            {remove.error && (
+              <span className="block text-destructive" role="alert">
+                <Problem error={remove.error} />
+              </span>
+            )}
+          </>
+        }
+        trailing={
+          <>
+            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+              <Pencil />
+              {m.common_edit()}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={isSelf || remove.isPending}
+              onClick={() => {
+                if (window.confirm(m.users_delete_confirm({ name: user.name }))) remove.mutate()
+              }}
             >
-              {user.name.slice(0, 1).toUpperCase()}
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <CardTitle className="truncate">{user.name}</CardTitle>
-                {user.is_admin && (
-                  <Badge variant="secondary">
-                    <ShieldCheck />
-                    {m.users_badge_admin()}
-                  </Badge>
-                )}
-                {isSelf && <Badge variant="outline">{m.users_badge_you()}</Badge>}
-                {user.deleted_at && (
-                  <Badge variant="destructive">{m.users_badge_deleted()}</Badge>
-                )}
-              </div>
-              <CardDescription className="truncate">
-                {user.email ?? m.users_no_email()} ·{' '}
-                <span className="font-mono">{user.id}</span>
-              </CardDescription>
-            </div>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={isSelf || remove.isPending}
-            onClick={() => {
-              if (window.confirm(m.users_delete_confirm({ name: user.name }))) remove.mutate()
-            }}
-          >
-            <Trash />
-            {m.common_delete()}
-          </Button>
-        </CardHeader>
+              <Trash />
+              {m.common_delete()}
+            </Button>
+          </>
+        }
+      />
 
-        <CardContent className="flex flex-col gap-4 border-t border-border pt-4">
-          <div className="flex flex-wrap items-end gap-3">
+      <Drawer
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        title={m.users_edit_title({ name: user.name })}
+        description={m.users_edit_description()}
+      >
+        <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-3">
             <label className="flex flex-col gap-1.5 text-sm">
               <span className="text-xs text-muted-foreground">{m.users_login_type()}</span>
               <select
-                className={`${selectClass} w-32`}
+                className={selectClass}
                 aria-label={m.users_login_type_for({ name: user.name })}
                 value={loginType}
                 onChange={(e) => setLoginType(e.target.value as LoginType)}
@@ -355,7 +396,7 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
                 ))}
               </select>
             </label>
-            <label className="flex h-8 items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 className="size-4 accent-brand"
@@ -366,6 +407,7 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
               {m.users_admin_label()}
             </label>
             <Button
+              className="self-start"
               variant="outline"
               size="sm"
               disabled={update.isPending}
@@ -375,44 +417,50 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
             </Button>
           </div>
 
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-xs text-muted-foreground">{m.users_gpu_quota()}</span>
-              <Input
-                type="number"
-                min="0"
-                className="w-28"
-                aria-label={m.users_gpu_quota_for({ name: user.name })}
-                value={gpus}
-                onChange={(e) => setGpus(e.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-xs text-muted-foreground">{m.users_sandbox_quota()}</span>
-              <Input
-                type="number"
-                min="0"
-                className="w-28"
-                aria-label={m.users_sandbox_quota_for({ name: user.name })}
-                value={sandboxes}
-                onChange={(e) => setSandboxes(e.target.value)}
-              />
-            </label>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={quota.isPending}
-              onClick={() => quota.mutate()}
-            >
-              {m.users_set_quota()}
-            </Button>
-            <span className="pb-1.5 text-xs text-muted-foreground">
-              {m.users_limits({ gpus: user.quota.gpus, sandboxes: user.quota.sandboxes })}
-            </span>
+          <div className="flex flex-col gap-3 border-t border-border pt-5">
+            <div className="grid grid-cols-2 gap-3">
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-xs text-muted-foreground">{m.users_gpu_quota()}</span>
+                <Input
+                  type="number"
+                  min="0"
+                  aria-label={m.users_gpu_quota_for({ name: user.name })}
+                  value={gpus}
+                  onChange={(e) => setGpus(e.target.value)}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-xs text-muted-foreground">{m.users_sandbox_quota()}</span>
+                <Input
+                  type="number"
+                  min="0"
+                  aria-label={m.users_sandbox_quota_for({ name: user.name })}
+                  value={sandboxes}
+                  onChange={(e) => setSandboxes(e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  quota.isPending ||
+                  !Number.isFinite(Number(gpus)) ||
+                  !Number.isFinite(Number(sandboxes))
+                }
+                onClick={() => quota.mutate()}
+              >
+                {m.users_set_quota()}
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                {m.users_limits({ gpus: user.quota.gpus, sandboxes: user.quota.sandboxes })}
+              </span>
+            </div>
           </div>
 
           {user.login_type === 'password' && (
-            <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-3 border-t border-border pt-5">
               <label className="flex flex-col gap-1.5 text-sm">
                 <span className="text-xs text-muted-foreground">{m.users_new_password()}</span>
                 <Input
@@ -424,6 +472,7 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
                 />
               </label>
               <Button
+                className="self-start"
                 variant="outline"
                 size="sm"
                 disabled={password.length < 12 || reset.isPending}
@@ -439,8 +488,8 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
               <Problem error={error} />
             </p>
           )}
-        </CardContent>
-      </Card>
-    </li>
+        </div>
+      </Drawer>
+    </>
   )
 }

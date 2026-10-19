@@ -5,6 +5,7 @@ import { useState } from 'react'
 
 import { api, type ListResponse, type Sandbox, type User } from '@/api'
 import { EmptyState } from '@/components/empty-state'
+import { ListCard, ListRow, listTitleClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
@@ -105,40 +106,42 @@ function SandboxesPage() {
       )}
 
       {sandboxes.data && sandboxes.data.items.length > 0 && (
-        <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+        <ListCard>
           {sandboxes.data.items.map((sandbox) => (
-            <div
+            <ListRow
               key={sandbox.id}
-              className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40"
-            >
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-muted-foreground">
-                <Box className="size-4" />
-              </span>
-              <div className="min-w-0 flex-1">
+              icon={<Box />}
+              title={
                 <Link
                   to="/sandboxes/$id"
                   params={{ id: sandbox.id }}
-                  className="text-sm font-medium hover:underline"
+                  className={`${listTitleClass} hover:underline`}
                 >
                   {sandbox.name}
                 </Link>
-                <p className="truncate text-xs text-muted-foreground">
+              }
+              description={
+                <>
                   {sandbox.cpu} CPU · {(sandbox.memory / 1024 / 1024).toFixed(0)} MiB
                   {sandbox.gpu ? ` · ${sandbox.gpu.count} GPU` : ''}
                   {sandbox.workspace
                     ? ` · workspace ${workspaceModeLabel(sandbox.workspace.mode)}`
                     : ''}
                   {sandbox.node_id ? ` · ${sandbox.node_id}` : ''}
-                </p>
-              </div>
-              <StatusBadge
-                state={sandbox.state}
-                data-testid={`sandbox-state-${sandbox.id}`}
-              />
-              <ChevronRight className="size-4 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" />
-            </div>
+                </>
+              }
+              trailing={
+                <>
+                  <StatusBadge
+                    state={sandbox.state}
+                    data-testid={`sandbox-state-${sandbox.id}`}
+                  />
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground/50" />
+                </>
+              }
+            />
           ))}
-        </div>
+        </ListCard>
       )}
     </div>
   )

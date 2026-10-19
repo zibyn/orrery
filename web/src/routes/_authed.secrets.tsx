@@ -1,14 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { KeyRound, Trash } from 'lucide-react'
+import { KeyRound, Plus, Trash } from 'lucide-react'
 import { useState, type FormEvent, type ReactNode } from 'react'
 
 import { api, type ListResponse, type Secret } from '@/api'
 import { EmptyState } from '@/components/empty-state'
+import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Drawer } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useLocale } from '@/lib/i18n'
@@ -36,6 +37,8 @@ function SecretsPage() {
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
   const [error, setError] = useState('')
+  const [removeError, setRemoveError] = useState('')
+  const [open, setOpen] = useState(false)
 
   const secrets = useQuery({
     queryKey: ['secrets'],
@@ -48,8 +51,10 @@ function SecretsPage() {
         value: payload.value,
       }),
     onSuccess: () => {
+      setName('')
       setValue('')
       setError('')
+      setOpen(false)
       void queryClient.invalidateQueries({ queryKey: ['secrets'] })
     },
     onError: (err) => setError(messageOf(err)),
@@ -59,10 +64,10 @@ function SecretsPage() {
     mutationFn: (secretName: string) =>
       api<Secret>('DELETE', `/secrets/${encodeURIComponent(secretName)}`),
     onSuccess: () => {
-      setError('')
+      setRemoveError('')
       void queryClient.invalidateQueries({ queryKey: ['secrets'] })
     },
-    onError: (err) => setError(messageOf(err)),
+    onError: (err) => setRemoveError(messageOf(err)),
   })
 
   function submit(event: FormEvent) {
@@ -80,47 +85,65 @@ function SecretsPage() {
   }
 
   return (
-    <div className="flex max-w-3xl flex-col gap-6">
-      <PageHeader title={m.secrets_title()} description={m.secrets_description()} />
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title={m.secrets_title()}
+        description={m.secrets_description()}
+        actions={
+          <Button
+            onClick={() => {
+              setError('')
+              setOpen(true)
+            }}
+          >
+            <Plus />
+            {m.secrets_add()}
+          </Button>
+        }
+      />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{m.secrets_add_title()}</CardTitle>
-          <CardDescription>{m.secrets_add_description()}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
-            <Field label={m.common_name()} htmlFor="secret-name">
-              <Input
-                id="secret-name"
-                className="w-56"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="GITHUB_TOKEN"
-                autoComplete="off"
-              />
-            </Field>
-            <div className="flex min-w-56 flex-1 flex-col gap-1.5">
-              <Label htmlFor="secret-value">{m.secrets_value()}</Label>
-              <Input
-                id="secret-value"
-                type="password"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                autoComplete="new-password"
-              />
-            </div>
-            <Button type="submit" disabled={save.isPending}>
+      <Drawer
+        open={open}
+        onOpenChange={setOpen}
+        title={m.secrets_add_title()}
+        description={m.secrets_add_description()}
+        footer={
+          <>
+            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+              {m.common_cancel()}
+            </Button>
+            <Button type="submit" form="secret-form" disabled={save.isPending}>
               {save.isPending ? m.secrets_saving() : m.secrets_save()}
             </Button>
-          </form>
+          </>
+        }
+      >
+        <form id="secret-form" onSubmit={submit} className="flex flex-col gap-4">
+          <Field label={m.common_name()} htmlFor="secret-name">
+            <Input
+              id="secret-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="GITHUB_TOKEN"
+              autoComplete="off"
+            />
+          </Field>
+          <Field label={m.secrets_value()} htmlFor="secret-value">
+            <Input
+              id="secret-value"
+              type="password"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              autoComplete="new-password"
+            />
+          </Field>
           {error && (
-            <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">
+            <p className="text-sm whitespace-pre-line text-destructive" role="alert">
               {error}
             </p>
           )}
-        </CardContent>
-      </Card>
+        </form>
+      </Drawer>
 
       {secrets.isPending && (
         <p className="py-8 text-sm text-muted-foreground">{m.secrets_loading()}</p>
@@ -128,6 +151,11 @@ function SecretsPage() {
       {secrets.error && (
         <p className="text-sm text-destructive" role="alert">
           {m.secrets_load_error()}: <Problem error={secrets.error} />
+        </p>
+      )}
+      {removeError && (
+        <p className="text-sm text-destructive" role="alert">
+          {removeError}
         </p>
       )}
 
@@ -140,30 +168,27 @@ function SecretsPage() {
       )}
 
       {secrets.data && secrets.data.items.length > 0 && (
-        <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+        <ListCard>
           {secrets.data.items.map((secret) => (
-            <div key={secret.name} className="flex items-center gap-3 px-4 py-3">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-muted-foreground">
-                <KeyRound className="size-4" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-mono text-sm font-medium">{secret.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {m.secrets_updated({ time: formatTimestamp(secret.updated_at) })}
-                </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={remove.isPending}
-                onClick={() => remove.mutate(secret.name)}
-              >
-                <Trash />
-                {m.common_delete()}
-              </Button>
-            </div>
+            <ListRow
+              key={secret.name}
+              icon={<KeyRound />}
+              title={<span className="truncate font-mono text-sm font-medium">{secret.name}</span>}
+              description={m.secrets_updated({ time: formatTimestamp(secret.updated_at) })}
+              trailing={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={remove.isPending}
+                  onClick={() => remove.mutate(secret.name)}
+                >
+                  <Trash />
+                  {m.common_delete()}
+                </Button>
+              }
+            />
           ))}
-        </div>
+        </ListCard>
       )}
     </div>
   )

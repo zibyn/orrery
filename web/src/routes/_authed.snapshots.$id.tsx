@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { ArrowLeft, Layers, ScrollText } from 'lucide-react'
+import { Layers, ScrollText } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
+import { Breadcrumbs } from '@/components/breadcrumbs'
 import { BuildLog } from '@/components/build-log'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
@@ -68,13 +69,12 @@ function SnapshotDetailPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Link
-            to="/snapshots"
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="size-3.5" />
-            {m.snapshot_back()}
-          </Link>
+          <Breadcrumbs
+            items={[
+              { label: m.nav_snapshots(), to: '/snapshots' },
+              { label: current?.name ?? id },
+            ]}
+          />
         }
         title={current?.name ?? id}
         meta={

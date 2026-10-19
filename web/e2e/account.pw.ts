@@ -15,8 +15,9 @@ test('admin creates a token, uses it, revokes it and it stops working', async ({
   await expect(page.getByTestId('current-session')).toHaveCount(1)
 
   const name = `pw-token-${Date.now()}`
-  await page.getByLabel('Name').fill(name)
   await page.getByRole('button', { name: 'Create token' }).click()
+  await page.getByLabel('Name').fill(name)
+  await page.getByRole('button', { name: 'Create', exact: true }).click()
 
   const plaintext = page.getByTestId('token-plaintext')
   await expect(plaintext).toBeVisible()

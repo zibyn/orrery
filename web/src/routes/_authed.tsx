@@ -9,6 +9,7 @@ import {
   ScrollText,
   Server,
   Terminal,
+  UserRound,
   Users,
 } from 'lucide-react'
 
@@ -153,18 +154,23 @@ function AuthedShell() {
         <div className="flex flex-col gap-2 border-t border-sidebar-border p-2.5">
           <LocaleSwitch className="self-start" />
           <div className="flex items-center gap-2.5">
-            <span
-              aria-hidden="true"
-              className="flex size-7 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-medium text-sidebar-accent-foreground"
+            <Link
+              to="/account"
+              className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md p-1 transition-colors hover:bg-sidebar-accent"
             >
-              {user.name.slice(0, 1).toUpperCase()}
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">{user.name}</p>
-              <p className="truncate text-[11px] text-muted-foreground">
-                {user.is_admin ? m.user_administrator() : m.user_member()}
-              </p>
-            </div>
+              <span
+                aria-hidden="true"
+                className="flex size-7 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-medium text-sidebar-accent-foreground"
+              >
+                {user.name.slice(0, 1).toUpperCase()}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{user.name}</p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  {user.is_admin ? m.user_administrator() : m.user_member()}
+                </p>
+              </div>
+            </Link>
             <Button
               variant="ghost"
               size="icon-sm"
@@ -187,6 +193,13 @@ function AuthedShell() {
               <span className="text-sm font-semibold tracking-tight">stars-sandbox</span>
             </Link>
             <div className="ml-auto flex items-center gap-1.5">
+              <Link
+                to="/account"
+                aria-label={m.account_title()}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <UserRound className="size-4" />
+              </Link>
               <span className="hidden max-w-32 truncate text-xs text-muted-foreground sm:inline">
                 {user.name}
               </span>
