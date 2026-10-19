@@ -340,7 +340,7 @@ func (s *Server) sourceCredential(ctx context.Context, owner uuid.UUID, name *st
 		return nil, "", ""
 	}
 	if s.cfg.EncryptionKeys == nil {
-		return nil, "unavailable", "Secret storage is not configured: set STARS_ENCRYPTION_KEYS_FILE"
+		return nil, "unavailable", "Secret storage is not configured: set encryption_keys in the deployment configuration"
 	}
 	row, err := s.q.GetSecretByName(ctx, store.GetSecretByNameParams{OwnerID: owner, Name: *name})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -637,7 +637,7 @@ func resolveSnapshotPin(ctx context.Context, q *store.Queries, cfg Config, owner
 		platformOnly = false
 	}
 	if ref == "" {
-		return "", "internal", "no default Snapshot is configured; set STARS_DEFAULT_SNAPSHOT or pass snapshot"
+		return "", "internal", "no default Snapshot is configured; set default: true on a platform_snapshots entry or pass snapshot"
 	}
 	if id, err := uuid.Parse(ref); err == nil && !platformOnly {
 		version, err := q.GetSnapshotVersionByID(ctx, id)

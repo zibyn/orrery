@@ -26,20 +26,36 @@ type GitProvider struct {
 	Scopes       []string
 }
 
-// gitProviderFileEntry is one element of STARS_GIT_PROVIDERS_FILE (defaults.md).
-// PKCE is a pointer so an omitted field means true.
+// gitProviderFileEntry is one element of STARS_GIT_PROVIDERS_FILE (defaults.md,
+// environment mode only). PKCE is a pointer so an omitted field means true.
 type gitProviderFileEntry struct {
-	ID               string   `json:"id"`
-	Type             string   `json:"type"`
-	ClientID         string   `json:"client_id"`
-	ClientSecretFile string   `json:"client_secret_file"`
-	BaseURL          string   `json:"base_url"`
-	AuthURL          string   `json:"auth_url"`
-	TokenURL         string   `json:"token_url"`
-	ValidateURL      string   `json:"validate_url"`
-	PKCE             *bool    `json:"pkce"`
-	Host             string   `json:"host"`
-	Scopes           []string `json:"scopes"`
+	ID               string    `json:"id"`
+	Type             string    `json:"type"`
+	ClientID         string    `json:"client_id"`
+	ClientSecretFile string    `json:"client_secret_file"`
+	BaseURL          string    `json:"base_url"`
+	AuthURL          string    `json:"auth_url"`
+	TokenURL         string    `json:"token_url"`
+	ValidateURL      string    `json:"validate_url"`
+	PKCE             *bool     `json:"pkce"`
+	Host             string    `json:"host"`
+	Scopes           *[]string `json:"scopes"`
+}
+
+// gitProviderSpec is the provider fields shared by the environment-mode JSON
+// file and config.yaml; the secret has already been read or inlined.
+type gitProviderSpec struct {
+	ID           string
+	Type         string
+	ClientID     string
+	ClientSecret string
+	BaseURL      string
+	AuthURL      string
+	TokenURL     string
+	ValidateURL  string
+	PKCE         *bool
+	Host         string
+	Scopes       *[]string
 }
 
 var gitProviderIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -58,7 +74,26 @@ func loadGitProviders(path string) ([]GitProvider, error) {
 	providers := make([]GitProvider, 0, len(entries))
 	seen := map[string]bool{}
 	for n, entry := range entries {
-		provider, err := resolveGitProvider(entry)
+		if entry.ClientSecretFile == "" {
+			return nil, fmt.Errorf("Git provider %d: client_secret_file is required", n+1)
+		}
+		secret, err := os.ReadFile(entry.ClientSecretFile)
+		if err != nil {
+			return nil, fmt.Errorf("Git provider %d: read client_secret_file: %w", n+1, err)
+		}
+		provider, err := resolveGitProvider(gitProviderSpec{
+			ID:           entry.ID,
+			Type:         entry.Type,
+			ClientID:     entry.ClientID,
+			ClientSecret: strings.TrimSpace(string(secret)),
+			BaseURL:      entry.BaseURL,
+			AuthURL:      entry.AuthURL,
+			TokenURL:     entry.TokenURL,
+			ValidateURL:  entry.ValidateURL,
+			PKCE:         entry.PKCE,
+			Host:         entry.Host,
+			Scopes:       entry.Scopes,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("Git provider %d: %w", n+1, err)
 		}
@@ -71,7 +106,7 @@ func loadGitProviders(path string) ([]GitProvider, error) {
 	return providers, nil
 }
 
-func resolveGitProvider(e gitProviderFileEntry) (GitProvider, error) {
+func resolveGitProvider(e gitProviderSpec) (GitProvider, error) {
 	if !gitProviderIDPattern.MatchString(e.ID) {
 		return GitProvider{}, fmt.Errorf("id must be non-empty and use letters, digits, '.', '_' or '-'")
 	}
@@ -92,23 +127,16 @@ func resolveGitProvider(e gitProviderFileEntry) (GitProvider, error) {
 	if e.ClientID == "" {
 		return GitProvider{}, fmt.Errorf("client_id is required")
 	}
-	if e.ClientSecretFile == "" {
-		return GitProvider{}, fmt.Errorf("client_secret_file is required")
-	}
-	secret, err := os.ReadFile(e.ClientSecretFile)
-	if err != nil {
-		return GitProvider{}, fmt.Errorf("read client_secret_file: %w", err)
-	}
 	p := GitProvider{
 		ID:           e.ID,
 		Type:         e.Type,
 		ClientID:     e.ClientID,
-		ClientSecret: strings.TrimSpace(string(secret)),
+		ClientSecret: e.ClientSecret,
 		PKCE:         e.PKCE == nil || *e.PKCE,
-		Scopes:       e.Scopes,
+		Scopes:       *e.Scopes,
 	}
 	if p.ClientSecret == "" {
-		return GitProvider{}, fmt.Errorf("client_secret_file is empty")
+		return GitProvider{}, fmt.Errorf("client_secret is empty")
 	}
 	base := strings.TrimSuffix(e.BaseURL, "/")
 	switch e.Type {

@@ -263,7 +263,7 @@ func gpuSnapshotName(t *testing.T) string {
 	t.Helper()
 	name := envOr("STARS_E2E_GPU_SNAPSHOT", "cuda")
 	if strings.ContainsAny(name, "/:") {
-		t.Fatalf("STARS_E2E_GPU_SNAPSHOT must be a Snapshot name listed in STARS_PLATFORM_SNAPSHOTS, got image reference %q", name)
+		t.Fatalf("STARS_E2E_GPU_SNAPSHOT must be a Snapshot name listed in platform_snapshots, got image reference %q", name)
 	}
 	return name
 }

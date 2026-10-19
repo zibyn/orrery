@@ -69,7 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/stars-sandbox/main/deploy/ins
 
 ### TLS
 
-首次安装在 `/etc/stars-sandbox/` 生成 `.env`、`tls/`、`ca/`、`keys/`、`registry/` 和 `nginx/stars.conf`，此后不再重新生成。
+首次安装在 `/etc/stars-sandbox/` 生成 `config/`、`tls/`、`ca/`、`registry/`、`nginx/stars.conf` 和 `.env`，此后不再重新生成。
 
 - **`--tls self-signed`（默认）**：生成 CA 和一张证书，SAN 同时覆盖公开入口和对象存储域名。Node 安装时带 `--ca`，并用 `--trust-registry` 把 CA 放进 Docker/Podman 的 `certs.d`；Control Plane 和 registry 也信任它。证书有效期十年，没有自动轮换。
 - **`--tls cert`**：用 `--tls-cert FILE --tls-key FILE` 提供证书；私有 CA 再加 `--ca FILE`。同一张证书必须覆盖两个域名，脚本会检查并警告。

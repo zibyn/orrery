@@ -106,13 +106,9 @@ wait_rustfs() {
 # create_bucket replaces the old rustfs-init service. It runs before the
 # registry and the Control Plane start; both write to the bucket.
 create_bucket() {
-  local bucket access secret region network id
-  bucket="$(env_get STARS_S3_BUCKET .env)"
+  local bucket=stars region=us-east-1 access secret network id
   access="$(env_get STARS_S3_ACCESS_KEY .env)"
   secret="$(env_get STARS_S3_SECRET_KEY .env)"
-  region="$(env_get STARS_S3_REGION .env)"
-  bucket="${bucket:-stars}"
-  region="${region:-us-east-1}"
   id="$(docker compose ps -q rustfs)"
   [ -n "$id" ] || die "rustfs is not running"
   network="$(docker inspect "$id" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
@@ -176,12 +172,14 @@ server() {
   if [ ! -f .env ]; then
     first_install "$version" "$host" "$port" "$tls" "$cert" "$key" "$ca" "$access_url" "$registry_addr" "$s3_url" "$bind"
   else
+    [ -f config/config.yaml ] ||
+      die "this installation predates config.yaml (issue #147); it is pre-release: move $etc aside and install again"
     grep -q '^STARS_PUBLIC_PORT=' .env && grep -q '^STARS_S3_PUBLIC_HOST=' .env ||
       die "this .env predates the nginx front (issue #135); reinstall, or add STARS_PUBLIC_HOST, STARS_PUBLIC_PORT, STARS_S3_PUBLIC_HOST and STARS_PUBLIC_BIND and write nginx/stars.conf"
     [ -f nginx/stars.conf ] ||
       die "nginx/stars.conf is missing; recreate it from deploy/release/nginx.conf at this release tag"
     if [ -n "$host$port$cert$key$ca$access_url$registry_addr$s3_url$bind" ] || [ "$tls" != self-signed ]; then
-      echo "install.sh: $etc/.env exists; addresses and TLS are kept, edit .env and nginx/stars.conf to change them" >&2
+      echo "install.sh: $etc/.env exists; addresses and TLS are kept, edit .env, config/config.yaml and nginx/stars.conf to change them" >&2
     fi
   fi
 
@@ -296,7 +294,7 @@ first_install() {
   resolve=127.0.0.1
   [ -n "$bind" ] && resolve="$bind"
 
-  mkdir -p tls ca keys registry nginx
+  mkdir -p config tls ca registry nginx
   # One certificate covers the API and the object store; Agents and containers
   # see the same public entry (ADR-0023).
   if [ "$tls" = "cert" ]; then
@@ -335,12 +333,10 @@ first_install() {
     fi
   done
 
-  local pg s3_secret registry_password auth
+  local pg s3_secret registry_password
   pg="$(rand)"
   s3_secret="$(rand)"
   registry_password="$(rand)"
-  auth="$(printf 'stars:%s' "$registry_password" | base64 -w0)"
-  printf 'k1 %s\n' "$(openssl rand -base64 32)" > keys/encryption
   docker run --rm httpd:2.4-alpine htpasswd -Bbn stars "$registry_password" > registry/htpasswd
   cat > registry/config.yml <<EOF
 version: 0.1
@@ -376,37 +372,78 @@ EOF
   rm -f "$tmp"
   chmod 0644 nginx/stars.conf
 
-  # The server container runs as uid 10001.
-  chown 10001:10001 tls/server.key keys/encryption
-  chmod 600 tls/server.key keys/encryption registry/config.yml registry/htpasswd
+  # The Control Plane application settings live here (ADR-0024). The server
+  # container runs as uid 10001 and reads the directory read-only.
+  cat > config/config.yaml <<EOF
+# Deployment configuration (docs/spec/defaults.md). Edit this file and run
+# docker compose up -d; upgrades never overwrite it. Secrets are inline: the
+# file is 0600 and must stay out of backups you do not protect.
+database:
+  host: postgres
+  port: 5432
+  user: stars
+  password: $pg
+  name: stars
 
+access:
+  # OAuth/OIDC callbacks and the Sandbox's STARS_URL.
+  url: $access_url
+  # Wildcard domain for browser port forwarding; empty leaves it off.
+  apps_domain: ""
+  ticket_key: $(rand 32)
+
+s3:
+  # The Control Plane reaches the bundled object store on the Compose network;
+  # presigned URLs use the public endpoint. Clear endpoint to disable it.
+  public_endpoint: $s3_url
+  secret_key: $s3_secret
+
+registry:
+  addr: $registry_addr
+  username: stars
+  password: $registry_password
+
+encryption_keys:
+  - {id: k1, key: $(openssl rand -base64 32)}
+
+# Git OAuth applications (defaults.md):
+# git_providers:
+#   - {id: gitea, type: gitea, client_id: ..., client_secret: ...,
+#      base_url: https://git.example.com, scopes: [read:user]}
+
+# oidc:
+#   issuer_url: https://idp.example.com
+#   client_id: ...
+#   client_secret: ...
+#   email_domains: []
+#   allow_signups: false
+
+# A Sandbox needs a Platform Snapshot, referenced by digest:
+# platform_snapshots:
+#   - {name: default, ref: docker.io/library/ubuntu:24.04@sha256:..., default: true}
+EOF
+  chown 10001:10001 tls/server.key config config/config.yaml
+  chmod 700 config
+  chmod 600 tls/server.key config/config.yaml registry/config.yml registry/htpasswd
+
+  # Compose interpolation only; application settings are in config/config.yaml.
   cat > .env <<EOF
-# Written once by install.sh (ADR-0023); edit to change settings, then run
-# docker compose up -d. Every STARS_* setting is in docs/spec/defaults.md.
+# Written once by install.sh (ADR-0023, ADR-0024); these values are read by
+# Compose and install.sh before the server starts. Application settings live
+# in config/config.yaml.
 STARS_VERSION=$version
-# Read by install.sh; STARS_S3_PUBLIC_HOST is also read by Compose.
+# The server reads its application settings from this file (ADR-0024).
+STARS_CONFIG_FILE=/config/config.yaml
 STARS_PUBLIC_HOST=$host
 STARS_PUBLIC_PORT=$port
 STARS_PUBLIC_BIND=$public_bind
 STARS_PUBLIC_RESOLVE=$resolve
 STARS_S3_PUBLIC_HOST=$s3_host
-STARS_TLS=$tls
 # The server, registry and object store stay on loopback behind nginx.
 STARS_BIND=127.0.0.1:
 STARS_POSTGRES_PASSWORD=$pg
-STARS_DATABASE_URL=postgres://stars:$pg@postgres:5432/stars?sslmode=disable
-STARS_ACCESS_URL=$access_url
-STARS_S3_PUBLIC_ENDPOINT=$s3_url
-STARS_S3_BUCKET=stars
-STARS_S3_REGION=us-east-1
 STARS_S3_ACCESS_KEY=stars
 STARS_S3_SECRET_KEY=$s3_secret
-STARS_REGISTRY_ADDR=$registry_addr
-STARS_REGISTRY_CREDENTIAL='{"auths":{"$registry_addr":{"auth":"$auth"}}}'
-STARS_PORT_TICKET_KEY=$(rand 32)
-# A Sandbox needs a Platform Snapshot, referenced by digest:
-# STARS_PLATFORM_SNAPSHOTS=default=docker.io/library/ubuntu:24.04@sha256:...
-# STARS_DEFAULT_SNAPSHOT=default
 EOF
   chmod 600 .env
 }
@@ -559,10 +596,11 @@ next_steps() {
   bind="$(env_get STARS_PUBLIC_BIND "$etc/.env")"
   bind="${bind%:}"
   { [ -z "$bind" ] || [ "$bind" = "0.0.0.0" ]; } && check_addr=127.0.0.1 || check_addr="$bind"
-  registry_addr="$(env_get STARS_REGISTRY_ADDR "$etc/.env")"
-  s3_url="$(env_get STARS_S3_PUBLIC_ENDPOINT "$etc/.env")"
-  s3_host="${s3_url#https://}"
-  s3_host="${s3_host%%/*}"
+  # config.yaml is the source of truth for the Node-reachable registry address.
+  registry_addr="$(awk '/^registry:/{r=1;next} /^[^ #]/{r=0} r && /^  addr:/{print $2; exit}' \
+    "$etc/config/config.yaml")"
+  s3_host="$(env_get STARS_S3_PUBLIC_HOST "$etc/.env")"
+  s3_url="https://$s3_host$(port_suffix "$port")"
   node_host="$host:$port"
   if [ -f "$etc/ca/ca.crt" ]; then
     ca_flags="--ca ca.crt"

@@ -148,7 +148,7 @@ func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request, p *p
 
 func (s *Server) requireSecrets(w http.ResponseWriter) bool {
 	if s.cfg.EncryptionKeys == nil {
-		writeProblem(w, "unavailable", "Secret storage is not configured: set STARS_ENCRYPTION_KEYS_FILE")
+		writeProblem(w, "unavailable", "Secret storage is not configured: set encryption_keys in the deployment configuration")
 		return false
 	}
 	return true

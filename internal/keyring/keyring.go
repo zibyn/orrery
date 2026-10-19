@@ -1,5 +1,5 @@
 // Package keyring encrypts secrets at rest with AES-256-GCM and a
-// deployment-supplied key file (defaults.md, STARS_ENCRYPTION_KEYS_FILE).
+// deployment-supplied keyring (defaults.md, encryption_keys).
 package keyring
 
 import (

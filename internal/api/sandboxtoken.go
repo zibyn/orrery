@@ -15,7 +15,7 @@ import (
 
 // errSandboxTokenStorage is the explicit answer when the deployment has no
 // keyring (defaults.md).
-var errSandboxTokenStorage = errors.New("Sandbox Token storage is not configured: set STARS_ENCRYPTION_KEYS_FILE")
+var errSandboxTokenStorage = errors.New("Sandbox Token storage is not configured: set encryption_keys in the deployment configuration")
 
 // requireSandboxTokens refuses a Sandbox create when tokens cannot be sealed.
 func (s *Server) requireSandboxTokens(w http.ResponseWriter) bool {
