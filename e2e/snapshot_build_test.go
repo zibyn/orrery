@@ -107,7 +107,11 @@ func TestSnapshotBuildRun(t *testing.T) {
 	if !strings.Contains(log, "context-") {
 		// The context was copied by the build; the log itself need not show
 		// it, so this is only a sanity hint when BuildKit echoed the step.
-		t.Logf("build log did not echo the context; log starts: %.200s", log)
+		tail := log
+		if len(tail) > 1500 {
+			tail = tail[len(tail)-1500:]
+		}
+		t.Logf("build log did not echo the context; log tail: %s", tail)
 	}
 
 	ready := waitForSnapshotVersion(t, admin, snapshot.ID, version.ID, "ready", 5*time.Minute)
