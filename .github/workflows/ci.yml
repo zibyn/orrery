@@ -63,6 +63,9 @@ jobs:
       - run: |
           sudo loginctl enable-linger "$USER"
           until [ -S "/run/user/$(id -u)/bus" ]; do sleep 1; done
+          systemctl --user set-property --runtime stars-build-probe.slice CPUQuota=400%
+          find /sys/fs/cgroup -name 'stars-build-probe.slice'
+          systemctl --user stop stars-build-probe.slice
       # GPU, Podman and remote-host scenarios skip themselves without
       # STARS_E2E_GPU_SSH.
       - run: ./scripts/e2e.sh -timeout 80m
