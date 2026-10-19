@@ -20,6 +20,32 @@ permissions:
   contents: read
 
 jobs:
+  # `check` is the required PR gate and always runs. The Docker e2e suite only
+  # runs when the server, agent, CLI, protocol, deployment or the tests
+  # themselves change; a web/docs-only PR skips it (#146).
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      e2e: ${{ steps.paths.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: paths
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet "origin/${GITHUB_BASE_REF}...HEAD" -- \
+            client cmd internal proto gen sdk deploy e2e scripts \
+            go.mod go.sum Makefile buf.yaml buf.gen.yaml sqlc.yaml \
+            .github/workflows; then
+            echo "e2e=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     runs-on: ubuntu-24.04
     steps:
@@ -46,6 +72,8 @@ jobs:
       - run: pip install httpx && python -m unittest discover -s sdk/python/tests
 
   e2e:
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -74,6 +102,10 @@ jobs:
       # GPU, Podman and remote-host scenarios skip themselves without
       # STARS_E2E_GPU_SSH.
       - run: ./scripts/e2e.sh -timeout 80m
+        env:
+          # CI-only BuildKit cache; local e2e runs keep the plain build
+          # (deploy/compose.ci.yaml).
+          STARS_E2E_COMPOSE_OVERRIDE: ${{ github.workspace }}/deploy/compose.ci.yaml
 
   # Playwright is slow and not a merge gate; it runs nightly or on demand.
   e2e-console:

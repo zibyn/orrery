@@ -1,0 +1,22 @@
+# CI-only Compose override. scripts/e2e.sh loads this file when
+# STARS_E2E_COMPOSE_OVERRIDE is set, so local e2e runs keep the plain build.
+# The GitHub Actions cache keeps the web, Go module and build layers warm
+# across runs; the exporter reads ACTIONS_CACHE_URL and ACTIONS_RUNTIME_TOKEN.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      cache_from:
+        - type=gha,scope=stars-server
+      cache_to:
+        - type=gha,scope=stars-server,mode=max
+
+  server-oidc:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      cache_from:
+        - type=gha,scope=stars-server-oidc
+      cache_to:
+        - type=gha,scope=stars-server-oidc,mode=max
