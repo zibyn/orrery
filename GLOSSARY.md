@@ -47,7 +47,7 @@ A durable execution intent representing one requested command or interactive ope
 _Avoid_: terminal session, process
 
 **Idempotency Key**:
-A caller-supplied identity for one requested operation, used to prevent duplicate durable execution intents.
+A caller-supplied identity for one requested operation, used to make a repeat return the existing result instead of performing the operation again.
 _Avoid_: retry token
 
 **Cancellation**:

@@ -1,6 +1,6 @@
 # ADR-0017: The whole system, completed against Coder and Daytona
 
-- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92; MCP and SDK entries amended in place by #107 (ADR-0022)
+- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92; MCP and SDK entries amended in place by #107 (ADR-0022); periodic work advisory lock scope amended in place by #128
 - Date: 2026-10-17
 
 ## Context
@@ -33,7 +33,7 @@ PTY output is not an Execution Log: it lives only in the Node's ring buffer, and
 
 **Paused and deleted Nodes.** Paused blocks new Workspaces and builds only; Workspaces already bound there can still start Sandboxes, so their owners can archive them out. Deleting a Node requires it to be paused with no non-terminal Workspace and no non-terminal Sandbox, build rows included, leaves a tombstone (ADR-0014), and is a separate act from declaring it lost.
 
-**Periodic work.** Periodic tasks take `pg_try_advisory_xact_lock`. Purge covers every table with expiring rows (Execution Logs, Audit Records, expired versions, used or expired Enrollment Packets, expired API Tokens and Idempotency Keys, terminal admission requests) in batches. Execution Log tables are never `UNLOGGED`; log retention defaults to 30 days.
+**Periodic work.** Periodic tasks take `pg_try_advisory_xact_lock` around their database work (ADR-0014). Purge covers every table with expiring rows (Execution Logs, Audit Records, expired versions, used or expired Enrollment Packets, expired API Tokens and Idempotency Keys, terminal admission requests) in batches. Execution Log tables are never `UNLOGGED`; log retention defaults to 30 days.
 
 ### Ports
 
