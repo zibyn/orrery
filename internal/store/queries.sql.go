@@ -834,6 +834,67 @@ func (q *Queries) CreateOIDCUser(ctx context.Context, arg CreateOIDCUserParams) 
 	return i, err
 }
 
+const createPasswordToken = `-- name: CreatePasswordToken :one
+INSERT INTO api_tokens (
+    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key
+)
+SELECT
+    $1, u.id, $2, $3,
+    $4, $5, $6,
+    $7
+FROM users u
+WHERE u.id = $8
+  AND u.password_hash = $9
+  AND u.deleted_at IS NULL
+FOR SHARE
+RETURNING id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at
+`
+
+type CreatePasswordTokenParams struct {
+	ID             uuid.UUID
+	Kind           string
+	Name           string
+	SecretHash     []byte
+	Scope          string
+	ExpiresAt      pgtype.Timestamptz
+	IdempotencyKey *string
+	UserID         uuid.UUID
+	PasswordHash   *string
+}
+
+// CreatePasswordToken inserts a token only while the User still has the
+// password hash the login verified. FOR SHARE makes a password change wait for
+// this statement, so the change either sees the new Session in its revocation
+// delete or this insert re-reads the new hash and inserts nothing. The lock
+// covers this statement only; argon2 verification stays outside it.
+func (q *Queries) CreatePasswordToken(ctx context.Context, arg CreatePasswordTokenParams) (ApiToken, error) {
+	row := q.db.QueryRow(ctx, createPasswordToken,
+		arg.ID,
+		arg.Kind,
+		arg.Name,
+		arg.SecretHash,
+		arg.Scope,
+		arg.ExpiresAt,
+		arg.IdempotencyKey,
+		arg.UserID,
+		arg.PasswordHash,
+	)
+	var i ApiToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Kind,
+		&i.Name,
+		&i.SecretHash,
+		&i.Scope,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createPendingResourceVersion = `-- name: CreatePendingResourceVersion :one
 INSERT INTO resource_versions (
     id, resource_id, provenance, state, publish_workspace_id,

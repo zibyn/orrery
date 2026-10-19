@@ -37,7 +37,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
-生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`workspace_lost`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`；ResourceVersion 的 `node_lost`）。创建时就能判定的配额超限直接返回 `429`；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
+生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`workspace_lost`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`；ResourceVersion 的 `node_lost`）。创建时的配额判定只是预检：能确定超限时直接返回 `429`，不创建行、不入队。是否占用配额由 admission 权威判定，并发下预检通过仍可能在 admission 失败；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
 
 ## 3. 资源与路径
 
