@@ -1,4 +1,5 @@
 import type { Snapshot, SnapshotVersion, SnapshotVersionState } from '@/api'
+import { m } from '@/paraglide/messages'
 
 // api.md §8: lists poll every 5 s while a resource is non-terminal.
 const LIST_INTERVAL_MS = 5000
@@ -23,7 +24,7 @@ export function buildLogMode(version: SnapshotVersion): 'follow' | 'stored' | 'n
 }
 
 export function snapshotOwnerLabel(snapshot: Snapshot, currentUserId: string | undefined): string {
-  if (snapshot.owner_id === null) return 'Platform'
-  if (currentUserId && snapshot.owner_id === currentUserId) return 'You'
+  if (snapshot.owner_id === null) return m.snapshot_owner_platform()
+  if (currentUserId && snapshot.owner_id === currentUserId) return m.snapshot_owner_you()
   return snapshot.owner_id
 }
