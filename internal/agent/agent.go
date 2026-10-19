@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	"github.com/zibyn/stars-sandbox/internal/buildinfo"
 	"github.com/zibyn/stars-sandbox/internal/nodeproto"
 )
 
@@ -77,7 +77,7 @@ func Enroll(ctx context.Context, opts EnrollOptions) (Identity, error) {
 		}
 		name = host
 	}
-	version := buildVersion()
+	version := buildinfo.Version()
 	creds, err := transportCredentials(opts.CAPath, opts.Server)
 	if err != nil {
 		return Identity{}, err
@@ -224,7 +224,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if err := PrepareDataRoot(opts.DataRoot); err != nil {
 		return err
 	}
-	version := buildVersion()
+	version := buildinfo.Version()
 
 	backoff := time.Second
 	for {
@@ -548,11 +548,4 @@ func diskUsage(path string) (free, total uint64) {
 		return 0, 0
 	}
 	return stat.Bavail * uint64(stat.Bsize), stat.Blocks * uint64(stat.Bsize)
-}
-
-func buildVersion() string {
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
-	return "dev"
 }

@@ -10,12 +10,16 @@ RUN pnpm build
 
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 ARG TARGETOS TARGETARCH
+# The context has no .git (.dockerignore), so the tag arrives here instead.
+ARG VERSION=""
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags embed -trimpath -ldflags="-s -w" -o /out/stars-sandbox-server ./cmd/stars-sandbox-server
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags embed -trimpath \
+    -ldflags="-s -w -X github.com/zibyn/stars-sandbox/internal/buildinfo.version=${VERSION}" \
+    -o /out/stars-sandbox-server ./cmd/stars-sandbox-server
 
 FROM alpine:3.22
 RUN adduser -D -u 10001 stars
