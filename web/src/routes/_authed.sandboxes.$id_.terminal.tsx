@@ -1,11 +1,15 @@
 import { useMutation } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { ArrowLeft, ScrollText } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { Terminal } from '@xterm/xterm'
+import type { Terminal as XTerminal } from '@xterm/xterm'
 
 import { api, type CreateExecRequest, type Exec, type PtyExitFrame } from '@/api'
+import { PageHeader } from '@/components/page-header'
+import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { consoleWebSocketUrl, formatExecResult, parseArgv } from '@/lib/exec-stream'
@@ -27,7 +31,7 @@ function TerminalPage() {
 
   const [argvText, setArgvText] = useState(DEFAULT_ARGV)
   const [execId, setExecId] = useState<string | null>(existingExec ?? null)
-  const [terminal, setTerminal] = useState<Terminal | null>(null)
+  const [terminal, setTerminal] = useState<XTerminal | null>(null)
   const [status, setStatus] = useState<Status>('connecting')
   const [exit, setExit] = useState('')
   const [error, setError] = useState('')
@@ -145,70 +149,88 @@ function TerminalPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <Link
-          to="/sandboxes/$id"
-          params={{ id }}
-          className="text-sm text-muted-foreground hover:underline"
-        >
-          ← Sandbox
-        </Link>
-        <h1 className="text-2xl font-semibold">Terminal</h1>
-      </div>
-
-      {execId ? (
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <span className="text-muted-foreground">
-            {existingExec && execId === existingExec ? `Attached to Exec ${execId}` : `Exec ${execId}`}
-          </span>
-          <span data-testid="terminal-status" className="rounded-full border border-border px-2 py-0.5 text-xs">
-            {status}
-          </span>
-          {exit && <span data-testid="terminal-exit">Exited: {exit}</span>}
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        above={
+          <Link
+            to="/sandboxes/$id"
+            params={{ id }}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            Sandbox
+          </Link>
+        }
+        title="Terminal"
+        actions={
           <Link
             to="/sandboxes/$id/execs"
             params={{ id }}
-            search={{ exec: execId }}
-            className="text-muted-foreground hover:underline"
+            search={execId ? { exec: execId } : {}}
+            className={buttonVariants({ variant: 'outline' })}
           >
+            <ScrollText />
             View Exec list
           </Link>
+        }
+      />
+
+      {execId ? (
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="text-xs text-muted-foreground">
+            {existingExec && execId === existingExec ? `Attached to Exec ${execId}` : `Exec ${execId}`}
+          </span>
+          <StatusBadge state={status} data-testid="terminal-status" />
+          {exit && (
+            <span data-testid="terminal-exit" className="text-xs text-muted-foreground">
+              Exited: {exit}
+            </span>
+          )}
+          {error && (
+            <span className="text-xs text-destructive" role="alert">
+              {error}
+            </span>
+          )}
         </div>
       ) : (
-        <form
-          className="flex flex-wrap items-end gap-3"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (parseArgv(argvText).length > 0) create.mutate()
-          }}
-        >
-          <div className="flex min-w-64 flex-1 flex-col gap-1">
-            <Label htmlFor="terminal-argv">Command</Label>
-            <Input
-              id="terminal-argv"
-              value={argvText}
-              onChange={(event) => setArgvText(event.target.value)}
-              placeholder={DEFAULT_ARGV}
-            />
-            <p className="text-xs text-muted-foreground">
-              Runs in a PTY inside the Sandbox Workspace.
-            </p>
-          </div>
-          <Button type="submit" disabled={create.isPending || parseArgv(argvText).length === 0}>
-            Open terminal
-          </Button>
-        </form>
+        <Card>
+          <CardContent>
+            <form
+              className="flex flex-wrap items-end gap-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (parseArgv(argvText).length > 0) create.mutate()
+              }}
+            >
+              <div className="flex min-w-64 flex-1 flex-col gap-1.5">
+                <Label htmlFor="terminal-argv">Command</Label>
+                <Input
+                  id="terminal-argv"
+                  className="font-mono"
+                  value={argvText}
+                  onChange={(event) => setArgvText(event.target.value)}
+                  placeholder={DEFAULT_ARGV}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Runs in a PTY inside the Sandbox Workspace.
+                </p>
+              </div>
+              <Button type="submit" disabled={create.isPending || parseArgv(argvText).length === 0}>
+                Open terminal
+              </Button>
+            </form>
+            {error && (
+              <p className="mt-3 text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            )}
+          </CardContent>
+        </Card>
       )}
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
-
-      <TerminalView
-        onReady={setTerminal}
-        onData={sendInput}
-        onResize={sendResize}
-        className="h-[28rem]"
-      />
+      <div className="overflow-hidden rounded-xl border border-border bg-card p-1.5">
+        <TerminalView onReady={setTerminal} onData={sendInput} onResize={sendResize} className="h-[32rem] border-0" />
+      </div>
     </div>
   )
 }

@@ -1,3 +1,4 @@
+import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -29,12 +30,15 @@ export function TokenReveal({
       {hint && <p className="text-sm text-muted-foreground">{hint}</p>}
       <pre
         data-testid="token-plaintext"
-        className="overflow-x-auto rounded-md border border-border bg-muted p-3 font-mono text-sm"
+        className="overflow-x-auto rounded-lg border border-border bg-muted/60 p-3 font-mono text-xs break-all whitespace-pre-wrap"
       >
         {token}
       </pre>
       <div className="flex gap-2">
-        <Button onClick={copy}>{copied ? 'Copied' : 'Copy token'}</Button>
+        <Button onClick={copy} variant={copied ? 'outline' : 'default'}>
+          {copied ? <Check /> : <Copy />}
+          {copied ? 'Copied' : 'Copy token'}
+        </Button>
         {onDone && (
           <Button variant="outline" onClick={onDone}>
             Done

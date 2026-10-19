@@ -1,3 +1,4 @@
+import { CircleCheck, LoaderCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
 
@@ -83,12 +84,19 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
 
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-sm" data-testid="build-log-result">
-        {result
-          ? `Finished: ${formatExecResult(result)}`
-          : loading
-            ? 'Loading build log…'
-            : 'Build log'}
+      <p className="flex items-center gap-1.5 text-xs" data-testid="build-log-result">
+        {result ? (
+          <CircleCheck className="size-3.5 text-success" />
+        ) : loading ? (
+          <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" />
+        ) : null}
+        <span className={result ? 'text-foreground' : 'text-muted-foreground'}>
+          {result
+            ? `Finished: ${formatExecResult(result)}`
+            : loading
+              ? 'Loading build log…'
+              : 'Build log'}
+        </span>
       </p>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <TerminalView readOnly onReady={setTerminal} className="h-[28rem]" />

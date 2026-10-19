@@ -1,11 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { ArrowLeft, Terminal } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { Terminal } from '@xterm/xterm'
+import type { Terminal as XTerminal } from '@xterm/xterm'
 
 import { api, type Exec, type ExecResultFrame, type ListResponse } from '@/api'
+import { EmptyState } from '@/components/empty-state'
+import { PageHeader } from '@/components/page-header'
+import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
 import { Button, buttonVariants } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { execListPollInterval, followExecOutput, formatExecResult } from '@/lib/exec-stream'
 import { cn, messageOf } from '@/lib/utils'
 
@@ -40,115 +45,155 @@ function ExecsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-col gap-1">
+      <PageHeader
+        above={
           <Link
             to="/sandboxes/$id"
             params={{ id }}
-            className="text-sm text-muted-foreground hover:underline"
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
-            ← Sandbox
+            <ArrowLeft className="size-3.5" />
+            Sandbox
           </Link>
-          <h1 className="text-2xl font-semibold">Execs</h1>
-        </div>
-        <Link
-          to="/sandboxes/$id/terminal"
-          params={{ id }}
-          className={buttonVariants({ variant: 'outline' })}
-        >
-          Open terminal
-        </Link>
-      </div>
+        }
+        title="Execs"
+        actions={
+          <Link
+            to="/sandboxes/$id/terminal"
+            params={{ id }}
+            className={buttonVariants({ variant: 'outline' })}
+          >
+            <Terminal />
+            Open terminal
+          </Link>
+        }
+      />
 
-      {execs.isPending && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {execs.isPending && <p className="py-8 text-sm text-muted-foreground">Loading execs…</p>}
       {execs.error && (
-        <p className="text-sm text-destructive">Could not load Execs: {execs.error.message}</p>
+        <p className="text-sm text-destructive" role="alert">
+          Could not load Execs: {execs.error.message}
+        </p>
       )}
+
       {execs.data?.items.length === 0 && (
-        <p className="text-sm text-muted-foreground">No Execs for this Sandbox yet.</p>
+        <EmptyState
+          icon={<Terminal />}
+          title="No Execs yet"
+          description="Start a command from the CLI, SDK or MCP, or open a terminal."
+        />
       )}
 
       {execs.data && execs.data.items.length > 0 && (
-        <ul className="divide-y divide-border rounded-md border border-border">
-          {execs.data.items.map((exec) => (
-            <li
-              key={exec.id}
-              className={cn(
-                'flex flex-wrap items-center justify-between gap-3 p-4',
-                selectedId === exec.id && 'bg-muted',
-              )}
-            >
-              <Link
-                to="/sandboxes/$id/execs"
-                params={{ id }}
-                search={{ exec: exec.id }}
-                aria-current={selectedId === exec.id ? 'true' : undefined}
-                className="flex flex-col gap-1 hover:underline"
-              >
-                <span className="font-mono text-sm">{exec.argv.join(' ')}</span>
-                <span className="text-xs text-muted-foreground">
-                  {exec.id} · {exec.accepted_at}
-                </span>
-              </Link>
-              <span className="flex items-center gap-2">
-                <span
-                  className="rounded-full border border-border px-2 py-0.5 text-xs font-medium"
-                  data-testid={`exec-state-${exec.id}`}
-                >
-                  {exec.state}
-                </span>
-                <Link
-                  to="/sandboxes/$id/terminal"
-                  params={{ id }}
-                  search={{ exec: exec.id }}
-                  data-testid={`exec-attach-${exec.id}`}
-                  className={buttonVariants({ variant: 'outline', size: 'sm' })}
-                >
-                  Attach
-                </Link>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+        <div className="grid items-start gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
+          <Card className="overflow-hidden">
+            <CardHeader>
+              <CardTitle>Recent execs</CardTitle>
+              <CardDescription>Select one to follow its output.</CardDescription>
+            </CardHeader>
+            <CardContent className="px-0 pb-0">
+              <ul className="divide-y divide-border border-t border-border">
+                {execs.data.items.map((exec) => (
+                  <li key={exec.id}>
+                    <div
+                      className={cn(
+                        'flex items-start gap-2 px-4 py-3 transition-colors',
+                        selectedId === exec.id ? 'bg-accent' : 'hover:bg-muted/40',
+                      )}
+                    >
+                      <Link
+                        to="/sandboxes/$id/execs"
+                        params={{ id }}
+                        search={{ exec: exec.id }}
+                        aria-current={selectedId === exec.id ? 'true' : undefined}
+                        className="flex min-w-0 flex-1 flex-col gap-1"
+                      >
+                        <span className="truncate font-mono text-xs font-medium">
+                          {exec.argv.join(' ')}
+                        </span>
+                        <span className="truncate text-[11px] text-muted-foreground">
+                          {exec.id} · {exec.accepted_at}
+                        </span>
+                      </Link>
+                      <div className="flex shrink-0 flex-col items-end gap-1.5">
+                        <StatusBadge
+                          state={exec.state}
+                          data-testid={`exec-state-${exec.id}`}
+                        />
+                        <Link
+                          to="/sandboxes/$id/terminal"
+                          params={{ id }}
+                          search={{ exec: exec.id }}
+                          data-testid={`exec-attach-${exec.id}`}
+                          className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                        >
+                          Attach
+                        </Link>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
 
-      {selectedId && !selected && !execs.isPending && (
-        <p className="text-sm text-muted-foreground">That Exec is not in this Sandbox's list.</p>
-      )}
-
-      {selected && (
-        <section className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-col gap-1">
-              <h2 className="font-mono text-sm">{selected.argv.join(' ')}</h2>
-              <p className="text-xs text-muted-foreground">
-                Full logs beyond the terminal scrollback are available with the CLI.
+          <div className="min-w-0">
+            {selectedId && !selected && !execs.isPending && (
+              <p className="text-sm text-muted-foreground">
+                That Exec is not in this Sandbox's list.
               </p>
-            </div>
-            {selected.state !== 'finished' && (
-              <Button
-                variant="outline"
-                disabled={cancel.isPending}
-                onClick={() => cancel.mutate(selected.id)}
-              >
-                Cancel Exec
-              </Button>
+            )}
+
+            {selected && (
+              <Card>
+                <CardHeader className="flex-row items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <CardTitle className="truncate font-mono text-xs">
+                      {selected.argv.join(' ')}
+                    </CardTitle>
+                    <CardDescription>
+                      Full logs beyond the terminal scrollback are available with the CLI.
+                    </CardDescription>
+                  </div>
+                  {selected.state !== 'finished' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={cancel.isPending}
+                      onClick={() => cancel.mutate(selected.id)}
+                    >
+                      Cancel Exec
+                    </Button>
+                  )}
+                </CardHeader>
+                <CardContent>
+                  {cancelError && (
+                    <p className="mb-2 text-sm text-destructive" role="alert">
+                      {cancelError}
+                    </p>
+                  )}
+                  <ExecLog exec={selected} />
+                </CardContent>
+              </Card>
+            )}
+
+            {!selected && !selectedId && (
+              <EmptyState
+                icon={<Terminal />}
+                title="No Exec selected"
+                description="Pick an Exec from the list to follow its output here."
+                className="h-full"
+              />
             )}
           </div>
-          {cancelError && (
-            <p className="text-sm text-destructive" role="alert">
-              {cancelError}
-            </p>
-          )}
-          <ExecLog exec={selected} />
-        </section>
+        </div>
       )}
     </div>
   )
 }
 
 function ExecLog({ exec }: { exec: Exec }) {
-  const [terminal, setTerminal] = useState<Terminal | null>(null)
+  const [terminal, setTerminal] = useState<XTerminal | null>(null)
   const [result, setResult] = useState<ExecResultFrame | null>(null)
   const [error, setError] = useState('')
 

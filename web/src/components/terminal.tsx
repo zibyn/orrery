@@ -36,8 +36,34 @@ export function TerminalView({
       convertEol: readOnly,
       cursorBlink: !readOnly,
       fontSize: 13,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      lineHeight: 1.35,
+      fontFamily:
+        "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace",
       scrollback: 2000,
+      // The terminal stays dark in both themes, like a code editor.
+      theme: {
+        background: '#0b0b0d',
+        foreground: '#e5e7eb',
+        cursor: '#a5b4fc',
+        cursorAccent: '#0b0b0d',
+        selectionBackground: '#334155',
+        black: '#1f2937',
+        brightBlack: '#4b5563',
+        red: '#f87171',
+        brightRed: '#fca5a5',
+        green: '#4ade80',
+        brightGreen: '#86efac',
+        yellow: '#fbbf24',
+        brightYellow: '#fcd34d',
+        blue: '#60a5fa',
+        brightBlue: '#93c5fd',
+        magenta: '#c084fc',
+        brightMagenta: '#d8b4fe',
+        cyan: '#22d3ee',
+        brightCyan: '#67e8f9',
+        white: '#e5e7eb',
+        brightWhite: '#f9fafb',
+      },
     })
     const fit = new FitAddon()
     terminal.loadAddon(fit)
@@ -73,7 +99,7 @@ export function TerminalView({
       ref={hostRef}
       data-testid="terminal"
       className={cn(
-        'h-96 w-full overflow-hidden rounded-md border border-border bg-black p-1',
+        'h-96 w-full overflow-hidden rounded-xl border border-border bg-[#0b0b0d] p-3',
         className,
       )}
     />

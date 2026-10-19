@@ -1,7 +1,9 @@
+import { ExternalLink } from 'lucide-react'
 import { useState } from 'react'
 
 import { api, type PortTicket } from '@/api'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
@@ -43,40 +45,47 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded-md border border-border p-4 text-sm">
-      <h2 className="font-semibold">Ports</h2>
-      <div className="flex items-end gap-2">
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="sandbox-port">Port</Label>
-          <Input
-            id="sandbox-port"
-            type="number"
-            min="1"
-            max="65535"
-            value={port}
-            onChange={(event) => {
-              setPort(event.target.value)
-              setError('')
-              setLocked(false)
-            }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !locked) {
-                event.preventDefault()
-                void open()
-              }
-            }}
-          />
+    <Card>
+      <CardHeader>
+        <CardTitle>Ports</CardTitle>
+        <CardDescription>
+          Open a forwarded port in a new tab. The ticket is valid for one minute.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex items-end gap-2">
+          <div className="flex w-36 flex-col gap-1.5">
+            <Label htmlFor="sandbox-port">Port</Label>
+            <Input
+              id="sandbox-port"
+              type="number"
+              min="1"
+              max="65535"
+              value={port}
+              onChange={(event) => {
+                setPort(event.target.value)
+                setError('')
+                setLocked(false)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !locked) {
+                  event.preventDefault()
+                  void open()
+                }
+              }}
+            />
+          </div>
+          <Button type="button" disabled={locked || opening || !port} onClick={() => void open()}>
+            <ExternalLink />
+            Open
+          </Button>
         </div>
-        <Button type="button" disabled={locked || opening || !port} onClick={() => void open()}>
-          Open
-        </Button>
-      </div>
-      <p className="text-xs text-muted-foreground">The ticket is valid for one minute.</p>
-      {error && (
-        <p className="text-destructive" role="alert">
-          {error}
-        </p>
-      )}
-    </section>
+        {error && (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   )
 }

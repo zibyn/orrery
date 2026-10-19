@@ -1,17 +1,21 @@
 import { useForm } from '@tanstack/react-form'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { KeyRound, Plus } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import { z } from 'zod'
 
 import { api, type CreatedToken, type ListResponse, type Token, type User } from '@/api'
+import { PageHeader } from '@/components/page-header'
 import { TokenReveal } from '@/components/token-reveal'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { matchesCurrentSession, readCurrentSessionId, forgetCurrentSession } from '@/lib/current-session'
 import { expiresAtFromInput, formatTimestamp, scopeOptions } from '@/lib/tokens'
-import { messageOf } from '@/lib/utils'
+import { messageOf, selectClass } from '@/lib/utils'
 
 const tokenSchema = z.object({
   name: z.string().trim().min(1, 'Enter a name'),
@@ -28,6 +32,15 @@ type NewToken = {
   name: string
   scope: (typeof scopeOptions)[number]
   expires_at?: string
+}
+
+function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={htmlFor}>{label}</Label>
+      {children}
+    </div>
+  )
 }
 
 export const Route = createFileRoute('/_authed/account')({
@@ -122,188 +135,209 @@ function AccountPage() {
   })
 
   return (
-    <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="text-2xl font-semibold">Account</h1>
-        <p className="text-sm text-muted-foreground">API tokens and browser Sessions for {user.name}.</p>
-      </div>
+    <div className="flex max-w-3xl flex-col gap-6">
+      <PageHeader
+        title="Account"
+        description={`API tokens and browser Sessions for ${user.name}.`}
+      />
 
-      <section className="flex flex-col gap-4">
-        <div>
-          <h2 className="text-lg font-medium">My tokens &amp; Sessions</h2>
-          <p className="text-sm text-muted-foreground">
-            Tokens authenticate the CLI and API; Sessions are browser logins.
-          </p>
-        </div>
-
-        {created && (
-          <div className="rounded-md border border-border p-4">
-            <p className="mb-2 text-sm font-medium">
+      {created && (
+        <Card className="border-brand/30 bg-brand/5">
+          <CardHeader>
+            <CardTitle>
               Token <span className="font-mono">{created.name}</span> created
-            </p>
-            <TokenReveal
-              token={created.token}
-              hint="This token appears only once. Store it before closing this panel."
-              onDone={() => setCreated(null)}
-            />
-          </div>
-        )}
+            </CardTitle>
+            <CardDescription>
+              This token appears only once. Store it before closing this panel.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <TokenReveal token={created.token} onDone={() => setCreated(null)} />
+          </CardContent>
+        </Card>
+      )}
 
-        <form
-          className="flex flex-wrap items-end gap-3 rounded-md border border-border p-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            createForm.handleSubmit()
-          }}
-        >
-          <createForm.Field name="name">
-            {(field) => (
-              <div className="flex flex-col gap-2">
-                <Label htmlFor={field.name}>Name</Label>
-                <Input
-                  id={field.name}
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value)}
-                  placeholder="laptop-cli"
-                  autoComplete="off"
-                />
-              </div>
-            )}
-          </createForm.Field>
-          <createForm.Field name="scope">
-            {(field) => (
-              <div className="flex flex-col gap-2">
-                <Label htmlFor={field.name}>Scope</Label>
-                <select
-                  id={field.name}
-                  className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value as NewToken['scope'])}
-                >
-                  {scopeOptions.map((scope) => (
-                    <option key={scope} value={scope}>
-                      {scope}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </createForm.Field>
-          <createForm.Field name="expires_at">
-            {(field) => (
-              <div className="flex flex-col gap-2">
-                <Label htmlFor={field.name}>Expires (optional)</Label>
-                <Input
-                  id={field.name}
-                  type="datetime-local"
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value)}
-                />
-              </div>
-            )}
-          </createForm.Field>
-          <Button type="submit" disabled={createToken.isPending}>
-            {createToken.isPending ? 'Creating…' : 'Create token'}
-          </Button>
-        </form>
-
-        {tokenError && <p className="text-sm text-destructive">{tokenError}</p>}
-        {tokens.isPending && <p className="text-sm text-muted-foreground">Loading…</p>}
-        {tokens.error && (
-          <p className="text-sm text-destructive">Could not load tokens: {tokens.error.message}</p>
-        )}
-
-        {tokens.data?.items.length === 0 && (
-          <p className="text-sm text-muted-foreground">No tokens or Sessions.</p>
-        )}
-
-        {tokens.data && tokens.data.items.length > 0 && (
-          <ul className="divide-y divide-border rounded-md border border-border">
-            {tokens.data.items.map((token) => (
-              <li key={token.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
-                <div className="flex flex-col gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{token.name}</span>
-                    <span className="rounded-full border border-border px-2 py-0.5 text-xs font-medium">
-                      {token.kind === 'session' ? 'Session' : 'Token'}
-                    </span>
-                    {matchesCurrentSession(token, currentId) && (
-                      <span
-                        data-testid="current-session"
-                        className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium"
-                      >
-                        current
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-xs text-muted-foreground">
-                    {token.scope} · expires {formatTimestamp(token.expires_at)} · last used{' '}
-                    {formatTimestamp(token.last_used_at)}
-                  </span>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={revokeToken.isPending}
-                  onClick={() => revokeToken.mutate(token.id)}
-                >
-                  Revoke
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {user.login_type === 'password' && (
-        <section className="flex flex-col gap-4">
-          <div>
-            <h2 className="text-lg font-medium">Change password</h2>
-            <p className="text-sm text-muted-foreground">
-              Changing the password signs out every Session, including this one.
-            </p>
-          </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Create token</CardTitle>
+          <CardDescription>
+            Tokens authenticate the CLI and API. Sessions are browser logins.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
           <form
-            className="flex flex-wrap items-end gap-3 rounded-md border border-border p-4"
+            className="flex flex-wrap items-end gap-3"
             onSubmit={(e) => {
               e.preventDefault()
-              passwordForm.handleSubmit()
+              createForm.handleSubmit()
             }}
           >
-            <passwordForm.Field name="old">
+            <createForm.Field name="name">
               {(field) => (
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor={field.name}>Current password</Label>
+                <Field label="Name" htmlFor={field.name}>
                   <Input
                     id={field.name}
-                    type="password"
+                    className="w-44"
                     value={field.state.value}
                     onChange={(e) => field.handleChange(e.target.value)}
-                    autoComplete="current-password"
+                    placeholder="laptop-cli"
+                    autoComplete="off"
                   />
-                </div>
+                </Field>
               )}
-            </passwordForm.Field>
-            <passwordForm.Field name="new">
+            </createForm.Field>
+            <createForm.Field name="scope">
               {(field) => (
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor={field.name}>New password</Label>
+                <Field label="Scope" htmlFor={field.name}>
+                  <select
+                    id={field.name}
+                    className={`${selectClass} w-32`}
+                    value={field.state.value}
+                    onChange={(e) => field.handleChange(e.target.value as NewToken['scope'])}
+                  >
+                    {scopeOptions.map((scope) => (
+                      <option key={scope} value={scope}>
+                        {scope}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+            </createForm.Field>
+            <createForm.Field name="expires_at">
+              {(field) => (
+                <Field label="Expires (optional)" htmlFor={field.name}>
                   <Input
                     id={field.name}
-                    type="password"
+                    type="datetime-local"
+                    className="w-52"
                     value={field.state.value}
                     onChange={(e) => field.handleChange(e.target.value)}
-                    autoComplete="new-password"
                   />
-                </div>
+                </Field>
               )}
-            </passwordForm.Field>
-            <Button type="submit" disabled={changePassword.isPending}>
-              {changePassword.isPending ? 'Changing…' : 'Change password'}
+            </createForm.Field>
+            <Button type="submit" disabled={createToken.isPending}>
+              <Plus />
+              {createToken.isPending ? 'Creating…' : 'Create token'}
             </Button>
           </form>
-          {passwordError && <p className="text-sm text-destructive">{passwordError}</p>}
-        </section>
+          {tokenError && (
+            <p className="mt-3 text-sm text-destructive" role="alert">
+              {tokenError}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>My tokens &amp; Sessions</CardTitle>
+          <CardDescription>Revoking a token or Session takes effect immediately.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {tokens.isPending && <p className="text-sm text-muted-foreground">Loading…</p>}
+          {tokens.error && (
+            <p className="text-sm text-destructive" role="alert">
+              Could not load tokens: {tokens.error.message}
+            </p>
+          )}
+          {tokens.data?.items.length === 0 && (
+            <p className="text-sm text-muted-foreground">No tokens or Sessions.</p>
+          )}
+
+          {tokens.data && tokens.data.items.length > 0 && (
+            <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+              {tokens.data.items.map((token) => (
+                <li key={token.id} className="flex items-center gap-3 px-3 py-2.5">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-muted-foreground">
+                    <KeyRound className="size-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium">{token.name}</span>
+                      <Badge variant={token.kind === 'session' ? 'secondary' : 'outline'}>
+                        {token.kind === 'session' ? 'Session' : 'Token'}
+                      </Badge>
+                      {matchesCurrentSession(token, currentId) && (
+                        <Badge variant="success" data-testid="current-session">
+                          current
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {token.scope} · expires {formatTimestamp(token.expires_at)} · last used{' '}
+                      {formatTimestamp(token.last_used_at)}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={revokeToken.isPending}
+                    onClick={() => revokeToken.mutate(token.id)}
+                  >
+                    Revoke
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      {user.login_type === 'password' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Change password</CardTitle>
+            <CardDescription>
+              Changing the password signs out every Session, including this one.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form
+              className="flex flex-wrap items-end gap-3"
+              onSubmit={(e) => {
+                e.preventDefault()
+                passwordForm.handleSubmit()
+              }}
+            >
+              <passwordForm.Field name="old">
+                {(field) => (
+                  <Field label="Current password" htmlFor={field.name}>
+                    <Input
+                      id={field.name}
+                      type="password"
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value)}
+                      autoComplete="current-password"
+                    />
+                  </Field>
+                )}
+              </passwordForm.Field>
+              <passwordForm.Field name="new">
+                {(field) => (
+                  <Field label="New password" htmlFor={field.name}>
+                    <Input
+                      id={field.name}
+                      type="password"
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value)}
+                      autoComplete="new-password"
+                    />
+                  </Field>
+                )}
+              </passwordForm.Field>
+              <Button type="submit" disabled={changePassword.isPending}>
+                {changePassword.isPending ? 'Changing…' : 'Change password'}
+              </Button>
+            </form>
+            {passwordError && (
+              <p className="mt-3 text-sm text-destructive" role="alert">
+                {passwordError}
+              </p>
+            )}
+          </CardContent>
+        </Card>
       )}
     </div>
   )
