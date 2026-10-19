@@ -53,6 +53,16 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      # The unprivileged e2e Agent bounds each build with a slice of its
+      # systemd user manager (runtime.md §12); the runner has none until
+      # lingering starts it.
+      - run: |
+          sudo loginctl enable-linger "$USER"
+          until [ -S "/run/user/$(id -u)/bus" ]; do sleep 1; done
       # GPU, Podman and remote-host scenarios skip themselves without
       # STARS_E2E_GPU_SSH.
       - run: ./scripts/e2e.sh -timeout 80m
