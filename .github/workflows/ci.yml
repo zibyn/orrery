@@ -73,16 +73,17 @@ jobs:
           # Record every build slice that appears, to diagnose a MISS without
           # rerunning the build by hand.
           (for _ in $(seq 1 2400); do
-            find /sys/fs/cgroup -maxdepth 10 -name 'stars-build-*' -type d 2>/dev/null |
-              while read -r d; do printf '%s %s\n' "$(wc -l < "$d/cgroup.procs" 2>/dev/null)" "$d"; done
+            find /sys/fs/cgroup -maxdepth 10 -name 'stars-build-*' -type d 2>/dev/null > /tmp/slices.now
+            while read -r d; do printf '%s %s\n' "$(wc -l < "$d/cgroup.procs" 2>/dev/null)" "$d"; done < /tmp/slices.now
             sleep 2
-          done | sort -u > /tmp/cgroups.log) &
+          done >> /tmp/cgroups.log) &
           ./scripts/e2e.sh -timeout 80m
       - if: always()
         run: |
           docker version
           docker info --format '{{.CgroupDriver}} {{.CgroupVersion}}' || true
-          sort -k2 /tmp/cgroups.log | tail -30 || true
+          sort -u -k2 /tmp/cgroups.log | tail -30 || true
+          ps -eo user,args | grep [s]tars-sandbox-agent | head -3 || true
           sudo journalctl -u docker --no-pager | grep -iE 'cgroup|slice' | tail -30 || true
 
   # Playwright is slow and not a merge gate; it runs nightly or on demand.
