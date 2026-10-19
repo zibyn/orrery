@@ -1,4 +1,5 @@
 /// <reference types="vitest/config" />
+import { paraglideVitePlugin } from '@inlang/paraglide-js'
 import { fileURLToPath, URL } from 'node:url'
 
 import tailwindcss from '@tailwindcss/vite'
@@ -11,6 +12,14 @@ import { defineConfig } from 'vite'
 // console's Content-Security-Policy forbids.
 export default defineConfig({
   plugins: [
+    // The console has no locale URL segment; a stored choice wins, then the
+    // browser's language, then English (api.md §8).
+    paraglideVitePlugin({
+      project: './project.inlang',
+      outdir: './src/paraglide',
+      strategy: ['localStorage', 'preferredLanguage', 'baseLocale'],
+      emitTsDeclarations: true,
+    }),
     tanstackRouter({ target: 'react', autoCodeSplitting: true }),
     react(),
     tailwindcss(),

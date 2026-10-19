@@ -6,16 +6,21 @@ import { useState } from 'react'
 import { api, type ListResponse, type Sandbox, type User } from '@/api'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { buttonVariants } from '@/components/ui/button'
+import { useLocale } from '@/lib/i18n'
+import { workspaceModeLabel } from '@/lib/labels'
 import { sandboxListPollInterval } from '@/lib/sandbox'
 import { selectClass } from '@/lib/utils'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/')({
   component: SandboxesPage,
 })
 
 function SandboxesPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user } = Route.useRouteContext()
   // An admin's list defaults to their own Sandboxes: without `owner` the API
   // already answers with the caller's, so '' means "me" (api.md §8).
@@ -41,20 +46,26 @@ function SandboxesPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Sandboxes"
-        description="Sandboxes run your chosen Snapshot on one Node."
-        meta={count === undefined ? undefined : `${count} ${count === 1 ? 'sandbox' : 'sandboxes'}`}
+        title={m.sandboxes_title()}
+        description={m.sandboxes_description()}
+        meta={
+          count === undefined
+            ? undefined
+            : count === 1
+              ? m.sandboxes_count_one({ count })
+              : m.sandboxes_count_other({ count })
+        }
         actions={
           <>
             {user.is_admin && (
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                Owner
+                {m.sandboxes_owner()}
                 <select
                   className={`${selectClass} w-auto min-w-32`}
                   value={owner}
                   onChange={(e) => setOwner(e.target.value)}
                 >
-                  <option value="">Me ({user.name})</option>
+                  <option value="">{m.sandboxes_owner_me({ name: user.name })}</option>
                   {users.data?.items.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.name}
@@ -65,31 +76,31 @@ function SandboxesPage() {
             )}
             <Link to="/sandboxes/new" className={buttonVariants()}>
               <Plus />
-              New Sandbox
+              {m.sandboxes_new()}
             </Link>
           </>
         }
       />
 
       {sandboxes.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">Loading sandboxes…</p>
+        <p className="py-8 text-sm text-muted-foreground">{m.sandboxes_loading()}</p>
       )}
       {sandboxes.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load Sandboxes: {sandboxes.error.message}
+          {m.sandboxes_load_error()}: <Problem error={sandboxes.error} />
         </p>
       )}
       {users.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load Users: {users.error.message}
+          {m.users_load_error()}: <Problem error={users.error} />
         </p>
       )}
 
       {sandboxes.data?.items.length === 0 && (
         <EmptyState
           icon={<Box />}
-          title="No Sandboxes yet"
-          description="Create a Sandbox to run a Snapshot on one Node. Resources, Secrets and labels are available with the CLI."
+          title={m.sandboxes_empty_title()}
+          description={m.sandboxes_empty_description()}
         />
       )}
 
@@ -114,7 +125,9 @@ function SandboxesPage() {
                 <p className="truncate text-xs text-muted-foreground">
                   {sandbox.cpu} CPU · {(sandbox.memory / 1024 / 1024).toFixed(0)} MiB
                   {sandbox.gpu ? ` · ${sandbox.gpu.count} GPU` : ''}
-                  {sandbox.workspace ? ` · workspace ${sandbox.workspace.mode}` : ''}
+                  {sandbox.workspace
+                    ? ` · workspace ${workspaceModeLabel(sandbox.workspace.mode)}`
+                    : ''}
                   {sandbox.node_id ? ` · ${sandbox.node_id}` : ''}
                 </p>
               </div>

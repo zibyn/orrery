@@ -6,13 +6,16 @@ import { useState, type FormEvent, type ReactNode } from 'react'
 import { api, type ListResponse, type Secret } from '@/api'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useLocale } from '@/lib/i18n'
+import { messageOf } from '@/lib/labels'
 import { secretNameError } from '@/lib/secrets'
 import { formatTimestamp } from '@/lib/tokens'
-import { messageOf } from '@/lib/utils'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/secrets')({
   component: SecretsPage,
@@ -28,6 +31,7 @@ function Field({ label, htmlFor, children }: { label: string; htmlFor: string; c
 }
 
 function SecretsPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
@@ -69,7 +73,7 @@ function SecretsPage() {
       return
     }
     if (!value) {
-      setError('Enter a value')
+      setError(m.secrets_enter_value())
       return
     }
     save.mutate({ name: name.trim(), value })
@@ -77,19 +81,16 @@ function SecretsPage() {
 
   return (
     <div className="flex max-w-3xl flex-col gap-6">
-      <PageHeader
-        title="Secrets"
-        description="Values are write-only: the console never shows a stored value. Saving an existing name overwrites it."
-      />
+      <PageHeader title={m.secrets_title()} description={m.secrets_description()} />
 
       <Card>
         <CardHeader>
-          <CardTitle>Add or overwrite</CardTitle>
-          <CardDescription>The name is the key injected where the Secret is used.</CardDescription>
+          <CardTitle>{m.secrets_add_title()}</CardTitle>
+          <CardDescription>{m.secrets_add_description()}</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
-            <Field label="Name" htmlFor="secret-name">
+            <Field label={m.common_name()} htmlFor="secret-name">
               <Input
                 id="secret-name"
                 className="w-56"
@@ -100,7 +101,7 @@ function SecretsPage() {
               />
             </Field>
             <div className="flex min-w-56 flex-1 flex-col gap-1.5">
-              <Label htmlFor="secret-value">Value</Label>
+              <Label htmlFor="secret-value">{m.secrets_value()}</Label>
               <Input
                 id="secret-value"
                 type="password"
@@ -110,11 +111,11 @@ function SecretsPage() {
               />
             </div>
             <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? 'Saving…' : 'Save Secret'}
+              {save.isPending ? m.secrets_saving() : m.secrets_save()}
             </Button>
           </form>
           {error && (
-            <p className="mt-3 text-sm text-destructive" role="alert">
+            <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">
               {error}
             </p>
           )}
@@ -122,19 +123,19 @@ function SecretsPage() {
       </Card>
 
       {secrets.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">Loading secrets…</p>
+        <p className="py-8 text-sm text-muted-foreground">{m.secrets_loading()}</p>
       )}
       {secrets.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load Secrets: {secrets.error.message}
+          {m.secrets_load_error()}: <Problem error={secrets.error} />
         </p>
       )}
 
       {secrets.data?.items.length === 0 && (
         <EmptyState
           icon={<KeyRound />}
-          title="No Secrets yet"
-          description="Secret values can only be replaced, never read back."
+          title={m.secrets_empty_title()}
+          description={m.secrets_empty_description()}
         />
       )}
 
@@ -148,7 +149,7 @@ function SecretsPage() {
               <div className="min-w-0 flex-1">
                 <p className="truncate font-mono text-sm font-medium">{secret.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  Updated {formatTimestamp(secret.updated_at)}
+                  {m.secrets_updated({ time: formatTimestamp(secret.updated_at) })}
                 </p>
               </div>
               <Button
@@ -158,7 +159,7 @@ function SecretsPage() {
                 onClick={() => remove.mutate(secret.name)}
               >
                 <Trash />
-                Delete
+                {m.common_delete()}
               </Button>
             </div>
           ))}

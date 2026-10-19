@@ -9,7 +9,7 @@ import {
   frameText,
   isResultFrame,
   parseArgv,
-  TRUNCATION_NOTICE,
+  truncationNotice,
 } from './exec-stream'
 
 const base64 = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)))
@@ -59,7 +59,7 @@ describe('frameText', () => {
   it('marks a truncated frame visibly instead of writing it as output', () => {
     const frame: ExecOutputFrame = { seq: 0, stream: 'truncated', data: '' }
     const text = frameText(frame)
-    expect(text).toContain(TRUNCATION_NOTICE.trim())
+    expect(text).toContain(truncationNotice().trim())
     expect(text).toContain('CLI')
   })
 

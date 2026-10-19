@@ -326,12 +326,13 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 技术栈与构建：
 
-- Vite + React + TypeScript + TanStack Router（文件路由）+ TanStack Form + TanStack Query + Zod + shadcn/ui。
+- Vite + React + TypeScript + TanStack Router（文件路由）+ TanStack Form + TanStack Query + Zod + shadcn/ui + Paraglide（i18n）。
 - 纯 SPA，不引入 TanStack Start 运行时；目录结构参考 Start 模板。
 - 源码在 `web/`，产物经 `go:embed` 嵌入，未命中静态文件的路径回退到 `index.html`。仓库提交一个占位 `index.html`，不装 node 也能 `go build`；真正的构建放在 Makefile 和 Dockerfile 的多阶段构建里，`dist` 不进仓库。
 
 约定：
 
+- **语言**：控制台支持中文和英文，默认跟随浏览器偏好，用户的选择存在浏览器本地（`localStorage` 的 `PARAGLIDE_LOCALE`），不进入 URL。服务端只返回机器值（枚举、`code`、`cause`），显示标签由控制台负责；错误 `detail`、`blocked_reason`、日志和终端输出保持服务端原文。
 - **刷新**：没有推送，控制台轮询。资源处于非终态时，详情 2 秒、列表 5 秒刷新一次；进入终态后停止。
 - **终端与日志**：用同一个终端模拟器渲染，日志用只读实例。`base64` 帧解码后显示，`truncated` 帧显式标出；超出 scrollback 的部分用 CLI 看。
 

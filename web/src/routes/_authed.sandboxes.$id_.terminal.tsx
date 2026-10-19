@@ -13,6 +13,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { consoleWebSocketUrl, formatExecResult, parseArgv } from '@/lib/exec-stream'
+import { useLocale } from '@/lib/i18n'
+import { messageOf } from '@/lib/labels'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/$id_/terminal')({
   validateSearch: (search: Record<string, unknown>): { exec?: string } => ({
@@ -26,6 +29,7 @@ const DEFAULT_ARGV = '/bin/sh -l'
 type Status = 'connecting' | 'connected' | 'closed'
 
 function TerminalPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { id } = Route.useParams()
   const { exec: existingExec } = Route.useSearch()
 
@@ -49,7 +53,7 @@ function TerminalPage() {
       setError('')
       setExecId(exec.id)
     },
-    onError: (err) => setError(err.message),
+    onError: (err) => setError(messageOf(err)),
   })
 
   useEffect(() => {
@@ -79,12 +83,12 @@ function TerminalPage() {
           exec = await api<Exec>('GET', `/execs/${execId}`)
         }
       } catch (err) {
-        if (!canceled) setError(err instanceof Error ? err.message : String(err))
+        if (!canceled) setError(messageOf(err))
         return
       }
       if (canceled) return
       if (exec.state === 'pending') {
-        setError('The Exec did not start in time.')
+        setError(m.terminal_start_timeout())
         return
       }
 
@@ -124,8 +128,8 @@ function TerminalPage() {
         if (canceled) return
         setError(
           existingExec
-            ? 'The terminal connection failed. This Exec has no PTY, or the Sandbox is not ready.'
-            : 'The terminal connection failed. The Sandbox may not be ready.',
+            ? m.terminal_connect_failed_attached()
+            : m.terminal_connect_failed(),
         )
       }
     }
@@ -158,10 +162,10 @@ function TerminalPage() {
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Sandbox
+            {m.terminal_back()}
           </Link>
         }
-        title="Terminal"
+        title={m.terminal_title()}
         actions={
           <Link
             to="/sandboxes/$id/execs"
@@ -170,7 +174,7 @@ function TerminalPage() {
             className={buttonVariants({ variant: 'outline' })}
           >
             <ScrollText />
-            View Exec list
+            {m.terminal_view_execs()}
           </Link>
         }
       />
@@ -178,16 +182,18 @@ function TerminalPage() {
       {execId ? (
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <span className="text-xs text-muted-foreground">
-            {existingExec && execId === existingExec ? `Attached to Exec ${execId}` : `Exec ${execId}`}
+            {existingExec && execId === existingExec
+              ? m.terminal_attached({ id: execId })
+              : m.terminal_exec({ id: execId })}
           </span>
           <StatusBadge state={status} data-testid="terminal-status" />
           {exit && (
             <span data-testid="terminal-exit" className="text-xs text-muted-foreground">
-              Exited: {exit}
+              {m.terminal_exited({ result: exit })}
             </span>
           )}
           {error && (
-            <span className="text-xs text-destructive" role="alert">
+            <span className="whitespace-pre-line text-xs text-destructive" role="alert">
               {error}
             </span>
           )}
@@ -203,7 +209,7 @@ function TerminalPage() {
               }}
             >
               <div className="flex min-w-64 flex-1 flex-col gap-1.5">
-                <Label htmlFor="terminal-argv">Command</Label>
+                <Label htmlFor="terminal-argv">{m.terminal_command()}</Label>
                 <Input
                   id="terminal-argv"
                   className="font-mono"
@@ -211,16 +217,14 @@ function TerminalPage() {
                   onChange={(event) => setArgvText(event.target.value)}
                   placeholder={DEFAULT_ARGV}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Runs in a PTY inside the Sandbox Workspace.
-                </p>
+                <p className="text-xs text-muted-foreground">{m.terminal_runs_in()}</p>
               </div>
               <Button type="submit" disabled={create.isPending || parseArgv(argvText).length === 0}>
-                Open terminal
+                {m.terminal_open()}
               </Button>
             </form>
             {error && (
-              <p className="mt-3 text-sm text-destructive" role="alert">
+              <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">
                 {error}
               </p>
             )}

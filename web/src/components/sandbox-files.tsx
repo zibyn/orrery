@@ -3,6 +3,7 @@ import { ArrowUp, Download, File, Folder, Upload } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import { api, apiRaw, type FileEntry } from '@/api'
+import { Problem } from '@/components/problem'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -13,6 +14,9 @@ import {
   joinPath,
   parentPath,
 } from '@/lib/files'
+import { messageOf } from '@/lib/labels'
+import { formatLocalDateTime } from '@/lib/tokens'
+import { m } from '@/paraglide/messages'
 
 export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
   const [path, setPath] = useState('')
@@ -32,21 +36,21 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
       setUploadError('')
       queryClient.invalidateQueries({ queryKey: ['files', sandboxId] })
     },
-    onError: (err) => setUploadError(err.message),
+    onError: (err) => setUploadError(messageOf(err)),
   })
 
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
-          <CardTitle>Files</CardTitle>
+          <CardTitle>{m.files_title()}</CardTitle>
           <CardDescription className="font-mono">/{path}</CardDescription>
         </div>
         <div>
           <input
             ref={inputRef}
             type="file"
-            aria-label="Upload file"
+            aria-label={m.files_upload_aria()}
             className="sr-only"
             disabled={upload.isPending}
             onChange={(event) => {
@@ -63,7 +67,7 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
             onClick={() => inputRef.current?.click()}
           >
             <Upload />
-            {upload.isPending ? 'Uploading…' : 'Upload'}
+            {upload.isPending ? m.files_uploading() : m.files_upload()}
           </Button>
         </div>
       </CardHeader>
@@ -76,19 +80,21 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
             onClick={() => setPath(parentPath(path))}
           >
             <ArrowUp />
-            Up
+            {m.files_up()}
           </Button>
           <span className="truncate font-mono text-xs text-muted-foreground">/{path}</span>
         </div>
 
-        {listing.isPending && <p className="text-muted-foreground">Loading…</p>}
+        {listing.isPending && (
+          <p className="text-muted-foreground">{m.common_loading()}</p>
+        )}
         {listing.error && (
           <p className="text-destructive" role="alert">
-            {listing.error.message}
+            <Problem error={listing.error} />
           </p>
         )}
         {uploadError && (
-          <p className="text-destructive" role="alert">
+          <p className="whitespace-pre-line text-destructive" role="alert">
             {uploadError}
           </p>
         )}
@@ -97,7 +103,7 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
           <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
             {listing.data.items.length === 0 && (
               <li className="px-3 py-6 text-center text-xs text-muted-foreground">
-                Empty directory.
+                {m.files_empty()}
               </li>
             )}
             {listing.data.items.map((entry) => {
@@ -134,8 +140,8 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
                       <span className="truncate text-sm font-medium">{entry.name}</span>
                     )}
                     <span className="text-xs text-muted-foreground">
-                      {entry.type === 'dir' ? 'directory' : formatBytes(entry.size)} ·{' '}
-                      {new Date(entry.mod_time).toLocaleString()}
+                      {entry.type === 'dir' ? m.files_directory() : formatBytes(entry.size)} ·{' '}
+                      {formatLocalDateTime(entry.mod_time)}
                     </span>
                   </div>
                   {href && (
@@ -145,7 +151,7 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
                       className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                     >
                       <Download className="size-3.5" />
-                      Download
+                      {m.files_download()}
                     </a>
                   )}
                 </li>

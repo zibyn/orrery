@@ -5,14 +5,18 @@ import { Layers } from 'lucide-react'
 import { api, type ListResponse, type Snapshot } from '@/api'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
+import { useLocale } from '@/lib/i18n'
 import { snapshotOwnerLabel } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/snapshots/')({
   component: SnapshotsPage,
 })
 
 function SnapshotsPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user } = Route.useRouteContext()
   const snapshots = useQuery({
     queryKey: ['snapshots'],
@@ -24,25 +28,31 @@ function SnapshotsPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Snapshots"
-        description="Your Snapshots and the deployment's platform Snapshots. Importing, building and rollback are done with the CLI."
-        meta={count === undefined ? undefined : `${count} ${count === 1 ? 'snapshot' : 'snapshots'}`}
+        title={m.snapshots_title()}
+        description={m.snapshots_description()}
+        meta={
+          count === undefined
+            ? undefined
+            : count === 1
+              ? m.snapshots_count_one({ count })
+              : m.snapshots_count_other({ count })
+        }
       />
 
       {snapshots.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">Loading snapshots…</p>
+        <p className="py-8 text-sm text-muted-foreground">{m.snapshots_loading()}</p>
       )}
       {snapshots.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load Snapshots: {snapshots.error.message}
+          {m.snapshots_load_error()}: <Problem error={snapshots.error} />
         </p>
       )}
 
       {snapshots.data?.items.length === 0 && (
         <EmptyState
           icon={<Layers />}
-          title="No Snapshots yet"
-          description="Import a Snapshot by digest or build one with BuildKit. Both are available with the CLI."
+          title={m.snapshots_empty_title()}
+          description={m.snapshots_empty_description()}
         />
       )}
 
@@ -66,12 +76,14 @@ function SnapshotsPage() {
                   {snapshot.name}
                 </Link>
                 <p className="truncate text-xs text-muted-foreground">
-                  {snapshotOwnerLabel(snapshot, user.id)} · created{' '}
-                  {formatTimestamp(snapshot.created_at)}
+                  {snapshotOwnerLabel(snapshot, user.id)} ·{' '}
+                  {m.common_created({ time: formatTimestamp(snapshot.created_at) })}
                 </p>
               </div>
               <div className="hidden min-w-0 flex-col items-end gap-0.5 sm:flex">
-                <span className="text-[11px] text-muted-foreground">current version</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {m.snapshots_current_version()}
+                </span>
                 <span className="max-w-48 truncate font-mono text-xs">
                   {snapshot.current_version_id ?? '—'}
                 </span>

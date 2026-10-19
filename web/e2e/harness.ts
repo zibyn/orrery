@@ -33,6 +33,14 @@ export async function signIn(
   options: { username?: string; password?: string; returnTo?: string } = {},
 ): Promise<void> {
   const { username = ADMIN.username, password = ADMIN.password, returnTo = '/sandboxes' } = options
+  // Pin the console to English on the first visit so the existing assertions
+  // keep matching the source strings (api.md §8). A language chosen later is
+  // kept.
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('PARAGLIDE_LOCALE')) {
+      localStorage.setItem('PARAGLIDE_LOCALE', 'en')
+    }
+  })
   await page.goto(`/login?return=${encodeURIComponent(returnTo)}`)
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)

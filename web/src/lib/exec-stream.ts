@@ -1,11 +1,16 @@
 import type { ExecOutputFrame, ExecResult, ExecResultFrame, ExecState } from '@/api'
+import { m } from '@/paraglide/messages'
+
+import { causeLabel } from './labels'
 
 // Every stored frame is a 5-byte header (stream byte plus a big-endian length)
 // followed by its payload; `seq` is the frame's offset in the record
 // (runtime.md §3, api.md §4).
 const FRAME_HEADER_BYTES = 5
 
-export const TRUNCATION_NOTICE = '[output truncated — full log available via the CLI]'
+export function truncationNotice(): string {
+  return m.exec_truncation_notice()
+}
 
 export function decodeFrame(frame: ExecOutputFrame): string {
   if (frame.encoding !== 'base64') return frame.data
@@ -15,7 +20,7 @@ export function decodeFrame(frame: ExecOutputFrame): string {
 }
 
 export function frameText(frame: ExecOutputFrame): string {
-  if (frame.stream === 'truncated') return `\r\n\x1b[33m${TRUNCATION_NOTICE}\x1b[0m\r\n`
+  if (frame.stream === 'truncated') return `\r\n\x1b[33m${truncationNotice()}\x1b[0m\r\n`
   return decodeFrame(frame)
 }
 
@@ -36,11 +41,11 @@ export function isResultFrame(value: unknown): value is ExecResultFrame {
 export function formatExecResult(result: ExecResult & { log_truncated?: boolean }): string {
   const suffix =
     result.exit_code !== undefined
-      ? ` (exit code ${result.exit_code})`
+      ? m.exec_exit_code({ code: String(result.exit_code) })
       : result.signal !== undefined
-        ? ` (signal ${result.signal})`
+        ? m.exec_signal({ signal: String(result.signal) })
         : ''
-  return `${result.cause}${suffix}${result.log_truncated ? ' · log truncated' : ''}`
+  return `${causeLabel(result.cause)}${suffix}${result.log_truncated ? m.exec_log_truncated() : ''}`
 }
 
 export function execListPollInterval(items: Pick<{ state: ExecState }, 'state'>[] | undefined) {

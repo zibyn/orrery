@@ -5,7 +5,10 @@ import { GitBranch, Link2, Unlink } from 'lucide-react'
 import { api, type GitLink, type GitProvider, type ListResponse } from '@/api'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { Button, buttonVariants } from '@/components/ui/button'
+import { useLocale } from '@/lib/i18n'
+import { m } from '@/paraglide/messages'
 
 // The console lists the deployment's Git providers and lets the caller link or
 // unlink one (api.md §8). The provider's authorization page starts the OAuth
@@ -15,6 +18,7 @@ export const Route = createFileRoute('/_authed/git')({
 })
 
 function GitPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const queryClient = useQueryClient()
   const providers = useQuery({
     queryKey: ['git-providers'],
@@ -34,30 +38,27 @@ function GitPage() {
 
   return (
     <div className="flex max-w-3xl flex-col gap-6">
-      <PageHeader
-        title="Git account links"
-        description="Link an account so git inside your Sandboxes can clone and push on your behalf."
-      />
+      <PageHeader title={m.git_title()} description={m.git_description()} />
 
       {(providers.isPending || links.isPending) && (
-        <p className="py-8 text-sm text-muted-foreground">Loading providers…</p>
+        <p className="py-8 text-sm text-muted-foreground">{m.git_loading()}</p>
       )}
       {(providers.error ?? links.error) && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load Git providers: {(providers.error ?? links.error)?.message}
+          {m.git_load_error()}: <Problem error={providers.error ?? links.error} />
         </p>
       )}
       {unlink.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not unlink: {unlink.error.message}
+          {m.git_unlink_error()}: <Problem error={unlink.error} />
         </p>
       )}
 
       {providers.data?.items.length === 0 && (
         <EmptyState
           icon={<GitBranch />}
-          title="No Git providers"
-          description="This deployment does not configure a Git provider yet."
+          title={m.git_empty_title()}
+          description={m.git_empty_description()}
         />
       )}
 
@@ -82,7 +83,7 @@ function GitPage() {
                   onClick={() => unlink.mutate(provider.id)}
                 >
                   <Unlink />
-                  Unlink
+                  {m.git_unlink()}
                 </Button>
               ) : (
                 <a
@@ -90,7 +91,7 @@ function GitPage() {
                   href={`/api/v1/git-providers/${encodeURIComponent(provider.id)}/authorize`}
                 >
                   <Link2 />
-                  Link
+                  {m.git_link()}
                 </a>
               )}
             </div>

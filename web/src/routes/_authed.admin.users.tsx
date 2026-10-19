@@ -7,12 +7,16 @@ import { z } from 'zod'
 
 import { api, type ListResponse, type QuotaUsage, type User } from '@/api'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { messageOf, selectClass } from '@/lib/utils'
+import { useLocale } from '@/lib/i18n'
+import { loginTypeLabel } from '@/lib/labels'
+import { selectClass } from '@/lib/utils'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/admin/users')({
   component: UsersPage,
@@ -23,14 +27,14 @@ type LoginType = (typeof LOGIN_TYPES)[number]
 
 const createUserSchema = z
   .object({
-    name: z.string().trim().min(1, 'Enter a name'),
+    name: z.string().trim().min(1, { error: () => m.admin_user_name_required() }),
     email: z.string().trim(),
     login_type: z.enum(LOGIN_TYPES),
     password: z.string(),
     is_admin: z.boolean(),
   })
   .refine((value) => value.login_type !== 'password' || value.password.length >= 12, {
-    message: 'Password must be at least 12 characters',
+    error: () => m.admin_user_password_min(),
     path: ['password'],
   })
 
@@ -52,6 +56,7 @@ function Field({
 }
 
 function UsersPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user: me } = Route.useRouteContext()
   const queryClient = useQueryClient()
 
@@ -107,13 +112,17 @@ function UsersPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Users"
-        description="Create Users, change their login, reset passwords and set Quotas."
+        title={m.users_title()}
+        description={m.users_description()}
         meta={
           myQuota.data ? (
             <span data-testid="my-quota">
-              Your usage: GPUs {myQuota.data.gpus.used}/{myQuota.data.gpus.limit} · Sandboxes{' '}
-              {myQuota.data.sandboxes.used}/{myQuota.data.sandboxes.limit}
+              {m.users_usage({
+                gpusUsed: myQuota.data.gpus.used,
+                gpusLimit: myQuota.data.gpus.limit,
+                sandboxesUsed: myQuota.data.sandboxes.used,
+                sandboxesLimit: myQuota.data.sandboxes.limit,
+              })}
             </span>
           ) : undefined
         }
@@ -121,8 +130,8 @@ function UsersPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>New User</CardTitle>
-          <CardDescription>A User can sign in with a password, SSO, or not at all.</CardDescription>
+          <CardTitle>{m.users_new_title()}</CardTitle>
+          <CardDescription>{m.users_new_description()}</CardDescription>
         </CardHeader>
         <CardContent>
           <form
@@ -135,7 +144,7 @@ function UsersPage() {
             <div className="grid gap-4 sm:grid-cols-2">
               <form.Field name="name">
                 {(field) => (
-                  <Field label="Name" htmlFor="new-user-name">
+                  <Field label={m.common_name()} htmlFor="new-user-name">
                     <Input
                       id="new-user-name"
                       value={field.state.value}
@@ -146,7 +155,7 @@ function UsersPage() {
               </form.Field>
               <form.Field name="email">
                 {(field) => (
-                  <Field label="Email (optional)" htmlFor="new-user-email">
+                  <Field label={m.users_email_optional()} htmlFor="new-user-email">
                     <Input
                       id="new-user-email"
                       type="email"
@@ -161,7 +170,7 @@ function UsersPage() {
             <div className="grid gap-4 sm:grid-cols-2">
               <form.Field name="login_type">
                 {(field) => (
-                  <Field label="Login type" htmlFor="new-user-login-type">
+                  <Field label={m.users_login_type()} htmlFor="new-user-login-type">
                     <select
                       id="new-user-login-type"
                       className={selectClass}
@@ -170,7 +179,7 @@ function UsersPage() {
                     >
                       {LOGIN_TYPES.map((type) => (
                         <option key={type} value={type}>
-                          {type}
+                          {loginTypeLabel(type)}
                         </option>
                       ))}
                     </select>
@@ -182,10 +191,7 @@ function UsersPage() {
                   loginType === 'password' ? (
                     <form.Field name="password">
                       {(field) => (
-                        <Field
-                          label="Password (at least 12 characters)"
-                          htmlFor="new-user-password"
-                        >
+                        <Field label={m.users_password_label()} htmlFor="new-user-password">
                           <Input
                             id="new-user-password"
                             type="password"
@@ -210,31 +216,33 @@ function UsersPage() {
                     checked={field.state.value}
                     onChange={(e) => field.handleChange(e.target.checked)}
                   />
-                  Administrator
+                  {m.user_administrator()}
                 </label>
               )}
             </form.Field>
 
             {create.error && (
               <p className="text-sm text-destructive" role="alert" data-testid="create-user-error">
-                {messageOf(create.error)}
+                <Problem error={create.error} />
               </p>
             )}
 
             <div>
               <Button type="submit" disabled={form.state.isSubmitting || create.isPending}>
                 <Plus />
-                Create User
+                {m.users_create()}
               </Button>
             </div>
           </form>
         </CardContent>
       </Card>
 
-      {users.isPending && <p className="py-8 text-sm text-muted-foreground">Loading users…</p>}
+      {users.isPending && (
+        <p className="py-8 text-sm text-muted-foreground">{m.users_loading()}</p>
+      )}
       {users.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load Users: {users.error.message}
+          {m.users_load_error()}: <Problem error={users.error} />
         </p>
       )}
 
@@ -303,14 +311,17 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
                 {user.is_admin && (
                   <Badge variant="secondary">
                     <ShieldCheck />
-                    admin
+                    {m.users_badge_admin()}
                   </Badge>
                 )}
-                {isSelf && <Badge variant="outline">you</Badge>}
-                {user.deleted_at && <Badge variant="destructive">deleted</Badge>}
+                {isSelf && <Badge variant="outline">{m.users_badge_you()}</Badge>}
+                {user.deleted_at && (
+                  <Badge variant="destructive">{m.users_badge_deleted()}</Badge>
+                )}
               </div>
               <CardDescription className="truncate">
-                {user.email ?? 'no email'} · <span className="font-mono">{user.id}</span>
+                {user.email ?? m.users_no_email()} ·{' '}
+                <span className="font-mono">{user.id}</span>
               </CardDescription>
             </div>
           </div>
@@ -319,27 +330,27 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
             size="sm"
             disabled={isSelf || remove.isPending}
             onClick={() => {
-              if (window.confirm(`Delete User ${user.name}?`)) remove.mutate()
+              if (window.confirm(m.users_delete_confirm({ name: user.name }))) remove.mutate()
             }}
           >
             <Trash />
-            Delete
+            {m.common_delete()}
           </Button>
         </CardHeader>
 
         <CardContent className="flex flex-col gap-4 border-t border-border pt-4">
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-xs text-muted-foreground">Login type</span>
+              <span className="text-xs text-muted-foreground">{m.users_login_type()}</span>
               <select
                 className={`${selectClass} w-32`}
-                aria-label={`Login type for ${user.name}`}
+                aria-label={m.users_login_type_for({ name: user.name })}
                 value={loginType}
                 onChange={(e) => setLoginType(e.target.value as LoginType)}
               >
                 {LOGIN_TYPES.map((type) => (
                   <option key={type} value={type}>
-                    {type}
+                    {loginTypeLabel(type)}
                   </option>
                 ))}
               </select>
@@ -348,11 +359,11 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
               <input
                 type="checkbox"
                 className="size-4 accent-brand"
-                aria-label={`Administrator for ${user.name}`}
+                aria-label={m.users_administrator_for({ name: user.name })}
                 checked={isAdmin}
                 onChange={(e) => setIsAdmin(e.target.checked)}
               />
-              Admin
+              {m.users_admin_label()}
             </label>
             <Button
               variant="outline"
@@ -360,29 +371,29 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
               disabled={update.isPending}
               onClick={() => update.mutate()}
             >
-              Save login
+              {m.users_save_login()}
             </Button>
           </div>
 
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-xs text-muted-foreground">GPU quota</span>
+              <span className="text-xs text-muted-foreground">{m.users_gpu_quota()}</span>
               <Input
                 type="number"
                 min="0"
                 className="w-28"
-                aria-label={`GPU quota for ${user.name}`}
+                aria-label={m.users_gpu_quota_for({ name: user.name })}
                 value={gpus}
                 onChange={(e) => setGpus(e.target.value)}
               />
             </label>
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-xs text-muted-foreground">Sandbox quota</span>
+              <span className="text-xs text-muted-foreground">{m.users_sandbox_quota()}</span>
               <Input
                 type="number"
                 min="0"
                 className="w-28"
-                aria-label={`Sandbox quota for ${user.name}`}
+                aria-label={m.users_sandbox_quota_for({ name: user.name })}
                 value={sandboxes}
                 onChange={(e) => setSandboxes(e.target.value)}
               />
@@ -393,21 +404,21 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
               disabled={quota.isPending}
               onClick={() => quota.mutate()}
             >
-              Set quota
+              {m.users_set_quota()}
             </Button>
             <span className="pb-1.5 text-xs text-muted-foreground">
-              Limits {user.quota.gpus} GPUs / {user.quota.sandboxes} Sandboxes
+              {m.users_limits({ gpus: user.quota.gpus, sandboxes: user.quota.sandboxes })}
             </span>
           </div>
 
           {user.login_type === 'password' && (
             <div className="flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-xs text-muted-foreground">New password</span>
+                <span className="text-xs text-muted-foreground">{m.users_new_password()}</span>
                 <Input
                   type="password"
                   autoComplete="new-password"
-                  aria-label={`New password for ${user.name}`}
+                  aria-label={m.users_new_password_for({ name: user.name })}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
@@ -418,14 +429,14 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
                 disabled={password.length < 12 || reset.isPending}
                 onClick={() => reset.mutate()}
               >
-                Reset password
+                {m.users_reset_password()}
               </Button>
             </div>
           )}
 
           {error && (
             <p className="text-sm text-destructive" role="alert" data-testid="user-row-error">
-              {messageOf(error)}
+              <Problem error={error} />
             </p>
           )}
         </CardContent>

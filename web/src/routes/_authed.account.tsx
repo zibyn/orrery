@@ -7,6 +7,7 @@ import { z } from 'zod'
 
 import { api, type CreatedToken, type ListResponse, type Token, type User } from '@/api'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { TokenReveal } from '@/components/token-reveal'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -14,18 +15,21 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { matchesCurrentSession, readCurrentSessionId, forgetCurrentSession } from '@/lib/current-session'
+import { useLocale } from '@/lib/i18n'
+import { kindLabel, messageOf, scopeLabel } from '@/lib/labels'
 import { expiresAtFromInput, formatTimestamp, scopeOptions } from '@/lib/tokens'
-import { messageOf, selectClass } from '@/lib/utils'
+import { selectClass } from '@/lib/utils'
+import { m } from '@/paraglide/messages'
 
 const tokenSchema = z.object({
-  name: z.string().trim().min(1, 'Enter a name'),
+  name: z.string().trim().min(1, { error: () => m.account_name_required() }),
   scope: z.enum(['read_only', 'user', 'admin']),
   expires_at: z.string(),
 })
 
 const passwordSchema = z.object({
-  old: z.string().min(1, 'Enter your current password'),
-  new: z.string().min(12, 'The new password must be at least 12 characters'),
+  old: z.string().min(1, { error: () => m.account_password_required() }),
+  new: z.string().min(12, { error: () => m.account_password_min() }),
 })
 
 type NewToken = {
@@ -48,6 +52,7 @@ export const Route = createFileRoute('/_authed/account')({
 })
 
 function AccountPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user } = Route.useRouteContext()
   const queryClient = useQueryClient()
   // Reads the id stored by the password login. After an OIDC login no id is
@@ -87,16 +92,16 @@ function AccountPage() {
       setTokenError('')
       const parsed = tokenSchema.safeParse(value)
       if (!parsed.success) {
-        setTokenError(parsed.error.issues[0]?.message ?? 'Invalid input')
+        setTokenError(parsed.error.issues[0]?.message ?? m.common_invalid_input())
         return
       }
       const expiresAt = expiresAtFromInput(parsed.data.expires_at)
       if (parsed.data.expires_at && !expiresAt) {
-        setTokenError('Enter a valid expiry')
+        setTokenError(m.account_bad_expiry())
         return
       }
       if (expiresAt && new Date(expiresAt) <= new Date()) {
-        setTokenError('Expiry must be in the future')
+        setTokenError(m.account_expiry_future())
         return
       }
       try {
@@ -119,7 +124,7 @@ function AccountPage() {
       setPasswordError('')
       const parsed = passwordSchema.safeParse(value)
       if (!parsed.success) {
-        setPasswordError(parsed.error.issues[0]?.message ?? 'Invalid input')
+        setPasswordError(parsed.error.issues[0]?.message ?? m.common_invalid_input())
         return
       }
       try {
@@ -137,19 +142,15 @@ function AccountPage() {
   return (
     <div className="flex max-w-3xl flex-col gap-6">
       <PageHeader
-        title="Account"
-        description={`API tokens and browser Sessions for ${user.name}.`}
+        title={m.account_title()}
+        description={m.account_description({ name: user.name })}
       />
 
       {created && (
         <Card className="border-brand/30 bg-brand/5">
           <CardHeader>
-            <CardTitle>
-              Token <span className="font-mono">{created.name}</span> created
-            </CardTitle>
-            <CardDescription>
-              This token appears only once. Store it before closing this panel.
-            </CardDescription>
+            <CardTitle>{m.account_token_created_title({ name: created.name })}</CardTitle>
+            <CardDescription>{m.account_token_created_description()}</CardDescription>
           </CardHeader>
           <CardContent>
             <TokenReveal token={created.token} onDone={() => setCreated(null)} />
@@ -159,10 +160,8 @@ function AccountPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Create token</CardTitle>
-          <CardDescription>
-            Tokens authenticate the CLI and API. Sessions are browser logins.
-          </CardDescription>
+          <CardTitle>{m.account_create_token()}</CardTitle>
+          <CardDescription>{m.account_create_token_description()}</CardDescription>
         </CardHeader>
         <CardContent>
           <form
@@ -174,7 +173,7 @@ function AccountPage() {
           >
             <createForm.Field name="name">
               {(field) => (
-                <Field label="Name" htmlFor={field.name}>
+                <Field label={m.common_name()} htmlFor={field.name}>
                   <Input
                     id={field.name}
                     className="w-44"
@@ -188,7 +187,7 @@ function AccountPage() {
             </createForm.Field>
             <createForm.Field name="scope">
               {(field) => (
-                <Field label="Scope" htmlFor={field.name}>
+                <Field label={m.account_scope()} htmlFor={field.name}>
                   <select
                     id={field.name}
                     className={`${selectClass} w-32`}
@@ -197,7 +196,7 @@ function AccountPage() {
                   >
                     {scopeOptions.map((scope) => (
                       <option key={scope} value={scope}>
-                        {scope}
+                        {scopeLabel(scope)}
                       </option>
                     ))}
                   </select>
@@ -206,7 +205,7 @@ function AccountPage() {
             </createForm.Field>
             <createForm.Field name="expires_at">
               {(field) => (
-                <Field label="Expires (optional)" htmlFor={field.name}>
+                <Field label={m.account_expires()} htmlFor={field.name}>
                   <Input
                     id={field.name}
                     type="datetime-local"
@@ -219,11 +218,11 @@ function AccountPage() {
             </createForm.Field>
             <Button type="submit" disabled={createToken.isPending}>
               <Plus />
-              {createToken.isPending ? 'Creating…' : 'Create token'}
+              {createToken.isPending ? m.account_creating() : m.account_create_token()}
             </Button>
           </form>
           {tokenError && (
-            <p className="mt-3 text-sm text-destructive" role="alert">
+            <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">
               {tokenError}
             </p>
           )}
@@ -232,18 +231,20 @@ function AccountPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>My tokens &amp; Sessions</CardTitle>
-          <CardDescription>Revoking a token or Session takes effect immediately.</CardDescription>
+          <CardTitle>{m.account_my_tokens()}</CardTitle>
+          <CardDescription>{m.account_my_tokens_description()}</CardDescription>
         </CardHeader>
         <CardContent>
-          {tokens.isPending && <p className="text-sm text-muted-foreground">Loading…</p>}
+          {tokens.isPending && (
+            <p className="text-sm text-muted-foreground">{m.common_loading()}</p>
+          )}
           {tokens.error && (
             <p className="text-sm text-destructive" role="alert">
-              Could not load tokens: {tokens.error.message}
+              {m.account_tokens_load_error()}: <Problem error={tokens.error} />
             </p>
           )}
           {tokens.data?.items.length === 0 && (
-            <p className="text-sm text-muted-foreground">No tokens or Sessions.</p>
+            <p className="text-sm text-muted-foreground">{m.account_no_tokens()}</p>
           )}
 
           {tokens.data && tokens.data.items.length > 0 && (
@@ -257,17 +258,20 @@ function AccountPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-medium">{token.name}</span>
                       <Badge variant={token.kind === 'session' ? 'secondary' : 'outline'}>
-                        {token.kind === 'session' ? 'Session' : 'Token'}
+                        {kindLabel(token.kind)}
                       </Badge>
                       {matchesCurrentSession(token, currentId) && (
                         <Badge variant="success" data-testid="current-session">
-                          current
+                          {m.common_current()}
                         </Badge>
                       )}
                     </div>
                     <p className="truncate text-xs text-muted-foreground">
-                      {token.scope} · expires {formatTimestamp(token.expires_at)} · last used{' '}
-                      {formatTimestamp(token.last_used_at)}
+                      {m.account_token_meta({
+                        scope: scopeLabel(token.scope),
+                        expires: formatTimestamp(token.expires_at),
+                        lastUsed: formatTimestamp(token.last_used_at),
+                      })}
                     </p>
                   </div>
                   <Button
@@ -276,7 +280,7 @@ function AccountPage() {
                     disabled={revokeToken.isPending}
                     onClick={() => revokeToken.mutate(token.id)}
                   >
-                    Revoke
+                    {m.account_revoke()}
                   </Button>
                 </li>
               ))}
@@ -288,10 +292,8 @@ function AccountPage() {
       {user.login_type === 'password' && (
         <Card>
           <CardHeader>
-            <CardTitle>Change password</CardTitle>
-            <CardDescription>
-              Changing the password signs out every Session, including this one.
-            </CardDescription>
+            <CardTitle>{m.account_change_password()}</CardTitle>
+            <CardDescription>{m.account_change_password_description()}</CardDescription>
           </CardHeader>
           <CardContent>
             <form
@@ -303,7 +305,7 @@ function AccountPage() {
             >
               <passwordForm.Field name="old">
                 {(field) => (
-                  <Field label="Current password" htmlFor={field.name}>
+                  <Field label={m.account_current_password()} htmlFor={field.name}>
                     <Input
                       id={field.name}
                       type="password"
@@ -316,7 +318,7 @@ function AccountPage() {
               </passwordForm.Field>
               <passwordForm.Field name="new">
                 {(field) => (
-                  <Field label="New password" htmlFor={field.name}>
+                  <Field label={m.account_new_password()} htmlFor={field.name}>
                     <Input
                       id={field.name}
                       type="password"
@@ -328,11 +330,11 @@ function AccountPage() {
                 )}
               </passwordForm.Field>
               <Button type="submit" disabled={changePassword.isPending}>
-                {changePassword.isPending ? 'Changing…' : 'Change password'}
+                {changePassword.isPending ? m.account_changing() : m.account_change_password()}
               </Button>
             </form>
             {passwordError && (
-              <p className="mt-3 text-sm text-destructive" role="alert">
+              <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">
                 {passwordError}
               </p>
             )}

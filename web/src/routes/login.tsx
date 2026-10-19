@@ -4,16 +4,20 @@ import { useState } from 'react'
 import { z } from 'zod'
 
 import { api, ApiError, type Token } from '@/api'
+import { LocaleSwitch } from '@/components/locale-switch'
 import { Logo } from '@/components/logo'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { rememberCurrentSession } from '@/lib/current-session'
+import { useLocale } from '@/lib/i18n'
+import { messageOf } from '@/lib/labels'
 import { safeReturn } from '@/lib/return-path'
+import { m } from '@/paraglide/messages'
 
 const loginSchema = z.object({
-  username: z.string().trim().min(1, 'Enter your username'),
-  password: z.string().min(1, 'Enter your password'),
+  username: z.string().trim().min(1, { error: () => m.login_username_required() }),
+  password: z.string().min(1, { error: () => m.login_password_required() }),
 })
 
 export const Route = createFileRoute('/login')({
@@ -24,6 +28,7 @@ export const Route = createFileRoute('/login')({
 })
 
 function LoginPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { return: returnTo } = Route.useSearch()
   const [error, setError] = useState('')
   const form = useForm({
@@ -32,7 +37,7 @@ function LoginPage() {
       setError('')
       const parsed = loginSchema.safeParse(value)
       if (!parsed.success) {
-        setError(parsed.error.issues[0]?.message ?? 'Invalid input')
+        setError(parsed.error.issues[0]?.message ?? m.login_invalid_input())
         return
       }
       try {
@@ -42,9 +47,9 @@ function LoginPage() {
         rememberCurrentSession(session.id)
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
-          setError('Wrong username or password.')
+          setError(m.login_wrong_credentials())
         } else {
-          setError(err instanceof Error ? err.message : 'Login failed')
+          setError(err instanceof Error ? messageOf(err) : m.login_failed())
         }
         return
       }
@@ -63,12 +68,15 @@ function LoginPage() {
             'radial-gradient(ellipse 70% 45% at 50% -10%, color-mix(in oklch, var(--brand) 16%, transparent), transparent)',
         }}
       />
+      <div className="absolute top-4 right-4 z-10">
+        <LocaleSwitch />
+      </div>
       <div className="relative w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
           <Logo />
           <div className="space-y-1">
             <h1 className="text-lg font-semibold tracking-tight">stars-sandbox</h1>
-            <p className="text-sm text-muted-foreground">Sign in to the console.</p>
+            <p className="text-sm text-muted-foreground">{m.login_subtitle()}</p>
           </div>
         </div>
 
@@ -83,7 +91,7 @@ function LoginPage() {
             <form.Field name="username">
               {(field) => (
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor={field.name}>Username</Label>
+                  <Label htmlFor={field.name}>{m.login_username()}</Label>
                   <Input
                     id={field.name}
                     value={field.state.value}
@@ -97,7 +105,7 @@ function LoginPage() {
             <form.Field name="password">
               {(field) => (
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor={field.name}>Password</Label>
+                  <Label htmlFor={field.name}>{m.login_password()}</Label>
                   <Input
                     id={field.name}
                     type="password"
@@ -109,18 +117,18 @@ function LoginPage() {
               )}
             </form.Field>
             {error && (
-              <p className="text-sm text-destructive" role="alert">
+              <p className="text-sm whitespace-pre-line text-destructive" role="alert">
                 {error}
               </p>
             )}
             <Button type="submit" className="w-full" disabled={form.state.isSubmitting}>
-              Sign in
+              {m.login_sign_in()}
             </Button>
           </form>
 
           <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
             <span className="h-px flex-1 bg-border" />
-            or
+            {m.login_or()}
             <span className="h-px flex-1 bg-border" />
           </div>
 
@@ -128,13 +136,11 @@ function LoginPage() {
             href={`/api/v1/oidc/login?return=${encodeURIComponent(safeReturn(returnTo))}`}
             className={buttonVariants({ variant: 'outline', className: 'w-full' })}
           >
-            Sign in with SSO
+            {m.login_sso()}
           </a>
         </div>
 
-        <p className="mt-6 text-center text-xs text-muted-foreground">
-          Agent execution and remote development platform
-        </p>
+        <p className="mt-6 text-center text-xs text-muted-foreground">{m.login_tagline()}</p>
       </div>
     </div>
   )

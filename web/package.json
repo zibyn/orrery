@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "compile": "paraglide-js compile --project ./project.inlang --outdir ./src/paraglide --strategy localStorage preferredLanguage baseLocale --emit-ts-declarations",
+    "typecheck": "pnpm compile && tsc --noEmit",
+    "test": "pnpm compile && vitest run",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -26,6 +27,8 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@inlang/paraglide-js": "2.29.0",
+    "@inlang/plugin-message-format": "4.5.4",
     "@playwright/test": "1.64.1",
     "@tailwindcss/vite": "4.3.3",
     "@tanstack/router-plugin": "1.168.47",

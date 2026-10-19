@@ -7,12 +7,16 @@ import type { Terminal as XTerminal } from '@xterm/xterm'
 import { api, type Exec, type ExecResultFrame, type ListResponse } from '@/api'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { execListPollInterval, followExecOutput, formatExecResult } from '@/lib/exec-stream'
-import { cn, messageOf } from '@/lib/utils'
+import { useLocale } from '@/lib/i18n'
+import { messageOf, stateLabel } from '@/lib/labels'
+import { cn } from '@/lib/utils'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/$id_/execs')({
   validateSearch: (search: Record<string, unknown>): { exec?: string } => ({
@@ -22,6 +26,7 @@ export const Route = createFileRoute('/_authed/sandboxes/$id_/execs')({
 })
 
 function ExecsPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { id } = Route.useParams()
   const { exec: selectedId } = Route.useSearch()
   const queryClient = useQueryClient()
@@ -53,10 +58,10 @@ function ExecsPage() {
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Sandbox
+            {m.execs_back()}
           </Link>
         }
-        title="Execs"
+        title={m.execs_title()}
         actions={
           <Link
             to="/sandboxes/$id/terminal"
@@ -64,23 +69,25 @@ function ExecsPage() {
             className={buttonVariants({ variant: 'outline' })}
           >
             <Terminal />
-            Open terminal
+            {m.execs_open_terminal()}
           </Link>
         }
       />
 
-      {execs.isPending && <p className="py-8 text-sm text-muted-foreground">Loading execs…</p>}
+      {execs.isPending && (
+        <p className="py-8 text-sm text-muted-foreground">{m.execs_loading()}</p>
+      )}
       {execs.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load Execs: {execs.error.message}
+          {m.execs_load_error()}: <Problem error={execs.error} />
         </p>
       )}
 
       {execs.data?.items.length === 0 && (
         <EmptyState
           icon={<Terminal />}
-          title="No Execs yet"
-          description="Start a command from the CLI, SDK or MCP, or open a terminal."
+          title={m.execs_empty_title()}
+          description={m.execs_empty_description()}
         />
       )}
 
@@ -88,8 +95,8 @@ function ExecsPage() {
         <div className="grid items-start gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
           <Card className="overflow-hidden">
             <CardHeader>
-              <CardTitle>Recent execs</CardTitle>
-              <CardDescription>Select one to follow its output.</CardDescription>
+              <CardTitle>{m.execs_recent()}</CardTitle>
+              <CardDescription>{m.execs_recent_description()}</CardDescription>
             </CardHeader>
             <CardContent className="px-0 pb-0">
               <ul className="divide-y divide-border border-t border-border">
@@ -127,7 +134,7 @@ function ExecsPage() {
                           data-testid={`exec-attach-${exec.id}`}
                           className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
                         >
-                          Attach
+                          {m.execs_attach()}
                         </Link>
                       </div>
                     </div>
@@ -139,9 +146,7 @@ function ExecsPage() {
 
           <div className="min-w-0">
             {selectedId && !selected && !execs.isPending && (
-              <p className="text-sm text-muted-foreground">
-                That Exec is not in this Sandbox's list.
-              </p>
+              <p className="text-sm text-muted-foreground">{m.execs_not_in_list()}</p>
             )}
 
             {selected && (
@@ -151,9 +156,7 @@ function ExecsPage() {
                     <CardTitle className="truncate font-mono text-xs">
                       {selected.argv.join(' ')}
                     </CardTitle>
-                    <CardDescription>
-                      Full logs beyond the terminal scrollback are available with the CLI.
-                    </CardDescription>
+                    <CardDescription>{m.execs_logs_hint()}</CardDescription>
                   </div>
                   {selected.state !== 'finished' && (
                     <Button
@@ -162,13 +165,13 @@ function ExecsPage() {
                       disabled={cancel.isPending}
                       onClick={() => cancel.mutate(selected.id)}
                     >
-                      Cancel Exec
+                      {m.execs_cancel()}
                     </Button>
                   )}
                 </CardHeader>
                 <CardContent>
                   {cancelError && (
-                    <p className="mb-2 text-sm text-destructive" role="alert">
+                    <p className="mb-2 text-sm whitespace-pre-line text-destructive" role="alert">
                       {cancelError}
                     </p>
                   )}
@@ -180,8 +183,8 @@ function ExecsPage() {
             {!selected && !selectedId && (
               <EmptyState
                 icon={<Terminal />}
-                title="No Exec selected"
-                description="Pick an Exec from the list to follow its output here."
+                title={m.execs_no_selected_title()}
+                description={m.execs_no_selected_description()}
                 className="h-full"
               />
             )}
@@ -214,8 +217,7 @@ function ExecLog({ exec }: { exec: Exec }) {
         // A disconnected socket is retried twice; the offset is kept so the
         // log resumes without replaying bytes.
         retries: 2,
-        closedMessage:
-          'The output stream closed before the Exec finished. A PTY Exec has no log page; attach its terminal instead.',
+        closedMessage: m.execs_stream_closed(),
       },
     )
   }, [terminal, exec.id])
@@ -224,10 +226,10 @@ function ExecLog({ exec }: { exec: Exec }) {
     <div className="flex flex-col gap-2">
       <p className="text-sm" data-testid="exec-result">
         {result
-          ? `Finished: ${formatExecResult(result)}`
+          ? m.execs_result_finished({ result: formatExecResult(result) })
           : exec.result
-            ? `Finished: ${formatExecResult(exec.result)}`
-            : `State: ${exec.state}`}
+            ? m.execs_result_finished({ result: formatExecResult(exec.result) })
+            : m.execs_result_state({ state: stateLabel(exec.state) })}
       </p>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <TerminalView readOnly onReady={setTerminal} className="h-[28rem]" />

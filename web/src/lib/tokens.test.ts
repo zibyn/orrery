@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { expiresAtFromInput, formatTimestamp, scopeOptions } from './tokens'
 
 describe('formatTimestamp', () => {
-  it('formats an RFC3339 timestamp in UTC', () => {
-    expect(formatTimestamp('2026-10-18T12:34:56Z')).toBe('2026-10-18 12:34:56 UTC')
-    expect(formatTimestamp('2026-10-18T12:34:56.123Z')).toBe('2026-10-18 12:34:56 UTC')
+  it('formats an RFC3339 timestamp in the console locale and UTC', () => {
+    expect(formatTimestamp('2026-10-18T12:34:56Z')).toBe('Oct 18, 2026, 12:34:56 PM UTC')
+    expect(formatTimestamp('2026-10-18T12:34:56.123Z')).toBe('Oct 18, 2026, 12:34:56 PM UTC')
   })
 
   it('shows a dash for a missing value', () => {
