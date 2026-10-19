@@ -227,7 +227,7 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	if req.Stdin != nil && pty == nil { // PTY mode ignores stdin (api.md §4)
 		stdin = []byte(*req.Stdin)
 	}
-	exec, replayed, err := createIdempotent(key, "execs_sandbox_idempotency", lookup,
+	exec, replayed, err := createIdempotent(key, lookup,
 		func() (store.Exec, error) {
 			return s.q.CreateExec(ctx, store.CreateExecParams{
 				ID: id, SandboxID: sandboxID, Argv: argv, Env: env, Cwd: req.Cwd,

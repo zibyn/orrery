@@ -92,15 +92,15 @@ func readPage[T any, C any](s *Server, w http.ResponseWriter, r *http.Request, w
 }
 
 // createIdempotent inserts a row that carries an Idempotency Key. A concurrent
-// request may win the unique index first; its row is then returned with
+// request may win a unique index first; its row is then returned with
 // replayed=true (ADR-0017). A nil key never replays.
-func createIdempotent[T any](key *string, constraint string,
+func createIdempotent[T any](key *string,
 	lookup func() (T, error), insert func() (T, error)) (T, bool, error) {
 	row, err := insert()
 	if err == nil {
 		return row, false, nil
 	}
-	if existing, replayed := replayConflict(key, err, constraint, lookup); replayed {
+	if existing, replayed := replayConflict(key, err, lookup); replayed {
 		return existing, true, nil
 	}
 	var zero T

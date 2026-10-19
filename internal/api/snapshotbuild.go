@@ -305,7 +305,7 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 			SnapshotID: snap.ID, IdempotencyKey: key,
 		})
 	}
-	version, replayed, err := createIdempotent(key, "snapshot_versions_idempotency", lookup,
+	version, replayed, err := createIdempotent(key, lookup,
 		func() (store.SnapshotVersion, error) {
 			return q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
 				ID: versionID, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),

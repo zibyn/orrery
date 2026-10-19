@@ -321,7 +321,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !ok {
 		return
 	}
-	sandbox, replayed, err := createIdempotent(key, "sandboxes_owner_idempotency", lookup,
+	sandbox, replayed, err := createIdempotent(key, lookup,
 		func() (store.Sandbox, error) {
 			return q.CreateSandbox(ctx, store.CreateSandboxParams{
 				ID: id, OwnerID: p.user.ID, Name: name, Labels: labels, Runtime: runtime,

@@ -137,15 +137,17 @@ func responsesFor(rt route) map[string]any {
 		responses["503"] = problemResponse("unavailable")
 	case "listSecrets", "deleteSecret", "getGitCredential":
 		responses["503"] = problemResponse("unavailable")
-	case "createSnapshotVersion":
-		// An Idempotency-Key replay returns the version that already exists.
+	case "createSnapshot", "createSnapshotVersion":
+		// An Idempotency-Key replay returns the resource that already exists.
 		responses["200"] = map[string]any{
-			"description": "The SnapshotVersion created by an earlier request with the same Idempotency-Key",
+			"description": "The Snapshot or SnapshotVersion created by an earlier request with the same Idempotency-Key",
 			"content":     map[string]any{"application/json": map[string]any{"schema": schemaRef(rt.Response)}},
 		}
-		// A build is asynchronous; an unfulfillable build ends the version
-		// failed/build_failed through admission, not with 422.
-		responses["503"] = problemResponse("unavailable")
+		if rt.OperationID == "createSnapshotVersion" {
+			// A build is asynchronous; an unfulfillable build ends the version
+			// failed/build_failed through admission, not with 422.
+			responses["503"] = problemResponse("unavailable")
+		}
 	case "createResourceUpload":
 		responses["413"] = problemResponse("payload_too_large")
 		responses["503"] = problemResponse("unavailable")

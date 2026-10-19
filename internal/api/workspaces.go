@@ -98,7 +98,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request, p
 		s.internal(w, "generate Workspace id", err)
 		return
 	}
-	ws, replayed, err := createIdempotent(key, "workspaces_owner_idempotency", lookup,
+	ws, replayed, err := createIdempotent(key, lookup,
 		func() (store.Workspace, error) {
 			return s.q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
 				ID: id, OwnerID: p.user.ID, Kind: "persistent", IdempotencyKey: key,

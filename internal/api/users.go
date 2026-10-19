@@ -69,7 +69,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "generate user id", err)
 		return
 	}
-	user, replayed, err := createIdempotent(key, "users_idempotency_key_unique", lookup,
+	user, replayed, err := createIdempotent(key, lookup,
 		func() (store.User, error) {
 			return s.q.CreateUser(ctx, store.CreateUserParams{
 				ID:             id,
@@ -360,6 +360,12 @@ func uniqueViolation(err error) string {
 		return pgErr.ConstraintName
 	}
 	return ""
+}
+
+// isUniqueViolation reports any SQLSTATE 23505, whichever index answered.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (s *Server) audit(ctx context.Context, p *principal, action, targetType, targetID string, detail any) {
