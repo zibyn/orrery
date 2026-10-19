@@ -130,6 +130,14 @@ _Avoid_: Runner, Docker daemon
 The platform authority for identity, resource state, scheduling, leases, lifecycle commands, and audit records.
 _Avoid_: Node Agent, data plane
 
+**Deployment**:
+A Control Plane and the Nodes enrolled to it, installed and operated as one unit.
+_Avoid_: cluster, installation, instance
+
+**Deployment Configuration**:
+The deployment-level settings an operator supplies for a Deployment, distinct from User-owned resources and Secrets.
+_Avoid_: environment variables, config file
+
 **Data Plane**:
 The authorized path for high-frequency operations inside a Sandbox, such as files, Git, Exec output, and PTY traffic. It carries operations that have already been authorized by the Control Plane and does not create independent durable execution intent.
 _Avoid_: Control Plane
