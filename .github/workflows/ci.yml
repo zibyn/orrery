@@ -61,7 +61,7 @@ jobs:
       # the runner image ships 28. This is the version the e2e runs against.
       - uses: docker/setup-docker-action@v5
         with:
-          version: v29.9.1
+          version: v29.8.2
           # The action's daemon listens on its own socket; the e2e Agent takes
           # it from DOCKER_HOST (scripts/e2e.sh).
           set-host: true
