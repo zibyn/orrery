@@ -28,7 +28,12 @@ API_URL="http://127.0.0.1:18080"
 NODE_URL="127.0.0.1:18081"
 COMPOSE_FILE="$PWD/deploy/compose.yaml"
 COMPOSE_PROJECT="stars-sandbox-e2e"
-COMPOSE=(docker compose --profile oidc --profile e2e -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT")
+COMPOSE_FILES=(-f "$COMPOSE_FILE")
+# CI adds a BuildKit cache override; local runs stay on the plain file.
+if [ -n "${STARS_E2E_COMPOSE_OVERRIDE:-}" ]; then
+  COMPOSE_FILES+=(-f "$STARS_E2E_COMPOSE_OVERRIDE")
+fi
+COMPOSE=(docker compose --profile oidc --profile e2e "${COMPOSE_FILES[@]}" -p "$COMPOSE_PROJECT")
 
 # wait_for_http polls a URL until it answers the expected status, then leaves a
 # last-status diagnostic on failure.
