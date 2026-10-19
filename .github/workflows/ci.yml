@@ -73,11 +73,7 @@ jobs:
           until [ -S "/run/user/$(id -u)/bus" ]; do sleep 1; done
       # GPU, Podman and remote-host scenarios skip themselves without
       # STARS_E2E_GPU_SSH.
-      - run: ./scripts/e2e.sh -run TestSnapshotBuildRun -timeout 20m
-      - if: failure()
-        run: |
-          docker info --format '{{.Driver}} {{.CgroupDriver}}'
-          sudo grep -iE 'error|warn|buildkit' /home/runner/setup-docker-action/run-*/dockerd.log | tail -40 || true
+      - run: ./scripts/e2e.sh -timeout 80m
 
   # Playwright is slow and not a merge gate; it runs nightly or on demand.
   e2e-console:
