@@ -1,6 +1,7 @@
 .e2e/
 .e2e-run.log
 /bin/
+.playwright-cli/
 
 # Python
 __pycache__/
