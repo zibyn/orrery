@@ -163,6 +163,11 @@ export STARS_DEFAULT_SNAPSHOT="${STARS_DEFAULT_SNAPSHOT:-default}"
 
 CONSOLE_AGENT_PID=""
 cleanup() {
+  local code=$?
+  # A failed run is only reproducible from its logs; the stack is about to go.
+  if [ "$code" -ne 0 ]; then
+    "${COMPOSE[@]}" logs --no-color --tail 80 server 2>&1 | tail -40 || true
+  fi
   if [ -n "$CONSOLE_AGENT_PID" ]; then
     kill "$CONSOLE_AGENT_PID" >/dev/null 2>&1 || true
     wait "$CONSOLE_AGENT_PID" 2>/dev/null || true

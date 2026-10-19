@@ -78,7 +78,9 @@ func TestSnapshotBuildRun(t *testing.T) {
 	// build's own /proc/self/cgroup is namespaced (cgroupns=private), so the
 	// proof is the host cgroup tree while the RUN is alive.
 	if path, cpuMax, memoryMax, ok := waitForBuildCgroup(t, version.ID, 2*time.Minute); !ok {
-		t.Fatalf("no live process under stars-build-%s.slice", version.ID)
+		node := findNode(t, admin, nodeName)
+		got := getSnapshotVersion(t, admin, snapshot.ID, version.ID)
+		t.Fatalf("no live process under stars-build-%s.slice; node=%+v version=%+v", version.ID, node, got)
 	} else {
 		t.Logf("build RUN observed in %s", path)
 		// The slice carries the deployment build limits (defaults.md: 4 CPU +
