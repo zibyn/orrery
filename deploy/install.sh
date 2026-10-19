@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Installs or upgrades a Stars Sandbox host from a GitHub release (ADR-0023).
-# Fetch it from the release tag and run it as root; docs/deploy.md has the
-# full walkthrough. Re-run with a newer --version to upgrade, Control Plane
-# first, then Nodes (ADR-0014).
+# Fetch it from the release tag (or from main for a bootstrap) and run it as
+# root; --version defaults to the newest release. docs/deploy.md has the full
+# walkthrough. Re-run with a newer --version to upgrade, Control Plane first,
+# then Nodes (ADR-0014).
 set -euo pipefail
 
 REPO=zibyn/stars-sandbox
@@ -10,12 +11,18 @@ REPO=zibyn/stars-sandbox
 usage() {
   cat >&2 <<'EOF'
 usage:
-  install.sh server --version vX.Y.Z [--public-host HOST]   (required on first install) [--tls self-signed|proxy]
-                    [--tls-cert FILE --tls-key FILE]
-                    [--access-url URL --registry-addr HOST[:PORT] --s3-public-endpoint URL]
-  install.sh node   --version vX.Y.Z [--server HOST:PORT --packet sse_...] [--ca FILE]
-                    [--trust-registry HOST:PORT] [--runtime docker|podman|local] [--name NAME]
+  install.sh server [--version vX.Y.Z] (--public-host HOST | --access-url https://HOST[:PORT])
+                    [--public-port PORT] [--s3-public-endpoint https://S3HOST[:PORT]]
+                    [--public-bind ADDR] [--tls self-signed|cert]
+                    [--tls-cert FILE --tls-key FILE] [--ca FILE]
+                    [--registry-addr HOST[:PORT]]
+                    [--auto-update | --no-auto-update]
+  install.sh node   [--version vX.Y.Z] [--server HOST:PORT --packet sse_...] [--ca FILE]
+                    [--trust-registry HOST[:PORT]]... [--runtime docker|podman|local]
+                    [--name NAME] [--auto-update | --no-auto-update]
                     [-- extra `stars-sandbox-agent run` flags]
+
+--version defaults to the newest published release.
 EOF
   exit 2
 }
@@ -23,32 +30,137 @@ EOF
 die() { echo "install.sh: $*" >&2; exit 1; }
 need() { for c in "$@"; do command -v "$c" >/dev/null || die "$c is required but not installed"; done; }
 rand() { openssl rand -hex "${1:-24}"; }
+env_get() { sed -n "s/^$1=//p" "$2"; }
+port_suffix() { [ "$1" = 443 ] || printf ':%s' "$1"; }
+san_of() {
+  local h="${1#[}"; h="${h%]}"
+  if [[ "$h" =~ ^[0-9.]+$ ]] || [[ "$h" == *:* ]]; then printf 'IP:%s' "$h"; else printf 'DNS:%s' "$h"; fi
+}
+
+# split_url prints "HOST PORT" for an https URL with no path.
+split_url() {
+  local url="$1" rest scheme authority host port=443
+  scheme="${url%%://*}"
+  [ "$scheme" = "https" ] || die "$url must use https"
+  rest="${url#*://}"
+  authority="${rest%%/*}"
+  [ "$rest" = "$authority" ] || [ "${rest#"$authority"}" = "/" ] ||
+    die "$url must not have a path"
+  case "$authority" in
+    \[*\]:*) host="${authority%:*}"; port="${authority##*:}" ;;
+    \[*\]) host="$authority" ;;
+    *:*) host="${authority%:*}"; port="${authority##*:}" ;;
+    *) host="$authority" ;;
+  esac
+  [ -n "$host" ] || die "$url has no host"
+  [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] ||
+    die "$url has an invalid port"
+  printf '%s %s' "$host" "$port"
+}
 
 check_version() {
   [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] ||
-    die "--version must be a release tag such as v1.2.3 (there is no latest)"
+    die "--version must be a release tag such as v1.2.3"
+}
+
+# latest_version reads the tag from GitHub's releases/latest redirect. The
+# script still pins that exact tag; it never follows a branch.
+latest_version() {
+  local url
+  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$REPO/releases/latest")" || die "could not resolve the newest release; pass --version"
+  url="${url##*/}"
+  [[ "$url" =~ ^v[0-9] ]] || die "could not resolve the newest release; pass --version"
+  check_version "$url"
+  printf '%s' "$url"
+}
+
+# is_newer CURRENT CANDIDATE returns success when CANDIDATE is a newer
+# release. A final release supersedes its own rc; otherwise sort -V.
+is_newer() {
+  local cur="$1" new="$2"
+  [ "$cur" = "$new" ] && return 1
+  if [ "${cur%%-*}" = "${new%%-*}" ]; then
+    [[ "$cur" == *-* ]] && [[ "$new" != *-* ]] && return 0
+    return 1
+  fi
+  [ "$(printf '%s\n' "$cur" "$new" | sort -V | head -n1)" = "$cur" ]
+}
+
+# wait_rustfs blocks until the object store's healthcheck passes.
+wait_rustfs() {
+  local id status
+  for _ in $(seq 1 120); do
+    id="$(docker compose ps -q rustfs)"
+    if [ -n "$id" ]; then
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id")"
+      [ "$status" = "healthy" ] && return 0
+      [ "$status" = "exited" ] &&
+        die "rustfs exited; see: cd /etc/stars-sandbox && docker compose logs rustfs"
+    fi
+    sleep 1
+  done
+  die "rustfs did not become healthy"
+}
+
+# create_bucket replaces the old rustfs-init service. It runs before the
+# registry and the Control Plane start; both write to the bucket.
+create_bucket() {
+  local bucket access secret region network id
+  bucket="$(env_get STARS_S3_BUCKET .env)"
+  access="$(env_get STARS_S3_ACCESS_KEY .env)"
+  secret="$(env_get STARS_S3_SECRET_KEY .env)"
+  region="$(env_get STARS_S3_REGION .env)"
+  bucket="${bucket:-stars}"
+  region="${region:-us-east-1}"
+  id="$(docker compose ps -q rustfs)"
+  [ -n "$id" ] || die "rustfs is not running"
+  network="$(docker inspect "$id" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
+  [ -n "$network" ] || die "could not find the rustfs network"
+  local -a envs=(-e "AWS_ACCESS_KEY_ID=$access" -e "AWS_SECRET_ACCESS_KEY=$secret"
+    -e "AWS_DEFAULT_REGION=$region" -e AWS_EC2_METADATA_DISABLED=true)
+  # An existing bucket makes `mb` fail, which is the wanted state.
+  docker run --rm --network "$network" "${envs[@]}" amazon/aws-cli:2.17.0 \
+    --endpoint-url http://rustfs:9000 s3 mb "s3://$bucket" >/dev/null 2>&1 || true
+  for _ in $(seq 1 60); do
+    if docker run --rm --network "$network" "${envs[@]}" amazon/aws-cli:2.17.0 \
+      --endpoint-url http://rustfs:9000 s3api head-bucket --bucket "$bucket" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  die "could not create the object-store bucket $bucket"
 }
 
 server() {
-  local version="" host="" tls=self-signed cert="" key="" access_url="" registry_addr="" s3_url=""
+  local version="" host="" port="" tls=self-signed cert="" key="" ca="" access_url="" registry_addr="" s3_url="" bind="" auto_update=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --version) version="$2" ;;
-      --public-host) host="$2" ;;
-      --tls) tls="$2" ;;
-      --tls-cert) cert="$2" ;;
-      --tls-key) key="$2" ;;
-      --access-url) access_url="$2" ;;
-      --registry-addr) registry_addr="$2" ;;
-      --s3-public-endpoint) s3_url="$2" ;;
+      --version) version="$2"; shift 2 ;;
+      --public-host) host="$2"; shift 2 ;;
+      --public-port) port="$2"; shift 2 ;;
+      --tls) tls="$2"; shift 2 ;;
+      --tls-cert) cert="$2"; shift 2 ;;
+      --tls-key) key="$2"; shift 2 ;;
+      --ca) ca="$2"; shift 2 ;;
+      --access-url) access_url="$2"; shift 2 ;;
+      --registry-addr) registry_addr="$2"; shift 2 ;;
+      --s3-public-endpoint) s3_url="$2"; shift 2 ;;
+      --public-bind) bind="$2"; shift 2 ;;
+      --auto-update) auto_update=1; shift ;;
+      --no-auto-update) auto_update=0; shift ;;
       *) usage ;;
     esac
-    shift 2
   done
-  check_version "$version"
   [ "$(id -u)" = 0 ] || die "run as root"
-  need docker openssl curl
+  need docker openssl curl flock
   docker compose version >/dev/null 2>&1 || die "the docker compose plugin is required"
+  case "$version" in "" | latest) version="$(latest_version)" ;; esac
+  check_version "$version"
+  mkdir -p /etc/stars-sandbox
+  # Manual runs and the Docker updater share one lock.
+  exec 9>/etc/stars-sandbox/.install.lock
+  flock -n 9 || die "another install or auto-update is running"
 
   local etc=/etc/stars-sandbox backups=/var/lib/stars-sandbox-server/backups previous=""
   mkdir -p "$etc" "$backups"
@@ -57,16 +169,20 @@ server() {
   [ -f .env ] && previous="$(sed -n 's/^STARS_VERSION=//p' .env)"
 
   if [ -n "$previous" ] && [ "$previous" != "$version" ]; then
-    # ponytail: sort -V orders v1.2.0 before v1.2.0-rc.1, so going from an rc
-    # to its final release reads as a downgrade; compare semver if rcs ship.
-    [ "$(printf '%s\n' "$previous" "$version" | sort -V | head -n1)" = "$previous" ] ||
+    is_newer "$previous" "$version" ||
       die "refusing to downgrade $previous to $version: migrations are forward-only; restore a backup from $backups instead"
   fi
 
   if [ ! -f .env ]; then
-    first_install "$version" "$host" "$tls" "$cert" "$key" "$access_url" "$registry_addr" "$s3_url"
-  elif [ -n "$host$cert$access_url$registry_addr$s3_url" ] || [ "$tls" != self-signed ]; then
-    echo "install.sh: $etc/.env exists; addresses and TLS are kept, edit .env to change them" >&2
+    first_install "$version" "$host" "$port" "$tls" "$cert" "$key" "$ca" "$access_url" "$registry_addr" "$s3_url" "$bind"
+  else
+    grep -q '^STARS_PUBLIC_PORT=' .env && grep -q '^STARS_S3_PUBLIC_HOST=' .env ||
+      die "this .env predates the nginx front (issue #135); reinstall, or add STARS_PUBLIC_HOST, STARS_PUBLIC_PORT, STARS_S3_PUBLIC_HOST and STARS_PUBLIC_BIND and write nginx/stars.conf"
+    [ -f nginx/stars.conf ] ||
+      die "nginx/stars.conf is missing; recreate it from deploy/release/nginx.conf at this release tag"
+    if [ -n "$host$port$cert$key$ca$access_url$registry_addr$s3_url$bind" ] || [ "$tls" != self-signed ]; then
+      echo "install.sh: $etc/.env exists; addresses and TLS are kept, edit .env and nginx/stars.conf to change them" >&2
+    fi
   fi
 
   curl -fsSL "https://raw.githubusercontent.com/$REPO/$version/deploy/release/compose.yaml" -o compose.yaml.new
@@ -77,7 +193,8 @@ server() {
   # ADR-0014 upgrade: stop the Control Plane, back up PostgreSQL, start the
   # new version.
   if [ -n "$previous" ] && [ "$previous" != "$version" ]; then
-    local dump="$backups/$(date -u +%Y%m%dT%H%M%SZ)-$previous.sql.gz"
+    local dump
+    dump="$backups/$(date -u +%Y%m%dT%H%M%SZ)-$previous.sql.gz"
     docker compose stop server
     docker compose exec -T postgres pg_dump -U stars stars | gzip > "$dump" ||
       die "backup failed; the old Control Plane is stopped, start it with: cd $etc && docker compose start server"
@@ -85,71 +202,146 @@ server() {
   fi
   sed -i "s/^STARS_VERSION=.*/STARS_VERSION=$version/" .env
 
+  # The registry and the Control Plane write to the object store at startup,
+  # so its bucket must exist before either starts.
+  docker compose up -d rustfs
+  wait_rustfs
+  create_bucket
+
   docker compose up -d --remove-orphans
+  # nginx reads its config and resolves the loopback upstreams at start.
+  docker compose restart nginx
+
+  local host port check_addr
+  host="$(env_get STARS_PUBLIC_HOST .env)"
+  port="$(env_get STARS_PUBLIC_PORT .env)"
+  check_addr="$(env_get STARS_PUBLIC_BIND .env)"
+  check_addr="${check_addr%:}"
+  { [ -z "$check_addr" ] || [ "$check_addr" = "0.0.0.0" ]; } && check_addr=127.0.0.1
   local code=""
   for _ in $(seq 1 120); do
-    code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/api/v1/users || true)"
+    # The public entry is TLS even when the certificate is generated.
+    code="$(curl -ks -o /dev/null -w '%{http_code}' \
+      --connect-to "$host:$port:$check_addr:$port" \
+      "https://$host:$port/api/v1/users" || true)"
     [ "$code" = 401 ] && break
     sleep 1
   done
-  [ "$code" = 401 ] || die "the Control Plane did not come up; see: cd $etc && docker compose logs server"
-  echo "Control Plane $version is running"
+  [ "$code" = 401 ] || die "the Control Plane did not come up; see: cd $etc && docker compose logs server nginx"
+  echo "Control Plane $version is running at https://$host:$port"
+  [ "$auto_update" = 1 ] && install_updater server
+  [ "$auto_update" = 0 ] && remove_updater server
   [ -z "$previous" ] && next_steps "$version"
   return 0
 }
 
-# first_install writes TLS material, secrets, the registry config and .env.
-# None of it is ever regenerated.
+# first_install writes TLS material, the nginx and registry configs, secrets
+# and .env. None of it is ever regenerated.
 first_install() {
-  local version="$1" host="$2" tls="$3" cert="$4" key="$5" access_url="$6" registry_addr="$7" s3_url="$8"
-  local bind="" listen=":15000" registry_tls=""
-  # Agents dial the `node` surface at this host, so it is the certificate's SAN.
-  [ -n "$host" ] || die "--public-host is required on first install"
-  case "$tls" in
-    self-signed)
-      access_url="${access_url:-http://$host:18080}"
-      registry_addr="${registry_addr:-$host:15000}"
-      s3_url="${s3_url:-http://$host:19000}"
-      registry_tls=$'  tls:\n    certificate: /tls/server.crt\n    key: /tls/server.key'
-      ;;
-    proxy)
-      [ -n "$access_url" ] && [ -n "$registry_addr" ] && [ -n "$s3_url" ] ||
-        die "--tls proxy needs --access-url, --registry-addr and --s3-public-endpoint"
-      bind="127.0.0.1:"
-      listen="127.0.0.1:15000"
-      ;;
-    *) die "--tls is self-signed or proxy" ;;
-  esac
+  local version="$1" host="$2" port="$3" tls="$4" cert="$5" key="$6" ca="$7" \
+    access_url="$8" registry_addr="$9" s3_url="${10}" bind="${11}"
+  local pair s3_host s3_port listen public_bind resolve
 
-  mkdir -p tls ca keys registry
-  # The `node` surface is TLS in both modes (ADR-0014).
-  if [ -n "$cert" ]; then
-    [ -n "$key" ] || die "--tls-cert needs --tls-key"
+  # The public URL is the source of truth; --public-host/--public-port fill it.
+  if [ -n "$access_url" ]; then
+    pair="$(split_url "$access_url")"
+    local url_host="${pair% *}" url_port="${pair##* }"
+    [ -z "$host" ] || [ "$host" = "$url_host" ] || die "--public-host $host does not match --access-url"
+    [ -z "$port" ] || [ "$port" = "$url_port" ] || die "--public-port $port does not match --access-url"
+    host="$url_host"; port="$url_port"
+  fi
+  [ -n "$host" ] || die "--public-host (or --access-url) is required on first install"
+  case "$host" in
+    */*) die "--public-host is a hostname, not a URL" ;;
+  esac
+  if [[ "$host" != \[* ]] && [[ "$host" == *:* ]]; then
+    die "--public-host is a hostname; put the port in --public-port or --access-url"
+  fi
+  port="${port:-443}"
+  [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] ||
+    die "--public-port must be 1-65535"
+  access_url="https://$host$(port_suffix "$port")"
+
+  if [ -z "$s3_url" ]; then
+    if [[ "$host" =~ ^[0-9.]+$ ]] || [[ "$host" == *:* ]]; then
+      die "--s3-public-endpoint is required when --public-host is an IP"
+    fi
+    s3_url="https://s3.$host$(port_suffix "$port")"
+  fi
+  pair="$(split_url "$s3_url")"
+  s3_host="${pair% *}"; s3_port="${pair##* }"
+  [ "$s3_port" = "$port" ] ||
+    die "the object-store endpoint must use the public port $port; the registry signs URLs with it"
+  [ "$s3_host" != "$host" ] ||
+    die "the object-store host must differ from the public host: SigV4 signs Host and path, so it cannot share one"
+  s3_url="https://$s3_host$(port_suffix "$port")"
+
+  registry_addr="${registry_addr:-$host$(port_suffix "$port")}"
+
+  [ "$tls" = "self-signed" ] || [ "$tls" = "cert" ] || die "--tls is self-signed or cert"
+  [ -n "$cert" ] && tls=cert
+  if [ "$tls" = "cert" ]; then
+    [ -n "$cert" ] && [ -n "$key" ] || die "--tls cert needs --tls-cert and --tls-key"
+  elif [ -n "$ca" ]; then
+    die "--ca is only used with --tls cert"
+  fi
+
+  bind="${bind%:}"
+  [ "$bind" = "0.0.0.0" ] && bind=""
+  listen="$port"
+  [ -n "$bind" ] && listen="$bind:$port"
+  public_bind=""
+  [ -n "$bind" ] && public_bind="$bind:"
+  # Where the host-network registry finds nginx's object-store vhost.
+  resolve=127.0.0.1
+  [ -n "$bind" ] && resolve="$bind"
+
+  mkdir -p tls ca keys registry nginx
+  # One certificate covers the API and the object store; Agents and containers
+  # see the same public entry (ADR-0023).
+  if [ "$tls" = "cert" ]; then
     install -m 0644 "$cert" tls/server.crt
     install -m 0600 "$key" tls/server.key
+    if [ -n "$ca" ]; then
+      install -m 0644 "$ca" ca/ca.crt
+    else
+      rm -f ca/ca.crt
+    fi
   else
-    local san="DNS:$host"
-    [[ "$host" =~ ^[0-9.]+$ ]] && san="IP:$host"
+    local sans
+    sans="$(san_of "$host"),$(san_of "$s3_host")"
     # ponytail: ten-year certificates and no rotation; re-issue by hand
     # (docs/deploy.md) if a deployment outlives them.
     openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj "/CN=Stars Sandbox CA" \
       -keyout ca.key -out ca/ca.crt 2>/dev/null
     chmod 600 ca.key
+    chmod 0644 ca/ca.crt
     openssl req -newkey rsa:3072 -nodes -subj "/CN=$host" -keyout tls/server.key -out tls/server.csr 2>/dev/null
     openssl x509 -req -in tls/server.csr -CA ca/ca.crt -CAkey ca.key -set_serial "0x$(rand 16)" -days 3650 \
-      -extfile <(printf 'subjectAltName=%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n' "$san") \
+      -extfile <(printf 'subjectAltName=%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n' "$sans") \
       -out tls/server.crt 2>/dev/null
     rm tls/server.csr
   fi
+  # A supplied certificate that misses a hostname would only fail at TLS time.
+  local check
+  for check in "$host" "$s3_host"; do
+    check="${check#[}"; check="${check%]}"
+    if [[ "$check" =~ ^[0-9.]+$ ]] || [[ "$check" == *:* ]]; then
+      openssl x509 -in tls/server.crt -noout -checkip "$check" >/dev/null 2>&1 ||
+        echo "install.sh: warning: tls/server.crt does not cover $check" >&2
+    else
+      openssl x509 -in tls/server.crt -noout -checkhost "$check" >/dev/null 2>&1 ||
+        echo "install.sh: warning: tls/server.crt does not cover $check" >&2
+    fi
+  done
 
-  local pg s3_secret registry_password auth secure=false
+  local pg s3_secret registry_password auth
   pg="$(rand)"
   s3_secret="$(rand)"
   registry_password="$(rand)"
   auth="$(printf 'stars:%s' "$registry_password" | base64 -w0)"
   printf 'k1 %s\n' "$(openssl rand -base64 32)" > keys/encryption
   docker run --rm httpd:2.4-alpine htpasswd -Bbn stars "$registry_password" > registry/htpasswd
-  [[ "$s3_url" == https://* ]] && secure=true
   cat > registry/config.yml <<EOF
 version: 0.1
 log:
@@ -163,16 +355,27 @@ storage:
     bucket: stars
     rootdirectory: /registry
     forcepathstyle: true
-    secure: $secure
+    secure: true
 http:
-  addr: $listen
+  # Plain HTTP on loopback; nginx is the public TLS entry (ADR-0023).
+  addr: 127.0.0.1:15000
   secret: $(rand)
-$registry_tls
 auth:
   htpasswd:
     realm: stars-sandbox
     path: /etc/distribution/htpasswd
 EOF
+
+  local tmp
+  tmp="$(mktemp)"
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/$version/deploy/release/nginx.conf" -o "$tmp" ||
+    die "download deploy/release/nginx.conf"
+  sed -e "s|__LISTEN__|$listen|g" \
+      -e "s|__PUBLIC_HOST__|$host|g" \
+      -e "s|__S3_HOST__|$s3_host|g" "$tmp" > nginx/stars.conf
+  rm -f "$tmp"
+  chmod 0644 nginx/stars.conf
+
   # The server container runs as uid 10001.
   chown 10001:10001 tls/server.key keys/encryption
   chmod 600 tls/server.key keys/encryption registry/config.yml registry/htpasswd
@@ -181,10 +384,15 @@ EOF
 # Written once by install.sh (ADR-0023); edit to change settings, then run
 # docker compose up -d. Every STARS_* setting is in docs/spec/defaults.md.
 STARS_VERSION=$version
-# STARS_PUBLIC_HOST and STARS_TLS are read by install.sh only.
+# Read by install.sh; STARS_S3_PUBLIC_HOST is also read by Compose.
 STARS_PUBLIC_HOST=$host
+STARS_PUBLIC_PORT=$port
+STARS_PUBLIC_BIND=$public_bind
+STARS_PUBLIC_RESOLVE=$resolve
+STARS_S3_PUBLIC_HOST=$s3_host
 STARS_TLS=$tls
-STARS_BIND=$bind
+# The server, registry and object store stay on loopback behind nginx.
+STARS_BIND=127.0.0.1:
 STARS_POSTGRES_PASSWORD=$pg
 STARS_DATABASE_URL=postgres://stars:$pg@postgres:5432/stars?sslmode=disable
 STARS_ACCESS_URL=$access_url
@@ -203,54 +411,218 @@ EOF
   chmod 600 .env
 }
 
+# write_updater_script writes the pull-based updater. The Control Plane runs
+# it in a Docker Compose project; a Node runs it as a systemd service.
+write_updater_script() {
+  cat > "$1" <<'EOF'
+#!/usr/bin/env bash
+# Installed by install.sh --auto-update (ADR-0023). Resolve the newest
+# released tag and run that tag's install script. Major upgrades and
+# downgrades are left to a manual run.
+set -uo pipefail
+REPO=zibyn/stars-sandbox
+role="${1:-server}"
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
+
+newer() {
+  local cur="$1" new="$2"
+  [ "$cur" = "$new" ] && return 1
+  if [ "${cur%%-*}" = "${new%%-*}" ]; then
+    [[ "$cur" == *-* ]] && [[ "$new" != *-* ]] && return 0
+    return 1
+  fi
+  [ "$(printf '%s\n' "$cur" "$new" | sort -V | head -n1)" = "$cur" ]
+}
+
+update_once() {
+  local current latest effective current_major latest_major
+  case "$role" in
+    server) current="$(sed -n 's/^STARS_VERSION=//p' /etc/stars-sandbox/.env 2>/dev/null)" ;;
+    node) current="$(cat /etc/stars-sandbox-agent/version 2>/dev/null)" ;;
+    *) log "unknown role $role"; return 2 ;;
+  esac
+  [ -n "$current" ] || return 0
+  effective="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$REPO/releases/latest" 2>/dev/null)" || return 0
+  latest="${effective##*/}"
+  [ "$latest" = "$current" ] && return 0
+  [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
+    log "unexpected release tag $latest"
+    return 0
+  }
+  current_major="${current#v}"; current_major="${current_major%%.*}"
+  latest_major="${latest#v}"; latest_major="${latest_major%%.*}"
+  if [ "$current_major" != "$latest_major" ]; then
+    log "$current -> $latest crosses a major version; run install.sh manually"
+    return 0
+  fi
+  newer "$current" "$latest" || return 0
+  log "updating $role $current -> $latest"
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/$latest/deploy/install.sh" |
+    bash -s -- "$role" --version "$latest"
+}
+
+while :; do
+  update_once
+  sleep "${STARS_UPDATE_INTERVAL:-21600}"
+done
+EOF
+}
+
+install_server_updater() {
+  local etc=/etc/stars-sandbox
+  mkdir -p "$etc"
+  write_updater_script "$etc/updater.sh"
+  chmod 0755 "$etc/updater.sh"
+  # A separate Compose project: the main project's `up -d --remove-orphans`
+  # must not touch the container that is running the update.
+  cat > "$etc/updater.yaml" <<'EOF'
+name: stars-sandbox-updater
+services:
+  updater:
+    image: docker:27-cli
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        apk add --no-cache bash curl openssl >/dev/null
+        exec bash /etc/stars-sandbox/updater.sh server
+    environment:
+      STARS_UPDATE_INTERVAL: "${STARS_UPDATE_INTERVAL:-21600}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/stars-sandbox:/etc/stars-sandbox
+      - /var/lib/stars-sandbox-server/backups:/var/lib/stars-sandbox-server/backups
+EOF
+  docker compose -p stars-sandbox-updater -f "$etc/updater.yaml" up -d --force-recreate
+  echo "auto-update enabled: docker compose -p stars-sandbox-updater"
+}
+
+install_node_updater() {
+  local conf=/etc/stars-sandbox-agent
+  mkdir -p "$conf" /etc/systemd/system
+  write_updater_script "$conf/updater"
+  chmod 0755 "$conf/updater"
+  cat > /etc/systemd/system/stars-sandbox-update.service <<EOF
+[Unit]
+Description=Stars Sandbox auto-update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$conf/updater node
+Restart=always
+RestartSec=300
+Environment=STARS_UPDATE_INTERVAL=21600
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now stars-sandbox-update.service
+  echo "auto-update enabled: stars-sandbox-update.service (node)"
+}
+
+install_updater() {
+  case "$1" in
+    server) install_server_updater ;;
+    node) install_node_updater ;;
+    *) die "install_updater: unknown role $1" ;;
+  esac
+}
+
+remove_updater() {
+  case "$1" in
+    server)
+      docker compose -p stars-sandbox-updater -f /etc/stars-sandbox/updater.yaml \
+        down --remove-orphans 2>/dev/null || true
+      rm -f /etc/stars-sandbox/updater.yaml /etc/stars-sandbox/updater.sh
+      ;;
+    node)
+      systemctl disable --now stars-sandbox-update.service 2>/dev/null || true
+      rm -f /etc/systemd/system/stars-sandbox-update.service /etc/stars-sandbox-agent/updater
+      systemctl daemon-reload 2>/dev/null || true
+      ;;
+    *) die "remove_updater: unknown role $1" ;;
+  esac
+  echo "auto-update disabled"
+}
+
 next_steps() {
-  local version="$1" etc=/etc/stars-sandbox node_host registry_addr ca_flags=""
-  node_host="$(sed -n 's/^STARS_PUBLIC_HOST=//p' "$etc/.env")"
-  registry_addr="$(sed -n 's/^STARS_REGISTRY_ADDR=//p' "$etc/.env")"
+  local version="$1" etc=/etc/stars-sandbox
+  local host port bind check_addr registry_addr s3_url s3_host node_host ca_flags="" trust_flags=""
+  host="$(env_get STARS_PUBLIC_HOST "$etc/.env")"
+  port="$(env_get STARS_PUBLIC_PORT "$etc/.env")"
+  bind="$(env_get STARS_PUBLIC_BIND "$etc/.env")"
+  bind="${bind%:}"
+  { [ -z "$bind" ] || [ "$bind" = "0.0.0.0" ]; } && check_addr=127.0.0.1 || check_addr="$bind"
+  registry_addr="$(env_get STARS_REGISTRY_ADDR "$etc/.env")"
+  s3_url="$(env_get STARS_S3_PUBLIC_ENDPOINT "$etc/.env")"
+  s3_host="${s3_url#https://}"
+  s3_host="${s3_host%%/*}"
+  node_host="$host:$port"
   if [ -f "$etc/ca/ca.crt" ]; then
     ca_flags="--ca ca.crt"
-    grep -q '^STARS_TLS=self-signed' "$etc/.env" && ca_flags="$ca_flags --trust-registry $registry_addr"
+    # Docker and Podman fetch blobs from the object store after the redirect,
+    # so that host needs the CA as well.
+    trust_flags="--trust-registry $registry_addr --trust-registry $s3_host"
   fi
-  grep -q '^STARS_TLS=proxy' "$etc/.env" && cat <<EOF
+  if [ -n "$bind" ]; then
+    cat <<EOF
 
-Point the HTTPS proxy at: api -> 127.0.0.1:18080, registry -> 127.0.0.1:15000,
-object store -> 127.0.0.1:19000. Port 18081 (node surface) is never proxied.
+An external proxy fronts this host. Forward https://$host:$port to
+$check_addr:$port and keep Host, SNI and X-Forwarded-Proto.
 EOF
+  fi
   cat <<EOF
+
+The public entry is https://$host:$port: /v2/ is the registry,
+/stars.node.v1.Node/ is the Node surface, and everything else is the API.
+The object store is https://$s3_host.
 
 Next steps:
   1. Create the first admin:
        cd $etc && docker compose exec server stars-sandbox-server bootstrap
   2. Issue an Enrollment Packet (valid for 1 hour):
-       TOKEN=\$(curl -fsS -H 'Content-Type: application/json' \\
+       TOKEN=\$(curl -ks --connect-to "$host:$port:$check_addr:$port" -H 'Content-Type: application/json' \\
          -d '{"username":"admin","password":"...","token":{"name":"ops","scope":"admin"}}' \\
-         http://127.0.0.1:18080/api/v1/sessions | sed -n 's/.*"token":"\\([^"]*\\)".*/\\1/p')
-       curl -fsS -X POST -H "Authorization: Bearer \$TOKEN" http://127.0.0.1:18080/api/v1/enrollment-packets
+         "https://$host:$port/api/v1/sessions" | sed -n 's/.*"token":"\\([^"]*\\)".*/\\1/p')
+       curl -ks --connect-to "$host:$port:$check_addr:$port" -X POST -H "Authorization: Bearer \$TOKEN" \\
+         "https://$host:$port/api/v1/enrollment-packets"
   3. On each Node$( [ -n "$ca_flags" ] && echo ", after copying $etc/ca/ca.crt there as ca.crt"):
        curl -fsSL https://raw.githubusercontent.com/$REPO/$version/deploy/install.sh | sudo bash -s -- node \\
-         --version $version --server $node_host:18081 --packet sse_... $ca_flags
+         --version $version --server $node_host --packet sse_... $ca_flags $trust_flags
 EOF
 }
 
 node() {
-  local version="" server="" packet="" ca="" trust_registry="" runtime="" name="" extra=() write_unit=0
+  local version="" server="" packet="" ca="" trust_registry=() runtime="" name="" extra=() write_unit=0 auto_update=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --version) version="$2" ;;
-      --server) server="$2" ;;
-      --packet) packet="$2" ;;
-      --ca) ca="$2" ;;
-      --trust-registry) trust_registry="$2" ;;
-      --runtime) runtime="$2"; write_unit=1 ;;
-      --name) name="$2" ;;
+      --version) version="$2"; shift 2 ;;
+      --server) server="$2"; shift 2 ;;
+      --packet) packet="$2"; shift 2 ;;
+      --ca) ca="$2"; shift 2 ;;
+      --trust-registry) trust_registry+=("$2"); shift 2 ;;
+      --runtime) runtime="$2"; write_unit=1; shift 2 ;;
+      --name) name="$2"; shift 2 ;;
+      --auto-update) auto_update=1; shift ;;
+      --no-auto-update) auto_update=0; shift ;;
       --) shift; extra=("$@"); write_unit=1; break ;;
       *) usage ;;
     esac
-    shift 2
   done
-  check_version "$version"
   [ "$(id -u)" = 0 ] || die "run as root"
-  need curl tar sha256sum systemctl
+  need curl tar sha256sum systemctl flock
+  case "$version" in "" | latest) version="$(latest_version)" ;; esac
+  check_version "$version"
+  mkdir -p /etc/stars-sandbox-agent
+  # Manual runs and the updater service share one lock.
+  exec 9>/etc/stars-sandbox-agent/.install.lock
+  flock -n 9 || die "another install or auto-update is running"
   case "${runtime:-docker}" in
     docker) need docker ;;
     podman) need podman ;;
@@ -284,11 +656,15 @@ node() {
   if [ -n "$ca" ]; then
     install -m 0644 "$ca" "$conf/ca.crt"
   fi
-  if [ -n "$trust_registry" ]; then
+  if [ ${#trust_registry[@]} -gt 0 ]; then
     [ -f "$conf/ca.crt" ] || die "--trust-registry needs --ca"
-    # Docker and Podman read per-registry CAs without a daemon restart.
-    for d in /etc/docker/certs.d /etc/containers/certs.d; do
-      install -D -m 0644 "$conf/ca.crt" "$d/$trust_registry/ca.crt"
+    # Docker and Podman read per-registry CAs without a daemon restart. The
+    # object store is a redirect target, so it is passed here too.
+    local registry d
+    for registry in "${trust_registry[@]}"; do
+      for d in /etc/docker/certs.d /etc/containers/certs.d; do
+        install -D -m 0644 "$conf/ca.crt" "$d/$registry/ca.crt"
+      done
     done
   fi
   local ca_flag=()
@@ -322,7 +698,12 @@ EOF
   fi
   systemctl enable --quiet stars-sandbox-agent
   systemctl restart stars-sandbox-agent
+  # The auto-updater reads this after a successful restart.
+  printf '%s\n' "$version" > "$conf/version"
+  chmod 0644 "$conf/version"
   echo "Node Agent $version is running: systemctl status stars-sandbox-agent"
+  [ "$auto_update" = 1 ] && install_updater node
+  [ "$auto_update" = 0 ] && remove_updater node
 }
 
 case "${1:-}" in
