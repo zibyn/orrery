@@ -23,3 +23,20 @@ test('admin signs in, creates a ready Sandbox and deletes it', async ({ page }) 
 
   assertConsoleScope(requests)
 })
+
+test('the console switches between English and Chinese', async ({ page }) => {
+  await signIn(page)
+  await expect(page.getByRole('link', { name: 'New Sandbox' })).toBeVisible()
+
+  await page.getByRole('group', { name: 'Language' }).getByRole('button', { name: '中文' }).click()
+  await expect(page.getByRole('link', { name: '新建 Sandbox' })).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh')
+
+  // The stored choice survives a reload.
+  await page.reload()
+  await expect(page.getByRole('link', { name: '新建 Sandbox' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'English' }).click()
+  await expect(page.getByRole('link', { name: 'New Sandbox' })).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+})

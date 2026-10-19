@@ -14,12 +14,16 @@ import {
   type Workspace,
 } from '@/api'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useLocale } from '@/lib/i18n'
+import { messageOf } from '@/lib/labels'
 import { buildCreateSandboxBody, createSandboxSchema } from '@/lib/sandbox-form'
 import { selectClass } from '@/lib/utils'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/new')({
   component: NewSandboxPage,
@@ -46,6 +50,7 @@ function Field({
 }
 
 function NewSandboxPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const navigate = useNavigate()
   const [error, setError] = useState('')
 
@@ -91,7 +96,7 @@ function NewSandboxPage() {
       setError('')
       const parsed = createSandboxSchema.safeParse(value)
       if (!parsed.success) {
-        setError(parsed.error.issues[0]?.message ?? 'Invalid input')
+        setError(parsed.error.issues[0]?.message ?? m.common_invalid_input())
         return
       }
       try {
@@ -102,7 +107,7 @@ function NewSandboxPage() {
         )
         navigate({ to: '/sandboxes/$id', params: { id: created.id } })
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not create the Sandbox')
+        setError(messageOf(err))
       }
     },
   })
@@ -118,11 +123,11 @@ function NewSandboxPage() {
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Sandboxes
+            {m.sandbox_back()}
           </Link>
         }
-        title="New Sandbox"
-        description="Pick a Snapshot, size the resources, and optionally attach a persistent Workspace. Resources, Secrets and labels stay CLI-only (api.md §8)."
+        title={m.new_title()}
+        description={m.new_description()}
       />
 
       <form
@@ -134,13 +139,13 @@ function NewSandboxPage() {
       >
         <Card>
           <CardHeader>
-            <CardTitle>General</CardTitle>
-            <CardDescription>Name and the environment to start from.</CardDescription>
+            <CardTitle>{m.new_general()}</CardTitle>
+            <CardDescription>{m.new_general_description()}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <form.Field name="name">
               {(field) => (
-                <Field label="Name" htmlFor={field.name}>
+                <Field label={m.common_name()} htmlFor={field.name}>
                   <Input
                     id={field.name}
                     value={field.state.value}
@@ -161,11 +166,11 @@ function NewSandboxPage() {
                     value={field.state.value}
                     onChange={(e) => field.handleChange(e.target.value)}
                   >
-                    <option value="">Deployment default</option>
+                    <option value="">{m.new_deployment_default()}</option>
                     {snapshots.data?.items.map((snapshot) => (
                       <option key={snapshot.id} value={snapshot.name}>
                         {snapshot.name}
-                        {snapshot.owner_id === null ? ' (platform)' : ''}
+                        {snapshot.owner_id === null ? m.new_platform_suffix() : ''}
                       </option>
                     ))}
                   </select>
@@ -177,8 +182,8 @@ function NewSandboxPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Resources</CardTitle>
-            <CardDescription>The Scheduler places the Sandbox on a Node with this capacity.</CardDescription>
+            <CardTitle>{m.new_resources()}</CardTitle>
+            <CardDescription>{m.new_resources_description()}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-4">
@@ -198,7 +203,7 @@ function NewSandboxPage() {
               </form.Field>
               <form.Field name="memoryMiB">
                 {(field) => (
-                  <Field label="Memory (MiB)" htmlFor={field.name}>
+                  <Field label={m.new_memory_mib()} htmlFor={field.name}>
                     <Input
                       id={field.name}
                       type="number"
@@ -215,7 +220,7 @@ function NewSandboxPage() {
             <div className="grid grid-cols-2 gap-4">
               <form.Field name="gpuCount">
                 {(field) => (
-                  <Field label="GPUs" htmlFor={field.name}>
+                  <Field label={m.new_gpus()} htmlFor={field.name}>
                     <Input
                       id={field.name}
                       type="number"
@@ -229,14 +234,14 @@ function NewSandboxPage() {
               </form.Field>
               <form.Field name="gpuModel">
                 {(field) => (
-                  <Field label="GPU model" htmlFor={field.name}>
+                  <Field label={m.new_gpu_model()} htmlFor={field.name}>
                     <select
                       id={field.name}
                       className={selectClass}
                       value={field.state.value}
                       onChange={(e) => field.handleChange(e.target.value)}
                     >
-                      <option value="">Any model</option>
+                      <option value="">{m.new_any_model()}</option>
                       {gpuModels.map((model) => (
                         <option key={model} value={model}>
                           {model}
@@ -253,10 +258,7 @@ function NewSandboxPage() {
         <Card>
           <CardHeader>
             <CardTitle>Workspace</CardTitle>
-            <CardDescription>
-              A persistent Workspace outlives the Sandbox. Leave it empty to create an ephemeral
-              one.
-            </CardDescription>
+            <CardDescription>{m.new_workspace_description()}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <form.Field name="workspaceId">
@@ -268,7 +270,7 @@ function NewSandboxPage() {
                     value={field.state.value}
                     onChange={(e) => field.handleChange(e.target.value)}
                   >
-                    <option value="">Ephemeral (created with the Sandbox)</option>
+                    <option value="">{m.new_ephemeral()}</option>
                     {attachable.map((workspace) => (
                       <option key={workspace.id} value={workspace.id}>
                         {workspace.id}
@@ -284,15 +286,15 @@ function NewSandboxPage() {
                 workspaceId ? (
                   <form.Field name="workspaceMode">
                     {(field) => (
-                      <Field label="Workspace mode" htmlFor={field.name}>
+                      <Field label={m.new_workspace_mode()} htmlFor={field.name}>
                         <select
                           id={field.name}
                           className={selectClass}
                           value={field.state.value}
                           onChange={(e) => field.handleChange(e.target.value as 'rw' | 'ro')}
                         >
-                          <option value="rw">Read-write</option>
-                          <option value="ro">Read-only</option>
+                          <option value="rw">{m.new_read_write()}</option>
+                          <option value="ro">{m.new_read_only()}</option>
                         </select>
                       </Field>
                     )}
@@ -304,9 +306,9 @@ function NewSandboxPage() {
             <form.Field name="idleStop">
               {(field) => (
                 <Field
-                  label="Idle stop (seconds, 0 = off)"
+                  label={m.new_idle_stop()}
                   htmlFor={field.name}
-                  hint="The Sandbox stops after this much inactivity."
+                  hint={m.new_idle_stop_hint()}
                 >
                   <Input
                     id={field.name}
@@ -322,17 +324,17 @@ function NewSandboxPage() {
           </CardContent>
           <CardFooter className="justify-end">
             <Button type="button" variant="ghost" onClick={() => navigate({ to: '/sandboxes' })}>
-              Cancel
+              {m.common_cancel()}
             </Button>
             <Button type="submit" disabled={form.state.isSubmitting}>
-              Create Sandbox
+              {m.new_create()}
             </Button>
           </CardFooter>
         </Card>
 
         {(error || loadError) && (
-          <p className="text-sm text-destructive" role="alert">
-            {error || loadError?.message}
+          <p className="text-sm whitespace-pre-line text-destructive" role="alert">
+            {error || <Problem error={loadError} />}
           </p>
         )}
       </form>

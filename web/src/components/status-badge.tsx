@@ -1,5 +1,6 @@
 import type * as React from 'react'
 
+import { stateLabel } from '@/lib/labels'
 import { cn } from '@/lib/utils'
 
 // Status is never conveyed by color alone (UX: color-only): the dot is
@@ -59,7 +60,7 @@ export function StatusBadge({
         aria-hidden="true"
         className={cn('size-1.5 rounded-full', DOT[tone], animate && 'animate-pulse')}
       />
-      {state}
+      {stateLabel(state)}
     </span>
   )
 }

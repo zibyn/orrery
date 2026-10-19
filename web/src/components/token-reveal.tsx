@@ -2,6 +2,7 @@ import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { m } from '@/paraglide/messages'
 
 // The one-time plaintext display shared by /cli-auth and the account page
 // (api.md §8: the value is shown once and never stored or re-fetched).
@@ -37,11 +38,11 @@ export function TokenReveal({
       <div className="flex gap-2">
         <Button onClick={copy} variant={copied ? 'outline' : 'default'}>
           {copied ? <Check /> : <Copy />}
-          {copied ? 'Copied' : 'Copy token'}
+          {copied ? m.token_copied() : m.token_copy()}
         </Button>
         {onDone && (
           <Button variant="outline" onClick={onDone}>
-            Done
+            {m.token_done()}
           </Button>
         )}
       </div>

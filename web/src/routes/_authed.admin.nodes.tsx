@@ -5,6 +5,7 @@ import { Pause, Play, Server, Trash } from 'lucide-react'
 import { api, type CapacityNode, type ListResponse, type Node } from '@/api'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,12 +18,15 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { mergeNodeCapacity, nodeListPollInterval } from '@/lib/nodes'
+import { useLocale } from '@/lib/i18n'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/admin/nodes')({
   component: NodesPage,
 })
 
 function NodesPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const queryClient = useQueryClient()
 
   const nodes = useQuery({
@@ -57,44 +61,48 @@ function NodesPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Nodes"
-        description="GPU totals and allocations come from GET /capacity. Declaring a Node lost and Enrollment Packets stay CLI-only (api.md §8)."
-        meta={rows.length > 0 ? `${rows.length} ${rows.length === 1 ? 'node' : 'nodes'}` : undefined}
+        title={m.nodes_title()}
+        description={m.nodes_description()}
+        meta={
+          rows.length > 0
+            ? rows.length === 1
+              ? m.nodes_count_one({ count: rows.length })
+              : m.nodes_count_other({ count: rows.length })
+            : undefined
+        }
       />
 
       {(nodes.isPending || capacity.isPending) && (
-        <p className="py-8 text-sm text-muted-foreground">Loading nodes…</p>
+        <p className="py-8 text-sm text-muted-foreground">{m.nodes_loading()}</p>
       )}
       {error && (
         <p className="text-sm text-destructive" role="alert" data-testid="node-error">
-          {error.message}
+          <Problem error={error} />
         </p>
       )}
 
       {nodes.data && rows.length === 0 && (
         <EmptyState
           icon={<Server />}
-          title="No Nodes yet"
-          description="Enroll a Node Agent with an Enrollment Packet to give the deployment capacity."
+          title={m.nodes_empty_title()}
+          description={m.nodes_empty_description()}
         />
       )}
 
       {rows.length > 0 && (
         <Card className="overflow-hidden">
           <CardHeader>
-            <CardTitle>Enrolled Nodes</CardTitle>
-            <CardDescription>
-              Pausing a Node stops new Sandboxes from scheduling on it.
-            </CardDescription>
+            <CardTitle>{m.nodes_enrolled()}</CardTitle>
+            <CardDescription>{m.nodes_enrolled_description()}</CardDescription>
           </CardHeader>
           <CardContent className="px-0 pb-0">
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-5">Node</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>GPUs (allocated / total)</TableHead>
-                  <TableHead className="pr-5 text-right">Actions</TableHead>
+                  <TableHead className="pl-5">{m.sandbox_node()}</TableHead>
+                  <TableHead>{m.nodes_status()}</TableHead>
+                  <TableHead>{m.nodes_gpus()}</TableHead>
+                  <TableHead className="pr-5 text-right">{m.nodes_actions()}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -143,7 +151,7 @@ function NodesPage() {
                             onClick={() => action.mutate({ id: row.id, verb: 'resume' })}
                           >
                             <Play />
-                            Resume
+                            {m.nodes_resume()}
                           </Button>
                         ) : (
                           <Button
@@ -155,7 +163,7 @@ function NodesPage() {
                             onClick={() => action.mutate({ id: row.id, verb: 'pause' })}
                           >
                             <Pause />
-                            Pause
+                            {m.nodes_pause()}
                           </Button>
                         )}
                         <Button
@@ -163,11 +171,13 @@ function NodesPage() {
                           size="sm"
                           disabled={action.isPending || remove.isPending}
                           onClick={() => {
-                            if (window.confirm(`Delete Node ${row.name}?`)) remove.mutate(row.id)
+                            if (window.confirm(m.nodes_delete_confirm({ name: row.name }))) {
+                              remove.mutate(row.id)
+                            }
                           }}
                         >
                           <Trash />
-                          Delete
+                          {m.common_delete()}
                         </Button>
                       </div>
                     </TableCell>

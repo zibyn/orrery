@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { messageOf } from '@/lib/labels'
+import { m } from '@/paraglide/messages'
 
 export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
   const [port, setPort] = useState('')
@@ -16,7 +18,7 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
   async function open() {
     const value = Number(port)
     if (!Number.isInteger(value) || value < 1 || value > 65535) {
-      setError('Enter a port between 1 and 65535.')
+      setError(m.ports_invalid())
       setLocked(true)
       return
     }
@@ -26,7 +28,7 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
     // navigate it to the ticket URL once the request returns.
     const popup = window.open('', '_blank')
     if (!popup) {
-      setError('The browser blocked the new tab. Allow pop-ups and try again.')
+      setError(m.ports_blocked())
       setLocked(true)
       return
     }
@@ -37,7 +39,7 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
       popup.location.href = ticket.url
     } catch (err) {
       popup.close()
-      setError(err instanceof Error ? err.message : 'Could not open the port')
+      setError(err instanceof Error ? messageOf(err) : m.ports_failed())
       setLocked(true)
     } finally {
       setOpening(false)
@@ -47,15 +49,13 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Ports</CardTitle>
-        <CardDescription>
-          Open a forwarded port in a new tab. The ticket is valid for one minute.
-        </CardDescription>
+        <CardTitle>{m.ports_title()}</CardTitle>
+        <CardDescription>{m.ports_description()}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="flex items-end gap-2">
           <div className="flex w-36 flex-col gap-1.5">
-            <Label htmlFor="sandbox-port">Port</Label>
+            <Label htmlFor="sandbox-port">{m.ports_port()}</Label>
             <Input
               id="sandbox-port"
               type="number"
@@ -77,11 +77,11 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
           </div>
           <Button type="button" disabled={locked || opening || !port} onClick={() => void open()}>
             <ExternalLink />
-            Open
+            {m.ports_open()}
           </Button>
         </div>
         {error && (
-          <p className="text-sm text-destructive" role="alert">
+          <p className="text-sm whitespace-pre-line text-destructive" role="alert">
             {error}
           </p>
         )}

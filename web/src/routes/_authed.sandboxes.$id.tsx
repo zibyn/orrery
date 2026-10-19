@@ -5,13 +5,22 @@ import type { ReactNode } from 'react'
 
 import { api, type Sandbox } from '@/api'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { SandboxFiles } from '@/components/sandbox-files'
 import { SandboxPorts } from '@/components/sandbox-ports'
 import { StatusBadge } from '@/components/status-badge'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useLocale } from '@/lib/i18n'
+import {
+  causeLabel,
+  conditionLabel,
+  runtimeLabel,
+  workspaceModeLabel,
+} from '@/lib/labels'
 import { sandboxPollInterval } from '@/lib/sandbox'
 import { formatTimestamp } from '@/lib/tokens'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/$id')({
   component: SandboxDetailPage,
@@ -27,6 +36,7 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function SandboxDetailPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { id } = Route.useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -64,7 +74,7 @@ function SandboxDetailPage() {
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Sandboxes
+            {m.sandbox_back()}
           </Link>
         }
         title={current?.name ?? id}
@@ -72,9 +82,11 @@ function SandboxDetailPage() {
           current ? (
             <>
               <StatusBadge state={current.state} data-testid="sandbox-state" />
-              <span>{current.runtime}</span>
+              <span>{runtimeLabel(current.runtime)}</span>
               <span aria-hidden="true">·</span>
-              <span>created {formatTimestamp(current.created_at)}</span>
+              <span>
+                {m.common_created({ time: formatTimestamp(current.created_at) })}
+              </span>
             </>
           ) : undefined
         }
@@ -87,7 +99,7 @@ function SandboxDetailPage() {
                 className={buttonVariants({ variant: 'outline' })}
               >
                 <ScrollText />
-                Execs
+                {m.sandbox_execs()}
               </Link>
               <Link
                 to="/sandboxes/$id/terminal"
@@ -95,7 +107,7 @@ function SandboxDetailPage() {
                 className={buttonVariants({ variant: 'outline' })}
               >
                 <Terminal />
-                Terminal
+                {m.sandbox_terminal()}
               </Link>
               <Button
                 variant="outline"
@@ -103,7 +115,7 @@ function SandboxDetailPage() {
                 onClick={() => action.mutate('start')}
               >
                 <Play />
-                Start
+                {m.sandbox_start()}
               </Button>
               <Button
                 variant="outline"
@@ -117,7 +129,7 @@ function SandboxDetailPage() {
                 onClick={() => action.mutate('stop')}
               >
                 <Square />
-                Stop
+                {m.sandbox_stop()}
               </Button>
               <Button
                 variant="destructive"
@@ -127,7 +139,7 @@ function SandboxDetailPage() {
                 onClick={() => remove.mutate()}
               >
                 <Trash />
-                Delete
+                {m.sandbox_delete()}
               </Button>
             </>
           ) : undefined
@@ -135,11 +147,11 @@ function SandboxDetailPage() {
       />
 
       {sandbox.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">Loading sandbox…</p>
+        <p className="py-8 text-sm text-muted-foreground">{m.sandbox_loading()}</p>
       )}
       {error && (
         <p className="text-sm text-destructive" role="alert">
-          {error.message}
+          <Problem error={error} />
         </p>
       )}
 
@@ -147,21 +159,27 @@ function SandboxDetailPage() {
         <div className="grid gap-4 lg:grid-cols-3">
           <Card className="lg:col-span-2">
             <CardHeader>
-              <CardTitle>Status</CardTitle>
-              <CardDescription>Lifecycle state reported by the Control Plane.</CardDescription>
+              <CardTitle>{m.sandbox_status()}</CardTitle>
+              <CardDescription>{m.sandbox_status_description()}</CardDescription>
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
-                <Detail label="State">
+                <Detail label={m.sandbox_state()}>
                   <StatusBadge state={current.state} />
                 </Detail>
-                <Detail label="Cause">{current.cause ?? '—'}</Detail>
-                <Detail label="Queue position">{current.queue_position ?? '—'}</Detail>
-                <Detail label="Blocked reason">{current.blocked_reason ?? '—'}</Detail>
-                <Detail label="Conditions">
-                  {current.conditions.length > 0 ? current.conditions.join(', ') : '—'}
+                <Detail label={m.sandbox_cause()}>
+                  {current.cause ? causeLabel(current.cause) : '—'}
                 </Detail>
-                <Detail label="Node">
+                <Detail label={m.sandbox_queue_position()}>{current.queue_position ?? '—'}</Detail>
+                <Detail label={m.sandbox_blocked_reason()}>
+                  {current.blocked_reason ?? '—'}
+                </Detail>
+                <Detail label={m.sandbox_conditions()}>
+                  {current.conditions.length > 0
+                    ? current.conditions.map(conditionLabel).join(', ')
+                    : '—'}
+                </Detail>
+                <Detail label={m.sandbox_node()}>
                   <span className="font-mono text-xs">{current.node_id ?? '—'}</span>
                 </Detail>
               </dl>
@@ -170,27 +188,31 @@ function SandboxDetailPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Configuration</CardTitle>
-              <CardDescription>The resources this Sandbox was created with.</CardDescription>
+              <CardTitle>{m.sandbox_configuration()}</CardTitle>
+              <CardDescription>{m.sandbox_configuration_description()}</CardDescription>
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
                 <Detail label="CPU">{current.cpu}</Detail>
-                <Detail label="Memory">{(current.memory / 1024 / 1024).toFixed(0)} MiB</Detail>
+                <Detail label={m.sandbox_memory()}>
+                  {(current.memory / 1024 / 1024).toFixed(0)} MiB
+                </Detail>
                 <Detail label="GPU">
                   {current.gpu
                     ? `${current.gpu.count}${current.gpu.model ? ` × ${current.gpu.model}` : ''}`
                     : '—'}
                 </Detail>
-                <Detail label="Idle stop">
-                  {current.idle_stop === 0 ? 'off' : `${current.idle_stop} s`}
+                <Detail label={m.sandbox_idle_stop()}>
+                  {current.idle_stop === 0
+                    ? m.common_off()
+                    : `${current.idle_stop} s`}
                 </Detail>
                 <Detail label="Workspace">
                   {current.workspace
-                    ? `${current.workspace.id} (${current.workspace.mode})`
+                    ? `${current.workspace.id} (${workspaceModeLabel(current.workspace.mode)})`
                     : '—'}
                 </Detail>
-                <Detail label="Runtime">{current.runtime}</Detail>
+                <Detail label="Runtime">{runtimeLabel(current.runtime)}</Detail>
                 <div className="col-span-2">
                   <Detail label="Snapshot">
                     <span className="font-mono text-xs break-all">{current.snapshot}</span>

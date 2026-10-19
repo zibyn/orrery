@@ -10,6 +10,8 @@ import {
   frameEnd,
   frameText,
 } from '@/lib/exec-stream'
+import { messageOf } from '@/lib/labels'
+import { m } from '@/paraglide/messages'
 
 export type BuildLogProps = {
   execId: string
@@ -44,8 +46,8 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
           open: () => setLoading(false),
         },
         {
-          closedMessage: 'The build log stream closed before the build finished.',
-          failedMessage: 'The build log stream failed.',
+          closedMessage: m.build_log_closed(),
+          failedMessage: m.build_log_failed(),
         },
       )
     }
@@ -72,7 +74,7 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
           setResult({ ...exec.result, type: 'result', log_truncated: exec.log_truncated })
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+        if (!cancelled) setError(messageOf(err))
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -92,13 +94,15 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
         ) : null}
         <span className={result ? 'text-foreground' : 'text-muted-foreground'}>
           {result
-            ? `Finished: ${formatExecResult(result)}`
+            ? m.build_log_result({ result: formatExecResult(result) })
             : loading
-              ? 'Loading build log…'
-              : 'Build log'}
+              ? m.build_log_loading()
+              : m.build_log_title()}
         </span>
       </p>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && (
+        <p className="text-sm whitespace-pre-line text-destructive">{error}</p>
+      )}
       <TerminalView readOnly onReady={setTerminal} className="h-[28rem]" />
     </div>
   )

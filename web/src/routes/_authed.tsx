@@ -13,9 +13,12 @@ import {
 } from 'lucide-react'
 
 import { api, ApiError, getMe } from '@/api'
+import { LocaleSwitch } from '@/components/locale-switch'
 import { Logo } from '@/components/logo'
 import { Button } from '@/components/ui/button'
 import { forgetCurrentSession } from '@/lib/current-session'
+import { useLocale } from '@/lib/i18n'
+import { m } from '@/paraglide/messages'
 
 // Every page under _authed needs a Session. A 401 sends the browser to the
 // login page with the current location as ?return= (ADR-0020).
@@ -40,26 +43,26 @@ export const Route = createFileRoute('/_authed')({
 // server still enforces scope.
 const NAV = [
   {
-    label: 'Workspace',
+    label: () => m.nav_group_workspace(),
     items: [
-      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-      { to: '/snapshots', label: 'Snapshots', icon: Layers },
+      { to: '/sandboxes', label: () => m.nav_sandboxes(), icon: Boxes },
+      { to: '/snapshots', label: () => m.nav_snapshots(), icon: Layers },
     ],
   },
   {
-    label: 'Developer',
+    label: () => m.nav_group_developer(),
     items: [
-      { to: '/secrets', label: 'Secrets', icon: KeyRound },
-      { to: '/git', label: 'Git account links', icon: GitBranch },
-      { to: '/cli-auth', label: 'CLI authorization', icon: Terminal },
+      { to: '/secrets', label: () => m.nav_secrets(), icon: KeyRound },
+      { to: '/git', label: () => m.nav_git(), icon: GitBranch },
+      { to: '/cli-auth', label: () => m.nav_cli(), icon: Terminal },
     ],
   },
 ] as const
 
 const ADMIN_NAV = [
-  { to: '/admin/users', label: 'Users', icon: Users },
-  { to: '/admin/nodes', label: 'Nodes', icon: Server },
-  { to: '/admin/audit', label: 'Audit', icon: ScrollText },
+  { to: '/admin/users', label: () => m.nav_users(), icon: Users },
+  { to: '/admin/nodes', label: () => m.nav_nodes(), icon: Server },
+  { to: '/admin/audit', label: () => m.nav_audit(), icon: ScrollText },
 ] as const
 
 const navLinkClass =
@@ -73,6 +76,7 @@ const mobileLinkClass =
 const mobileActiveClass = mobileLinkClass + ' bg-accent text-accent-foreground'
 
 function AuthedShell() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user } = Route.useRouteContext()
   const logout = useMutation({
     mutationFn: () => api('DELETE', '/sessions/current'),
@@ -95,7 +99,7 @@ function AuthedShell() {
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-1.5 focus:text-sm focus:text-primary-foreground"
       >
-        Skip to content
+        {m.nav_skip()}
       </a>
 
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-sidebar-border bg-sidebar lg:flex">
@@ -106,11 +110,11 @@ function AuthedShell() {
           </Link>
         </div>
 
-        <nav aria-label="Console" className="flex flex-1 flex-col gap-5 overflow-y-auto px-2.5 py-3">
+        <nav aria-label={m.nav_console()} className="flex flex-1 flex-col gap-5 overflow-y-auto px-2.5 py-3">
           {NAV.map((group) => (
-            <div key={group.label} className="flex flex-col gap-0.5">
+            <div key={group.items[0].to} className="flex flex-col gap-0.5">
               <p className="px-2.5 pb-1 text-[11px] font-medium tracking-wider text-muted-foreground/80 uppercase">
-                {group.label}
+                {group.label()}
               </p>
               {group.items.map((item) => (
                 <Link
@@ -120,7 +124,7 @@ function AuthedShell() {
                   activeProps={{ className: navActiveClass }}
                 >
                   <item.icon />
-                  {item.label}
+                  {item.label()}
                 </Link>
               ))}
             </div>
@@ -129,7 +133,7 @@ function AuthedShell() {
           {adminItems.length > 0 && (
             <div className="flex flex-col gap-0.5">
               <p className="px-2.5 pb-1 text-[11px] font-medium tracking-wider text-muted-foreground/80 uppercase">
-                Admin
+                {m.nav_group_admin()}
               </p>
               {adminItems.map((item) => (
                 <Link
@@ -139,36 +143,39 @@ function AuthedShell() {
                   activeProps={{ className: navActiveClass }}
                 >
                   <item.icon />
-                  {item.label}
+                  {item.label()}
                 </Link>
               ))}
             </div>
           )}
         </nav>
 
-        <div className="flex items-center gap-2.5 border-t border-sidebar-border p-2.5">
-          <span
-            aria-hidden="true"
-            className="flex size-7 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-medium text-sidebar-accent-foreground"
-          >
-            {user.name.slice(0, 1).toUpperCase()}
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium">{user.name}</p>
-            <p className="truncate text-[11px] text-muted-foreground">
-              {user.is_admin ? 'Administrator' : 'Member'}
-            </p>
+        <div className="flex flex-col gap-2 border-t border-sidebar-border p-2.5">
+          <LocaleSwitch className="self-start" />
+          <div className="flex items-center gap-2.5">
+            <span
+              aria-hidden="true"
+              className="flex size-7 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-medium text-sidebar-accent-foreground"
+            >
+              {user.name.slice(0, 1).toUpperCase()}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">{user.name}</p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {user.is_admin ? m.user_administrator() : m.user_member()}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={m.user_sign_out()}
+              title={m.user_sign_out()}
+              disabled={logout.isPending}
+              onClick={() => logout.mutate()}
+            >
+              <LogOut />
+            </Button>
           </div>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Sign out"
-            title="Sign out"
-            disabled={logout.isPending}
-            onClick={() => logout.mutate()}
-          >
-            <LogOut />
-          </Button>
         </div>
       </aside>
 
@@ -179,12 +186,15 @@ function AuthedShell() {
               <Logo />
               <span className="text-sm font-semibold tracking-tight">stars-sandbox</span>
             </Link>
-            <div className="ml-auto flex items-center gap-1">
-              <span className="max-w-32 truncate text-xs text-muted-foreground">{user.name}</span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <span className="hidden max-w-32 truncate text-xs text-muted-foreground sm:inline">
+                {user.name}
+              </span>
+              <LocaleSwitch />
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Sign out"
+                aria-label={m.user_sign_out()}
                 disabled={logout.isPending}
                 onClick={() => logout.mutate()}
               >
@@ -193,7 +203,7 @@ function AuthedShell() {
             </div>
           </div>
           <nav
-            aria-label="Console"
+            aria-label={m.nav_console()}
             className="flex gap-1 overflow-x-auto px-3 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {allItems.map((item) => (
@@ -203,7 +213,7 @@ function AuthedShell() {
                 className={mobileLinkClass}
                 activeProps={{ className: mobileActiveClass }}
               >
-                {item.label}
+                {item.label()}
               </Link>
             ))}
           </nav>

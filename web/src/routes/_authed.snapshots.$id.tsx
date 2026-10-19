@@ -6,6 +6,7 @@ import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/a
 import { BuildLog } from '@/components/build-log'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { buttonVariants } from '@/components/ui/button'
@@ -18,6 +19,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { useLocale } from '@/lib/i18n'
+import { causeLabel, sourceLabel, stateLabel } from '@/lib/labels'
 import {
   buildLogMode,
   isSnapshotVersionTerminal,
@@ -26,6 +29,7 @@ import {
   versionIsCurrent,
 } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
+import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/snapshots/$id')({
   validateSearch: (search: Record<string, unknown>): { version?: string } => ({
@@ -35,6 +39,7 @@ export const Route = createFileRoute('/_authed/snapshots/$id')({
 })
 
 function SnapshotDetailPage() {
+  useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { id } = Route.useParams()
   const { user } = Route.useRouteContext()
   const { version: selectedId } = Route.useSearch()
@@ -68,7 +73,7 @@ function SnapshotDetailPage() {
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Snapshots
+            {m.snapshot_back()}
           </Link>
         }
         title={current?.name ?? id}
@@ -78,7 +83,7 @@ function SnapshotDetailPage() {
               <span>{snapshotOwnerLabel(current, user.id)}</span>
               <span aria-hidden="true">·</span>
               <span>
-                current version{' '}
+                {m.snapshots_current_version()}{' '}
                 <span className="font-mono">{current.current_version_id ?? '—'}</span>
               </span>
             </>
@@ -87,33 +92,35 @@ function SnapshotDetailPage() {
       />
 
       {snapshot.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">Loading snapshot…</p>
+        <p className="py-8 text-sm text-muted-foreground">{m.snapshot_loading()}</p>
       )}
       {snapshot.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load Snapshot: {snapshot.error.message}
+          {m.snapshot_load_error()}: <Problem error={snapshot.error} />
         </p>
       )}
       {versions.error && (
         <p className="text-sm text-destructive" role="alert">
-          Could not load versions: {versions.error.message}
+          {m.snapshot_versions_load_error()}: <Problem error={versions.error} />
         </p>
       )}
 
       <Card>
         <CardHeader>
-          <CardTitle>Versions</CardTitle>
-          <CardDescription>Every version of this Snapshot, newest first.</CardDescription>
+          <CardTitle>{m.snapshot_versions()}</CardTitle>
+          <CardDescription>{m.snapshot_versions_description()}</CardDescription>
         </CardHeader>
         <CardContent className="px-0 pb-0">
           {versions.isPending && (
-            <p className="px-5 pb-4 text-sm text-muted-foreground">Loading versions…</p>
+            <p className="px-5 pb-4 text-sm text-muted-foreground">
+              {m.snapshot_versions_loading()}
+            </p>
           )}
           {versions.data?.items.length === 0 && (
             <EmptyState
               icon={<Layers />}
-              title="No versions yet"
-              description="Importing a Snapshot by digest or building it creates the first version."
+              title={m.snapshot_versions_empty_title()}
+              description={m.snapshot_versions_empty_description()}
               className="mx-5 mb-5 border-0 bg-muted/20"
             />
           )}
@@ -121,11 +128,11 @@ function SnapshotDetailPage() {
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-5">Version</TableHead>
-                  <TableHead>State</TableHead>
-                  <TableHead>Source</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="pr-5 text-right">Build log</TableHead>
+                  <TableHead className="pl-5">{m.snapshot_version()}</TableHead>
+                  <TableHead>{m.snapshot_state()}</TableHead>
+                  <TableHead>{m.snapshot_source()}</TableHead>
+                  <TableHead>{m.snapshot_created()}</TableHead>
+                  <TableHead className="pr-5 text-right">{m.snapshot_build_log()}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -139,7 +146,7 @@ function SnapshotDetailPage() {
                             variant="secondary"
                             data-testid={`version-current-${version.id}`}
                           >
-                            current
+                            {m.common_current()}
                           </Badge>
                         )}
                       </div>
@@ -151,8 +158,8 @@ function SnapshotDetailPage() {
                       />
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {version.source}
-                      {version.cause ? ` · ${version.cause}` : ''}
+                      {sourceLabel(version.source)}
+                      {version.cause ? ` · ${causeLabel(version.cause)}` : ''}
                     </TableCell>
                     <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
                       {formatTimestamp(version.created_at)}
@@ -167,7 +174,7 @@ function SnapshotDetailPage() {
                           className={buttonVariants({ variant: 'outline', size: 'sm' })}
                         >
                           <ScrollText />
-                          Build log
+                          {m.snapshot_build_log()}
                         </Link>
                       ) : (
                         <span className="text-xs text-muted-foreground">—</span>
@@ -182,27 +189,31 @@ function SnapshotDetailPage() {
       </Card>
 
       {selectedId && !selected && !versions.isPending && (
-        <p className="text-sm text-muted-foreground">
-          That version is not in this Snapshot's list.
-        </p>
+        <p className="text-sm text-muted-foreground">{m.snapshot_not_in_list()}</p>
       )}
 
       {selected && (
         <Card>
           <CardHeader>
-            <CardTitle>Build log</CardTitle>
+            <CardTitle>{m.snapshot_build_log()}</CardTitle>
             <CardDescription>
-              {selected.source} · state {selected.state}
-              {selected.cause ? ` · cause ${selected.cause}` : ''}
+              {selected.cause
+                ? m.snapshot_build_log_meta_cause({
+                    source: sourceLabel(selected.source),
+                    state: stateLabel(selected.state),
+                    cause: causeLabel(selected.cause),
+                  })
+                : m.snapshot_build_log_meta({
+                    source: sourceLabel(selected.source),
+                    state: stateLabel(selected.state),
+                  })}
             </CardDescription>
           </CardHeader>
           <CardContent>
             {logMode !== 'none' && selected.build_exec_id ? (
               <BuildLog execId={selected.build_exec_id} mode={logMode} />
             ) : (
-              <p className="text-sm text-muted-foreground">
-                This version has no build log; imports do not run an Exec.
-              </p>
+              <p className="text-sm text-muted-foreground">{m.snapshot_no_build_log()}</p>
             )}
           </CardContent>
         </Card>
