@@ -33,7 +33,10 @@ func TestSnapshotBuildRun(t *testing.T) {
 
 	nodeName := fmt.Sprintf("e2e-build-node-%d", suffix)
 	state, dataRoot := enrollAgent(t, admin, nodeName)
-	startAgent(t, state, dataRoot)
+	// The build ceiling is 4 CPU (defaults.md) and CI runners have exactly
+	// four, so the default 1-CPU reserve for the host would leave the build
+	// Sandbox infeasible forever.
+	startAgentWith(t, state, dataRoot, "--reserve-cpu", "0")
 	waitForNodeReady(t, admin, nodeName)
 	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
@@ -78,7 +81,9 @@ func TestSnapshotBuildRun(t *testing.T) {
 	// build's own /proc/self/cgroup is namespaced (cgroupns=private), so the
 	// proof is the host cgroup tree while the RUN is alive.
 	if path, cpuMax, memoryMax, ok := waitForBuildCgroup(t, version.ID, 2*time.Minute); !ok {
-		t.Fatalf("no live process under stars-build-%s.slice", version.ID)
+		node := findNode(t, admin, nodeName)
+		got := getSnapshotVersion(t, admin, snapshot.ID, version.ID)
+		t.Fatalf("no live process under stars-build-%s.slice; node=%+v version=%+v", version.ID, node, got)
 	} else {
 		t.Logf("build RUN observed in %s", path)
 		// The slice carries the deployment build limits (defaults.md: 4 CPU +
@@ -102,7 +107,11 @@ func TestSnapshotBuildRun(t *testing.T) {
 	if !strings.Contains(log, "context-") {
 		// The context was copied by the build; the log itself need not show
 		// it, so this is only a sanity hint when BuildKit echoed the step.
-		t.Logf("build log did not echo the context; log starts: %.200s", log)
+		tail := log
+		if len(tail) > 1500 {
+			tail = tail[len(tail)-1500:]
+		}
+		t.Logf("build log did not echo the context; log tail: %s", tail)
 	}
 
 	ready := waitForSnapshotVersion(t, admin, snapshot.ID, version.ID, "ready", 5*time.Minute)
@@ -140,7 +149,6 @@ func TestSnapshotBuildRun(t *testing.T) {
 		"name": fmt.Sprintf("build-run-%d", suffix), "cpu": 0.5, "memory": 128 << 20,
 		"idle_stop": 0, "snapshot": snapshot.Name,
 	})
-	defer deleteSandbox(t, admin, created.ID)
 	sb := waitForSandboxState(t, admin, created.ID, "ready", 5*time.Minute)
 	probe, _, code := execInSandbox(t, admin, sb.ID, "cat", "/probe")
 	if code != 0 {
@@ -164,6 +172,10 @@ func TestSnapshotBuildRun(t *testing.T) {
 	if strings.Contains(config, secretValue) {
 		t.Fatal("the built image config or history leaks the Secret value")
 	}
+
+	// Free the Node before the next build: its 0.5 CPU would make a 4-CPU
+	// build infeasible on a four-core CI runner (defaults.md's build ceiling).
+	deleteSandbox(t, admin, created.ID)
 
 	// A failing Dockerfile ends the version failed and leaves the current
 	// pointer on the successful build.

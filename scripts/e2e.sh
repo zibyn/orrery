@@ -64,12 +64,16 @@ export STARS_REGISTRY_ADDR="${STARS_REGISTRY_ADDR:-127.0.0.1:15000}"
 # The node listener always uses TLS (ADR-0014); a throwaway self-signed cert is
 # enough for the black-box tests. Backdate it: a remote Node whose clock is a
 # few seconds behind would otherwise reject it as "not yet valid".
+# -not_before needs OpenSSL 3.4; older ones (Ubuntu 24.04, the CI runner) get
+# an undated cert, which only matters for the remote-host scenarios.
 mkdir -p .e2e/tls
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-  -not_before 20200101000000Z \
-  -subj "/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
-  -keyout .e2e/tls/server.key -out .e2e/tls/server.crt >/dev/null 2>&1
+tls_cert() {
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 "$@" \
+    -subj "/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+    -keyout .e2e/tls/server.key -out .e2e/tls/server.crt >/dev/null 2>&1
+}
+tls_cert -not_before 20200101000000Z || tls_cert
 # The server container runs as an unprivileged user; this is a throwaway cert.
 chmod 644 .e2e/tls/server.key .e2e/tls/server.crt
 export STARS_NODE_TLS_DIR="$PWD/.e2e/tls"
@@ -159,6 +163,14 @@ export STARS_DEFAULT_SNAPSHOT="${STARS_DEFAULT_SNAPSHOT:-default}"
 
 CONSOLE_AGENT_PID=""
 cleanup() {
+  local code=$?
+  # A failed run is only reproducible from its logs; the stack is about to go.
+  if [ "$code" -ne 0 ]; then
+    "${COMPOSE[@]}" logs --no-color --tail 400 server 2>&1 | grep -v '"msg":"request"' | tail -40 || true
+    "${COMPOSE[@]}" logs --no-color registry 2>&1 |
+      grep -E '(PUT|POST) /v2/snapshots|level=error' | tail -20 || true
+    "${COMPOSE[@]}" logs --no-color --tail 100 rustfs 2>&1 | grep -iE 'error|warn' | tail -10 || true
+  fi
   if [ -n "$CONSOLE_AGENT_PID" ]; then
     kill "$CONSOLE_AGENT_PID" >/dev/null 2>&1 || true
     wait "$CONSOLE_AGENT_PID" 2>/dev/null || true

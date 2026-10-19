@@ -1,0 +1,182 @@
+# CI gate, images and releases (ADR-0023). Pull requests and main run the
+# checks and the Compose e2e suite; main also publishes :main; a v* tag
+# publishes :X.Y.Z and :latest and creates the GitHub Release.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  schedule:
+    - cron: "17 19 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: make vet
+      - run: make test
+      - run: make web-check
+      # `make console` builds the Web console and embeds it (api.md §8).
+      - run: make console
+      - run: pip install httpx && python -m unittest discover -s sdk/python/tests
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      # Dockerd's built-in BuildKit gained the image exporter in Docker 29;
+      # the runner image ships 28. This is the version the e2e runs against.
+      - uses: docker/setup-docker-action@v5
+        with:
+          version: v29.9.1
+          # The action's daemon listens on its own socket; the e2e Agent takes
+          # it from DOCKER_HOST (scripts/e2e.sh).
+          set-host: true
+      # The unprivileged e2e Agent bounds each build with a slice of its
+      # systemd user manager (runtime.md §12); the runner has none until
+      # lingering starts it.
+      - run: |
+          sudo loginctl enable-linger "$USER"
+          until [ -S "/run/user/$(id -u)/bus" ]; do sleep 1; done
+      # GPU, Podman and remote-host scenarios skip themselves without
+      # STARS_E2E_GPU_SSH.
+      - run: ./scripts/e2e.sh -timeout 80m
+
+  # Playwright is slow and not a merge gate; it runs nightly or on demand.
+  e2e-console:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: make e2e-console
+
+  image:
+    if: github.event_name == 'push'
+    needs: [check, e2e]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      # Only the final alpine stage runs on the target architecture; the Web
+      # and Go stages cross-compile on the build platform.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/stars-sandbox-server
+          # semver also tags :latest; a push to main tags :main.
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=branch
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, e2e]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # Go stamps the tag into each binary's build info, which is the version
+      # the Agent reports in its handshake (ADR-0014); that needs the tag.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build the Node package and the CLI
+        run: |
+          set -euo pipefail
+          v="$GITHUB_REF_NAME"
+          mkdir dist
+          build() { # os arch out-dir binaries...
+            local os="$1" arch="$2" out="$3"; shift 3
+            for bin in "$@"; do
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$out/$bin" "./cmd/$bin"
+            done
+          }
+          # The Agent finds the CLI beside its own executable (runtime.md).
+          for arch in amd64 arm64; do
+            d="$(mktemp -d)"
+            build linux "$arch" "$d" stars-sandbox-agent stars-sandbox
+            tar -C "$d" -czf "dist/stars-sandbox-node_${v}_linux_${arch}.tar.gz" stars-sandbox-agent stars-sandbox
+          done
+          for arch in amd64 arm64; do
+            d="$(mktemp -d)"
+            build darwin "$arch" "$d" stars-sandbox
+            tar -C "$d" -czf "dist/stars-sandbox_${v}_darwin_${arch}.tar.gz" stars-sandbox
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS)
+      # A hyphen marks a semver prerelease; releases/latest must skip it or
+      # --auto-update would pick up an rc.
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          args=(--verify-tag --generate-notes)
+          case "$GITHUB_REF_NAME" in *-*) args+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}
