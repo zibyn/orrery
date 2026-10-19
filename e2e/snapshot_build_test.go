@@ -149,7 +149,6 @@ func TestSnapshotBuildRun(t *testing.T) {
 		"name": fmt.Sprintf("build-run-%d", suffix), "cpu": 0.5, "memory": 128 << 20,
 		"idle_stop": 0, "snapshot": snapshot.Name,
 	})
-	defer deleteSandbox(t, admin, created.ID)
 	sb := waitForSandboxState(t, admin, created.ID, "ready", 5*time.Minute)
 	probe, _, code := execInSandbox(t, admin, sb.ID, "cat", "/probe")
 	if code != 0 {
@@ -173,6 +172,10 @@ func TestSnapshotBuildRun(t *testing.T) {
 	if strings.Contains(config, secretValue) {
 		t.Fatal("the built image config or history leaks the Secret value")
 	}
+
+	// Free the Node before the next build: its 0.5 CPU would make a 4-CPU
+	// build infeasible on a four-core CI runner (defaults.md's build ceiling).
+	deleteSandbox(t, admin, created.ID)
 
 	// A failing Dockerfile ends the version failed and leaves the current
 	// pointer on the successful build.
