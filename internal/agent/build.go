@@ -612,16 +612,19 @@ func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64
 	quota := "CPUQuota=" + fmt.Sprint(int64(cpu*100)) + "%"
 	memoryMax := "MemoryMax=" + fmt.Sprint(memory)
 	if os.Geteuid() == 0 {
-		if runSystemctl(ctx, "set-property", "--runtime", slice, quota, memoryMax) == nil {
-			return slice, func() { _ = runSystemctl(context.Background(), "stop", slice) }
+		if err := runSystemctl(ctx, "set-property", "--runtime", slice, quota, memoryMax); err != nil {
+			slog.Warn("build slice unavailable; builds fall back to the Node-wide limit", "slice", slice, "error", err)
+			return "", func() {}
 		}
-		return "", func() {}
+		return slice, func() { _ = runSystemctl(context.Background(), "stop", slice) }
 	}
-	if runSystemctl(ctx, "--user", "set-property", "--runtime", slice, quota, memoryMax) != nil {
+	if err := runSystemctl(ctx, "--user", "set-property", "--runtime", slice, quota, memoryMax); err != nil {
+		slog.Warn("build slice unavailable; builds fall back to the Node-wide limit", "slice", slice, "error", err)
 		return "", func() {}
 	}
 	parent := userSliceParent(os.Getuid(), slice)
 	if _, err := os.Stat(filepath.Join("/sys/fs/cgroup", parent)); err != nil {
+		slog.Warn("build slice has no cgroup; builds fall back to the Node-wide limit", "path", parent, "error", err)
 		return "", func() {}
 	}
 	return parent, func() { _ = runSystemctl(context.Background(), "--user", "stop", slice) }
