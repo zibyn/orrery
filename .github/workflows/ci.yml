@@ -57,34 +57,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install httpx
+      # Dockerd's built-in BuildKit gained the image exporter in Docker 29;
+      # the runner image ships 28. This is the version the e2e runs against.
+      - uses: docker/setup-docker-action@v5
+        with:
+          version: v29.9.1
       # The unprivileged e2e Agent bounds each build with a slice of its
       # systemd user manager (runtime.md §12); the runner has none until
       # lingering starts it.
       - run: |
           sudo loginctl enable-linger "$USER"
           until [ -S "/run/user/$(id -u)/bus" ]; do sleep 1; done
-          systemctl --user set-property --runtime stars-build-probe.slice CPUQuota=400%
-          find /sys/fs/cgroup -name 'stars-build-probe.slice'
-          systemctl --user stop stars-build-probe.slice
       # GPU, Podman and remote-host scenarios skip themselves without
       # STARS_E2E_GPU_SSH.
-      - name: e2e
-        run: |
-          # Record every build slice that appears, to diagnose a MISS without
-          # rerunning the build by hand.
-          (for _ in $(seq 1 2400); do
-            find /sys/fs/cgroup -maxdepth 10 -name 'stars-build-*' -type d 2>/dev/null > /tmp/slices.now
-            while read -r d; do printf '%s %s\n' "$(wc -l < "$d/cgroup.procs" 2>/dev/null)" "$d"; done < /tmp/slices.now
-            sleep 2
-          done >> /tmp/cgroups.log) &
-          ./scripts/e2e.sh -timeout 80m
-      - if: always()
-        run: |
-          docker version
-          docker info --format '{{.CgroupDriver}} {{.CgroupVersion}}' || true
-          sort -u -k2 /tmp/cgroups.log | tail -30 || true
-          ps -eo user,args | grep [s]tars-sandbox-agent | head -3 || true
-          sudo journalctl -u docker --no-pager | grep -iE 'cgroup|slice' | tail -30 || true
+      - run: ./scripts/e2e.sh -timeout 80m
 
   # Playwright is slow and not a merge gate; it runs nightly or on demand.
   e2e-console:
@@ -181,6 +167,13 @@ jobs:
             tar -C "$d" -czf "dist/stars-sandbox_${v}_darwin_${arch}.tar.gz" stars-sandbox
           done
           (cd dist && sha256sum -- * > SHA256SUMS)
-      - run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
+      # A hyphen marks a semver prerelease; releases/latest must skip it or
+      # --auto-update would pick up an rc.
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          args=(--verify-tag --generate-notes)
+          case "$GITHUB_REF_NAME" in *-*) args+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" dist/*
         env:
           GH_TOKEN: ${{ github.token }}
