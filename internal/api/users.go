@@ -362,6 +362,12 @@ func uniqueViolation(err error) string {
 	return ""
 }
 
+// isUniqueViolation reports any SQLSTATE 23505, whichever index answered.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 func (s *Server) audit(ctx context.Context, p *principal, action, targetType, targetID string, detail any) {
 	var actorUser *uuid.UUID
 	var actorToken *uuid.UUID

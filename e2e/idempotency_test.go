@@ -41,8 +41,9 @@ func waitForSandboxGone(t *testing.T, admin, id string, timeout time.Duration) {
 // concurrentCreates sends one create body with one Idempotency-Key from
 // several callers. They must converge on one row: exactly one 201 and the rest
 // 200 with the same id.
-func concurrentCreates(t *testing.T, path, token, key string, body any, callers int) string {
+func concurrentCreates(t *testing.T, path, token, key string, body any) string {
 	t.Helper()
+	const callers = 4
 	payload, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
@@ -107,10 +108,10 @@ func concurrentCreates(t *testing.T, path, token, key string, body any, callers 
 	return ""
 }
 
-// TestIdempotencyKeyAfterDelete is #122: a tombstone keeps its Idempotency Key
-// for 24 hours, but the replay lookup ignores deleted rows. The unique index
-// must ignore them too, or reusing the key collides with the tombstone and the
-// create answers 500 instead of creating a new resource.
+// TestIdempotencyKeyAfterDelete covers the Idempotency Key rules shared by the
+// create endpoints: the replay lookup ignores deleted rows (#122), concurrent
+// calls with one key converge even when the name index answers first (#127),
+// and Snapshots participate like every other resource (#130).
 func TestIdempotencyKeyAfterDelete(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
@@ -151,7 +152,7 @@ func TestIdempotencyKeyAfterDelete(t *testing.T) {
 	// the winner whichever index answers first (#127).
 	concurrentKey := fmt.Sprintf("concurrent-resource-key-%d", suffix)
 	concurrentID := concurrentCreates(t, "/api/v1/resources", admin, concurrentKey,
-		map[string]string{"name": fmt.Sprintf("concurrent-resource-%d", suffix)}, 4)
+		map[string]string{"name": fmt.Sprintf("concurrent-resource-%d", suffix)})
 	t.Cleanup(func() { _, _ = call(t, http.MethodDelete, "/api/v1/resources/"+concurrentID, admin, nil) })
 
 	// Snapshot (#130): a repeat before deletion replays the row; after it, the
@@ -193,7 +194,7 @@ func TestIdempotencyKeyAfterDelete(t *testing.T) {
 	// Concurrent same-key, same-name Snapshot creates converge on one row.
 	concurrentSnapshotID := concurrentCreates(t, "/api/v1/snapshots", admin,
 		fmt.Sprintf("concurrent-snapshot-key-%d", suffix),
-		map[string]string{"name": fmt.Sprintf("concurrent-snapshot-%d", suffix)}, 4)
+		map[string]string{"name": fmt.Sprintf("concurrent-snapshot-%d", suffix)})
 	t.Cleanup(func() {
 		_, _ = call(t, http.MethodDelete, "/api/v1/snapshots/"+concurrentSnapshotID, admin, nil)
 	})

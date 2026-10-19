@@ -284,7 +284,7 @@ func replayExisting[T any](key *string, lookup func() (T, error)) (T, bool, erro
 // are left for the caller to classify.
 func replayConflict[T any](key *string, err error, lookup func() (T, error)) (T, bool) {
 	var zero T
-	if key == nil || uniqueViolation(err) == "" {
+	if key == nil || !isUniqueViolation(err) {
 		return zero, false
 	}
 	row, lookupErr := lookup()
