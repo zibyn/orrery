@@ -130,58 +130,20 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     environment:
-      STARS_DATABASE_URL: postgres://stars:stars@postgres:5432/stars?sslmode=disable
+      # Application settings come from the scenario's config.yaml (ADR-0024);
+      # these are the keys that have no config.yaml form plus the purge hook.
+      STARS_CONFIG_FILE: /config/config.yaml
       STARS_API_ADDR: ":8080"
       STARS_NODE_ADDR: ":8081"
       STARS_NODE_TLS_CERT: /tls/server.crt
       STARS_NODE_TLS_KEY: /tls/server.key
-      STARS_PLATFORM_SNAPSHOTS: "${STARS_PLATFORM_SNAPSHOTS:-}"
-      STARS_DEFAULT_SNAPSHOT: "${STARS_DEFAULT_SNAPSHOT:-}"
-      STARS_EXEC_LOG_CAP: "${STARS_EXEC_LOG_CAP:-}"
-      STARS_EXEC_LOG_RETENTION: "${STARS_EXEC_LOG_RETENTION:-}"
-      STARS_AUDIT_RETENTION: "${STARS_AUDIT_RETENTION:-}"
-      STARS_RESOURCE_VERSION_TTL: "${STARS_RESOURCE_VERSION_TTL:-}"
-      STARS_CAS_GRACE: "${STARS_CAS_GRACE:-}"
       # Test hook only; production uses the 10-minute constant (defaults.md).
       STARS_TEST_PURGE_INTERVAL: "${STARS_TEST_PURGE_INTERVAL:-}"
-      STARS_PTY_IDLE_SECONDS: "${STARS_PTY_IDLE_SECONDS:-}"
-      STARS_IDLE_STOP_SECONDS: "${STARS_IDLE_STOP_SECONDS:-}"
-      STARS_ADMISSION_TIMEOUT: "${STARS_ADMISSION_TIMEOUT:-}"
-      STARS_APPS_DOMAIN: "${STARS_APPS_DOMAIN:-}"
-      STARS_PORT_TICKET_KEY: "${STARS_PORT_TICKET_KEY:-}"
-      STARS_ENCRYPTION_KEYS_FILE: "${STARS_ENCRYPTION_KEYS_FILE:-}"
-      STARS_ACCESS_URL: "${STARS_ACCESS_URL:-}"
-      STARS_OIDC_ISSUER_URL: "${STARS_OIDC_ISSUER_URL:-}"
-      STARS_OIDC_CLIENT_ID: "${STARS_OIDC_CLIENT_ID:-}"
-      STARS_OIDC_CLIENT_SECRET_FILE: "${STARS_OIDC_CLIENT_SECRET_FILE:-}"
-      STARS_OIDC_ALLOW_SIGNUPS: "${STARS_OIDC_ALLOW_SIGNUPS:-}"
-      STARS_OIDC_EMAIL_DOMAINS: "${STARS_OIDC_EMAIL_DOMAINS:-}"
-      STARS_GIT_PROVIDERS_FILE: "${STARS_GIT_PROVIDERS_FILE:-}"
-      # Object store and registry (defaults.md, ADR-0014).
-      STARS_S3_ENDPOINT: "${STARS_S3_ENDPOINT:-http://rustfs:9000}"
-      STARS_S3_PUBLIC_ENDPOINT: "${STARS_S3_PUBLIC_ENDPOINT:-http://127.0.0.1:19000}"
-      STARS_S3_BUCKET: "${STARS_S3_BUCKET:-stars}"
-      STARS_S3_REGION: "${STARS_S3_REGION:-us-east-1}"
-      STARS_S3_ACCESS_KEY: "${STARS_S3_ACCESS_KEY:-stars}"
-      STARS_S3_SECRET_KEY: "${STARS_S3_SECRET_KEY:-stars-secret}"
-      STARS_REGISTRY_ADDR: "${STARS_REGISTRY_ADDR:-127.0.0.1:15000}"
-      # Nodes reach the registry at 127.0.0.1:15000 (host networking). The
-      # Control Plane is a container, so its pushes go through the host
-      # gateway instead; the credential document lists both hosts.
-      STARS_REGISTRY_PUSH_ADDR: "${STARS_REGISTRY_PUSH_ADDR:-host.docker.internal:15000}"
-      # Docker config.json auth document; matches deploy/registry/htpasswd.
-      STARS_REGISTRY_CREDENTIAL: "${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"},\"host.docker.internal:15000\":{\"auth\":\"c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=\"}}}}"
-      # Snapshot build limits (defaults.md: 4 CPU + 8 GiB, 1 hour).
-      STARS_BUILD_CPU: "${STARS_BUILD_CPU:-}"
-      STARS_BUILD_MEMORY: "${STARS_BUILD_MEMORY:-}"
-      STARS_BUILD_TIMEOUT: "${STARS_BUILD_TIMEOUT:-}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
-      - "${STARS_ENCRYPTION_KEYS_DIR:-./keys}:/keys:ro"
-      - "${STARS_OIDC_SECRET_DIR:-./oidc}:/oidc:ro"
-      - "${STARS_GIT_PROVIDERS_DIR:-./git}:/git:ro"
+      - "${STARS_CONFIG_DIR:-./config}:/config:ro"
     depends_on:
       postgres:
         condition: service_healthy

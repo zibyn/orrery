@@ -66,22 +66,21 @@ services:
   server:
     image: "ghcr.io/zibyn/stars-sandbox-server:${STARS_VERSION:?}"
     restart: unless-stopped
-    # Every STARS_* setting (defaults.md) lives in .env.
-    env_file: .env
+    # Application settings live in ./config/config.yaml (ADR-0024); install.sh
+    # writes it on first install and keeps operator edits on upgrade.
     environment:
+      STARS_CONFIG_FILE: "${STARS_CONFIG_FILE:-/config/config.yaml}"
       STARS_API_ADDR: ":8080"
       STARS_NODE_ADDR: ":8081"
       STARS_NODE_TLS_CERT: /tls/server.crt
       STARS_NODE_TLS_KEY: /tls/server.key
-      STARS_ENCRYPTION_KEYS_FILE: /keys/encryption
-      STARS_S3_ENDPOINT: "${STARS_S3_ENDPOINT:-http://rustfs:9000}"
       # Self-signed mode: trust the generated CA for registry pushes, in
       # addition to the system roots.
       SSL_CERT_DIR: /ca:/etc/ssl/certs
     volumes:
+      - ./config:/config:ro
       - ./tls:/tls:ro
       - ./ca:/ca:ro
-      - ./keys:/keys:ro
     depends_on:
       postgres:
         condition: service_healthy

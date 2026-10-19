@@ -48,7 +48,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 
 Sandbox Token 不在 `CreateSandbox` 里，而是随每个 `StartExec` 下发，所以 Agent 重启、Reconciler 重复下发都拿得到它。前例是 Coder 的 `workspace_agents.auth_token`：明文存储，放进每个进程的环境（`docs/research/recheck-identity-network-channel-vs-coder-daytona.md` I3、C1）。
 
-- **Control Plane** 往 `secret_env` 放 Secret 快照（`schema.md`）和 `STARS_SANDBOX_TOKEN`，往 `env` 放 `STARS_URL`（取 `STARS_ACCESS_URL`，未配置时不放）。这几项都不写入 `execs.env`。
+- **Control Plane** 往 `secret_env` 放 Secret 快照（`schema.md`）和 `STARS_SANDBOX_TOKEN`，往 `env` 放 `STARS_URL`（取部署配置的 `access.url`，未配置时不放）。这几项都不写入 `execs.env`。
 - **Agent** 再追加两组。下面的 `<bin>` 是 `/.stars/bin`；Local Runtime 没有 `/.stars`，`<bin>` 是 Agent 自己的 bin 目录，即 Agent 可执行文件所在、旁边放着 `stars-sandbox` 的目录（`runtime.md` §2、§10）：
   - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`，先写一条 `credential.helper=` 清空镜像的 helper 列表，再写 `credential.helper=<bin>/stars-sandbox git-credential`；
   - `PATH`：取调用方 `env` 里的 `PATH`，没有就取镜像配置里的 `PATH`（Local Runtime 取 Agent 自身的 `PATH`），在末尾追加 `<bin>`，不遮挡镜像里的同名命令。

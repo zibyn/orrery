@@ -1,6 +1,6 @@
 # ADR-0010: Identity, secrets, network, and audit boundaries
 
-- Status: accepted; Capability Channel, Egress and Audit superseded by ADR-0016; Node identity, Ingress, Deletion and caller tokens amended by ADR-0017; caller identity amended by ADR-0020 (password and OIDC login)
+- Status: accepted; Capability Channel, Egress and Audit superseded by ADR-0016; Node identity, Ingress, Deletion and caller tokens amended by ADR-0017; caller identity amended by ADR-0020 (password and OIDC login); platform secret storage amended by ADR-0024
 - Date: 2026-10-17
 
 ## Context
@@ -13,7 +13,7 @@ The platform has to answer who a caller is, how a Node becomes trusted, where th
 
 **Node identity.** Private-CA-issued client certificates. The Node generates its own keypair (the Control Plane never sees a private key) and redeems a single-use, short-lived Enrollment Packet for one CSR-signed certificate; renewal happens at 50% of remaining life through an RPC separate from enrollment. Revocation is `delete the Node row and refuse renewal`, with no CRL or OCSP. The failure semantics are asymmetric on purpose: `not_found`/`unauthenticated` clears local identity, while a transport failure preserves it and backs off, so a Control Plane restart cannot make a fleet clear its own identity.
 
-**Platform secrets.** Object-store keys, Git provider minting credentials, the CA private key and database credentials are deployment-time file path references. They do not live in PostgreSQL and are not reachable through the API, so they stay out of backups, the query surface, and the question of who may read a table.
+**Platform secrets.** Object-store keys, Git provider minting credentials and database credentials are supplied by the single deployment configuration file (ADR-0024); TLS material and the CA private key remain deployment-time file path references. None of them live in PostgreSQL or are reachable through the API, so they stay out of backups, the query surface, and the question of who may read a table.
 
 **Caller secrets.** A caller's secrets and Git account tokens may enter a Sandbox, as Coder and Daytona allow; how is ADR-0013. The platform never writes them inside the Workspace. Egress-proxy placeholder substitution is the documented upgrade path, not the mechanism.
 

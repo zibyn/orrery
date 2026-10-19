@@ -11,7 +11,7 @@ import (
 	"github.com/zibyn/stars-sandbox/internal/store"
 )
 
-// importPlatformSnapshots copies STARS_PLATFORM_SNAPSHOTS entries that are
+// importPlatformSnapshots copies configured platform_snapshots entries that are
 // not already in the registry (defaults.md, ADR-0021). It runs in the
 // background: a failing import must not block startup, and a Sandbox that
 // needs the missing Snapshot fails at create time.

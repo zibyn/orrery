@@ -1,6 +1,6 @@
 # ADR-0023: Release artifacts and a pull-based install script
 
-- Status: accepted; amended in place by #135 and #136
+- Status: accepted; amended in place by #135 and #136; deployment configuration layout amended by ADR-0024
 - Date: 2026-10-19
 
 ## Context
@@ -25,7 +25,7 @@ The version is the tag, stamped into all three binaries at build time; the Agent
 - `install.sh server` sets up a Control Plane host: the Control Plane, PostgreSQL, the object store, the registry and an nginx front, from a release Compose file without development credentials or e2e services. On first run it generates the deployment's TLS certificate and every secret, and never regenerates them. Each upgrade dumps PostgreSQL first; a downgrade is refused, because migrations are forward-only and rollback is restoring a backup (ADR-0014). PostgreSQL and the object store may point at external services instead.
 - `install.sh node` installs the Node package, verifies it against `SHA256SUMS`, enrolls once with an Enrollment Packet, and runs the Agent as a systemd service whose stop signal reaches the Agent only, so Exec Supervisors keep running across a restart. An older Agent is allowed: the Control Plane accepts an older minor and flags the Node `outdated`.
 
-**One public entry, HTTPS only.** The release stack runs nginx as the only public listener. It terminates TLS and routes one `addr:port` by the paths the protocols fix: `/v2/` to the registry, `/stars.node.v1.Node/` to the `node` surface, everything else to `api`. The object store gets its own hostname on the same port, because a presigned URL signs the full path and SigV4 signs the `Host`, so it can be neither a subpath nor rewritten. `install.sh server` takes the public host and port (`https://HOST[:PORT]`, for example `:9443`) and derives `STARS_ACCESS_URL`, the registry address and the `node` address from it; the object-store hostname defaults to `s3.HOST` and can be overridden.
+**One public entry, HTTPS only.** The release stack runs nginx as the only public listener. It terminates TLS and routes one `addr:port` by the paths the protocols fix: `/v2/` to the registry, `/stars.node.v1.Node/` to the `node` surface, everything else to `api`. The object store gets its own hostname on the same port, because a presigned URL signs the full path and SigV4 signs the `Host`, so it can be neither a subpath nor rewritten. `install.sh server` takes the public host and port (`https://HOST[:PORT]`, for example `:9443`) and derives `access.url` in the deployment configuration file (ADR-0024), the registry address and the `node` address from it; the object-store hostname defaults to `s3.HOST` and can be overridden.
 
 The front has two certificate modes:
 

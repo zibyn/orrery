@@ -92,7 +92,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 name?, labels?
 runtime?: container|local       # 默认 container；调用方分不出 Docker 和 Podman
 workspace?: {id, mode: rw|ro}     # 不写就隐式创建临时 Workspace，rw
-snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 STARS_DEFAULT_SNAPSHOT，local 没有 Snapshot
+snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 `platform_snapshots` 的默认项，local 没有 Snapshot
 resources?: [{resource, version?, mount?}]   # 创建时解析成具体版本，只读挂载到 /resources/<mount>；mount 是单段名字，默认取 Resource 名
 secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}
@@ -167,7 +167,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 
 - **状态**：`building → ready | failed | cancelled`，导入和构建共用。
 - **删除 Snapshot**：写墓碑；被引用的版本保留到最后一个引用消失，然后删掉 registry 里的 manifest。名字只在未删除的 Snapshot 间唯一。
-- **平台 Snapshot**：来自部署配置 `STARS_PLATFORM_SNAPSHOTS`（`defaults.md`），出现在每个 User 的 `GET /snapshots` 里；对它增删改返回 `403`。
+- **平台 Snapshot**：来自部署配置的 `platform_snapshots`（`defaults.md`），出现在每个 User 的 `GET /snapshots` 里；对它增删改返回 `403`。
 - **import**：`ref` 必须是 `ref@sha256:…`，`auth_secret` 是调用方一个 Secret 的名字，值为 docker `config.json`。Control Plane 用 go-containerregistry 把整个 index 流式复制到平台 registry，保留原 digest。Node 只从平台 registry 拉镜像（ADR-0021）。
 - **build**：
   - `dockerfile` 是文本；没有默认构建上下文。
@@ -190,7 +190,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 | `GET /users/me/git-links` · `DELETE /users/me/git-links/{provider_id}` | |
 | `POST /git/credential` | **只接受 Sandbox Token**。`{host}` 或 `{provider}` → `{username, password}`；未关联或校验失败时返回 `404 not_found`，`authorize_url` 写在 problem 扩展字段里，指向控制台的 Git 关联页 |
 
-Git Provider 来自部署配置 `STARS_GIT_PROVIDERS_FILE`（`defaults.md`）。OAuth `redirect_uri` 和 `authorize_url` 都以 `STARS_ACCESS_URL` 为基址；它未配置时 Git 关联关闭。
+Git Provider 来自部署配置文件 `config.yaml` 的 `git_providers`（`defaults.md`），client secret 直接写在文件里。OAuth `redirect_uri` 和 `authorize_url` 都以 `access.url`（环境变量覆盖名 `STARS_ACCESS_URL`）为基址；它未配置时 Git 关联关闭。
 
 沙箱内的 helper 收到 `404` 时，把 `authorize_url` 写到 stderr，stdout 不输出，退出码为 0，由 git 继续尝试下一个 helper 或报认证失败。
 

@@ -1,6 +1,6 @@
 # 部署指南
 
-决策见 ADR-0023，升级顺序和备份责任见 ADR-0014，所有配置项见 `docs/spec/defaults.md`。
+决策见 ADR-0023，升级顺序和备份责任见 ADR-0014，部署配置见 ADR-0024，所有配置项见 `docs/spec/defaults.md`。
 
 部署是 pull 式：在服务器上从 release tag 取 `deploy/install.sh` 执行，GitHub 不持有服务器凭据。`--version` 可选，缺省时从 GitHub 的最新 release 解析出确切 tag，脚本只从该 tag 下载，不会跟随分支。自动更新是可选功能（`--auto-update`），默认关闭。
 
@@ -69,16 +69,16 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/stars-sandbox/main/deploy/ins
 
 ### TLS
 
-首次安装在 `/etc/stars-sandbox/` 生成 `.env`、`tls/`、`ca/`、`keys/`、`registry/` 和 `nginx/stars.conf`，此后不再重新生成。
+首次安装在 `/etc/stars-sandbox/` 生成 `config/`、`tls/`、`ca/`、`registry/`、`nginx/stars.conf` 和 `.env`，此后不再重新生成。
 
 - **`--tls self-signed`（默认）**：生成 CA 和一张证书，SAN 同时覆盖公开入口和对象存储域名。Node 安装时带 `--ca`，并用 `--trust-registry` 把 CA 放进 Docker/Podman 的 `certs.d`；Control Plane 和 registry 也信任它。证书有效期十年，没有自动轮换。
 - **`--tls cert`**：用 `--tls-cert FILE --tls-key FILE` 提供证书；私有 CA 再加 `--ca FILE`。同一张证书必须覆盖两个域名，脚本会检查并警告。
 
 两种模式下 nginx 都是 TLS 终点；registry 在回环上是明文，Node 看到的 registry 是 HTTPS。
 
-使用私有 CA 时，沙箱内的 CLI 只信任镜像自带的 CA（`defaults.md` 的 `STARS_ACCESS_URL`），需要访问 HTTPS api 的镜像里要装上它。宿主机上的 CLI 和 SDK 也要信任 `ca/ca.crt`（例如设置 `SSL_CERT_FILE` 或 `REQUESTS_CA_BUNDLE`）。
+使用私有 CA 时，沙箱内的 CLI 只信任镜像自带的 CA（`defaults.md` 的 `access.url`），需要访问 HTTPS api 的镜像里要装上它。宿主机上的 CLI 和 SDK 也要信任 `ca/ca.crt`（例如设置 `SSL_CERT_FILE` 或 `REQUESTS_CA_BUNDLE`）。
 
-端口转发（`STARS_APPS_DOMAIN`）走 HTTPS 时需要覆盖 `*.apps` 的通配符证书；生成的证书只覆盖上面两个域名，所以用 `--tls cert` 提供通配符证书，或在 `nginx/stars.conf` 里为应用域名加 server block。
+端口转发（`access.apps_domain`）走 HTTPS 时需要覆盖 `*.apps` 的通配符证书；生成的证书只覆盖上面两个域名，所以用 `--tls cert` 提供通配符证书，或在 `nginx/stars.conf` 里为应用域名加 server block。
 
 ### 自动更新
 
@@ -96,18 +96,22 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/stars-sandbox/main/deploy/ins
 
 ### 首次安装之后
 
-1. 配置平台 Snapshot，否则无法创建 Sandbox。在 `.env` 里按 digest 写：
+1. 配置平台 Snapshot，否则无法创建 Sandbox。在 `/etc/stars-sandbox/config/config.yaml` 里按 digest 写：
 
-   ```sh
-   STARS_PLATFORM_SNAPSHOTS=default=docker.io/library/ubuntu:24.04@sha256:...
-   STARS_DEFAULT_SNAPSHOT=default
+   ```yaml
+   platform_snapshots:
+     - name: default
+       ref: docker.io/library/ubuntu:24.04@sha256:...
+       default: true
    ```
 
-   OIDC、Git provider、端口转发域名等也在 `.env` 配置（`defaults.md`）。改完执行 `docker compose up -d`。
+   OIDC、Git provider、端口转发域名等也在同一个文件里配置（`defaults.md`）。改完执行 `docker compose up -d`。
 2. 创建第一个 admin：`cd /etc/stars-sandbox && docker compose exec server stars-sandbox-server bootstrap`。
 3. 签发 Enrollment Packet（1 小时有效）：脚本结束时会打印用 `POST /sessions` 取 admin token、再 `POST /enrollment-packets` 的命令，走公开入口。
 
-改地址或证书时编辑 `.env` 和 `nginx/stars.conf`，然后：
+`config.yaml` 首次安装时生成，升级不覆盖；`.env` 只保留 Compose 需要的插值值，应用配置不要再写进 `.env`。
+
+改地址或证书时编辑 `.env`、`config.yaml` 的 `access.url` 和 `nginx/stars.conf`，然后：
 
 ```sh
 cd /etc/stars-sandbox && docker compose up -d && docker compose restart nginx
@@ -157,7 +161,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/stars-sandbox/main/deploy/ins
 
 对象存储（RustFS 卷 `stars-sandbox_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 
-排障：Control Plane 通过公开地址推送 registry（`STARS_REGISTRY_PUSH_ADDR` 默认等于 `STARS_REGISTRY_ADDR`）。如果容器解析不到公开地址或 NAT 不回环，Platform Snapshot 导入会失败。没有用 `--public-bind` 时（nginx 监听所有接口），可以在 `/etc/stars-sandbox/compose.override.yaml` 里给 `server` 加：
+排障：Control Plane 通过公开地址推送 registry（`registry.push_addr` 默认等于 `registry.addr`）。如果容器解析不到公开地址或 NAT 不回环，Platform Snapshot 导入会失败。没有用 `--public-bind` 时（nginx 监听所有接口），可以在 `/etc/stars-sandbox/compose.override.yaml` 里给 `server` 加：
 
 ```yaml
 services:
@@ -167,7 +171,7 @@ services:
       - "s3.cp.example.com:host-gateway"
 ```
 
-外层代理模式下让 server 经外层代理访问，或把 registry 暴露到容器可达的地址并设置 `STARS_REGISTRY_PUSH_ADDR`。
+外层代理模式下让 server 经外层代理访问，或把 registry 暴露到容器可达的地址并设置 `registry.push_addr`。
 
 ## 发版
 

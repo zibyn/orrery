@@ -66,7 +66,7 @@ func (s *Server) handleGitCredential(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	if s.cfg.EncryptionKeys == nil {
-		writeProblem(w, "unavailable", "Git account linking is not configured: set STARS_ENCRYPTION_KEYS_FILE")
+		writeProblem(w, "unavailable", "Git account linking is not configured: set encryption_keys in the deployment configuration")
 		return
 	}
 

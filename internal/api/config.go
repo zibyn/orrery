@@ -130,6 +130,9 @@ type OIDCConfig struct {
 
 func (c OIDCConfig) Enabled() bool { return c.IssuerURL != "" }
 
+// ConfigFromEnv reads the environment-only configuration used by tests and CI
+// when STARS_CONFIG_FILE is unset (defaults.md). It is not the deployment
+// contract; LoadConfig reads config.yaml.
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
 		DatabaseURL:   os.Getenv("STARS_DATABASE_URL"),

@@ -198,7 +198,7 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 		return
 	}
 	if len(req.Secrets) > 0 && s.cfg.EncryptionKeys == nil {
-		writeProblem(w, "unavailable", "Secret storage is not configured: set STARS_ENCRYPTION_KEYS_FILE")
+		writeProblem(w, "unavailable", "Secret storage is not configured: set encryption_keys in the deployment configuration")
 		return
 	}
 	if s.cfg.BuildCPU <= 0 || s.cfg.BuildMemory <= 0 || s.cfg.BuildTimeout <= 0 {

@@ -650,7 +650,7 @@ func schemas() map[string]any {
 						"mode": map[string]any{"type": "string", "enum": []string{"rw", "ro"}, "default": "rw"},
 					},
 				},
-				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name (own first, then platform); omit for STARS_DEFAULT_SNAPSHOT."},
+				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name (own first, then platform); omit for the deployment default."},
 				"resources": map[string]any{
 					"type":        "array",
 					"description": "Resource versions pinned at create time and mounted read-only at /resources/<mount>.",

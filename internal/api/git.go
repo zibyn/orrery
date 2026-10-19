@@ -286,7 +286,7 @@ func (s *Server) gitBrowserEndpoint(w http.ResponseWriter, r *http.Request, redi
 		return GitProvider{}, nil, false
 	}
 	if s.cfg.EncryptionKeys == nil {
-		writeProblem(w, "unavailable", "Git account linking is not configured: set STARS_ENCRYPTION_KEYS_FILE")
+		writeProblem(w, "unavailable", "Git account linking is not configured: set encryption_keys in the deployment configuration")
 		return GitProvider{}, nil, false
 	}
 	return provider, p, true

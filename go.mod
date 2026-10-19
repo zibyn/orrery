@@ -18,6 +18,7 @@ require (
 	github.com/moby/buildkit v0.34.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/tonistiigi/fsutil v0.0.0-20260819142231-83cac42c1c52
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
 	golang.org/x/oauth2 v0.36.0

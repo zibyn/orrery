@@ -57,8 +57,10 @@ commands:
   openapi     print the generated OpenAPI document
 
 environment:
-  STARS_DATABASE_URL            PostgreSQL DSN (required)
+  STARS_CONFIG_FILE             deployment config.yaml (defaults.md); when unset,
+                                settings come from the STARS_* variables below
   STARS_API_ADDR                listen address (default :8080)
+  STARS_DATABASE_URL            PostgreSQL DSN (environment mode only)
   STARS_DEFAULT_GPU_QUOTA       new User GPU quota (default 0)
   STARS_DEFAULT_SANDBOX_QUOTA   new User Sandbox quota (default 0)
   STARS_APPS_DOMAIN             wildcard domain for port forwarding (off when empty)
@@ -79,7 +81,7 @@ func serve(args []string, logger *slog.Logger) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := api.ConfigFromEnv()
+	cfg, err := api.LoadConfig(logger)
 	if err != nil {
 		return err
 	}
@@ -107,7 +109,7 @@ func runBootstrap(args []string, logger *slog.Logger) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := api.ConfigFromEnv()
+	cfg, err := api.LoadConfig(logger)
 	if err != nil {
 		return err
 	}
