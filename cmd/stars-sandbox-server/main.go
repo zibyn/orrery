@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/zibyn/stars-sandbox/internal/api"
+	"github.com/zibyn/stars-sandbox/internal/buildinfo"
 )
 
 func main() {
@@ -94,7 +95,7 @@ func serve(args []string, logger *slog.Logger) error {
 	}
 	logger.Info("migrations applied")
 	server := api.New(cfg, pool, logger)
-	logger.Info("listening", "addr", cfg.Addr)
+	logger.Info("listening", "addr", cfg.Addr, "version", buildinfo.Version())
 	return server.Serve(ctx)
 }
 
