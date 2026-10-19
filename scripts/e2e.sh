@@ -167,8 +167,8 @@ cleanup() {
   # A failed run is only reproducible from its logs; the stack is about to go.
   if [ "$code" -ne 0 ]; then
     "${COMPOSE[@]}" logs --no-color --tail 400 server 2>&1 | grep -v '"msg":"request"' | tail -40 || true
-    "${COMPOSE[@]}" logs --no-color --tail 300 registry 2>&1 |
-      grep -E 'snapshots|upload|level=error|level=warn' | tail -30 || true
+    "${COMPOSE[@]}" logs --no-color registry 2>&1 |
+      grep -E '(PUT|POST) /v2/snapshots|level=error' | tail -20 || true
     "${COMPOSE[@]}" logs --no-color --tail 100 rustfs 2>&1 | grep -iE 'error|warn' | tail -10 || true
   fi
   if [ -n "$CONSOLE_AGENT_PID" ]; then
