@@ -62,6 +62,9 @@ jobs:
       - uses: docker/setup-docker-action@v5
         with:
           version: v29.9.1
+          # The action's daemon listens on its own socket; the e2e Agent takes
+          # it from DOCKER_HOST (scripts/e2e.sh).
+          set-host: true
       # The unprivileged e2e Agent bounds each build with a slice of its
       # systemd user manager (runtime.md §12); the runner has none until
       # lingering starts it.
