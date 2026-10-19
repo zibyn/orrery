@@ -25,6 +25,13 @@ The version is the tag, stamped into all three binaries at build time; the Agent
 - `install.sh server` sets up a Control Plane host: the Control Plane, PostgreSQL, the object store and the registry, from a release Compose file without development credentials or e2e services. On first run it generates the `node` surface TLS certificate and every secret, and never regenerates them. Each upgrade dumps PostgreSQL first; a downgrade is refused, because migrations are forward-only and rollback is restoring a backup (ADR-0014). PostgreSQL and the object store may point at external services instead.
 - `install.sh node` installs the Node package, verifies it against `SHA256SUMS`, enrolls once with an Enrollment Packet, and runs the Agent as a systemd service whose stop signal reaches the Agent only, so Exec Supervisors keep running across a restart. An older Agent is allowed: the Control Plane accepts an older minor and flags the Node `outdated`.
 
+**TLS is the deployer's choice.** Remote Nodes pull from the platform registry through dockerd or Podman, which accept plain HTTP only on loopback, and the Control Plane's registry client falls back to HTTP only for loopback and private addresses. Some deployments front everything with an HTTPS reverse proxy; some internal networks cannot. `install.sh server` therefore has two modes:
+
+- `self-signed` (default): the script generates a CA and one server certificate for the public host. The registry serves TLS with it; `api` and the object store stay plain HTTP. The Node install trusts the CA for the `node` surface and drops it into the per-registry trust directories of Docker and Podman, which needs no daemon restart; the Control Plane trusts it for its pushes.
+- `proxy`: the deployer's proxy terminates HTTPS for `api`, the registry and the object store. The script binds them to loopback, takes their public URLs as arguments and prints the upstream each proxy entry must reach.
+
+The `node` surface is TLS in both modes and is never proxied, because Agents connect to it directly (ADR-0014); a deployer may supply its certificate instead of the generated one.
+
 Upgrading is re-running the same script with a newer version, Control Plane first.
 
 ## Consequences
@@ -40,4 +47,6 @@ Upgrading is re-running the same script with a newer version, Control Plane firs
 - A `latest` install path: one unattended re-run would upgrade a Control Plane past a forward-only migration.
 - Signing the Node package: no vendor does it for its agent (ADR-0014), and the checksum covers transport.
 - Installing Docker or Podman from the script: distribution package managers differ, and the host's container runtime belongs to its operator.
+- Configuring `insecure-registries` on Nodes: it restarts the host's container runtime, and the Control Plane still refuses plain HTTP to a public address.
+- Requiring a reverse proxy: some internal networks have no way to issue HTTPS certificates.
 - Reusing `deploy/compose.yaml` for production: its defaults are development credentials and same-host addresses.
