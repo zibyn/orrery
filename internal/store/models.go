@@ -242,6 +242,7 @@ type Snapshot struct {
 	CurrentVersionID *uuid.UUID
 	DeletedAt        pgtype.Timestamptz
 	CreatedAt        pgtype.Timestamptz
+	IdempotencyKey   *string
 }
 
 type SnapshotVersion struct {

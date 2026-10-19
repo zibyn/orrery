@@ -1127,20 +1127,26 @@ func (q *Queries) CreateSandboxResource(ctx context.Context, arg CreateSandboxRe
 
 const createSnapshot = `-- name: CreateSnapshot :one
 
-INSERT INTO snapshots (id, owner_id, name)
-VALUES ($1, $2, $3)
-RETURNING id, owner_id, name, current_version_id, deleted_at, created_at
+INSERT INTO snapshots (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key
 `
 
 type CreateSnapshotParams struct {
-	ID      uuid.UUID
-	OwnerID *uuid.UUID
-	Name    string
+	ID             uuid.UUID
+	OwnerID        *uuid.UUID
+	Name           string
+	IdempotencyKey *string
 }
 
 // M4 ticket #88: Snapshots and SnapshotVersions (schema.md, ADR-0012).
 func (q *Queries) CreateSnapshot(ctx context.Context, arg CreateSnapshotParams) (Snapshot, error) {
-	row := q.db.QueryRow(ctx, createSnapshot, arg.ID, arg.OwnerID, arg.Name)
+	row := q.db.QueryRow(ctx, createSnapshot,
+		arg.ID,
+		arg.OwnerID,
+		arg.Name,
+		arg.IdempotencyKey,
+	)
 	var i Snapshot
 	err := row.Scan(
 		&i.ID,
@@ -1149,6 +1155,7 @@ func (q *Queries) CreateSnapshot(ctx context.Context, arg CreateSnapshotParams) 
 		&i.CurrentVersionID,
 		&i.DeletedAt,
 		&i.CreatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -1657,7 +1664,7 @@ func (q *Queries) DeleteSecret(ctx context.Context, arg DeleteSecretParams) (Sec
 const deleteSnapshot = `-- name: DeleteSnapshot :one
 UPDATE snapshots SET deleted_at = now()
 WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL
-RETURNING id, owner_id, name, current_version_id, deleted_at, created_at
+RETURNING id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key
 `
 
 type DeleteSnapshotParams struct {
@@ -1675,6 +1682,7 @@ func (q *Queries) DeleteSnapshot(ctx context.Context, arg DeleteSnapshotParams) 
 		&i.CurrentVersionID,
 		&i.DeletedAt,
 		&i.CreatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -2316,7 +2324,7 @@ func (q *Queries) GetPendingWorkspacePublish(ctx context.Context, id uuid.UUID) 
 }
 
 const getPlatformSnapshotByName = `-- name: GetPlatformSnapshotByName :one
-SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots
 WHERE owner_id IS NULL AND name = $1 AND deleted_at IS NULL
 `
 
@@ -2330,6 +2338,7 @@ func (q *Queries) GetPlatformSnapshotByName(ctx context.Context, name string) (S
 		&i.CurrentVersionID,
 		&i.DeletedAt,
 		&i.CreatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -2652,7 +2661,7 @@ func (q *Queries) GetSecretByName(ctx context.Context, arg GetSecretByNameParams
 }
 
 const getSnapshot = `-- name: GetSnapshot :one
-SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots WHERE id = $1 AND deleted_at IS NULL
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetSnapshot(ctx context.Context, id uuid.UUID) (Snapshot, error) {
@@ -2665,12 +2674,38 @@ func (q *Queries) GetSnapshot(ctx context.Context, id uuid.UUID) (Snapshot, erro
 		&i.CurrentVersionID,
 		&i.DeletedAt,
 		&i.CreatedAt,
+		&i.IdempotencyKey,
+	)
+	return i, err
+}
+
+const getSnapshotByIdempotencyKey = `-- name: GetSnapshotByIdempotencyKey :one
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots
+WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL
+`
+
+type GetSnapshotByIdempotencyKeyParams struct {
+	OwnerID        *uuid.UUID
+	IdempotencyKey *string
+}
+
+func (q *Queries) GetSnapshotByIdempotencyKey(ctx context.Context, arg GetSnapshotByIdempotencyKeyParams) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, getSnapshotByIdempotencyKey, arg.OwnerID, arg.IdempotencyKey)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
 
 const getSnapshotByName = `-- name: GetSnapshotByName :one
-SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots
 WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL
 `
 
@@ -2689,6 +2724,7 @@ func (q *Queries) GetSnapshotByName(ctx context.Context, arg GetSnapshotByNamePa
 		&i.CurrentVersionID,
 		&i.DeletedAt,
 		&i.CreatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -3486,7 +3522,7 @@ func (q *Queries) ListDeletedResources(ctx context.Context, limit int32) ([]Reso
 }
 
 const listDeletedSnapshots = `-- name: ListDeletedSnapshots :many
-SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots
 WHERE deleted_at IS NOT NULL
 ORDER BY deleted_at
 LIMIT $1
@@ -3510,6 +3546,7 @@ func (q *Queries) ListDeletedSnapshots(ctx context.Context, limit int32) ([]Snap
 			&i.CurrentVersionID,
 			&i.DeletedAt,
 			&i.CreatedAt,
+			&i.IdempotencyKey,
 		); err != nil {
 			return nil, err
 		}
@@ -4688,7 +4725,7 @@ func (q *Queries) ListSnapshotVersionsForCleanup(ctx context.Context, arg ListSn
 }
 
 const listSnapshots = `-- name: ListSnapshots :many
-SELECT id, owner_id, name, current_version_id, deleted_at, created_at FROM snapshots
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots
 WHERE deleted_at IS NULL
   AND (owner_id = $1 OR owner_id IS NULL)
   AND ($2::uuid IS NULL OR id > $2)
@@ -4718,6 +4755,7 @@ func (q *Queries) ListSnapshots(ctx context.Context, arg ListSnapshotsParams) ([
 			&i.CurrentVersionID,
 			&i.DeletedAt,
 			&i.CreatedAt,
+			&i.IdempotencyKey,
 		); err != nil {
 			return nil, err
 		}
@@ -5627,6 +5665,16 @@ func (q *Queries) PurgeSandboxIdempotencyKeys(ctx context.Context) error {
 	return err
 }
 
+const purgeSnapshotIdempotencyKeys = `-- name: PurgeSnapshotIdempotencyKeys :exec
+UPDATE snapshots SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
+`
+
+func (q *Queries) PurgeSnapshotIdempotencyKeys(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeSnapshotIdempotencyKeys)
+	return err
+}
+
 const purgeTerminalAdmissionRequests = `-- name: PurgeTerminalAdmissionRequests :exec
 DELETE FROM admission_requests
 WHERE id IN (
@@ -5979,7 +6027,7 @@ func (q *Queries) SetSandboxWorkspace(ctx context.Context, arg SetSandboxWorkspa
 const setSnapshotCurrentVersion = `-- name: SetSnapshotCurrentVersion :one
 UPDATE snapshots SET current_version_id = $1
 WHERE id = $2 AND deleted_at IS NULL
-RETURNING id, owner_id, name, current_version_id, deleted_at, created_at
+RETURNING id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key
 `
 
 type SetSnapshotCurrentVersionParams struct {
@@ -5997,6 +6045,7 @@ func (q *Queries) SetSnapshotCurrentVersion(ctx context.Context, arg SetSnapshot
 		&i.CurrentVersionID,
 		&i.DeletedAt,
 		&i.CreatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }

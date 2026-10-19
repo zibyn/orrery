@@ -222,6 +222,10 @@ WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 UPDATE workspaces SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 
+-- name: PurgeSnapshotIdempotencyKeys :exec
+UPDATE snapshots SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
 -- Enrollment packets and nodes
 
 -- name: CreateEnrollmentPacket :one
@@ -1088,12 +1092,16 @@ WHERE id = $1 AND state = 'ready';
 -- M4 ticket #88: Snapshots and SnapshotVersions (schema.md, ADR-0012).
 
 -- name: CreateSnapshot :one
-INSERT INTO snapshots (id, owner_id, name)
-VALUES (sqlc.arg('id'), sqlc.narg('owner_id'), sqlc.arg('name'))
+INSERT INTO snapshots (id, owner_id, name, idempotency_key)
+VALUES (sqlc.arg('id'), sqlc.narg('owner_id'), sqlc.arg('name'), sqlc.narg('idempotency_key'))
 RETURNING *;
 
 -- name: GetSnapshot :one
 SELECT * FROM snapshots WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: GetSnapshotByIdempotencyKey :one
+SELECT * FROM snapshots
+WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
 
 -- name: GetSnapshotByName :one
 SELECT * FROM snapshots

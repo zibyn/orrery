@@ -139,6 +139,22 @@ func (s *Server) requireWritableSnapshot(w http.ResponseWriter, p *principal, sn
 }
 
 func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request, p *principal) {
+	key, ok := idempotencyKey(r)
+	if !ok {
+		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
+		return
+	}
+	ctx := r.Context()
+	lookup := func() (store.Snapshot, error) {
+		return s.q.GetSnapshotByIdempotencyKey(ctx, store.GetSnapshotByIdempotencyKeyParams{
+			OwnerID: &p.user.ID, IdempotencyKey: key,
+		})
+	}
+	if replayOr(s, w, "look up idempotent Snapshot", key, lookup, func(snap store.Snapshot) {
+		writeJSON(w, http.StatusOK, snapshotToDTO(snap))
+	}) {
+		return
+	}
 	var req createSnapshotRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -152,15 +168,21 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request, p 
 		s.internal(w, "generate Snapshot id", err)
 		return
 	}
-	ctx := r.Context()
-	snap, err := s.q.CreateSnapshot(ctx, store.CreateSnapshotParams{
-		ID: id, OwnerID: &p.user.ID, Name: req.Name,
-	})
+	snap, replayed, err := createIdempotent(key, lookup,
+		func() (store.Snapshot, error) {
+			return s.q.CreateSnapshot(ctx, store.CreateSnapshotParams{
+				ID: id, OwnerID: &p.user.ID, Name: req.Name, IdempotencyKey: key,
+			})
+		})
 	if err != nil {
 		if writeConstraintProblem(w, err) {
 			return
 		}
 		s.internal(w, "create Snapshot", err)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, snapshotToDTO(snap))
 		return
 	}
 	s.audit(ctx, p, "snapshot.create", "snapshot", snap.ID.String(), map[string]any{"name": snap.Name})
