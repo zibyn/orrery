@@ -123,7 +123,7 @@ docker 官方文档对这一能力的描述（dockerd 参考页 "Configure CDI d
 {
   "version": "1.0.0",
   "hook": { "path": "/usr/libexec/oci/hooks.d/xxx", "args": ["xxx", "--flag"] },
-  "when": { "annotations": { "^stars\\.sandbox/kind$": "^task$" } },
+  "when": { "annotations": { "^orrery\\.sandbox/kind$": "^task$" } },
   "stages": ["createRuntime"]
 }
 ```
@@ -268,7 +268,7 @@ podman 默认用 crun，**所以 runc 的行为不能直接当成 podman 的行�
 
 - 必须是**绝对路径**：`config.md` 对每个 stage 都写 "**`path`** (string, REQUIRED) ... This specification extends the IEEE standard in that **`path` MUST be absolute**"。
 - **必须在 runtime namespace 里能解析**（即宿主路径，不是容器内路径）——runc 用 `exec.Cmd{Path: c.Path}` 直接 exec，**不做 PATH 查找**。
-- ⇒ 二进制（`#19` 的 `stars-sandbox oci-hook` 第二入口）必须**以文件形式存在于宿主上且对 runtime 可执行**。规范**没有规定权限位**，可核实的只有「绝对路径 + 宿主可解析 + 被直接 exec」。
+- ⇒ 二进制（`#19` 的 `orrery oci-hook` 第二入口）必须**以文件形式存在于宿主上且对 runtime 可执行**。规范**没有规定权限位**，可核实的只有「绝对路径 + 宿主可解析 + 被直接 exec」。
 - `args`/`env`/`timeout` 都是规范字段，随 `hooks` 一起写进 `config.json`。
 
 **调用约定（两端一致，【源码读出】runc + containers-common）**：
@@ -377,27 +377,27 @@ podman 默认用 crun，**所以 runc 的行为不能直接当成 podman 的行�
 
 1. **hook 脚本**（宿主绝对路径、可执行位、`args` 里不写它也要能跑）：
 
-   `/usr/local/libexec/stars-cdi-hook-probe`：
+   `/usr/local/libexec/orrery-cdi-hook-probe`：
    ```sh
    #!/bin/sh
    # 把 OCI state JSON 原样存到宿主，用来证明 hook 真被 runtime 调用了
-   cat > /tmp/stars-cdi-hook-probe.json
+   cat > /tmp/orrery-cdi-hook-probe.json
    exit 0
    ```
-   `chmod +x /usr/local/libexec/stars-cdi-hook-probe`
+   `chmod +x /usr/local/libexec/orrery-cdi-hook-probe`
 
-2. **CDI spec**：`/etc/cdi/stars-sandbox-probe.yaml`
+2. **CDI spec**：`/etc/cdi/orrery-probe.yaml`
    ```yaml
    cdiVersion: "0.6.0"
-   kind: stars.sandbox/probe
+   kind: orrery.sandbox/probe
    devices:
      - name: hookprobe
        containerEdits:
          env:
-           - STARS_PROBE=cdi-works
+           - ORRERY_PROBE=cdi-works
          hooks:
            - hookName: createRuntime
-             path: /usr/local/libexec/stars-cdi-hook-probe
+             path: /usr/local/libexec/orrery-cdi-hook-probe
    ```
    （`env` 那条是**对照组**：它对应 moby 自己集成测试断言过的形状，用来区分「CDI 管线没通」和「只有 hook 没被执行」。）
 
@@ -405,24 +405,24 @@ podman 默认用 crun，**所以 runc 的行为不能直接当成 podman 的行�
 
 4. **单条命令**（不加 `--rm`，留下容器便于复看）：
    ```
-   docker run --name stars-cdi-probe --device stars.sandbox/probe=hookprobe \
-     --annotation stars.sandbox/probe=1 busybox env
+   docker run --name orrery-cdi-probe --device orrery.sandbox/probe=hookprobe \
+     --annotation orrery.sandbox/probe=1 busybox env
    ```
 
 5. **看什么**：
 
    | 观察 | 判定 |
    |---|---|
-   | `/tmp/stars-cdi-hook-probe.json` **存在** | **Q1 = 会**：docker 执行了 CDI 声明的 hook。文件内容即 stdin 收到的 state JSON（本节 §6） |
-   | 文件不存在、但 `STARS_PROBE=cdi-works` 出现在 `env` 输出里 | **Q1 = 不会**：CDI 管线通、但 `containerEdits.hooks` 被忽略 ⇒ 本节 §0 要改口，`# 22` 的候选 1 作废 |
-   | 文件不存在、`STARS_PROBE` 也没出现 | CDI 管线本身没通（目录/开关/版本问题），先修这个再判 Q1 |
-   | 容器起不来、报 `error executing hook ... /usr/local/libexec/stars-cdi-hook-probe` | hook **被应用、被调用**了，只是脚本失败（查权限位/绝对路径/shell 解释器）——仍算 **Q1 = 会** |
+   | `/tmp/orrery-cdi-hook-probe.json` **存在** | **Q1 = 会**：docker 执行了 CDI 声明的 hook。文件内容即 stdin 收到的 state JSON（本节 §6） |
+   | 文件不存在、但 `ORRERY_PROBE=cdi-works` 出现在 `env` 输出里 | **Q1 = 不会**：CDI 管线通、但 `containerEdits.hooks` 被忽略 ⇒ 本节 §0 要改口，`# 22` 的候选 1 作废 |
+   | 文件不存在、`ORRERY_PROBE` 也没出现 | CDI 管线本身没通（目录/开关/版本问题），先修这个再判 Q1 |
+   | 容器起不来、报 `error executing hook ... /usr/local/libexec/orrery-cdi-hook-probe` | hook **被应用、被调用**了，只是脚本失败（查权限位/绝对路径/shell 解释器）——仍算 **Q1 = 会** |
 
 6. **顺带值得看的两件事**：
    - 把 `hookName` 换成 `createContainer`、`startContainer` 各跑一次 ⇒ 验证 stage 分派与「hook 在哪个 namespace 里跑」（对齐上文 §3.2/§4）。
-   - `--annotation stars.sandbox/probe=1` 的键值**是否出现在 state JSON 的 `annotations` 里** ⇒ 一次同时验证 `# 19` 那句「per-task 数据经 annotation 进 hook」在 docker 上通不通（上文 §1 末尾那条：`daemon/oci_linux.go:1047` 的 `coci.WithAnnotations`）。
+   - `--annotation orrery.sandbox/probe=1` 的键值**是否出现在 state JSON 的 `annotations` 里** ⇒ 一次同时验证 `# 19` 那句「per-task 数据经 annotation 进 hook」在 docker 上通不通（上文 §1 末尾那条：`daemon/oci_linux.go:1047` 的 `coci.WithAnnotations`）。
 
-7. **清理**：`docker rm stars-cdi-probe`、删 `/etc/cdi/stars-sandbox-probe.yaml`、删 `/usr/local/libexec/stars-cdi-hook-probe`、删 `/tmp/stars-cdi-hook-probe.json`。
+7. **清理**：`docker rm orrery-cdi-probe`、删 `/etc/cdi/orrery-probe.yaml`、删 `/usr/local/libexec/orrery-cdi-hook-probe`、删 `/tmp/orrery-cdi-hook-probe.json`。
 
 ### 6. Q4 复述：`createRuntime` hook 的 stdin 到底有什么（按 runtime-spec 原文）
 

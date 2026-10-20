@@ -5,13 +5,13 @@
 
 ## Context
 
-Issue #147. The Control Plane read 41 `STARS_*` environment variables, documented 19 of them, and split further settings across a Git providers JSON file, an encryption keyring file, an OIDC client-secret file and TLS material; 11 more variables served only Compose interpolation. ADR-0010 had made platform secrets deployment-time file path references so they stay out of PostgreSQL, backups and the API.
+Issue #147. The Control Plane read 41 `ORRERY_*` environment variables, documented 19 of them, and split further settings across a Git providers JSON file, an encryption keyring file, an OIDC client-secret file and TLS material; 11 more variables served only Compose interpolation. ADR-0010 had made platform secrets deployment-time file path references so they stay out of PostgreSQL, backups and the API.
 
 We considered making Git Providers configurable from the admin console and rejected it: the console is a pure client of the public API (ADR-0020), so provider client secrets would have to live in PostgreSQL, enter backups and become reachable through the API — exactly what ADR-0010 excludes — and neither Coder nor Daytona stores provider credentials that way.
 
 ## Decision
 
-**One file.** A Deployment's Control Plane settings live in `config.yaml`, mounted read-only at `/config/config.yaml`; `STARS_CONFIG_FILE` names it and `install.sh` always sets the variable. The file is generated on first install and preserved on upgrade, so operator edits survive.
+**One file.** A Deployment's Control Plane settings live in `config.yaml`, mounted read-only at `/config/config.yaml`; `ORRERY_CONFIG_FILE` names it and `install.sh` always sets the variable. The file is generated on first install and preserved on upgrade, so operator edits survive.
 
 **Scope.** The file holds Control Plane application settings only. Compose interpolation values (version, public host and port, bind/resolve), nginx, the registry's own `config.yml`, systemd and Node Agent flags keep their native formats.
 
@@ -19,7 +19,7 @@ We considered making Git Providers configurable from the admin console and rejec
 
 **Structured schema.** Settings are grouped by feature (`access`, `database`, `oidc`, `s3`, `registry`, `logs`, `lifecycle`, `builds`, `quotas`) with list-valued `git_providers`, `encryption_keys` and `platform_snapshots`. Redundant settings are derived: registry auth JSON from username and password, the default Platform Snapshot from a per-entry flag, the access URL from the public host at install time, and the DSN from structured database fields unless `database.url` is set.
 
-**Precedence.** Scalar leaves may be overridden by `STARS_*` environment variables; existing names are preserved. Lists and maps are file-only. Overridden keys are logged at startup. When `STARS_CONFIG_FILE` is unset the server keeps reading the existing environment variables, including the file-path variables for the keyring and Git providers; that path exists for tests and CI and is not a deployment contract.
+**Precedence.** Scalar leaves may be overridden by `ORRERY_*` environment variables; existing names are preserved. Lists and maps are file-only. Overridden keys are logged at startup. When `ORRERY_CONFIG_FILE` is unset the server keeps reading the existing environment variables, including the file-path variables for the keyring and Git providers; that path exists for tests and CI and is not a deployment contract.
 
 **Validation.** YAML is decoded strictly: unknown keys, malformed values, duplicate provider ids, and `database.url` together with structured fields fail startup. There is no environment interpolation and no hot reload; a restart applies changes.
 
@@ -35,7 +35,7 @@ We considered making Git Providers configurable from the admin console and rejec
 ## Rejected alternatives
 
 - Admin-console CRUD for Git Providers: puts provider secrets in PostgreSQL, backups and the API, and no surveyed product does it.
-- Keeping `STARS_GIT_PROVIDERS_FILE`, `STARS_OIDC_CLIENT_SECRET_FILE` and `STARS_ENCRYPTION_KEYS_FILE` alongside the new file: two sources of truth for the same settings.
+- Keeping `ORRERY_GIT_PROVIDERS_FILE`, `ORRERY_OIDC_CLIENT_SECRET_FILE` and `ORRERY_ENCRYPTION_KEYS_FILE` alongside the new file: two sources of truth for the same settings.
 - Inlining TLS certificates and keys: nginx, the registry and Nodes consume them, not only the server.
 - JSON or TOML: JSON cannot carry comments, and YAML is the operator-facing convention for a file this size; one direct YAML dependency is acceptable.
 - Absorbing Compose, nginx and registry configuration: each component's native format would have to be reimplemented.

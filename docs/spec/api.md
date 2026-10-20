@@ -6,8 +6,8 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 - **前缀**：`/api/v1`。`api` 监听面上另有 `/metrics`（`admin`）、端口转发子域名（§6）和 `/` 下的 Web 控制台（§8）。
 - **ID**：服务端生成的 UUIDv7，不带类型前缀。Sandbox 的 `name` 每个 User 内唯一，只用于过滤，不进路径。
-- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `ssk_<id>_<secret>`，Sandbox Token 形如 `sst_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。
-- **Session cookie**：`stars_session; HttpOnly; Secure; SameSite=Lax; Path=/`，不带 `Domain`，端口转发子域名收不到。值的格式同 API Token，对应 `api_tokens` 里 `kind=session` 的一行。cookie 与 Bearer 等价；用 cookie 认证时，非安全方法要过 `http.CrossOriginProtection`，WebSocket 升级要求 `Origin` 等于 `api` 自己的源（ADR-0020）。
+- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `orr_<id>_<secret>`，Sandbox Token 形如 `ors_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。
+- **Session cookie**：`orrery_session; HttpOnly; Secure; SameSite=Lax; Path=/`，不带 `Domain`，端口转发子域名收不到。值的格式同 API Token，对应 `api_tokens` 里 `kind=session` 的一行。cookie 与 Bearer 等价；用 cookie 认证时，非安全方法要过 `http.CrossOriginProtection`，WebSocket 升级要求 `Origin` 等于 `api` 自己的源（ADR-0020）。
 - **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
 - **创建**返回 `201` 和初始状态的资源；**动作**（`POST /{资源}/{id}/{动词}`）返回 `202` 和当前资源；删除用 `DELETE`，返回 `202`，资源进入 `deleting`。
@@ -47,7 +47,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /users` · `GET /users` · `GET /users/{id}` · `PATCH /users/{id}` · `DELETE /users/{id}` | **admin**。`{name, email?, login_type, password?, is_admin}`；`login_type` 取 `password`、`oidc`、`none`。第一个 admin 由 `stars-sandbox-server bootstrap` 交互式设密码创建，或者是没有任何 User 时第一个 OIDC 登录者 |
+| `POST /users` · `GET /users` · `GET /users/{id}` · `PATCH /users/{id}` · `DELETE /users/{id}` | **admin**。`{name, email?, login_type, password?, is_admin}`；`login_type` 取 `password`、`oidc`、`none`。第一个 admin 由 `orrery-server bootstrap` 交互式设密码创建，或者是没有任何 User 时第一个 OIDC 登录者 |
 | `PUT /users/{id}/password` | **admin**。重置密码 |
 | `PUT /users/{id}/quota` | **admin**。`{gpus, sandboxes}` |
 | `GET /users/me` · `GET /users/me/quota` | quota 返回上限与当前用量 |
@@ -58,7 +58,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /sessions` | `{username, password}` → `Set-Cookie` 一个 Session。带 `token: {name, scope, expires_at?}` 时改为返回一枚具名 API Token，不设 cookie（`stars-sandbox login` 用）。用户名不存在和密码错误都返回同一个 `401`；失败超限返回 `429 rate_limited` |
+| `POST /sessions` | `{username, password}` → `Set-Cookie` 一个 Session。带 `token: {name, scope, expires_at?}` 时改为返回一枚具名 API Token，不设 cookie（`orrery login` 用）。用户名不存在和密码错误都返回同一个 `401`；失败超限返回 `429 rate_limited` |
 | `DELETE /sessions/current` | 退出登录，删掉当前 Session |
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
 | `GET /oidc/callback` | 先按 (`issuer`, `sub`) 匹配 User，再按已验证的 email 匹配；匹配不到时，`allow_signups` 打开或还没有任何 User 才建号，否则 `403`。`email_domains` 之外和 `email_verified=false` 一律 `403`。成功后设 Session cookie 并 302 回 `return` |
@@ -105,7 +105,7 @@ idle_stop?: 秒数，默认 900，0 表示关闭
 
 - `container` 只放到 Docker 或 Podman 的 Node 上，`local` 只放到 Local Node 上；重启后仍作为准入约束。
 - `local` 带了 `snapshot` 或 `resources` 时返回 `422 unsupported`。
-- Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `STARS_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。
+- Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `ORRERY_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。
 - Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用。GPU 可见性为 `best_effort` 时也接受。
 
 **Exec**：`GET /execs/{id}` · `POST /execs/{id}/cancel` · `GET /execs/{id}/output` · `GET /execs/{id}/pty`，见 §4。
@@ -190,7 +190,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 | `GET /users/me/git-links` · `DELETE /users/me/git-links/{provider_id}` | |
 | `POST /git/credential` | **只接受 Sandbox Token**。`{host}` 或 `{provider}` → `{username, password}`；未关联或校验失败时返回 `404 not_found`，`authorize_url` 写在 problem 扩展字段里，指向控制台的 Git 关联页 |
 
-Git Provider 来自部署配置文件 `config.yaml` 的 `git_providers`（`defaults.md`），client secret 直接写在文件里。OAuth `redirect_uri` 和 `authorize_url` 都以 `access.url`（环境变量覆盖名 `STARS_ACCESS_URL`）为基址；它未配置时 Git 关联关闭。
+Git Provider 来自部署配置文件 `config.yaml` 的 `git_providers`（`defaults.md`），client secret 直接写在文件里。OAuth `redirect_uri` 和 `authorize_url` 都以 `access.url`（环境变量覆盖名 `ORRERY_ACCESS_URL`）为基址；它未配置时 Git 关联关闭。
 
 沙箱内的 helper 收到 `404` 时，把 `authorize_url` 写到 stderr，stdout 不输出，退出码为 0，由 git 继续尝试下一个 helper 或报认证失败。
 
@@ -238,7 +238,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 只有 owner 或 admin 能访问，子域名格式为 `<port>--<sandbox_id>.<apps_domain>`。泛域名和证书由部署配置。
 
 - 浏览器：`POST /sandboxes/{id}/ports/{port}/ticket` 返回一个带签名票据的 URL，票据有效期不超过 1 分钟。Gateway 收到票据后，把它换成该子域名上的 cookie。转发前去掉 API Token 和 cookie。
-- CLI：`stars-sandbox port-forward` 带 API Token 打开 `GET /sandboxes/{id}/ports/{port}/tunnel` WebSocket，承载原始 TCP 字节。
+- CLI：`orrery port-forward` 带 API Token 打开 `GET /sandboxes/{id}/ports/{port}/tunnel` WebSocket，承载原始 TCP 字节。
 
 非 owner 且非 admin 访问一律返回 `404`。
 
@@ -248,8 +248,8 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 **传输与认证**
 
-- 只走 stdio，命令是 `stars-sandbox mcp`。
-- 凭据解析和其它 CLI 子命令一致：`--token` > `STARS_SANDBOX_TOKEN` > config 文件。
+- 只走 stdio，命令是 `orrery mcp`。
+- 凭据解析和其它 CLI 子命令一致：`--token` > `ORRERY_SANDBOX_TOKEN` > config 文件。
 - 不接受 Sandbox Token。
 
 **协议**
@@ -318,11 +318,11 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 - 参数校验失败也用 `isError` 返回。
 - 只有工具名不存在、请求格式错误、进程内部错误，才用 JSON-RPC 错误。
 
-**配置**：README 给出 `claude mcp add stars-sandbox -- stars-sandbox mcp` 和通用 JSON 配置示例，不做 `mcp init`。
+**配置**：README 给出 `claude mcp add orrery -- orrery mcp` 和通用 JSON 配置示例，不做 `mcp init`。
 
 ## 8. Web 控制台
 
-独立源码，构建成静态文件后嵌进 `stars-sandbox-server`，由 `api` 监听面在 `/` 下提供，与 `/api/v1` 同源，不开 CORS。它只调用本文列出的接口，用 Session cookie 认证（ADR-0020）。范围以下面的页面清单为准，不追求与每个 operation 对等；清单外的操作用 CLI。
+独立源码，构建成静态文件后嵌进 `orrery-server`，由 `api` 监听面在 `/` 下提供，与 `/api/v1` 同源，不开 CORS。它只调用本文列出的接口，用 Session cookie 认证（ADR-0020）。范围以下面的页面清单为准，不追求与每个 operation 对等；清单外的操作用 CLI。
 
 技术栈与构建：
 
@@ -339,7 +339,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | 页面 | 用到的接口 |
 |---|---|
 | 登录 `/login?return=` | `POST /sessions`、`GET /oidc/login` |
-| CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `stars-sandbox login` |
+| CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `orrery login` |
 | Git 关联 `/git` | `GET /git-providers`、`/users/me/git-links`、`authorize`；`authorize_url` 指向这里 |
 | Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、workspace（默认临时；或从 `GET /workspaces` 选一个持久的，并选 rw/ro）、idle_stop。resources、secrets、labels 用 CLI |
 | Exec | `GET /sandboxes/{id}/execs`、`output?follow=true` 跟随、`POST /execs/{id}/cancel` |
@@ -356,7 +356,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 两个 SDK 都手写（ADR-0017）。
 
 - **Go**：
-  - 公开包 `github.com/zibyn/stars-sandbox/client`，用 `client.New(baseURL, token)` 创建。
+  - 公开包 `github.com/zibyn/orrery/client`，用 `client.New(baseURL, token)` 创建。
   - 方法第一个参数都是 `ctx`，请求和响应的结构体手写。
   - 错误类型 `*client.Error{Status, Code, Detail}`。
   - 提供帮助函数 `RunExec` 和 `FollowOutput`。
@@ -366,7 +366,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 - **Python**：
   - 放在 `sdk/python/`，用 httpx 手写，只提供同步接口。
   - Python ≥ 3.10，唯一依赖是 httpx，模型用 `dataclasses`。
-  - 错误类型 `StarsSandboxError(status, code, detail)`。
+  - 错误类型 `OrreryError(status, code, detail)`。
   - 覆盖范围：Sandbox 生命周期（含 `wait_for`）、Exec（create、wait、按 `after` 跟随输出、cancel）、文件（§5 全部，包括 tar 上传和下载）、Secret。
   - 不覆盖 Resource 上传、Workspace publish、端口转发和 PTY。
 - **发布**：

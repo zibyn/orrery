@@ -73,47 +73,47 @@
 
 ## 部署配置
 
-Control Plane 的应用配置只有一个文件：`STARS_CONFIG_FILE` 指向的 YAML。安装脚本写入 `/etc/stars-sandbox/config/config.yaml`，容器内为 `/config/config.yaml`；文件 `0600`、属主为 server 运行用户，以目录只读挂载。未设置 `STARS_CONFIG_FILE` 时，server 读取现有的环境变量，供测试与 CI 使用；那不是部署契约。
+Control Plane 的应用配置只有一个文件：`ORRERY_CONFIG_FILE` 指向的 YAML。安装脚本写入 `/etc/orrery/config/config.yaml`，容器内为 `/config/config.yaml`；文件 `0600`、属主为 server 运行用户，以目录只读挂载。未设置 `ORRERY_CONFIG_FILE` 时，server 读取现有的环境变量，供测试与 CI 使用；那不是部署契约。
 
-键名去掉 `STARS_` 前缀、使用 snake_case，按功能分组。标量键可以被「覆盖变量」列的环境变量覆盖；列表和映射只从文件读取。被覆盖的键在启动时逐行打印。未知键、非法值、重复的 provider id、`database.url` 与结构化字段同时出现，都会让启动失败。不做环境变量插值，没有热加载。
+键名去掉 `ORRERY_` 前缀、使用 snake_case，按功能分组。标量键可以被「覆盖变量」列的环境变量覆盖；列表和映射只从文件读取。被覆盖的键在启动时逐行打印。未知键、非法值、重复的 provider id、`database.url` 与结构化字段同时出现，都会让启动失败。不做环境变量插值，没有热加载。
 
 ### `access`
 
 | 键 | 默认 | 覆盖变量 | 说明 |
 |---|---|---|---|
-| `url` | 空 | `STARS_ACCESS_URL` | 外部可达的 `api` 地址，对应 Coder 的 `CODER_ACCESS_URL`。OAuth `redirect_uri`、problem 里的 `authorize_url`、沙箱内的 `STARS_URL` 都由它拼出；空时 Git 关联关闭。沙箱内的 CLI 只信任镜像自带的 CA，部署指南要写明：用私有 CA 时，镜像里得装上它 |
-| `apps_domain` | 空 | `STARS_APPS_DOMAIN` | 端口转发的泛域名，子域名为 `<port>--<sandbox_id>.<apps_domain>`（`api.md` §6）；空时浏览器 Gateway 关闭，CLI 隧道仍可用 |
-| `ticket_key` | 空 | `STARS_PORT_TICKET_KEY` | 端口转发票据与 Gateway cookie 的 HMAC-SHA256 密钥；空时每个进程随机生成，重启后已签发的票据和 cookie 失效 |
+| `url` | 空 | `ORRERY_ACCESS_URL` | 外部可达的 `api` 地址，对应 Coder 的 `CODER_ACCESS_URL`。OAuth `redirect_uri`、problem 里的 `authorize_url`、沙箱内的 `ORRERY_URL` 都由它拼出；空时 Git 关联关闭。沙箱内的 CLI 只信任镜像自带的 CA，部署指南要写明：用私有 CA 时，镜像里得装上它 |
+| `apps_domain` | 空 | `ORRERY_APPS_DOMAIN` | 端口转发的泛域名，子域名为 `<port>--<sandbox_id>.<apps_domain>`（`api.md` §6）；空时浏览器 Gateway 关闭，CLI 隧道仍可用 |
+| `ticket_key` | 空 | `ORRERY_PORT_TICKET_KEY` | 端口转发票据与 Gateway cookie 的 HMAC-SHA256 密钥；空时每个进程随机生成，重启后已签发的票据和 cookie 失效 |
 
 ### `database`
 
 | 键 | 默认 | 覆盖变量 | 说明 |
 |---|---|---|---|
-| `url` | 空 | `STARS_DATABASE_URL` | 完整 DSN，与下面的结构化字段互斥；接外部 PostgreSQL（TLS、额外参数）时用它 |
-| `host` | 空 | `STARS_DATABASE_HOST` | 内置 PostgreSQL 为 `postgres`；`url` 为空时必填 |
-| `port` | `5432` | `STARS_DATABASE_PORT` | |
-| `user` | 空 | `STARS_DATABASE_USER` | `url` 为空时必填 |
-| `password` | 空 | `STARS_DATABASE_PASSWORD` | `url` 为空时必填 |
-| `name` | 空 | `STARS_DATABASE_NAME` | `url` 为空时必填 |
+| `url` | 空 | `ORRERY_DATABASE_URL` | 完整 DSN，与下面的结构化字段互斥；接外部 PostgreSQL（TLS、额外参数）时用它 |
+| `host` | 空 | `ORRERY_DATABASE_HOST` | 内置 PostgreSQL 为 `postgres`；`url` 为空时必填 |
+| `port` | `5432` | `ORRERY_DATABASE_PORT` | |
+| `user` | 空 | `ORRERY_DATABASE_USER` | `url` 为空时必填 |
+| `password` | 空 | `ORRERY_DATABASE_PASSWORD` | `url` 为空时必填 |
+| `name` | 空 | `ORRERY_DATABASE_NAME` | `url` 为空时必填 |
 
 ### 生命周期、配额、日志与构建
 
 | 键 | 默认 | 覆盖变量 | 说明 |
 |---|---|---|---|
-| `enrollment_packet_ttl` | `1h` | `STARS_ENROLLMENT_PACKET_TTL` | Enrollment Packet 有效期 |
-| `quotas.default_gpu` | `0` | `STARS_DEFAULT_GPU_QUOTA` | 新 User 的默认 GPU Quota |
-| `quotas.default_sandbox` | `0` | `STARS_DEFAULT_SANDBOX_QUOTA` | 新 User 的默认 Sandbox Quota |
-| `lifecycle.pty_idle_seconds` | `300` | `STARS_PTY_IDLE_SECONDS` | PTY 空闲回收，秒 |
-| `lifecycle.idle_stop_seconds` | `900` | `STARS_IDLE_STOP_SECONDS` | Idle Stop，秒，`0` 表示关闭 |
-| `lifecycle.admission_timeout` | `1h` | `STARS_ADMISSION_TIMEOUT` | 准入期限 |
-| `builds.cpu` | `4` | `STARS_BUILD_CPU` | 构建 CPU 上限 |
-| `builds.memory` | `8589934592`（8 GiB，字节） | `STARS_BUILD_MEMORY` | 构建内存上限 |
-| `builds.timeout` | `1h` | `STARS_BUILD_TIMEOUT` | 构建超时 |
-| `logs.exec_cap` | `16777216`（16 MiB，字节） | `STARS_EXEC_LOG_CAP` | Execution Log 上限 |
-| `logs.exec_retention` | `720h` | `STARS_EXEC_LOG_RETENTION` | Execution Log 保留期，`0` 表示永久 |
-| `logs.audit_retention` | `0` | `STARS_AUDIT_RETENTION` | Audit Record 保留期，`0` 表示永久 |
-| `logs.resource_version_ttl` | `720h` | `STARS_RESOURCE_VERSION_TTL` | 非 current、无引用的 ResourceVersion 保留期 |
-| `logs.cas_grace` | `24h` | `STARS_CAS_GRACE` | CAS 对象与未完成上传的 GC 宽限 |
+| `enrollment_packet_ttl` | `1h` | `ORRERY_ENROLLMENT_PACKET_TTL` | Enrollment Packet 有效期 |
+| `quotas.default_gpu` | `0` | `ORRERY_DEFAULT_GPU_QUOTA` | 新 User 的默认 GPU Quota |
+| `quotas.default_sandbox` | `0` | `ORRERY_DEFAULT_SANDBOX_QUOTA` | 新 User 的默认 Sandbox Quota |
+| `lifecycle.pty_idle_seconds` | `300` | `ORRERY_PTY_IDLE_SECONDS` | PTY 空闲回收，秒 |
+| `lifecycle.idle_stop_seconds` | `900` | `ORRERY_IDLE_STOP_SECONDS` | Idle Stop，秒，`0` 表示关闭 |
+| `lifecycle.admission_timeout` | `1h` | `ORRERY_ADMISSION_TIMEOUT` | 准入期限 |
+| `builds.cpu` | `4` | `ORRERY_BUILD_CPU` | 构建 CPU 上限 |
+| `builds.memory` | `8589934592`（8 GiB，字节） | `ORRERY_BUILD_MEMORY` | 构建内存上限 |
+| `builds.timeout` | `1h` | `ORRERY_BUILD_TIMEOUT` | 构建超时 |
+| `logs.exec_cap` | `16777216`（16 MiB，字节） | `ORRERY_EXEC_LOG_CAP` | Execution Log 上限 |
+| `logs.exec_retention` | `720h` | `ORRERY_EXEC_LOG_RETENTION` | Execution Log 保留期，`0` 表示永久 |
+| `logs.audit_retention` | `0` | `ORRERY_AUDIT_RETENTION` | Audit Record 保留期，`0` 表示永久 |
+| `logs.resource_version_ttl` | `720h` | `ORRERY_RESOURCE_VERSION_TTL` | 非 current、无引用的 ResourceVersion 保留期 |
+| `logs.cas_grace` | `24h` | `ORRERY_CAS_GRACE` | CAS 对象与未完成上传的 GC 宽限 |
 
 带 `_seconds` 的键是整数秒；其余时长使用 Go duration 语法（`1h`、`720h`）。字节数以整数表示。
 
@@ -142,38 +142,38 @@ Control Plane 的应用配置只有一个文件：`STARS_CONFIG_FILE` 指向的 
 
 | 键 | 默认 | 覆盖变量 | 说明 |
 |---|---|---|---|
-| `issuer_url` | 空 | `STARS_OIDC_ISSUER_URL` | 空表示 OIDC 关闭 |
-| `client_id` | 空 | `STARS_OIDC_CLIENT_ID` | 配置 issuer 时必填 |
-| `client_secret` | 空 | `STARS_OIDC_CLIENT_SECRET` | 配置 issuer 时必填；直接写在文件里 |
+| `issuer_url` | 空 | `ORRERY_OIDC_ISSUER_URL` | 空表示 OIDC 关闭 |
+| `client_id` | 空 | `ORRERY_OIDC_CLIENT_ID` | 配置 issuer 时必填 |
+| `client_secret` | 空 | `ORRERY_OIDC_CLIENT_SECRET` | 配置 issuer 时必填；直接写在文件里 |
 | `email_domains` | `[]` | 无（列表仅文件） | 空表示不限 |
-| `allow_signups` | `false` | `STARS_OIDC_ALLOW_SIGNUPS` | 没有任何 User 时，第一个 OIDC 登录者不受它限制（ADR-0020） |
+| `allow_signups` | `false` | `ORRERY_OIDC_ALLOW_SIGNUPS` | 没有任何 User 时，第一个 OIDC 登录者不受它限制（ADR-0020） |
 
 ### `s3`
 
 | 键 | 默认 | 覆盖变量 | 说明 |
 |---|---|---|---|
-| `endpoint` | `http://rustfs:9000` | `STARS_S3_ENDPOINT` | Control Plane 容器可达的内部地址；空表示对象存储关闭 |
-| `public_endpoint` | 同 `endpoint` | `STARS_S3_PUBLIC_ENDPOINT` | 预签名 URL 的基址（Node 可达） |
-| `bucket` | `stars` | `STARS_S3_BUCKET` | 只用一个 bucket |
-| `region` | `us-east-1` | `STARS_S3_REGION` | |
-| `access_key` | `stars` | `STARS_S3_ACCESS_KEY` | |
-| `secret_key` | 空 | `STARS_S3_SECRET_KEY` | 启用对象存储时必填 |
+| `endpoint` | `http://rustfs:9000` | `ORRERY_S3_ENDPOINT` | Control Plane 容器可达的内部地址；空表示对象存储关闭 |
+| `public_endpoint` | 同 `endpoint` | `ORRERY_S3_PUBLIC_ENDPOINT` | 预签名 URL 的基址（Node 可达） |
+| `bucket` | `orrery` | `ORRERY_S3_BUCKET` | 只用一个 bucket |
+| `region` | `us-east-1` | `ORRERY_S3_REGION` | |
+| `access_key` | `orrery` | `ORRERY_S3_ACCESS_KEY` | |
+| `secret_key` | 空 | `ORRERY_S3_SECRET_KEY` | 启用对象存储时必填 |
 
 ### `registry`
 
 | 键 | 默认 | 覆盖变量 | 说明 |
 |---|---|---|---|
-| `addr` | 空 | `STARS_REGISTRY_ADDR` | Node 拉取镜像的地址；空时平台 registry 相关功能失败 |
-| `push_addr` | 同 `addr` | `STARS_REGISTRY_PUSH_ADDR` | Control Plane 推送的地址；容器网络与主机视角不同时覆盖 |
-| `username` | 空 | `STARS_REGISTRY_USERNAME` | 与 password 一起拼出 auth JSON |
-| `password` | 空 | `STARS_REGISTRY_PASSWORD` | 与 username 一起拼出 auth JSON |
+| `addr` | 空 | `ORRERY_REGISTRY_ADDR` | Node 拉取镜像的地址；空时平台 registry 相关功能失败 |
+| `push_addr` | 同 `addr` | `ORRERY_REGISTRY_PUSH_ADDR` | Control Plane 推送的地址；容器网络与主机视角不同时覆盖 |
+| `username` | 空 | `ORRERY_REGISTRY_USERNAME` | 与 password 一起拼出 auth JSON |
+| `password` | 空 | `ORRERY_REGISTRY_PASSWORD` | 与 username 一起拼出 auth JSON |
 
 ### `platform_snapshots`
 
 列表，每项 `{name, ref, default}`。`ref` 形如 `…@sha256:…`，`name` 是 registry 里的 `platform/<name>`。Control Plane 启动时导入其中还没导入的条目；导入失败不影响启动，只让用到它的 Sandbox 创建失败。平台 Snapshot 所有 User 可读，API 不能增删（ADR-0021）。`default: true` 最多一项，多于一项启动失败；它是不带 `snapshot` 的 `runtime: container` 创建请求的默认值；没有默认项时该请求返回错误，`runtime: local` 不用 Snapshot。空列表表示没有平台 Snapshot。
 
-**不出现在 `config.yaml` 的键**。`api_addr`、`node_addr`、`node_tls_cert`、`node_tls_key` 由代码默认值给出，只可用环境变量（`STARS_API_ADDR`、`STARS_NODE_ADDR`、`STARS_NODE_TLS_CERT`、`STARS_NODE_TLS_KEY`）覆盖。
+**不出现在 `config.yaml` 的键**。`api_addr`、`node_addr`、`node_tls_cert`、`node_tls_key` 由代码默认值给出，只可用环境变量（`ORRERY_API_ADDR`、`ORRERY_NODE_ADDR`、`ORRERY_NODE_TLS_CERT`、`ORRERY_NODE_TLS_KEY`）覆盖。
 
-**环境变量模式**。`STARS_CONFIG_FILE` 未设置时保留现有变量名，包括 `STARS_ENCRYPTION_KEYS_FILE`、`STARS_GIT_PROVIDERS_FILE`、`STARS_OIDC_CLIENT_SECRET_FILE`、`STARS_PLATFORM_SNAPSHOTS`、`STARS_DEFAULT_SNAPSHOT`，用于测试和 CI。`STARS_TEST_PURGE_INTERVAL` 是测试钩子，不属于部署配置。
+**环境变量模式**。`ORRERY_CONFIG_FILE` 未设置时保留现有变量名，包括 `ORRERY_ENCRYPTION_KEYS_FILE`、`ORRERY_GIT_PROVIDERS_FILE`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_PLATFORM_SNAPSHOTS`、`ORRERY_DEFAULT_SNAPSHOT`，用于测试和 CI。`ORRERY_TEST_PURGE_INTERVAL` 是测试钩子，不属于部署配置。
 
 **对象存储布局**。只用一个 bucket：CAS 对象在 `cas/<owner_id>/sha256/<hex>`，manifest 在 `manifests/<owner_id>/<address>`，registry 的 s3 driver 用 `rootdirectory: /registry`。registry 里用户 Snapshot 在 `snapshots/<snapshot_id>`，平台 Snapshot 在 `platform/<name>`，一律按 digest 引用，不打 tag。e2e 和参考部署用 RustFS 1.0.2；安装脚本用一个一次性容器建 bucket。

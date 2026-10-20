@@ -23,7 +23,7 @@ Generated tools include Resource upload, manifest and presign operations that an
 
 **No PTY tool.** Interactive programs are driven through the CLI or the Web console.
 
-**stdio only, served by the CLI.** `stars-sandbox mcp` runs on the caller's machine with the caller's API Token, declares only the `tools` capability and writes diagnostics to stderr.
+**stdio only, served by the CLI.** `orrery mcp` runs on the caller's machine with the caller's API Token, declares only the `tools` capability and writes diagnostics to stderr.
 
 ## Consequences
 

@@ -10,7 +10,7 @@
 ## Decision
 
 - **One Supervisor process per Exec**, started by a detached exec, plus the same binary as an idle PID 1 that only reaps. There is no per-Sandbox daemon and no Agent-to-daemon RPC. Coder splits PID 1 the same way; Daytona's single process races its reaper against `cmd.Wait()`.
-- **The record is files on a second platform mount**, `/.stars/run`, read-write and per Sandbox. It holds an append-only frame file whose `seq` is the frame's byte offset, and atomically written `started` and `exit` files. The Sandbox's own processes can tamper with it; it is not a boundary against them.
+- **The record is files on a second platform mount**, `/.orrery/run`, read-write and per Sandbox. It holds an append-only frame file whose `seq` is the frame's byte offset, and atomically written `started` and `exit` files. The Sandbox's own processes can tamper with it; it is not a boundary against them.
 - **The Exec specification, Secrets included, arrives over a per-Exec unix socket**, never through the exec's Env or argv. Podman persists exec Env in its state database, Docker exposes argv through inspect, and `systemctl show` exposes `systemd-run -E`. The same socket relays cancel, PTY input and resize, and serves PTY output.
 - **The Supervisor alone enforces the timeout and the PTY idle reap**, so both still apply while the Agent is gone.
 - **The result is the last frame on `ExecOutput`**, for PTY Execs too. Its `OutputAck` is what lets the Agent delete the record.

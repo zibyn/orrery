@@ -187,7 +187,7 @@ interface SandboxRecord {
 | **Blaxel** | perpetual sandbox：空闲 5 秒自动 scale-to-zero，standby 恢复 **<25ms**；内存状态含运行中的进程跨 scale-down 存活；镜像底是只读 EROFS，可写层是**全在 RAM 里的 tmpfs + OverlayFS**，⚠️约**一半内存**留给 tmpfs；⚠️网络连接（数据库、消息队列、HTTP 连接池）不跨 standby | "resume 在 25ms 内、哪怕隔了几周"作为设计目标，**加上对"什么会断"的诚实记账**——他们明说网络连接不存活。**无论我们建什么，发布同一句话。** 预留端口约定（API/系统/应用）让 SDK 默认值可猜 | ⚠️ 以内存保留的 standby 为默认；⚠️ tmpfs 可写层占一半内存（Go worker 跑多个 Workspace 时是隐形内存耦合，失败模式是"写超了沙箱就坏"，不是"磁盘满"）；⚠️ 只能在创建时设置的配置轴（`extraArgs` 开 iptables）——永久工单；两套重叠的持久化产品 |
 | **Northflank** | 沙箱就是**一个 deployment service**：建、然后把实例数调到 1、**轮询 deployment 状态到 `COMPLETED`**（意思是 rollout 完成、容器起来了，**不是**进程结束）。⚠️ pause "会结束任何运行中的进程与终端会话"，**并删除临时数据**；pause 是异步的，**resume 可能和 pause 竞争**；扩缩容 = 重启。JS 侧 ⚠️ **必须"先注册 stdout/stderr listener 再 await 结果，否则早期输出会丢"** | ⭐ **"先订阅再启动"**——这是任何流式 exec 的真实 bug，包括 gRPC。把 Go 的 receive loop 先跑起来再派发任务。⭐ **"resume 可能和 pause 竞争"**：与我们的重连 epoch 是同一类 bug，也是"要显式状态机而不是一个 `paused` bool"的理由。"扩缩容 = 短暂中断，不是在线 resize"——诚实且正确 | ⚠️ 会删临时数据的 pause（命名陷阱；要停就明说，更好的是做 Runloop 那样的磁盘快照）；以 deployment service 为沙箱原语（create 是多步 rollout、pause 是 scale-to-zero、scaling 是重启）；按工作负载分类用两种 substrate；轮询 `COMPLETED` |
 
-### 1.10 ⭐⭐ Coder（与 Stars Sandbox 最近的架构亲属）
+### 1.10 ⭐⭐ Coder（与 Orrery 最近的架构亲属）
 
 **为什么重要**：Coder 是全篇唯一一个**以"工作区侧组件主动拨号控制层"为主要机制**的产品，而它这么设计的原因跟我们的**完全一样**：工作区在 NAT 后面、在客户的网络里、在你不拥有的机器上。
 
@@ -275,14 +275,14 @@ interface SandboxRecord {
 
 ```jsonc
 { "devcontainer": { /* 原样 devcontainer.json，base schema */ },
-  "starsSandbox": { "resources": {...}, "placement": {...}, "network": {...}, "task": {...} } }
+  "orrerySandbox": { "resources": {...}, "placement": {...}, "network": {...}, "task": {...} } }
 ```
 
 **它是什么**：JSONC（`allowComments: true`、`allowTrailingCommas: false`）。根是 `oneOf` 三个来源变体（`image` / `build`+`dockerFile` / `dockerComposeFile`）加一个公共块。`devContainerCommon` 的**完整**属性集是：`$schema, name, features, overrideFeatureInstallOrder, forwardPorts, portsAttributes, otherPortsAttributes, containerEnv, remoteEnv, remoteUser, containerUser, updateRemoteUserUID, userEnvProbe, overrideCommand, shutdownAction, init, privileged, capAdd, securityOpt, mounts, customizations, initializeCommand, onCreateCommand, updateContentCommand, postCreateCommand, postStartCommand, postAttachCommand, waitFor, hostRequirements, secrets`（[base schema](https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.base.schema.json)）。
 
 **版本与合规**：**规范没有版本号、没有 changelog、没有发布流程、没有合规程序或测试套件。** 只有 schema 文件隐式版本化。实际兼容性是一张手工维护的矩阵：VS Code 扩展不支持 `workspaceMount`/`${localWorkspaceFolder}`；Codespaces 忽略除 Docker socket 外的 bind mount、不支持 `"host:port"`、`${localEnv}` 在云主机上解析；CodeSandbox 用 rootless Podman 且把 `remoteUser` 覆盖成 root（[supporting-tools](https://raw.githubusercontent.com/devcontainers/spec/main/docs/specs/supporting-tools.md)）。**"合规"不是一个你能买到的可测试属性——钉一个具体 CLI 版本和 schema 修订作为兼容目标。**
 
-**变量替换**：`${localEnv:VAR}`（宿主环境变量，有 `${localEnv:VAR:default}` 形式，未设置时**留空**而非报错）、`${containerEnv:VAR}`（**仅限 `remoteEnv`**）、`${localWorkspaceFolder}`、`${containerWorkspaceFolder}`、`${localWorkspaceFolderBasename}`、`${containerWorkspaceFolderBasename}`、`${devcontainerId}`（限用于一份白名单属性）。**未文档化**（是空白而不是禁止）：嵌套/递归替换、如何转义出字面量 `${...}`。**[未证实]** ⚠️ 对我们：用 `${localEnv:STARS_TASK_ID}` 注入 per-task 值是**在曲解语义**（它本意是"用户宿主机上的值"），更适合放进我们自己的 wrapper 块。
+**变量替换**：`${localEnv:VAR}`（宿主环境变量，有 `${localEnv:VAR:default}` 形式，未设置时**留空**而非报错）、`${containerEnv:VAR}`（**仅限 `remoteEnv`**）、`${localWorkspaceFolder}`、`${containerWorkspaceFolder}`、`${localWorkspaceFolderBasename}`、`${containerWorkspaceFolderBasename}`、`${devcontainerId}`（限用于一份白名单属性）。**未文档化**（是空白而不是禁止）：嵌套/递归替换、如何转义出字面量 `${...}`。**[未证实]** ⚠️ 对我们：用 `${localEnv:ORRERY_TASK_ID}` 注入 per-task 值是**在曲解语义**（它本意是"用户宿主机上的值"），更适合放进我们自己的 wrapper 块。
 
 **生命周期**：严格顺序 `initializeCommand`（**宿主**）→ `onCreateCommand` → `updateContentCommand` → `postCreateCommand` → `postStartCommand` → `postAttachCommand`，都在容器里跑，且**失败即 fail-fast 中断后续**（`postCreate` 失败则 `postStart` 不跑）。`updateContentCommand` 会被云服务"定期执行以刷新缓存或预热容器"——⚠️ **这对确定性的 per-task 流水线是有害的**。整个生命周期是为**长期存在的开发环境**设计的，**没有任何钩子对应"跑这个任务"**。
 
@@ -395,7 +395,7 @@ DRA 之于设备，正如动态卷供给之于存储（文档明确做 PVC/PV �
 
 **一句话**：我们的"哪个 worker 认领这个任务"是一个**带原子容量约束和租约的撮合问题**，不是资源模型问题。
 
-| K8s 概念 | Stars Sandbox 的最小形状 |
+| K8s 概念 | Orrery 的最小形状 |
 |---|---|
 | Node | Worker（控制层 DB 里按稳定 worker ID 为键的一行） |
 | DeviceClass | Worker 在注册时声明的能力标签 / 种类（`gpu:a100`） |
