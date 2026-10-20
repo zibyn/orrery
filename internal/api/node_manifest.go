@@ -11,10 +11,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/manifest"
-	"github.com/zibyn/stars-sandbox/internal/objectstore"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/manifest"
+	"github.com/zibyn/orrery/internal/objectstore"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // publishFailedCause is the single failure cause a Workspace publish reports

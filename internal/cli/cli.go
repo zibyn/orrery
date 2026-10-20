@@ -16,7 +16,7 @@ import (
 
 	"golang.org/x/term"
 
-	starsclient "github.com/zibyn/stars-sandbox/client"
+	orreryclient "github.com/zibyn/orrery/client"
 )
 
 // The external CLI speaks only the public REST API (ADR-0017).
@@ -30,16 +30,16 @@ var ctx = context.Background()
 
 // client pairs the SDK with the writer command output goes to.
 type client struct {
-	*starsclient.Client
+	*orreryclient.Client
 	out io.Writer
 }
 
 func newClient(base, token string, out io.Writer) *client {
-	return &client{Client: starsclient.New(base, token), out: out}
+	return &client{Client: orreryclient.New(base, token), out: out}
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
-	global := flag.NewFlagSet("stars-sandbox", flag.ContinueOnError)
+	global := flag.NewFlagSet("orrery", flag.ContinueOnError)
 	global.SetOutput(stderr)
 	configPath := global.String("config", "", "path to the config file")
 	apiURL := global.String("api-url", "", "API base URL")
@@ -66,7 +66,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	base := firstNonEmpty(*apiURL, os.Getenv("STARS_SANDBOX_API_URL"), os.Getenv("STARS_URL"), fc.APIURL, "http://localhost:8080")
+	base := firstNonEmpty(*apiURL, os.Getenv("ORRERY_SANDBOX_API_URL"), os.Getenv("ORRERY_URL"), fc.APIURL, "http://localhost:8080")
 	if rest[0] == "login" {
 		if err := runLogin(base, path, rest[1:], os.Stdin, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
@@ -74,9 +74,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	tok := firstNonEmpty(*token, os.Getenv("STARS_SANDBOX_TOKEN"), fc.Token)
+	tok := firstNonEmpty(*token, os.Getenv("ORRERY_SANDBOX_TOKEN"), fc.Token)
 	if tok == "" {
-		fmt.Fprintf(stderr, "error: no API token configured; set STARS_SANDBOX_TOKEN, pass --token, or write one to %s\n", path)
+		fmt.Fprintf(stderr, "error: no API token configured; set ORRERY_SANDBOX_TOKEN, pass --token, or write one to %s\n", path)
 		return 1
 	}
 	c := newClient(base, tok, stdout)
@@ -123,7 +123,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `usage: stars-sandbox [global flags] <command> [flags]
+	fmt.Fprint(w, `usage: orrery [global flags] <command> [flags]
 
 commands:
   login            log in and store an API Token (--username for a password login)
@@ -170,28 +170,28 @@ commands:
   mcp                              serve the MCP Tool API over stdio
 
 global flags:
-  --config PATH    config file (default $STARS_SANDBOX_CONFIG or $XDG_CONFIG_HOME/stars-sandbox/config.json)
-  --api-url URL    API base URL (default $STARS_SANDBOX_API_URL or the config file)
-  --token TOKEN    API token (default $STARS_SANDBOX_TOKEN or the config file)
+  --config PATH    config file (default $ORRERY_SANDBOX_CONFIG or $XDG_CONFIG_HOME/orrery/config.json)
+  --api-url URL    API base URL (default $ORRERY_SANDBOX_API_URL or the config file)
+  --token TOKEN    API token (default $ORRERY_SANDBOX_TOKEN or the config file)
 
 examples:
-  stars-sandbox login --username alice
-  stars-sandbox user list
-  stars-sandbox user create --name alice --login-type password --password-stdin
-  stars-sandbox token create --name ci --scope read_only
-  stars-sandbox secret set --file npm-token.txt NPM_TOKEN
-  stars-sandbox secret list
-  stars-sandbox secret rm NPM_TOKEN
-  stars-sandbox audit list --action token.create --limit 20
-  stars-sandbox exec run <sandbox-id> -- uname -a
-  stars-sandbox exec cancel <exec-id>
-  stars-sandbox shell <sandbox-id> -- /bin/bash
-  stars-sandbox files ls <sandbox-id> src
-  stars-sandbox files cp ./config.toml <sandbox-id>:src/config.toml
-  stars-sandbox files cp <sandbox-id>:out/report.txt .
-  stars-sandbox git links
-  stars-sandbox git unlink gitea
-  stars-sandbox port-forward <sandbox-id> 8080:3000
+  orrery login --username alice
+  orrery user list
+  orrery user create --name alice --login-type password --password-stdin
+  orrery token create --name ci --scope read_only
+  orrery secret set --file npm-token.txt NPM_TOKEN
+  orrery secret list
+  orrery secret rm NPM_TOKEN
+  orrery audit list --action token.create --limit 20
+  orrery exec run <sandbox-id> -- uname -a
+  orrery exec cancel <exec-id>
+  orrery shell <sandbox-id> -- /bin/bash
+  orrery files ls <sandbox-id> src
+  orrery files cp ./config.toml <sandbox-id>:src/config.toml
+  orrery files cp <sandbox-id>:out/report.txt .
+  orrery git links
+  orrery git unlink gitea
+  orrery port-forward <sandbox-id> 8080:3000
 `)
 }
 
@@ -209,7 +209,7 @@ func runLogin(base, configPath string, args []string, stdin io.Reader, stdout, s
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: stars-sandbox login [--username NAME] [flags]")
+		return fmt.Errorf("usage: orrery login [--username NAME] [flags]")
 	}
 	if *username == "" {
 		return consoleLogin(base, configPath, stdin, stdout, stderr)
@@ -221,11 +221,11 @@ func runLogin(base, configPath string, args []string, stdin io.Reader, stdout, s
 	if *name == "" {
 		*name = "cli-" + time.Now().UTC().Format("20060102T150405Z")
 	}
-	c := starsclient.New(base, "")
-	out, err := c.CreateSession(ctx, starsclient.SessionRequest{
+	c := orreryclient.New(base, "")
+	out, err := c.CreateSession(ctx, orreryclient.SessionRequest{
 		Username: *username,
 		Password: password,
-		Token:    &starsclient.TokenRequest{Name: *name, Scope: *scope},
+		Token:    &orreryclient.TokenRequest{Name: *name, Scope: *scope},
 	})
 	if err != nil {
 		return fmt.Errorf("%w (if this User does not log in with a password, run again without --username and finish in the Web console)", err)
@@ -255,7 +255,7 @@ func consoleLogin(base, configPath string, stdin io.Reader, stdout, stderr io.Wr
 		return fmt.Errorf("no token pasted")
 	}
 	// Validate before storing: a typo must not replace a working config.
-	c := starsclient.New(base, token)
+	c := orreryclient.New(base, token)
 	me, err := c.Me(ctx)
 	if err != nil {
 		return fmt.Errorf("the token was rejected: %w", err)
@@ -311,17 +311,17 @@ func resolveConfigPath(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	if v := os.Getenv("STARS_SANDBOX_CONFIG"); v != "" {
+	if v := os.Getenv("ORRERY_SANDBOX_CONFIG"); v != "" {
 		return v
 	}
 	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "stars-sandbox", "config.json")
+		return filepath.Join(v, "orrery", "config.json")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "stars-sandbox.json"
+		return "orrery.json"
 	}
-	return filepath.Join(home, ".config", "stars-sandbox", "config.json")
+	return filepath.Join(home, ".config", "orrery", "config.json")
 }
 
 func loadConfig(path string, required bool) (fileConfig, error) {
@@ -366,7 +366,7 @@ func (c *client) print(v any) error {
 
 func runUser(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox user list|get|create|update|delete|quota")
+		return fmt.Errorf("usage: orrery user list|get|create|update|delete|quota")
 	}
 	switch args[0] {
 	case "list":
@@ -389,11 +389,11 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox user get <id|me>")
+			return fmt.Errorf("usage: orrery user get <id|me>")
 		}
 		id := fs.Arg(0)
 		var (
-			user *starsclient.User
+			user *orreryclient.User
 			err  error
 		)
 		if id == "me" {
@@ -425,7 +425,7 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		req := starsclient.CreateUserRequest{Name: *name, LoginType: *loginType, IsAdmin: *isAdmin}
+		req := orreryclient.CreateUserRequest{Name: *name, LoginType: *loginType, IsAdmin: *isAdmin}
 		if *email != "" {
 			req.Email = email
 		}
@@ -450,9 +450,9 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox user update <id> [flags]")
+			return fmt.Errorf("usage: orrery user update <id> [flags]")
 		}
-		var req starsclient.UpdateUserRequest
+		var req orreryclient.UpdateUserRequest
 		set := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		if set["name"] {
@@ -486,7 +486,7 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox user delete <id>")
+			return fmt.Errorf("usage: orrery user delete <id>")
 		}
 		user, err := c.DeleteUser(ctx, fs.Arg(0))
 		if err != nil {
@@ -502,7 +502,7 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox user quota <id> --gpus N --sandboxes N")
+			return fmt.Errorf("usage: orrery user quota <id> --gpus N --sandboxes N")
 		}
 		if *gpus < 0 || *sandboxes < 0 {
 			return fmt.Errorf("--gpus and --sandboxes are required and must be non-negative")
@@ -519,7 +519,7 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 
 func runToken(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox token list|create|revoke|<provider>")
+		return fmt.Errorf("usage: orrery token list|create|revoke|<provider>")
 	}
 	switch args[0] {
 	case "list":
@@ -548,7 +548,7 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 		if *name == "" {
 			return fmt.Errorf("--name is required")
 		}
-		req := starsclient.TokenRequest{Name: *name, Scope: *scope}
+		req := orreryclient.TokenRequest{Name: *name, Scope: *scope}
 		if *expiresAt != "" {
 			t, err := time.Parse(time.RFC3339, *expiresAt)
 			if err != nil {
@@ -568,7 +568,7 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox token revoke <id>")
+			return fmt.Errorf("usage: orrery token revoke <id>")
 		}
 		token, err := c.RevokeToken(ctx, fs.Arg(0))
 		if err != nil {
@@ -578,11 +578,11 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 	default:
 		// `token <provider>` fetches a Git credential for the Sandbox's owner.
 		// The API Token verbs above keep their names. Only the token goes to
-		// stdout, so GH_TOKEN=$(stars-sandbox token github) works (api.md §3).
+		// stdout, so GH_TOKEN=$(orrery token github) works (api.md §3).
 		if len(args) == 1 && !strings.HasPrefix(args[0], "-") {
-			cred, err := c.GitCredential(ctx, starsclient.GitCredentialRequest{Provider: args[0]})
+			cred, err := c.GitCredential(ctx, orreryclient.GitCredentialRequest{Provider: args[0]})
 			if err != nil {
-				var problem *starsclient.Error
+				var problem *orreryclient.Error
 				if errors.As(err, &problem) && problem.Status == http.StatusNotFound && problem.AuthorizeURL != "" {
 					return fmt.Errorf("no Git account is linked for %s; authorize at %s",
 						args[0], problem.AuthorizeURL)
@@ -601,7 +601,7 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 
 func runSecret(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox secret set|list|rm")
+		return fmt.Errorf("usage: orrery secret set|list|rm")
 	}
 	switch args[0] {
 	case "set":
@@ -612,7 +612,7 @@ func runSecret(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox secret set [--file PATH] <name>")
+			return fmt.Errorf("usage: orrery secret set [--file PATH] <name>")
 		}
 		value, err := readSecretValue(*file)
 		if err != nil {
@@ -641,7 +641,7 @@ func runSecret(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox secret rm <name>")
+			return fmt.Errorf("usage: orrery secret rm <name>")
 		}
 		secret, err := c.DeleteSecret(ctx, fs.Arg(0))
 		if err != nil {
@@ -691,7 +691,7 @@ func runAudit(c *client, args []string, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	page, err := c.ListAudit(ctx, starsclient.AuditParams{
+	page, err := c.ListAudit(ctx, orreryclient.AuditParams{
 		Actor: *actor, Action: *action, Target: *target, TargetType: *targetType,
 		From: *from, To: *to, Limit: *limit, Cursor: *cursor,
 	})

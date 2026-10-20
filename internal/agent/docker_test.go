@@ -7,8 +7,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 func TestDemux(t *testing.T) {

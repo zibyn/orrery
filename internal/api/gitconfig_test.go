@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zibyn/stars-sandbox/internal/keyring"
+	"github.com/zibyn/orrery/internal/keyring"
 )
 
 // writeGitProviders writes a secret file and a providers file, returning the
@@ -122,7 +122,7 @@ func TestLoadGitProvidersRejectsInvalidConfig(t *testing.T) {
 // console login page, keeping the authorize URL as the return path.
 func TestGitAuthorizeWithoutSessionRedirectsToLogin(t *testing.T) {
 	s := &Server{cfg: Config{
-		AccessURL:    "https://stars.example",
+		AccessURL:    "https://orrery.example",
 		GitProviders: []GitProvider{{ID: "gitea", Type: "gitea"}},
 	}}
 	rec := httptest.NewRecorder()
@@ -139,7 +139,7 @@ func TestGitAuthorizeWithoutSessionRedirectsToLogin(t *testing.T) {
 	}
 }
 
-// Linking is off without STARS_ACCESS_URL (defaults.md).
+// Linking is off without ORRERY_ACCESS_URL (defaults.md).
 func TestGitAuthorizeWithoutAccessURL(t *testing.T) {
 	s := &Server{cfg: Config{GitProviders: []GitProvider{{ID: "gitea"}}}}
 	rec := httptest.NewRecorder()
@@ -151,7 +151,7 @@ func TestGitAuthorizeWithoutAccessURL(t *testing.T) {
 	}
 }
 
-// Without STARS_ACCESS_URL Git linking is off, so the console sees no
+// Without ORRERY_ACCESS_URL Git linking is off, so the console sees no
 // providers at all (defaults.md).
 func TestGitProvidersClosedWithoutAccessURL(t *testing.T) {
 	s := &Server{cfg: Config{GitProviders: []GitProvider{{ID: "gitea", Type: "gitea", HostPattern: regexp.MustCompile(".")}}}}

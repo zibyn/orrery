@@ -24,9 +24,9 @@ import (
 // and the failed callback stores no link. A then links and unlinks the same
 // provider through the API and the external CLI.
 func TestGitLinkStateBinding(t *testing.T) {
-	providerID := envOr("STARS_E2E_GIT_PROVIDER", "gitea")
-	giteaUser := envOr("STARS_E2E_GITEA_USER", "gitea-user")
-	giteaPassword := envOr("STARS_E2E_GITEA_PASSWORD", "gitea-user-password-123")
+	providerID := envOr("ORRERY_E2E_GIT_PROVIDER", "gitea")
+	giteaUser := envOr("ORRERY_E2E_GITEA_USER", "gitea-user")
+	giteaPassword := envOr("ORRERY_E2E_GITEA_PASSWORD", "gitea-user-password-123")
 
 	admin := adminToken(t)
 	adminCLI := newCLIRunner(t, admin)
@@ -202,7 +202,7 @@ func newGiteaBrowser(t *testing.T) *giteaBrowser {
 		t.Fatal(err)
 	}
 	return &giteaBrowser{
-		base: envOr("STARS_E2E_GITEA_URL", "http://127.0.0.1:13000"),
+		base: envOr("ORRERY_E2E_GITEA_URL", "http://127.0.0.1:13000"),
 		client: &http.Client{
 			Jar: jar,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -343,11 +343,11 @@ type gitFixture struct {
 	sandboxToken string
 }
 
-func gitProviderID() string    { return envOr("STARS_E2E_GIT_PROVIDER", "gitea") }
-func gitGiteaUser() string     { return envOr("STARS_E2E_GITEA_USER", "gitea-user") }
-func gitGiteaPassword() string { return envOr("STARS_E2E_GITEA_PASSWORD", "gitea-user-password-123") }
+func gitProviderID() string    { return envOr("ORRERY_E2E_GIT_PROVIDER", "gitea") }
+func gitGiteaUser() string     { return envOr("ORRERY_E2E_GITEA_USER", "gitea-user") }
+func gitGiteaPassword() string { return envOr("ORRERY_E2E_GITEA_PASSWORD", "gitea-user-password-123") }
 
-func giteaBase() string { return envOr("STARS_E2E_GITEA_URL", "http://127.0.0.1:13000") }
+func giteaBase() string { return envOr("ORRERY_E2E_GITEA_URL", "http://127.0.0.1:13000") }
 
 // newGitFixture creates a User with sandbox quota and a ready Sandbox they
 // own, optionally linking the e2e Gitea provider first.
@@ -390,11 +390,11 @@ func newGitFixture(t *testing.T, admin string, link bool) *gitFixture {
 	waitForNodeReady(t, admin, nodeName)
 	sandboxID := createReadySandbox(t, userToken, fmt.Sprintf("git-cred-%d", suffix), 256<<20)
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", "stars-sandbox-"+sandboxID).Run()
+		_ = exec.Command("docker", "rm", "-f", "orrery-"+sandboxID).Run()
 	})
 
-	stdout, stderr, code := execInSandbox(t, admin, sandboxID, "sh", "-c", `printf %s "$STARS_SANDBOX_TOKEN"`)
-	if code != 0 || !strings.HasPrefix(stdout, "sst_") {
+	stdout, stderr, code := execInSandbox(t, admin, sandboxID, "sh", "-c", `printf %s "$ORRERY_SANDBOX_TOKEN"`)
+	if code != 0 || !strings.HasPrefix(stdout, "ors_") {
 		t.Fatalf("Sandbox Token: exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
 	return &gitFixture{
@@ -447,9 +447,9 @@ func execInSandbox(t *testing.T, admin, sandboxID string, argv ...string) (strin
 // Gitea admin API, with an initial commit so it can be cloned.
 func createGiteaRepo(t *testing.T, owner, name string) {
 	t.Helper()
-	token := os.Getenv("STARS_E2E_GITEA_TOKEN")
+	token := os.Getenv("ORRERY_E2E_GITEA_TOKEN")
 	if token == "" {
-		t.Fatal("STARS_E2E_GITEA_TOKEN is not set; run make e2e")
+		t.Fatal("ORRERY_E2E_GITEA_TOKEN is not set; run make e2e")
 	}
 	body, err := json.Marshal(map[string]any{
 		"name": name, "private": true, "auto_init": true, "default_branch": "main",
@@ -482,7 +482,7 @@ func giteaRepoFileExists(t *testing.T, owner, repo, path string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "token "+os.Getenv("STARS_E2E_GITEA_TOKEN"))
+	req.Header.Set("Authorization", "token "+os.Getenv("ORRERY_E2E_GITEA_TOKEN"))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("read Gitea repository: %v", err)
@@ -549,7 +549,7 @@ func TestGitLinkClonePush(t *testing.T) {
 	if strings.Contains(configs, token) {
 		t.Fatalf("git config holds the Git token:\n%s", configs)
 	}
-	if out, err := exec.Command("docker", "inspect", "stars-sandbox-"+fixture.sandboxID).CombinedOutput(); err != nil {
+	if out, err := exec.Command("docker", "inspect", "orrery-"+fixture.sandboxID).CombinedOutput(); err != nil {
 		t.Fatalf("docker inspect: %v\n%s", err, out)
 	} else if strings.Contains(string(out), token) {
 		t.Fatalf("docker inspect exposes the Git token:\n%s", out)
@@ -605,7 +605,7 @@ func TestGitUnlinked(t *testing.T) {
 	if code == 0 {
 		t.Fatal("cloning a private repository without a link succeeded")
 	}
-	want := strings.TrimSuffix(envURL("STARS_E2E_ACCESS_URL", apiURL()), "/") + "/git"
+	want := strings.TrimSuffix(envURL("ORRERY_E2E_ACCESS_URL", apiURL()), "/") + "/git"
 	if !strings.Contains(stdout+stderr, want) {
 		t.Fatalf("clone output does not name %s:\nstdout %s\nstderr %s", want, stdout, stderr)
 	}

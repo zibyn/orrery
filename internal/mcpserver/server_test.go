@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/zibyn/stars-sandbox/client"
-	"github.com/zibyn/stars-sandbox/internal/mcpserver"
+	"github.com/zibyn/orrery/client"
+	"github.com/zibyn/orrery/internal/mcpserver"
 )
 
 var toolName = regexp.MustCompile(`^[a-z_]+$`)

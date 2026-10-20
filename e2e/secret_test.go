@@ -187,7 +187,7 @@ func TestSecretInject(t *testing.T) {
 	var sb sandboxView
 	mustJSON(t, body, &sb)
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", "stars-sandbox-"+sb.ID).Run()
+		_ = exec.Command("docker", "rm", "-f", "orrery-"+sb.ID).Run()
 	})
 	status, body = call(t, http.MethodGet, "/api/v1/sandboxes/"+sb.ID+"?wait_for=ready", admin, nil)
 	var ready sandboxView
@@ -231,7 +231,7 @@ func TestSecretInject(t *testing.T) {
 	}
 
 	// The value is not part of the Runtime's configuration on the Node.
-	out, err := exec.Command("docker", "inspect", "stars-sandbox-"+sb.ID).CombinedOutput()
+	out, err := exec.Command("docker", "inspect", "orrery-"+sb.ID).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker inspect: %v\n%s", err, out)
 	}

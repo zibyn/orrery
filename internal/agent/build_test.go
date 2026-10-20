@@ -8,7 +8,7 @@ import (
 
 	"github.com/moby/buildkit/client"
 
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 func TestCollectFromDigests(t *testing.T) {
@@ -83,17 +83,17 @@ func TestBuildRecordFrames(t *testing.T) {
 }
 
 func TestUserSliceParent(t *testing.T) {
-	got := userSliceParent(1000, "stars-build-abc.slice")
-	want := "user.slice/user-1000.slice/user@1000.service/stars.slice/stars-build.slice/stars-build-abc.slice"
+	got := userSliceParent(1000, "orrery-build-abc.slice")
+	want := "user.slice/user-1000.slice/user@1000.service/orrery.slice/orrery-build.slice/orrery-build-abc.slice"
 	if got != want {
 		t.Fatalf("userSliceParent = %q, want %q", got, want)
 	}
 	// systemd splits a UUID slice name at every '-', so the real unit is
 	// nested under each prefix.
-	got = userSliceParent(1000, "stars-build-01a1-70b1-984b-597d45716a42.slice")
-	want = "user.slice/user-1000.slice/user@1000.service/stars.slice/stars-build.slice/" +
-		"stars-build-01a1.slice/stars-build-01a1-70b1.slice/" +
-		"stars-build-01a1-70b1-984b.slice/stars-build-01a1-70b1-984b-597d45716a42.slice"
+	got = userSliceParent(1000, "orrery-build-01a1-70b1-984b-597d45716a42.slice")
+	want = "user.slice/user-1000.slice/user@1000.service/orrery.slice/orrery-build.slice/" +
+		"orrery-build-01a1.slice/orrery-build-01a1-70b1.slice/" +
+		"orrery-build-01a1-70b1-984b.slice/orrery-build-01a1-70b1-984b-597d45716a42.slice"
 	if got != want {
 		t.Fatalf("userSliceParent = %q, want %q", got, want)
 	}

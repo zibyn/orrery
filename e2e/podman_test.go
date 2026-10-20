@@ -16,10 +16,10 @@ import (
 // scenarios gpu-sandbox-ready, exec-log-stream and agent-restart-survives run
 // on a rootless Podman Node. It reuses the remote-host shape of the GPU tests:
 //
-//	STARS_E2E_GPU_SSH=user@podman-host make e2e -run PodmanParity
+//	ORRERY_E2E_GPU_SSH=user@podman-host make e2e -run PodmanParity
 //
 // The SSH login must reach root (directly or with passwordless sudo), because
-// the Agent runs as root (runtime.md §9). STARS_E2E_PODMAN_USER names the
+// the Agent runs as root (runtime.md §9). ORRERY_E2E_PODMAN_USER names the
 // non-root user whose rootless Podman socket the Agent uses; it defaults to
 // the SSH user when that user is not root. Podman, uidmap and the rootless
 // network helper are installed over SSH when absent.
@@ -135,9 +135,9 @@ type podmanHost struct {
 
 func startPodmanHost(t *testing.T, name string) *podmanHost {
 	t.Helper()
-	target := os.Getenv("STARS_E2E_GPU_SSH")
+	target := os.Getenv("ORRERY_E2E_GPU_SSH")
 	if target == "" {
-		t.Skip("STARS_E2E_GPU_SSH is not set; connect a Podman host first")
+		t.Skip("ORRERY_E2E_GPU_SSH is not set; connect a Podman host first")
 	}
 	suffix := time.Now().UnixNano()
 	h := &podmanHost{
@@ -148,10 +148,10 @@ func startPodmanHost(t *testing.T, name string) *podmanHost {
 	}
 	h.state = h.dir + "/identity.json"
 	h.sshUser = strings.TrimSpace(h.sshRun(t, "id", "-un"))
-	h.user = os.Getenv("STARS_E2E_PODMAN_USER")
+	h.user = os.Getenv("ORRERY_E2E_PODMAN_USER")
 	if h.user == "" {
 		if h.sshUser == "root" {
-			t.Fatalf("STARS_E2E_PODMAN_USER is required when STARS_E2E_GPU_SSH logs in as root")
+			t.Fatalf("ORRERY_E2E_PODMAN_USER is required when ORRERY_E2E_GPU_SSH logs in as root")
 		}
 		h.user = h.sshUser
 	}
@@ -172,10 +172,10 @@ func startPodmanHost(t *testing.T, name string) *podmanHost {
 	h.startPodmanService(t)
 
 	h.scp(t, agentPath(t), h.dir+"/agent")
-	h.scp(t, cliPath(t), h.dir+"/stars-sandbox")
+	h.scp(t, cliPath(t), h.dir+"/orrery")
 	h.scp(t, nodeCA(), h.dir+"/ca.crt")
 
-	remotePort := envOr("STARS_E2E_GPU_REMOTE_PORT", "18081")
+	remotePort := envOr("ORRERY_E2E_GPU_REMOTE_PORT", "18081")
 	h.tunnel = exec.Command("ssh", "-N", "-R",
 		remotePort+":127.0.0.1:"+fmt.Sprint(gpuAPIPort), target)
 	if err := h.tunnel.Start(); err != nil {
@@ -405,7 +405,7 @@ func (h *podmanHost) scp(t *testing.T, src, dst string) {
 // user's Podman (the same container the Agent created).
 func remotePodmanGPUUUIDs(t *testing.T, h *podmanHost, sandboxID string) []string {
 	t.Helper()
-	out := h.sshRunUser(t, "podman", "exec", "stars-sandbox-"+sandboxID,
+	out := h.sshRunUser(t, "podman", "exec", "orrery-"+sandboxID,
 		"nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader,nounits")
 	var uuids []string
 	for _, line := range strings.Split(out, "\n") {

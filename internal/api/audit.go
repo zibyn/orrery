@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request, p *principal) {

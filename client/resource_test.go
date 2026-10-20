@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/zibyn/stars-sandbox/internal/manifest"
+	"github.com/zibyn/orrery/internal/manifest"
 )
 
 func TestBuildManifestRecordsTheTree(t *testing.T) {

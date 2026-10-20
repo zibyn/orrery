@@ -18,9 +18,9 @@ import (
 
 	"github.com/google/uuid"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 const (
@@ -30,7 +30,7 @@ const (
 	localProbeUnitMem   = "MemoryMax=67108864"
 	localProbeUnitPids  = "TasksMax=256"
 	// localProbeSlice groups the registration self-check units.
-	localProbeSlice = "stars-probe.slice"
+	localProbeSlice = "orrery-probe.slice"
 )
 
 // localUser is the single unprivileged host user every Local Runtime Exec runs
@@ -74,7 +74,7 @@ func lookupLocalUser(raw string) (localUser, error) {
 }
 
 // agentBinDir is the directory holding the Agent binary and the sibling
-// stars-sandbox CLI. Local Runtime appends it to PATH and points the Git
+// orrery CLI. Local Runtime appends it to PATH and points the Git
 // credential helper at it (node-protocol.md).
 func agentBinDir() string {
 	self, err := os.Executable()
@@ -84,13 +84,13 @@ func agentBinDir() string {
 	return filepath.Dir(self)
 }
 
-func localSliceName(id uuid.UUID) string { return "stars-sb-" + id.String() + ".slice" }
+func localSliceName(id uuid.UUID) string { return "orrery-sb-" + id.String() + ".slice" }
 
 // localPlaceholderUnit is the --unit= value; systemd appends .service. The
 // query helpers name the .service explicitly so is-active cannot guess wrong.
-func localPlaceholderUnit(id uuid.UUID) string    { return "stars-sb-" + id.String() }
+func localPlaceholderUnit(id uuid.UUID) string    { return "orrery-sb-" + id.String() }
 func localPlaceholderService(id uuid.UUID) string { return localPlaceholderUnit(id) + ".service" }
-func localExecUnit(id uuid.UUID) string           { return "stars-exec-" + id.String() }
+func localExecUnit(id uuid.UUID) string           { return "orrery-exec-" + id.String() }
 func localExecService(id uuid.UUID) string        { return localExecUnit(id) + ".service" }
 
 // localCtlSocket is the Supervisor's abstract socket. The host record path can
@@ -131,8 +131,8 @@ func localExecArgs(sandboxID, execID uuid.UUID, as localUser, runRoot, superviso
 		"--unit=" + localExecUnit(execID),
 		"--slice=" + localSliceName(sandboxID),
 		"--uid=" + as.name,
-		"--setenv=STARS_RUN_ROOT=" + runRoot,
-		"--setenv=STARS_CTL_SOCKET=" + localCtlSocket(execID),
+		"--setenv=ORRERY_RUN_ROOT=" + runRoot,
+		"--setenv=ORRERY_CTL_SOCKET=" + localCtlSocket(execID),
 	}
 	args = append(args, extra...)
 	return append(args, supervisorPath, "run", execID.String())
@@ -264,7 +264,7 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 // GPU-less Exec still names the variable as empty.
 func localExecEnv(caller map[string]string, basePath, binDir, workspace string, gpus []string) map[string]string {
 	env := execEnv(caller, basePath, binDir)
-	env["STARS_WORKSPACE"] = workspace
+	env["ORRERY_WORKSPACE"] = workspace
 	env["CUDA_VISIBLE_DEVICES"] = strings.Join(gpus, ",")
 	return env
 }
@@ -576,7 +576,7 @@ func (d *localDriver) probe(ctx context.Context) (nodeproto.CapabilityReport, er
 // cgroup and Workspace back (runtime.md §10). A host with cards also probes
 // DevicePolicy=closed; a rejected policy degrades only GPU visibility.
 func (d *localDriver) selfCheck(ctx context.Context) (supervisor.Result, bool, bool, bool, error) {
-	dir, err := os.MkdirTemp("", "stars-local-probe-*")
+	dir, err := os.MkdirTemp("", "orrery-local-probe-*")
 	if err != nil {
 		return supervisor.Result{}, false, false, false, err
 	}
@@ -634,7 +634,7 @@ func (d *localDriver) selfCheck(ctx context.Context) (supervisor.Result, bool, b
 func (d *localDriver) runProbe(ctx context.Context, workspace string, extra []string) (supervisor.Result, error) {
 	args := []string{
 		"--quiet", "--pipe", "--wait", "--collect",
-		"--unit=stars-probe-" + uuid.NewString(),
+		"--unit=orrery-probe-" + uuid.NewString(),
 		"--slice=" + localProbeSlice,
 		"--uid=" + d.user.name,
 		"--property=" + localProbeUnitCPU,

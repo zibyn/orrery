@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 )
 
 // Stream is what both Node_TunnelClient and Node_TunnelServer provide.

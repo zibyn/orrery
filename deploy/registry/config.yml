@@ -7,11 +7,11 @@ log:
   level: info
 storage:
   s3:
-    accesskey: stars
-    secretkey: stars-secret
+    accesskey: orrery
+    secretkey: orrery-secret
     region: us-east-1
     regionendpoint: http://127.0.0.1:19000
-    bucket: stars
+    bucket: orrery
     rootdirectory: /registry
     forcepathstyle: true
     secure: false
@@ -19,8 +19,8 @@ storage:
 http:
   addr: :15000
   # Signs internal state; this is a development value.
-  secret: stars-sandbox-registry-dev-secret
+  secret: orrery-registry-dev-secret
 auth:
   htpasswd:
-    realm: stars-sandbox
+    realm: orrery
     path: /etc/distribution/htpasswd

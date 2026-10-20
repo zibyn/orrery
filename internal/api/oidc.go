@@ -15,11 +15,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/oauth2"
 
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 const (
-	oidcStateCookieName = "stars_oidc_state"
+	oidcStateCookieName = "orrery_oidc_state"
 	oidcStateTTL        = 10 * time.Minute
 )
 

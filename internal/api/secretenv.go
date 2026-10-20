@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/zibyn/stars-sandbox/internal/keyring"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/keyring"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // A Sandbox's `secrets` mapping is snapshotted into `sandboxes.secret_env_ct`
@@ -167,7 +167,7 @@ func secretEnvNameProblem(name string) (code, detail string) {
 		return "invalid_request", "secrets keys must be non-empty, trimmed, and contain no '=' or NUL"
 	}
 	if reservedSecretName(name) {
-		return "invalid_request", "secrets keys may not use a reserved name: GIT_*, LD_*, STARS_*, PATH and HOME are not allowed"
+		return "invalid_request", "secrets keys may not use a reserved name: GIT_*, LD_*, ORRERY_*, PATH and HOME are not allowed"
 	}
 	return "", ""
 }

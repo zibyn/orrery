@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/zibyn/stars-sandbox/internal/httpjson"
+	"github.com/zibyn/orrery/internal/httpjson"
 )
 
 func writeProblem(w http.ResponseWriter, code, detail string) {

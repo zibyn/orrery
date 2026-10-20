@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // waitForLimit is fixed by api.md §1.

@@ -26,7 +26,7 @@ type GitProvider struct {
 	Scopes       []string
 }
 
-// gitProviderFileEntry is one element of STARS_GIT_PROVIDERS_FILE (defaults.md,
+// gitProviderFileEntry is one element of ORRERY_GIT_PROVIDERS_FILE (defaults.md,
 // environment mode only). PKCE is a pointer so an omitted field means true.
 type gitProviderFileEntry struct {
 	ID               string    `json:"id"`
@@ -60,7 +60,7 @@ type gitProviderSpec struct {
 
 var gitProviderIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-// loadGitProviders reads and resolves STARS_GIT_PROVIDERS_FILE. An unreadable
+// loadGitProviders reads and resolves ORRERY_GIT_PROVIDERS_FILE. An unreadable
 // or invalid file fails startup rather than silently disabling Git linking.
 func loadGitProviders(path string) ([]GitProvider, error) {
 	data, err := os.ReadFile(path)

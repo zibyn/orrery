@@ -1,4 +1,4 @@
-module github.com/zibyn/stars-sandbox
+module github.com/zibyn/orrery
 
 go 1.26.8
 

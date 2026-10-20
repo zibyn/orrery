@@ -12,7 +12,7 @@ import (
 )
 
 func gitMatchServer(providers ...GitProvider) *Server {
-	return &Server{cfg: Config{AccessURL: "https://stars.example", GitProviders: providers}}
+	return &Server{cfg: Config{AccessURL: "https://orrery.example", GitProviders: providers}}
 }
 
 // A host resolves to its provider; no match passes through and several
@@ -117,7 +117,7 @@ func TestIsPermanentGitRefreshError(t *testing.T) {
 
 // The 404 body carries the console's Git page (api.md §3).
 func TestWriteGitAuthorizationRequired(t *testing.T) {
-	s := &Server{cfg: Config{AccessURL: "https://stars.example/"}}
+	s := &Server{cfg: Config{AccessURL: "https://orrery.example/"}}
 	rec := httptest.NewRecorder()
 	s.writeGitAuthorizationRequired(rec, "no link")
 	if rec.Code != http.StatusNotFound {
@@ -130,7 +130,7 @@ func TestWriteGitAuthorizationRequired(t *testing.T) {
 	if !strings.Contains(body, `"code":"not_found"`) {
 		t.Fatalf("body = %s, want not_found", body)
 	}
-	if !strings.Contains(body, `"authorize_url":"https://stars.example/git"`) {
+	if !strings.Contains(body, `"authorize_url":"https://orrery.example/git"`) {
 		t.Fatalf("body = %s, want the console's /git URL", body)
 	}
 }

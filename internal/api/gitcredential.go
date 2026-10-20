@@ -13,8 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/oauth2"
 
-	"github.com/zibyn/stars-sandbox/internal/keyring"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/keyring"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // gitCredentialRequest is api.md §3: exactly one of host or provider.
@@ -115,7 +115,7 @@ func (s *Server) handleGitCredential(w http.ResponseWriter, r *http.Request, p *
 // configured provider. The match count lets the caller tell "no provider"
 // (pass through) from "ambiguous" (fail rather than guess).
 func (s *Server) gitCredentialProvider(host, id string) (GitProvider, int) {
-	// An unset STARS_ACCESS_URL turns Git account linking off, so there is no
+	// An unset ORRERY_ACCESS_URL turns Git account linking off, so there is no
 	// provider to match either way (defaults.md).
 	if s.cfg.AccessURL == "" {
 		return GitProvider{}, 0

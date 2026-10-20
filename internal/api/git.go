@@ -17,13 +17,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/oauth2"
 
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 const gitStateTTL = 10 * time.Minute
 
 // gitStateAAD binds the encrypted state to this flow.
-var gitStateAAD = []byte("stars-git-oauth-state")
+var gitStateAAD = []byte("orrery-git-oauth-state")
 
 // gitAuthState is the authorization-code flow's state, encrypted into the
 // OAuth `state` parameter. UserID is what binds the callback to the User who
@@ -57,7 +57,7 @@ type gitLinkList struct {
 }
 
 // GET /git-providers lists the deployment's providers without any credential
-// material. An unset STARS_ACCESS_URL turns linking off, so there is nothing
+// material. An unset ORRERY_ACCESS_URL turns linking off, so there is nothing
 // to offer (defaults.md).
 func (s *Server) handleListGitProviders(w http.ResponseWriter, r *http.Request, _ *principal) {
 	out := gitProviderList{Items: []gitProviderDTO{}}

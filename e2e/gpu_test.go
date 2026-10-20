@@ -16,14 +16,14 @@ import (
 // GPU scenarios need a real GPU host. They are isolated behind an environment
 // variable and only run once ticket #58 connects one:
 //
-//	STARS_E2E_GPU_SSH=user@gpu-host make e2e -run GPU
+//	ORRERY_E2E_GPU_SSH=user@gpu-host make e2e -run GPU
 //
 // The test deploys the Agent over SSH, opens a reverse tunnel so the host
 // reaches this machine's `node` listener on 127.0.0.1 (which the throwaway TLS
 // certificate covers), and drives the scenarios through the public REST API.
-// STARS_E2E_GPU_SNAPSHOT names a platform Snapshot for GPU Sandboxes (M4
+// ORRERY_E2E_GPU_SNAPSHOT names a platform Snapshot for GPU Sandboxes (M4
 // imports images by digest and Sandboxes reference a Snapshot by name). The
-// deployment must list it in STARS_PLATFORM_SNAPSHOTS; a raw image reference
+// deployment must list it in ORRERY_PLATFORM_SNAPSHOTS; a raw image reference
 // is no longer accepted. The default CUDA image is the smallest glibc base
 // whose nvidia-smi can run.
 
@@ -127,11 +127,11 @@ func TestGPUQueueAndDeadline(t *testing.T) {
 // reverse tunnel back to this machine's node listener.
 func startGPUHost(t *testing.T, name string) *gpuHost {
 	t.Helper()
-	target := os.Getenv("STARS_E2E_GPU_SSH")
+	target := os.Getenv("ORRERY_E2E_GPU_SSH")
 	if target == "" {
-		t.Skip("STARS_E2E_GPU_SSH is not set; connect a GPU host first (#58)")
+		t.Skip("ORRERY_E2E_GPU_SSH is not set; connect a GPU host first (#58)")
 	}
-	remotePort := envOr("STARS_E2E_GPU_REMOTE_PORT", "18081")
+	remotePort := envOr("ORRERY_E2E_GPU_REMOTE_PORT", "18081")
 
 	suffix := time.Now().UnixNano()
 	h := &gpuHost{
@@ -146,7 +146,7 @@ func startGPUHost(t *testing.T, name string) *gpuHost {
 	scpRun(t, h, agentPath(t), h.dir+"/agent")
 	// The Agent stages the external CLI into every Sandbox from its own
 	// directory (runtime.md §2).
-	scpRun(t, h, cliPath(t), h.dir+"/stars-sandbox")
+	scpRun(t, h, cliPath(t), h.dir+"/orrery")
 	scpRun(t, h, nodeCA(), h.dir+"/ca.crt")
 
 	// The reverse tunnel gives the host a 127.0.0.1 that reaches this machine,
@@ -196,7 +196,7 @@ func sshRun(t *testing.T, h *gpuHost, args ...string) string {
 
 func sshRunQuiet(t *testing.T, args ...string) {
 	t.Helper()
-	_ = exec.Command("ssh", append([]string{os.Getenv("STARS_E2E_GPU_SSH")}, args...)...).Run()
+	_ = exec.Command("ssh", append([]string{os.Getenv("ORRERY_E2E_GPU_SSH")}, args...)...).Run()
 }
 
 func scpRun(t *testing.T, h *gpuHost, src, dst string) {
@@ -227,7 +227,7 @@ func requireGPUs(t *testing.T, node nodeView) int {
 // remoteGPUUUIDs runs nvidia-smi inside the Sandbox on the GPU host.
 func remoteGPUUUIDs(t *testing.T, h *gpuHost, sandboxID string) []string {
 	t.Helper()
-	out := sshRun(t, h, "docker", "exec", "stars-sandbox-"+sandboxID,
+	out := sshRun(t, h, "docker", "exec", "orrery-"+sandboxID,
 		"nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader,nounits")
 	var uuids []string
 	for _, line := range strings.Split(out, "\n") {
@@ -261,9 +261,9 @@ func gpuSandboxBody(t *testing.T, node nodeView, count int) map[string]any {
 // Sandboxes resolve a Snapshot name to its current ready version (api.md §3).
 func gpuSnapshotName(t *testing.T) string {
 	t.Helper()
-	name := envOr("STARS_E2E_GPU_SNAPSHOT", "cuda")
+	name := envOr("ORRERY_E2E_GPU_SNAPSHOT", "cuda")
 	if strings.ContainsAny(name, "/:") {
-		t.Fatalf("STARS_E2E_GPU_SNAPSHOT must be a Snapshot name listed in platform_snapshots, got image reference %q", name)
+		t.Fatalf("ORRERY_E2E_GPU_SNAPSHOT must be a Snapshot name listed in platform_snapshots, got image reference %q", name)
 	}
 	return name
 }

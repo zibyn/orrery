@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/zibyn/stars-sandbox/client"
-	"github.com/zibyn/stars-sandbox/internal/mcpserver"
+	"github.com/zibyn/orrery/client"
+	"github.com/zibyn/orrery/internal/mcpserver"
 )
 
 // fakeServer is an httptest server with route registration.

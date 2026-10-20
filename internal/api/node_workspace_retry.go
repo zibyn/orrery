@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // recordWorkspaceCommandFailure advances a Workspace's provisioning retry

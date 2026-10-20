@@ -4,24 +4,24 @@ import (
 	"fmt"
 	"io"
 
-	starsclient "github.com/zibyn/stars-sandbox/client"
+	orreryclient "github.com/zibyn/orrery/client"
 )
 
 // runNode is the admin Node lifecycle surface (api.md §3, ADR-0014).
 // declare-lost clears the Token and cascades; pause/resume is the placement
 // switch; delete requires a paused, drained Node and leaves a tombstone.
 func runNode(c *client, args []string, stderr io.Writer) error {
-	const usage = "usage: stars-sandbox node pause|resume|delete|declare-lost <id>"
+	const usage = "usage: orrery node pause|resume|delete|declare-lost <id>"
 	if len(args) == 0 {
 		return fmt.Errorf(usage)
 	}
 	switch args[0] {
 	case "pause", "resume":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: stars-sandbox node %s <id>", args[0])
+			return fmt.Errorf("usage: orrery node %s <id>", args[0])
 		}
 		var (
-			node *starsclient.Node
+			node *orreryclient.Node
 			err  error
 		)
 		if args[0] == "pause" {
@@ -35,7 +35,7 @@ func runNode(c *client, args []string, stderr io.Writer) error {
 		return c.print(node)
 	case "delete":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: stars-sandbox node delete <id>")
+			return fmt.Errorf("usage: orrery node delete <id>")
 		}
 		node, err := c.DeleteNode(ctx, args[1])
 		if err != nil {
@@ -44,7 +44,7 @@ func runNode(c *client, args []string, stderr io.Writer) error {
 		return c.print(node)
 	case "declare-lost":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: stars-sandbox node declare-lost <id>")
+			return fmt.Errorf("usage: orrery node declare-lost <id>")
 		}
 		node, err := c.DeclareNodeLost(ctx, args[1])
 		if err != nil {

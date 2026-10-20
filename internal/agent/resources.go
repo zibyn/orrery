@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/castransfer"
-	"github.com/zibyn/stars-sandbox/internal/manifest"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/castransfer"
+	"github.com/zibyn/orrery/internal/manifest"
 )
 
 // resourceMountRoot is where every Resource version tree appears in the

@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // The numbers are the defaults from docs/spec/defaults.md: 1 CPU + 2 GiB of

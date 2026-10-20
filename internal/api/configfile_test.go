@@ -12,14 +12,14 @@ import (
 	"time"
 )
 
-// writeConfigYAML writes a config file and points STARS_CONFIG_FILE at it.
+// writeConfigYAML writes a config file and points ORRERY_CONFIG_FILE at it.
 func writeConfigYAML(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("STARS_CONFIG_FILE", path)
+	t.Setenv("ORRERY_CONFIG_FILE", path)
 	return path
 }
 
@@ -32,9 +32,9 @@ func TestLoadConfigFromYAML(t *testing.T) {
 database:
   host: postgres
   port: 5433
-  user: stars
+  user: orrery
   password: secret
-  name: stars
+  name: orrery
 access:
   url: https://cp.example.com:9443
   apps_domain: apps.example.com
@@ -51,7 +51,7 @@ s3: {secret_key: s3-secret}
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.DatabaseURL != "postgres://stars:secret@postgres:5433/stars?sslmode=disable" {
+	if cfg.DatabaseURL != "postgres://orrery:secret@postgres:5433/orrery?sslmode=disable" {
 		t.Fatalf("DatabaseURL = %q", cfg.DatabaseURL)
 	}
 	if cfg.AccessURL != "https://cp.example.com:9443" || cfg.AppsDomain != "apps.example.com" {
@@ -84,14 +84,14 @@ s3: {secret_key: s3-secret}
 
 func TestLoadConfigYAMLDefaults(t *testing.T) {
 	writeConfigYAML(t, `
-database: {host: postgres, user: stars, password: secret, name: stars}
+database: {host: postgres, user: orrery, password: secret, name: orrery}
 s3: {secret_key: s3-secret}
 `)
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.DatabaseURL != "postgres://stars:secret@postgres:5432/stars?sslmode=disable" {
+	if cfg.DatabaseURL != "postgres://orrery:secret@postgres:5432/orrery?sslmode=disable" {
 		t.Fatalf("DatabaseURL = %q", cfg.DatabaseURL)
 	}
 	if cfg.EnrollmentPacketTTL != time.Hour || cfg.AdmissionTimeout != time.Hour ||
@@ -105,8 +105,8 @@ s3: {secret_key: s3-secret}
 	if cfg.BuildCPU != 4 || cfg.BuildMemory != 8<<30 {
 		t.Fatalf("build defaults = %v, %d", cfg.BuildCPU, cfg.BuildMemory)
 	}
-	if cfg.S3.Endpoint != "http://rustfs:9000" || cfg.S3.Bucket != "stars" ||
-		cfg.S3.Region != "us-east-1" || cfg.S3.AccessKey != "stars" {
+	if cfg.S3.Endpoint != "http://rustfs:9000" || cfg.S3.Bucket != "orrery" ||
+		cfg.S3.Region != "us-east-1" || cfg.S3.AccessKey != "orrery" {
 		t.Fatalf("s3 defaults = %+v", cfg.S3)
 	}
 	if cfg.S3.PublicEndpoint != "http://rustfs:9000" {
@@ -142,15 +142,15 @@ database: {url: "postgres://x", host: h, user: u, password: p, name: n}
 
 func TestLoadConfigYAMLEnvOverridesScalars(t *testing.T) {
 	writeConfigYAML(t, `
-database: {host: postgres, user: stars, password: secret, name: stars}
+database: {host: postgres, user: orrery, password: secret, name: orrery}
 access: {url: https://file.example}
 enrollment_packet_ttl: 2h
 s3: {secret_key: s3-secret}
 `)
-	t.Setenv("STARS_DATABASE_HOST", "db.example")
-	t.Setenv("STARS_ACCESS_URL", "https://env.example")
-	t.Setenv("STARS_ENROLLMENT_PACKET_TTL", "3h")
-	t.Setenv("STARS_API_ADDR", ":9999")
+	t.Setenv("ORRERY_DATABASE_HOST", "db.example")
+	t.Setenv("ORRERY_ACCESS_URL", "https://env.example")
+	t.Setenv("ORRERY_ENROLLMENT_PACKET_TTL", "3h")
+	t.Setenv("ORRERY_API_ADDR", ":9999")
 
 	var log bytes.Buffer
 	cfg, err := LoadConfig(slog.New(slog.NewTextHandler(&log, nil)))
@@ -173,7 +173,7 @@ s3: {secret_key: s3-secret}
 func TestLoadConfigYAMLSecretsAndLists(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
 	writeConfigYAML(t, `
-database: {host: postgres, user: stars, password: secret, name: stars}
+database: {host: postgres, user: orrery, password: secret, name: orrery}
 s3: {secret_key: s3-secret}
 encryption_keys:
   - {id: k1, key: `+key+`}
@@ -182,7 +182,7 @@ git_providers:
      base_url: https://git.example.com, scopes: [read:user]}
 oidc: {issuer_url: https://idp.test, client_id: oidc-id, client_secret: oidc-secret,
        email_domains: [Example.COM], allow_signups: true}
-registry: {addr: cp.example.com:9443, username: stars, password: registry-secret}
+registry: {addr: cp.example.com:9443, username: orrery, password: registry-secret}
 platform_snapshots:
   - {name: default, ref: alpine@`+configTestDigest+`, default: true}
 `)
@@ -279,8 +279,8 @@ s3: {endpoint: ""}
 }
 
 func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
-	t.Setenv("STARS_CONFIG_FILE", "")
-	t.Setenv("STARS_DATABASE_URL", "postgres://u:p@db.example:5432/x")
+	t.Setenv("ORRERY_CONFIG_FILE", "")
+	t.Setenv("ORRERY_DATABASE_URL", "postgres://u:p@db.example:5432/x")
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)

@@ -1,4 +1,4 @@
-"""A synchronous client for the Stars Sandbox public REST API.
+"""A synchronous client for the Orrery public REST API.
 
 Covers Sandbox lifecycle, Exec, Workspace files and Secrets (api.md §9). It
 does not cover Resource upload, Workspace publish, port forwarding or PTY.
@@ -23,15 +23,15 @@ __all__ = [
     "Page",
     "Sandbox",
     "Secret",
-    "StarsSandbox",
-    "StarsSandboxError",
+    "Orrery",
+    "OrreryError",
     "WorkspaceRef",
 ]
 
 _TERMINAL_SANDBOX_STATES = {"failed", "deleted"}
 
 
-class StarsSandboxError(Exception):
+class OrreryError(Exception):
     """A non-2xx answer, parsed from the problem+json body (api.md §2)."""
 
     def __init__(self, status: int, code: str, detail: str):
@@ -174,7 +174,7 @@ class Secret:
     updated_at: str | None = None
 
 
-class StarsSandbox:
+class Orrery:
     """Synchronous client. Pass the API server root, e.g. http://127.0.0.1:18080."""
 
     def __init__(
@@ -195,7 +195,7 @@ class StarsSandbox:
     def close(self) -> None:
         self._http.close()
 
-    def __enter__(self) -> "StarsSandbox":
+    def __enter__(self) -> "Orrery":
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -210,7 +210,7 @@ class StarsSandbox:
                 problem = response.json()
             except ValueError:
                 problem = {}
-            raise StarsSandboxError(
+            raise OrreryError(
                 response.status_code,
                 problem.get("code", ""),
                 problem.get("detail") or response.reason_phrase,

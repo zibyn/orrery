@@ -62,8 +62,8 @@ func TestIsWebSocketUpgrade(t *testing.T) {
 }
 
 func TestSessionCookieAttributes(t *testing.T) {
-	c := newSessionCookie("ssk_value")
-	if c.Name != "stars_session" || c.Value != "ssk_value" {
+	c := newSessionCookie("orr_value")
+	if c.Name != "orrery_session" || c.Value != "orr_value" {
 		t.Fatalf("cookie = %q=%q", c.Name, c.Value)
 	}
 	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode {
@@ -77,7 +77,7 @@ func TestSessionCookieAttributes(t *testing.T) {
 	}
 
 	cleared := clearSessionCookie()
-	if cleared.MaxAge >= 0 || cleared.Value != "" || cleared.Name != "stars_session" {
+	if cleared.MaxAge >= 0 || cleared.Value != "" || cleared.Name != "orrery_session" {
 		t.Fatalf("cleared cookie = %+v", cleared)
 	}
 }

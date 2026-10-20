@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 func TestValidateBuildDockerfile(t *testing.T) {

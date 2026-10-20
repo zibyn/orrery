@@ -7,9 +7,9 @@ import (
 const configTestDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestConfigParsesPlatformSnapshots(t *testing.T) {
-	t.Setenv("STARS_DATABASE_URL", "postgres://x")
-	t.Setenv("STARS_PLATFORM_SNAPSHOTS", "default=alpine@"+configTestDigest+", tools=ghcr.io/acme/tools@"+configTestDigest)
-	t.Setenv("STARS_DEFAULT_SNAPSHOT", "default")
+	t.Setenv("ORRERY_DATABASE_URL", "postgres://x")
+	t.Setenv("ORRERY_PLATFORM_SNAPSHOTS", "default=alpine@"+configTestDigest+", tools=ghcr.io/acme/tools@"+configTestDigest)
+	t.Setenv("ORRERY_DEFAULT_SNAPSHOT", "default")
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ConfigFromEnv: %v", err)
@@ -38,9 +38,9 @@ func TestConfigRejectsBadPlatformSnapshots(t *testing.T) {
 		{"default not listed", "default=alpine@" + configTestDigest, "other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("STARS_DATABASE_URL", "postgres://x")
-			t.Setenv("STARS_PLATFORM_SNAPSHOTS", tc.platform)
-			t.Setenv("STARS_DEFAULT_SNAPSHOT", tc.def)
+			t.Setenv("ORRERY_DATABASE_URL", "postgres://x")
+			t.Setenv("ORRERY_PLATFORM_SNAPSHOTS", tc.platform)
+			t.Setenv("ORRERY_DEFAULT_SNAPSHOT", tc.def)
 			if _, err := ConfigFromEnv(); err == nil {
 				t.Fatal("ConfigFromEnv accepted a bad platform Snapshot configuration")
 			}
@@ -49,20 +49,20 @@ func TestConfigRejectsBadPlatformSnapshots(t *testing.T) {
 }
 
 func TestConfigRegistryPushAddress(t *testing.T) {
-	t.Setenv("STARS_DATABASE_URL", "postgres://x")
-	t.Setenv("STARS_REGISTRY_ADDR", "127.0.0.1:15000")
-	t.Setenv("STARS_REGISTRY_PUSH_ADDR", "")
+	t.Setenv("ORRERY_DATABASE_URL", "postgres://x")
+	t.Setenv("ORRERY_REGISTRY_ADDR", "127.0.0.1:15000")
+	t.Setenv("ORRERY_REGISTRY_PUSH_ADDR", "")
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.RegistryPushAddr != "127.0.0.1:15000" {
-		t.Fatalf("RegistryPushAddr = %q, defaults to STARS_REGISTRY_ADDR", cfg.RegistryPushAddr)
+		t.Fatalf("RegistryPushAddr = %q, defaults to ORRERY_REGISTRY_ADDR", cfg.RegistryPushAddr)
 	}
 	// The Node-reachable credential document must also resolve the address the
 	// Control Plane pushes to, or the platform import cannot authenticate.
-	t.Setenv("STARS_REGISTRY_PUSH_ADDR", "host.docker.internal:15000")
-	t.Setenv("STARS_REGISTRY_CREDENTIAL", `{"auths":{"127.0.0.1:15000":{"auth":"c3RhcnM6c2VjcmV0"}}}`)
+	t.Setenv("ORRERY_REGISTRY_PUSH_ADDR", "host.docker.internal:15000")
+	t.Setenv("ORRERY_REGISTRY_CREDENTIAL", `{"auths":{"127.0.0.1:15000":{"auth":"b3JyZXJ5OnNlY3JldA=="}}}`)
 	cfg, err = ConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)

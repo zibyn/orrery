@@ -100,12 +100,12 @@ jobs:
           sudo loginctl enable-linger "$USER"
           until [ -S "/run/user/$(id -u)/bus" ]; do sleep 1; done
       # GPU, Podman and remote-host scenarios skip themselves without
-      # STARS_E2E_GPU_SSH.
+      # ORRERY_E2E_GPU_SSH.
       - run: ./scripts/e2e.sh -timeout 80m
         env:
           # CI-only BuildKit cache; local e2e runs keep the plain build
           # (deploy/compose.ci.yaml).
-          STARS_E2E_COMPOSE_OVERRIDE: ${{ github.workspace }}/deploy/compose.ci.yaml
+          ORRERY_E2E_COMPOSE_OVERRIDE: ${{ github.workspace }}/deploy/compose.ci.yaml
 
   # Playwright is slow and not a merge gate; it runs nightly or on demand.
   e2e-console:
@@ -148,7 +148,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/stars-sandbox-server
+          images: ghcr.io/${{ github.repository_owner }}/orrery-server
           # semver also tags :latest; a push to main tags :main.
           tags: |
             type=semver,pattern={{version}}
@@ -195,13 +195,13 @@ jobs:
           # The Agent finds the CLI beside its own executable (runtime.md).
           for arch in amd64 arm64; do
             d="$(mktemp -d)"
-            build linux "$arch" "$d" stars-sandbox-agent stars-sandbox
-            tar -C "$d" -czf "dist/stars-sandbox-node_${v}_linux_${arch}.tar.gz" stars-sandbox-agent stars-sandbox
+            build linux "$arch" "$d" orrery-agent orrery
+            tar -C "$d" -czf "dist/orrery-node_${v}_linux_${arch}.tar.gz" orrery-agent orrery
           done
           for arch in amd64 arm64; do
             d="$(mktemp -d)"
-            build darwin "$arch" "$d" stars-sandbox
-            tar -C "$d" -czf "dist/stars-sandbox_${v}_darwin_${arch}.tar.gz" stars-sandbox
+            build darwin "$arch" "$d" orrery
+            tar -C "$d" -czf "dist/orrery_${v}_darwin_${arch}.tar.gz" orrery
           done
           (cd dist && sha256sum -- * > SHA256SUMS)
       # A hyphen marks a semver prerelease; releases/latest must skip it or

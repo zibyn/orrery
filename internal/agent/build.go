@@ -26,9 +26,9 @@ import (
 	"github.com/moby/buildkit/util/progress/progressui"
 	"github.com/tonistiigi/fsutil"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/dockerfile"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/dockerfile"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 // Snapshot builds run through BuildKit's Go client against a BuildKit endpoint
@@ -601,7 +601,7 @@ func writeBuildMarker(path string, marker buildMarker) error {
 // manager's unit. An empty parent means the Node cannot bound a single build;
 // the deployment must bound builds Node-wide (runtime.md §12). The e2e
 // snapshot-build scenario asserts that a RUN process lands in
-// stars-build-<version_id>.slice when the slice can be created; when it cannot
+// orrery-build-<version_id>.slice when the slice can be created; when it cannot
 // (no systemd, no permission, no cgroupfs entry) the build deliberately falls
 // back to the Node-wide limit instead of failing.
 func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64, memory int64) (string, func()) {
@@ -609,7 +609,7 @@ func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64
 		slog.Warn("build has no limits; it is bounded only by the Node-wide limit", "cpu", cpu, "memory", memory)
 		return "", func() {}
 	}
-	slice := "stars-build-" + versionID + ".slice"
+	slice := "orrery-build-" + versionID + ".slice"
 	quota := "CPUQuota=" + fmt.Sprint(int64(cpu*100)) + "%"
 	memoryMax := "MemoryMax=" + fmt.Sprint(memory)
 	if os.Geteuid() == 0 {
@@ -632,8 +632,8 @@ func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64
 }
 
 // userSliceParent mirrors systemd's slice hierarchy. systemd treats every '-'
-// in a slice name as a hierarchy separator, so stars-build-<uuid>.slice lives
-// under stars-build-<prefix>.slice for each prefix of its name.
+// in a slice name as a hierarchy separator, so orrery-build-<uuid>.slice lives
+// under orrery-build-<prefix>.slice for each prefix of its name.
 func userSliceParent(uid int, slice string) string {
 	base := strings.TrimSuffix(slice, ".slice")
 	parts := strings.Split(base, "-")
@@ -659,7 +659,7 @@ func runSystemctl(ctx context.Context, args ...string) error {
 }
 
 func stopBuildSlice(ctx context.Context, versionID string) {
-	slice := "stars-build-" + versionID + ".slice"
+	slice := "orrery-build-" + versionID + ".slice"
 	if os.Geteuid() == 0 {
 		_ = runSystemctl(ctx, "stop", slice)
 		return

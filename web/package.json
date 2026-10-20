@@ -1,5 +1,5 @@
 {
-  "name": "stars-sandbox-web",
+  "name": "orrery-web",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.4.2",

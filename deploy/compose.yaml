@@ -2,11 +2,11 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: stars
-      POSTGRES_PASSWORD: stars
-      POSTGRES_DB: stars
+      POSTGRES_USER: orrery
+      POSTGRES_PASSWORD: orrery
+      POSTGRES_DB: orrery
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U stars -d stars"]
+      test: ["CMD-SHELL", "pg_isready -U orrery -d orrery"]
       interval: 1s
       timeout: 5s
       retries: 60
@@ -19,8 +19,8 @@ services:
   rustfs:
     image: rustfs/rustfs:1.0.2
     environment:
-      RUSTFS_ACCESS_KEY: "${STARS_S3_ACCESS_KEY:-stars}"
-      RUSTFS_SECRET_KEY: "${STARS_S3_SECRET_KEY:-stars-secret}"
+      RUSTFS_ACCESS_KEY: "${ORRERY_S3_ACCESS_KEY:-orrery}"
+      RUSTFS_SECRET_KEY: "${ORRERY_S3_SECRET_KEY:-orrery-secret}"
     volumes:
       - rustfs-data:/data
     ports:
@@ -35,11 +35,11 @@ services:
   rustfs-init:
     image: amazon/aws-cli:2.17.0
     environment:
-      AWS_ACCESS_KEY_ID: "${STARS_S3_ACCESS_KEY:-stars}"
-      AWS_SECRET_ACCESS_KEY: "${STARS_S3_SECRET_KEY:-stars-secret}"
-      AWS_DEFAULT_REGION: "${STARS_S3_REGION:-us-east-1}"
-      S3_ENDPOINT: "${STARS_S3_INTERNAL_ENDPOINT:-http://rustfs:9000}"
-      S3_BUCKET: "${STARS_S3_BUCKET:-stars}"
+      AWS_ACCESS_KEY_ID: "${ORRERY_S3_ACCESS_KEY:-orrery}"
+      AWS_SECRET_ACCESS_KEY: "${ORRERY_S3_SECRET_KEY:-orrery-secret}"
+      AWS_DEFAULT_REGION: "${ORRERY_S3_REGION:-us-east-1}"
+      S3_ENDPOINT: "${ORRERY_S3_INTERNAL_ENDPOINT:-http://rustfs:9000}"
+      S3_BUCKET: "${ORRERY_S3_BUCKET:-orrery}"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -60,7 +60,7 @@ services:
       # Distribution signs blob redirects for this endpoint. Nodes reach the
       # host-mapped 127.0.0.1:19000; in e2e the Control Plane (a container)
       # must reach it too, so the script points this at the bridge gateway.
-      REGISTRY_STORAGE_S3_REGIONENDPOINT: "${STARS_REGISTRY_S3_REGIONENDPOINT:-http://127.0.0.1:19000}"
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: "${ORRERY_REGISTRY_S3_REGIONENDPOINT:-http://127.0.0.1:19000}"
     volumes:
       - ./registry/config.yml:/etc/distribution/config.yml:ro
       - ./registry/htpasswd:/etc/distribution/htpasswd:ro
@@ -69,8 +69,8 @@ services:
         condition: service_completed_successfully
     healthcheck:
       # /v2/ answers 401 to anonymous requests, so the healthcheck sends the
-      # development credential (base64 of stars:stars-registry-password).
-      test: ["CMD-SHELL", "wget -q -O /dev/null --header='Authorization: Basic c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ=' http://127.0.0.1:15000/v2/"]
+      # development credential (base64 of orrery:orrery-registry-password).
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header='Authorization: Basic b3JyZXJ5Om9ycmVyeS1yZWdpc3RyeS1wYXNzd29yZA==' http://127.0.0.1:15000/v2/"]
       interval: 2s
       timeout: 3s
       retries: 60
@@ -97,7 +97,7 @@ services:
     profiles: ["oidc"]
     command: ["dex", "serve", "/etc/dex/dex.yaml"]
     volumes:
-      - "${STARS_DEX_DIR:-.}:/etc/dex:ro"
+      - "${ORRERY_DEX_DIR:-.}:/etc/dex:ro"
     ports:
       - "15556:5556"
 
@@ -111,7 +111,7 @@ services:
     environment:
       GITEA__database__DB_TYPE: sqlite3
       GITEA__security__INSTALL_LOCK: "true"
-      GITEA__server__ROOT_URL: "${STARS_GITEA_URL:-http://127.0.0.1:13000}/"
+      GITEA__server__ROOT_URL: "${ORRERY_GITEA_URL:-http://127.0.0.1:13000}/"
       GITEA__server__HTTP_PORT: "3000"
       GITEA__service__DISABLE_REGISTRATION: "true"
       GITEA__oauth2__ENABLED: "true"
@@ -132,18 +132,18 @@ services:
     environment:
       # Application settings come from the scenario's config.yaml (ADR-0024);
       # these are the keys that have no config.yaml form plus the purge hook.
-      STARS_CONFIG_FILE: /config/config.yaml
-      STARS_API_ADDR: ":8080"
-      STARS_NODE_ADDR: ":8081"
-      STARS_NODE_TLS_CERT: /tls/server.crt
-      STARS_NODE_TLS_KEY: /tls/server.key
+      ORRERY_CONFIG_FILE: /config/config.yaml
+      ORRERY_API_ADDR: ":8080"
+      ORRERY_NODE_ADDR: ":8081"
+      ORRERY_NODE_TLS_CERT: /tls/server.crt
+      ORRERY_NODE_TLS_KEY: /tls/server.key
       # Test hook only; production uses the 10-minute constant (defaults.md).
-      STARS_TEST_PURGE_INTERVAL: "${STARS_TEST_PURGE_INTERVAL:-}"
+      ORRERY_TEST_PURGE_INTERVAL: "${ORRERY_TEST_PURGE_INTERVAL:-}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
-      - "${STARS_CONFIG_DIR:-./config}:/config:ro"
+      - "${ORRERY_NODE_TLS_DIR:-./tls}:/tls:ro"
+      - "${ORRERY_CONFIG_DIR:-./config}:/config:ro"
     depends_on:
       postgres:
         condition: service_healthy
@@ -163,20 +163,20 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     environment:
-      STARS_DATABASE_URL: postgres://stars:stars@postgres:5432/stars_oidc?sslmode=disable
-      STARS_API_ADDR: ":8080"
-      STARS_NODE_ADDR: ":8081"
-      STARS_NODE_TLS_CERT: /tls/server.crt
-      STARS_NODE_TLS_KEY: /tls/server.key
-      STARS_ACCESS_URL: "${STARS_OIDC_ACCESS_URL:-}"
-      STARS_OIDC_ISSUER_URL: "${STARS_OIDC_ISSUER_URL:-}"
-      STARS_OIDC_CLIENT_ID: "${STARS_OIDC_CLIENT_ID:-}"
-      STARS_OIDC_CLIENT_SECRET_FILE: "${STARS_OIDC_CLIENT_SECRET_FILE:-}"
-      STARS_OIDC_ALLOW_SIGNUPS: "${STARS_OIDC_ALLOW_SIGNUPS:-}"
-      STARS_OIDC_EMAIL_DOMAINS: "${STARS_OIDC_EMAIL_DOMAINS:-}"
+      ORRERY_DATABASE_URL: postgres://orrery:orrery@postgres:5432/orrery_oidc?sslmode=disable
+      ORRERY_API_ADDR: ":8080"
+      ORRERY_NODE_ADDR: ":8081"
+      ORRERY_NODE_TLS_CERT: /tls/server.crt
+      ORRERY_NODE_TLS_KEY: /tls/server.key
+      ORRERY_ACCESS_URL: "${ORRERY_OIDC_ACCESS_URL:-}"
+      ORRERY_OIDC_ISSUER_URL: "${ORRERY_OIDC_ISSUER_URL:-}"
+      ORRERY_OIDC_CLIENT_ID: "${ORRERY_OIDC_CLIENT_ID:-}"
+      ORRERY_OIDC_CLIENT_SECRET_FILE: "${ORRERY_OIDC_CLIENT_SECRET_FILE:-}"
+      ORRERY_OIDC_ALLOW_SIGNUPS: "${ORRERY_OIDC_ALLOW_SIGNUPS:-}"
+      ORRERY_OIDC_EMAIL_DOMAINS: "${ORRERY_OIDC_EMAIL_DOMAINS:-}"
     volumes:
-      - "${STARS_NODE_TLS_DIR:-./tls}:/tls:ro"
-      - "${STARS_OIDC_SECRET_DIR:-./oidc}:/oidc:ro"
+      - "${ORRERY_NODE_TLS_DIR:-./tls}:/tls:ro"
+      - "${ORRERY_OIDC_SECRET_DIR:-./oidc}:/oidc:ro"
     depends_on:
       postgres:
         condition: service_healthy

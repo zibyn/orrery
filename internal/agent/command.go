@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
 // noGenerationFence skips the stale-generation check. CancelExec uses it: the

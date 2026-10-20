@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 // runtime.md §10: Local Runtime needs one non-root host user. The flag names a
@@ -68,8 +68,8 @@ func TestLocalCreateArgs(t *testing.T) {
 	id := uuid.MustParse("00000000-0000-7000-8000-000000000001")
 	got := localCreateArgs(id, "/data/bin/supervisor")
 	want := []string{
-		"--unit=stars-sb-" + id.String(),
-		"--slice=stars-sb-" + id.String() + ".slice",
+		"--unit=orrery-sb-" + id.String(),
+		"--slice=orrery-sb-" + id.String() + ".slice",
 		"/data/bin/supervisor", "init",
 	}
 	if len(got) != len(want) {
@@ -91,11 +91,11 @@ func TestLocalExecArgs(t *testing.T) {
 	user := localUser{name: "builder", uid: 1001}
 	got := localExecArgs(sandboxID, execID, user, runRoot, "/data/bin/supervisor", nil)
 	want := []string{
-		"--unit=stars-exec-" + execID.String(),
-		"--slice=stars-sb-" + sandboxID.String() + ".slice",
+		"--unit=orrery-exec-" + execID.String(),
+		"--slice=orrery-sb-" + sandboxID.String() + ".slice",
 		"--uid=builder",
-		"--setenv=STARS_RUN_ROOT=" + runRoot,
-		"--setenv=STARS_CTL_SOCKET=@stars-exec-" + execID.String(),
+		"--setenv=ORRERY_RUN_ROOT=" + runRoot,
+		"--setenv=ORRERY_CTL_SOCKET=@orrery-exec-" + execID.String(),
 		"/data/bin/supervisor", "run", execID.String(),
 	}
 	for i := range want {
@@ -194,11 +194,11 @@ func TestLocalLimitsMatch(t *testing.T) {
 // than assuming a path.
 func TestFindSliceDir(t *testing.T) {
 	root := t.TempDir()
-	want := filepath.Join(root, "stars.slice", "stars-sb.slice", "stars-sb-x.slice")
+	want := filepath.Join(root, "orrery.slice", "orrery-sb.slice", "orrery-sb-x.slice")
 	if err := os.MkdirAll(want, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := findSliceDir(root, "stars-sb-x.slice"); got != want {
+	if got := findSliceDir(root, "orrery-sb-x.slice"); got != want {
 		t.Fatalf("findSliceDir = %q, want %q", got, want)
 	}
 	if got := findSliceDir(root, "missing.slice"); got != "" {
@@ -257,18 +257,18 @@ func TestLocalCapabilities(t *testing.T) {
 	}
 }
 
-// Local PATH and Git helper use the Agent's own bin directory, not /.stars,
-// and STARS_WORKSPACE names the host Workspace (node-protocol.md).
+// Local PATH and Git helper use the Agent's own bin directory, not /.orrery,
+// and ORRERY_WORKSPACE names the host Workspace (node-protocol.md).
 func TestLocalExecEnv(t *testing.T) {
 	env := localExecEnv(map[string]string{"PATH": "/caller/bin", "KEEP": "kept"},
 		"/fallback/bin", "/agent/bin", "/data/workspaces/ws", []string{"GPU-a", "GPU-b"})
 	if got := env["PATH"]; got != "/caller/bin:/agent/bin" {
 		t.Fatalf("PATH = %q", got)
 	}
-	if env["STARS_WORKSPACE"] != "/data/workspaces/ws" {
-		t.Fatalf("STARS_WORKSPACE = %q", env["STARS_WORKSPACE"])
+	if env["ORRERY_WORKSPACE"] != "/data/workspaces/ws" {
+		t.Fatalf("ORRERY_WORKSPACE = %q", env["ORRERY_WORKSPACE"])
 	}
-	if env["GIT_CONFIG_VALUE_1"] != "/agent/bin/stars-sandbox git-credential" {
+	if env["GIT_CONFIG_VALUE_1"] != "/agent/bin/orrery git-credential" {
 		t.Fatalf("credential helper = %q", env["GIT_CONFIG_VALUE_1"])
 	}
 	if env["CUDA_VISIBLE_DEVICES"] != "GPU-a,GPU-b" {

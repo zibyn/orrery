@@ -245,7 +245,7 @@ func waitForSandboxCondition(t *testing.T, admin, id, condition string, timeout 
 func composeService(t *testing.T, action, service string) {
 	t.Helper()
 	if len(composeArgs()) == 0 {
-		t.Fatal("STARS_E2E_COMPOSE_FILE/PROJECT are not set; run make e2e")
+		t.Fatal("ORRERY_E2E_COMPOSE_FILE/PROJECT are not set; run make e2e")
 	}
 	args := append(composeArgs(), action, service)
 	if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {

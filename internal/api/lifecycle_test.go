@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // sandboxStep must route exactly as the Reconciler's switch did: desired state

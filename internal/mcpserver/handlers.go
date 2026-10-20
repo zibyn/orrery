@@ -13,7 +13,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/zibyn/stars-sandbox/client"
+	"github.com/zibyn/orrery/client"
 )
 
 // requireSandboxID applies the rule every Sandbox-scoped tool shares.

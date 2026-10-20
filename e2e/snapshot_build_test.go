@@ -19,15 +19,15 @@ import (
 // TestSnapshotBuildRun is the "snapshot-build-run" acceptance scenario (#89):
 // a Snapshot builds on the Node's host build API from a platform base, a
 // Resource-backed named context and a Secret; the build log is readable
-// through /execs/{id}/output, the build's RUN lands in a stars-build-*.slice,
+// through /execs/{id}/output, the build's RUN lands in a orrery-build-*.slice,
 // the result runs a Sandbox, and the build does not count toward User Quota.
 // A failing Dockerfile ends the version failed.
 func TestSnapshotBuildRun(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
-	platformName := os.Getenv("STARS_E2E_PLATFORM_SNAPSHOT")
+	platformName := os.Getenv("ORRERY_E2E_PLATFORM_SNAPSHOT")
 	if platformName == "" {
-		t.Fatal("STARS_E2E_PLATFORM_SNAPSHOT is not set; run ./scripts/e2e.sh")
+		t.Fatal("ORRERY_E2E_PLATFORM_SNAPSHOT is not set; run ./scripts/e2e.sh")
 	}
 	suffix := time.Now().UnixNano()
 
@@ -83,7 +83,7 @@ func TestSnapshotBuildRun(t *testing.T) {
 	if path, cpuMax, memoryMax, ok := waitForBuildCgroup(t, version.ID, 2*time.Minute); !ok {
 		node := findNode(t, admin, nodeName)
 		got := getSnapshotVersion(t, admin, snapshot.ID, version.ID)
-		t.Fatalf("no live process under stars-build-%s.slice; node=%+v version=%+v", version.ID, node, got)
+		t.Fatalf("no live process under orrery-build-%s.slice; node=%+v version=%+v", version.ID, node, got)
 	} else {
 		t.Logf("build RUN observed in %s", path)
 		// The slice carries the deployment build limits (defaults.md: 4 CPU +
@@ -227,7 +227,7 @@ func waitForSnapshotTerminal(t *testing.T, admin, snapshotID, versionID string, 
 // Agent, under the user manager's hierarchy.
 func waitForBuildCgroup(t *testing.T, versionID string, timeout time.Duration) (path, cpuMax, memoryMax string, ok bool) {
 	t.Helper()
-	name := "stars-build-" + versionID + ".slice"
+	name := "orrery-build-" + versionID + ".slice"
 	deadline := time.Now().Add(timeout)
 	for {
 		if root := findBuildSliceRoot(name); root != "" {
@@ -337,7 +337,7 @@ func registryImageConfig(t *testing.T, ref string) string {
 }
 
 func registryAuthHeader(host string) string {
-	raw := os.Getenv("STARS_E2E_REGISTRY_CREDENTIAL")
+	raw := os.Getenv("ORRERY_E2E_REGISTRY_CREDENTIAL")
 	if raw == "" {
 		return ""
 	}

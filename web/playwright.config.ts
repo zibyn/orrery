@@ -9,7 +9,7 @@ export default defineConfig({
   workers: 1,
   timeout: 300_000,
   use: {
-    baseURL: process.env.STARS_E2E_API_URL ?? 'http://127.0.0.1:18080',
+    baseURL: process.env.ORRERY_E2E_API_URL ?? 'http://127.0.0.1:18080',
     trace: 'retain-on-failure',
   },
 })

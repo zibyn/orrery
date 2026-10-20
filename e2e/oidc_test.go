@@ -31,14 +31,14 @@ func TestOIDCSignup(t *testing.T) {
 	// The main Control Plane has the bootstrapped admin, so signups are off.
 	adminToken(t)
 
-	status, _, _, body := oidcLogin(t, envURL("STARS_E2E_ACCESS_URL", apiURL()), "/cli-auth")
+	status, _, _, body := oidcLogin(t, envURL("ORRERY_E2E_ACCESS_URL", apiURL()), "/cli-auth")
 	if status != http.StatusForbidden {
 		t.Fatalf("unknown OIDC User with allow_signups=false: %d %s, want 403", status, body)
 	}
 	requireProblemCode(t, body, "permission_denied")
 
 	// The dedicated empty Control Plane signs the first OIDC User in as admin.
-	base := envURL("STARS_E2E_OIDC_ACCESS_URL", "http://127.0.0.1:18082")
+	base := envURL("ORRERY_E2E_OIDC_ACCESS_URL", "http://127.0.0.1:18082")
 	status, location, session, body := oidcLogin(t, base, "/")
 	if status != http.StatusFound || location != "/" {
 		t.Fatalf("first OIDC login: %d %q %s, want 302 /", status, location, body)
@@ -92,7 +92,7 @@ func oidcLogin(t *testing.T, base, returnTo string) (int, string, *http.Cookie, 
 	}
 	var state *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == "stars_oidc_state" {
+		if c.Name == "orrery_oidc_state" {
 			state = c
 		}
 	}
@@ -120,7 +120,7 @@ func oidcLogin(t *testing.T, base, returnTo string) (int, string, *http.Cookie, 
 	body, _ := io.ReadAll(cb.Body)
 	var session *http.Cookie
 	for _, c := range cb.Cookies() {
-		if c.Name == "stars_session" {
+		if c.Name == "orrery_session" {
 			session = c
 		}
 	}
@@ -142,11 +142,11 @@ func newDexBrowser(t *testing.T) *dexBrowser {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issuer, err := url.Parse(envURL("STARS_E2E_OIDC_ISSUER_URL", "http://dex:5556/dex"))
+	issuer, err := url.Parse(envURL("ORRERY_E2E_OIDC_ISSUER_URL", "http://dex:5556/dex"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	publish, err := url.Parse(envURL("STARS_E2E_DEX_URL", "http://127.0.0.1:15556/dex"))
+	publish, err := url.Parse(envURL("ORRERY_E2E_DEX_URL", "http://127.0.0.1:15556/dex"))
 	if err != nil {
 		t.Fatal(err)
 	}

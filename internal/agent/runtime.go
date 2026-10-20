@@ -18,19 +18,19 @@ import (
 
 	"github.com/google/uuid"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/registry"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/registry"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 const (
 	// sandboxPidsLimit is the fixed PID ceiling for every Sandbox (runtime.md
 	// §9; defaults.md does not name a value).
 	sandboxPidsLimit = int64(2048)
-	binaryDir        = "/.stars/bin"
+	binaryDir        = "/.orrery/bin"
 	supervisorBin    = binaryDir + "/supervisor"
 	workspaceMount   = "/workspace"
-	runMount         = "/.stars/run"
+	runMount         = "/.orrery/run"
 	// recordSettle is how long a startup reconciliation waits for a
 	// just-created Supervisor to listen before calling it dead (runtime.md §8).
 	recordSettle = time.Second
@@ -42,7 +42,7 @@ type Runtime struct {
 	d        *dockerClient
 	dataRoot string
 	// nodeID is this Agent's Node identity. Every Runtime instance carries it
-	// as stars.node so two Agents sharing a daemon never touch each other's
+	// as orrery.node so two Agents sharing a daemon never touch each other's
 	// containers (runtime.md §8).
 	nodeID string
 	// socket is the Engine API socket. It is also the default BuildKit
@@ -177,8 +177,8 @@ func PrepareDataRoot(root string) error {
 		return fmt.Errorf("stage Supervisor binary: %w", err)
 	}
 	// The Node deployment package places the external CLI next to the Agent.
-	if err := stageBinary(filepath.Join(filepath.Dir(self), "stars-sandbox"),
-		filepath.Join(root, "bin", "stars-sandbox")); err != nil {
+	if err := stageBinary(filepath.Join(filepath.Dir(self), "orrery"),
+		filepath.Join(root, "bin", "orrery")); err != nil {
 		return fmt.Errorf("stage external CLI: %w", err)
 	}
 	return nil
@@ -206,14 +206,14 @@ func sandboxRunPath(root string, id uuid.UUID) string {
 	return filepath.Join(sandboxPath(root, id), "run")
 }
 
-func containerName(id uuid.UUID) string { return "stars-sandbox-" + id.String() }
+func containerName(id uuid.UUID) string { return "orrery-" + id.String() }
 
 // containerOwnedBy reports whether a container belongs to this Node. A
-// container carrying stars.managed without this Node's label was left by a
+// container carrying orrery.managed without this Node's label was left by a
 // previous identity (or another Node on the same daemon) and must not be
 // adopted (runtime.md §8).
 func containerOwnedBy(labels map[string]string, nodeID string) bool {
-	return labels["stars.managed"] == "true" && nodeID != "" && labels["stars.node"] == nodeID
+	return labels["orrery.managed"] == "true" && nodeID != "" && labels["orrery.node"] == nodeID
 }
 
 func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {
@@ -324,7 +324,7 @@ func (r *Runtime) createContainerSandbox(ctx context.Context, cmd *createSandbox
 	}
 	binds := []string{
 		workspace + ":" + workspaceMount + ":" + mode,
-		filepath.Join(r.dataRoot, "bin") + ":/.stars/bin:ro",
+		filepath.Join(r.dataRoot, "bin") + ":/.orrery/bin:ro",
 		runDir + ":" + runMount + ":rw",
 	}
 	binds = append(binds, resourcePaths...)
@@ -345,10 +345,10 @@ func (r *Runtime) createContainerSandbox(ctx context.Context, cmd *createSandbox
 		"Cmd":        []string{"init"},
 		"WorkingDir": workspaceMount,
 		"Labels": map[string]string{
-			"stars.sandbox_id": id.String(),
-			"stars.generation": strconv.FormatInt(cmd.generation, 10),
-			"stars.managed":    "true",
-			"stars.node":       r.nodeID,
+			"orrery.sandbox_id": id.String(),
+			"orrery.generation": strconv.FormatInt(cmd.generation, 10),
+			"orrery.managed":    "true",
+			"orrery.node":       r.nodeID,
 		},
 		"HostConfig": hostConfig,
 	}
@@ -441,7 +441,7 @@ func (r *Runtime) adoptContainers(ctx context.Context, report func(sandboxID str
 		ID     string            `json:"Id"`
 		Labels map[string]string `json:"Labels"`
 	}
-	filters := url.QueryEscape(`{"label":["stars.managed=true"]}`)
+	filters := url.QueryEscape(`{"label":["orrery.managed=true"]}`)
 	if err := r.d.do(ctx, http.MethodGet, r.d.api("/containers/json?all=true&filters="+filters), nil, &containers); err != nil {
 		return
 	}
@@ -451,14 +451,14 @@ func (r *Runtime) adoptContainers(ctx context.Context, report func(sandboxID str
 			// directory stays untouched: declaring it lost may be wrong, and
 			// the data may have no other copy (runtime.md §8).
 			slog.Info("removing a Runtime left by another Node",
-				"sandbox_id", c.Labels["stars.sandbox_id"], "node", c.Labels["stars.node"])
+				"sandbox_id", c.Labels["orrery.sandbox_id"], "node", c.Labels["orrery.node"])
 			if err := r.d.removeContainer(ctx, c.ID); err != nil {
 				slog.Warn("remove foreign Runtime", "container_id", c.ID, "error", err)
 			}
 			continue
 		}
-		id := c.Labels["stars.sandbox_id"]
-		gen, err := strconv.ParseInt(c.Labels["stars.generation"], 10, 64)
+		id := c.Labels["orrery.sandbox_id"]
+		gen, err := strconv.ParseInt(c.Labels["orrery.generation"], 10, 64)
 		if err != nil {
 			continue
 		}
@@ -582,7 +582,7 @@ func (r *Runtime) containerAlive(ctx context.Context, id uuid.UUID) (alive, know
 }
 
 // ctlSocket is where the Supervisor listens. A container mounts the record
-// directory at /.stars/run, so its socket is short; Local Runtime keeps the
+// directory at /.orrery/run, so its socket is short; Local Runtime keeps the
 // record on the host, where <data-root>/sandboxes/<id>/run/<exec>/ctl.sock can
 // exceed unix sockets' 108-byte sun_path, so it uses an abstract name
 // (runtime.md §10).
@@ -649,7 +649,7 @@ func readGeneration(dir string) (int64, bool) {
 // (runtime.md §9); the periodic scan is the fallback when the stream breaks.
 func (r *Runtime) watchContainerEvents(ctx context.Context, report func(sandboxID string, generation int64)) {
 	filters := url.QueryEscape(fmt.Sprintf(
-		`{"type":["container"],"event":["die"],"label":["stars.managed=true","stars.node=%s"]}`,
+		`{"type":["container"],"event":["die"],"label":["orrery.managed=true","orrery.node=%s"]}`,
 		r.nodeID))
 	for ctx.Err() == nil {
 		if err := r.d.negotiate(ctx); err != nil {
@@ -679,8 +679,8 @@ func (r *Runtime) watchContainerEvents(ctx context.Context, report func(sandboxI
 			if err := dec.Decode(&event); err != nil {
 				break
 			}
-			id := event.Actor.Attributes["stars.sandbox_id"]
-			gen, err := strconv.ParseInt(event.Actor.Attributes["stars.generation"], 10, 64)
+			id := event.Actor.Attributes["orrery.sandbox_id"]
+			gen, err := strconv.ParseInt(event.Actor.Attributes["orrery.generation"], 10, 64)
 			if err != nil {
 				continue
 			}

@@ -14,7 +14,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/zibyn/stars-sandbox/client"
+	"github.com/zibyn/orrery/client"
 )
 
 const (
@@ -41,7 +41,7 @@ func New(c *client.Client, logger *slog.Logger) *sdk.Server {
 	}
 	s := &server{c: c}
 	srv := sdk.NewServer(
-		&sdk.Implementation{Name: "stars-sandbox", Title: "stars-sandbox", Version: "0.1.0"},
+		&sdk.Implementation{Name: "orrery", Title: "orrery", Version: "0.1.0"},
 		&sdk.ServerOptions{
 			Instructions: "Manage Sandboxes and run commands in them. The usual flow is " +
 				"sandbox_create, exec_run, exec_output when a command is still running, and " +

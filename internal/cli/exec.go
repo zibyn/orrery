@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	starsclient "github.com/zibyn/stars-sandbox/client"
+	orreryclient "github.com/zibyn/orrery/client"
 )
 
 type stringList []string
@@ -21,7 +21,7 @@ func (s *stringList) Set(v string) error {
 
 func runExec(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox exec run|cancel")
+		return fmt.Errorf("usage: orrery exec run|cancel")
 	}
 	switch args[0] {
 	case "run":
@@ -33,7 +33,7 @@ func runExec(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox exec cancel <id>")
+			return fmt.Errorf("usage: orrery exec cancel <id>")
 		}
 		e, err := c.CancelExec(ctx, fs.Arg(0))
 		if err != nil {
@@ -59,12 +59,12 @@ func runExecRun(c *client, args []string, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: stars-sandbox exec run [flags] <sandbox-id> -- argv...")
+		return fmt.Errorf("usage: orrery exec run [flags] <sandbox-id> -- argv...")
 	}
 	// The Sandbox id comes before the program: flag.Parse leaves the first
 	// non-flag in NArg, so take it and treat the rest as argv.
 	sandboxID := fs.Arg(0)
-	req := starsclient.ExecRequest{Argv: fs.Args()[1:]}
+	req := orreryclient.ExecRequest{Argv: fs.Args()[1:]}
 	if *cwd != "" {
 		req.Cwd = *cwd
 	}
@@ -108,7 +108,7 @@ func runExecRun(c *client, args []string, stderr io.Writer) error {
 	return nil
 }
 
-func printExecResult(w io.Writer, id, state string, r *starsclient.ExecResult) {
+func printExecResult(w io.Writer, id, state string, r *orreryclient.ExecResult) {
 	if r == nil {
 		fmt.Fprintf(w, "exec %s: %s\n", id, state)
 		return

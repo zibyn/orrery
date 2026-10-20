@@ -12,8 +12,8 @@ func TestCtlSocketAddress(t *testing.T) {
 	if got, abstract := ctlSocketAddress(dir); abstract || got != filepath.Join(dir, "ctl.sock") {
 		t.Fatalf("default = %q, abstract %v", got, abstract)
 	}
-	t.Setenv("STARS_CTL_SOCKET", "@stars-exec-exec")
-	if got, abstract := ctlSocketAddress(dir); !abstract || got != "@stars-exec-exec" {
+	t.Setenv("ORRERY_CTL_SOCKET", "@orrery-exec-exec")
+	if got, abstract := ctlSocketAddress(dir); !abstract || got != "@orrery-exec-exec" {
 		t.Fatalf("env = %q, abstract %v", got, abstract)
 	}
 }

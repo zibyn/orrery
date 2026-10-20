@@ -90,8 +90,8 @@ func TestRewriteRegistry(t *testing.T) {
 func TestCredentialResolvesPushHost(t *testing.T) {
 	raw, err := json.Marshal(map[string]any{
 		"auths": map[string]any{
-			"127.0.0.1:15000":            map[string]string{"auth": "c3RhcnM6c2VjcmV0"},
-			"host.docker.internal:15000": map[string]string{"username": "stars", "password": "secret"},
+			"127.0.0.1:15000":            map[string]string{"auth": "b3JyZXJ5OnNlY3JldA=="},
+			"host.docker.internal:15000": map[string]string{"username": "orrery", "password": "secret"},
 		},
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ func TestCredentialResolvesPushHost(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.Username != "stars" || cfg.Password != "secret" {
+		if cfg.Username != "orrery" || cfg.Password != "secret" {
 			t.Fatalf("%s resolved to %+v", host, cfg)
 		}
 	}
@@ -127,7 +127,7 @@ func TestCredentialResolvesPushHost(t *testing.T) {
 }
 
 func TestCredentialAlias(t *testing.T) {
-	cred, err := ParseCredential(`{"auths":{"127.0.0.1:15000":{"auth":"c3RhcnM6c2VjcmV0"}}}`)
+	cred, err := ParseCredential(`{"auths":{"127.0.0.1:15000":{"auth":"b3JyZXJ5OnNlY3JldA=="}}}`)
 	if err != nil {
 		t.Fatal(err)
 	}

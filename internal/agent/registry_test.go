@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/zibyn/stars-sandbox/internal/registry"
+	"github.com/zibyn/orrery/internal/registry"
 )
 
 func TestRegistryCredentialMatchesImageHost(t *testing.T) {
-	auth := base64.StdEncoding.EncodeToString([]byte("stars:secret"))
+	auth := base64.StdEncoding.EncodeToString([]byte("orrery:secret"))
 	cred, err := registry.ParseCredential(`{"auths":{"127.0.0.1:15000":{"auth":"` + auth + `"}}}`)
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestRegistryCredentialMatchesImageHost(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("X-Registry-Auth is not JSON: %v", err)
 	}
-	if got.Username != "stars" || got.Password != "secret" || got.ServerAddress != "127.0.0.1:15000" {
+	if got.Username != "orrery" || got.Password != "secret" || got.ServerAddress != "127.0.0.1:15000" {
 		t.Fatalf("auth config = %+v", got)
 	}
 }

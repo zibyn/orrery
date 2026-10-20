@@ -20,20 +20,20 @@ import (
 
 var mcpToolName = regexp.MustCompile(`^[a-z_]+$`)
 
-// newMCPSession launches the real `stars-sandbox mcp` over stdio. Each call is
+// newMCPSession launches the real `orrery mcp` over stdio. Each call is
 // a fresh process, so two calls also check that tools/list order is stable
 // across sessions (the client caches it within one session).
 func newMCPSession(t *testing.T, token string) *sdk.ClientSession {
 	t.Helper()
 	cmd := exec.Command(cliPath(t), "mcp")
 	cmd.Env = append(os.Environ(),
-		"STARS_SANDBOX_API_URL="+apiURL(),
-		"STARS_SANDBOX_TOKEN="+token,
+		"ORRERY_SANDBOX_API_URL="+apiURL(),
+		"ORRERY_SANDBOX_TOKEN="+token,
 	)
 	cs, err := sdk.NewClient(&sdk.Implementation{Name: "e2e", Version: "0.0.0"}, nil).
 		Connect(context.Background(), &sdk.CommandTransport{Command: cmd}, nil)
 	if err != nil {
-		t.Fatalf("connect to stars-sandbox mcp: %v", err)
+		t.Fatalf("connect to orrery mcp: %v", err)
 	}
 	t.Cleanup(func() { _ = cs.Close() })
 	return cs

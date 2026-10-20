@@ -11,7 +11,7 @@ func TestParseToken(t *testing.T) {
 	id := uuid.MustParse("0192f0a0-0000-7000-8000-000000000001")
 	secret := strings.Repeat("a", 43)
 
-	parts, ok := ParseToken("ssk_" + id.String() + "_" + secret)
+	parts, ok := ParseToken("orr_" + id.String() + "_" + secret)
 	if !ok {
 		t.Fatal("ParseToken rejected a well-formed token")
 	}
@@ -24,18 +24,18 @@ func TestParseToken(t *testing.T) {
 
 	// base64url secrets contain '_' roughly half the time.
 	underscored := "ab_cd"
-	if parts, ok := ParseToken("ssk_" + id.String() + "_" + underscored); !ok || parts.Secret != underscored {
+	if parts, ok := ParseToken("orr_" + id.String() + "_" + underscored); !ok || parts.Secret != underscored {
 		t.Fatalf("ParseToken rejected an underscore in the secret: %v, %v", parts, ok)
 	}
 
 	for _, raw := range []string{
 		"",
-		"ssk_",
-		"ssk_" + id.String(),
-		"ssk_" + id.String() + "_",
-		"sst_" + id.String() + "_" + secret,
-		"ssk_not-a-uuid_" + secret,
-		"Bearer " + "ssk_" + id.String() + "_" + secret,
+		"orr_",
+		"orr_" + id.String(),
+		"orr_" + id.String() + "_",
+		"ors_" + id.String() + "_" + secret,
+		"orr_not-a-uuid_" + secret,
+		"Bearer " + "orr_" + id.String() + "_" + secret,
 	} {
 		if _, ok := ParseToken(raw); ok {
 			t.Errorf("ParseToken(%q) accepted a malformed token", raw)
@@ -47,19 +47,19 @@ func TestParseNodeTokenAndEnrollmentPacket(t *testing.T) {
 	id := uuid.MustParse("0192f0a0-0000-7000-8000-000000000002")
 	secret := strings.Repeat("b", 43)
 
-	parts, ok := ParseNodeToken("ssn_" + id.String() + "_" + secret)
+	parts, ok := ParseNodeToken("orn_" + id.String() + "_" + secret)
 	if !ok || parts.ID != id || parts.Secret != secret {
 		t.Fatalf("ParseNodeToken = %+v, %v", parts, ok)
 	}
-	if _, ok := ParseNodeToken("ssk_" + id.String() + "_" + secret); ok {
+	if _, ok := ParseNodeToken("orr_" + id.String() + "_" + secret); ok {
 		t.Fatal("ParseNodeToken accepted an API Token prefix")
 	}
 
-	parts, ok = ParseEnrollmentPacket("sse_" + id.String() + "_" + secret)
+	parts, ok = ParseEnrollmentPacket("ore_" + id.String() + "_" + secret)
 	if !ok || parts.ID != id || parts.Secret != secret {
 		t.Fatalf("ParseEnrollmentPacket = %+v, %v", parts, ok)
 	}
-	if _, ok := ParseEnrollmentPacket("ssn_" + id.String() + "_" + secret); ok {
+	if _, ok := ParseEnrollmentPacket("orn_" + id.String() + "_" + secret); ok {
 		t.Fatal("ParseEnrollmentPacket accepted a Node Token prefix")
 	}
 }

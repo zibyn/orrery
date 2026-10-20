@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/stars-sandbox/internal/keyring"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/keyring"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // errSandboxTokenStorage is the explicit answer when the deployment has no

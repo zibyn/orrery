@@ -19,8 +19,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/net/websocket"
 
-	"github.com/zibyn/stars-sandbox/internal/store"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	"github.com/zibyn/orrery/internal/store"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 // outputPageBytes bounds one REST output page; follow pages are the same size.

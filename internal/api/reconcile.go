@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // The Reconciler derives commands from desired state on every tick; the
@@ -20,7 +20,7 @@ import (
 // A NOTIFY only shortens the wait.
 const (
 	reconcileInterval = time.Second
-	reconcileChannel  = "stars_reconcile"
+	reconcileChannel  = "orrery_reconcile"
 	// reconcileLockID guards the sweep across replicas (ADR-0014).
 	reconcileLockID = 724001
 )
@@ -220,11 +220,11 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 	if secretEnv == nil {
 		secretEnv = make(map[string]string, 1)
 	}
-	secretEnv["STARS_SANDBOX_TOKEN"] = SandboxToken(e.SandboxID, secret)
-	// STARS_URL is the Sandbox's only clue about where `api` lives
+	secretEnv["ORRERY_SANDBOX_TOKEN"] = SandboxToken(e.SandboxID, secret)
+	// ORRERY_URL is the Sandbox's only clue about where `api` lives
 	// (node-protocol.md). An unconfigured deployment leaves it out.
 	if r.s.cfg.AccessURL != "" {
-		env["STARS_URL"] = r.s.cfg.AccessURL
+		env["ORRERY_URL"] = r.s.cfg.AccessURL
 	}
 	var timeout int64
 	if e.TimeoutSeconds != nil {

@@ -1,4 +1,4 @@
-// Package client is the public, hand-written Go SDK for the stars-sandbox
+// Package client is the public, hand-written Go SDK for the orrery
 // REST API (api.md §9). It uses only the standard library.
 package client
 
@@ -27,7 +27,7 @@ type Client struct {
 // would cut a valid wait short.
 const waitForTimeout = 90 * time.Second
 
-// New creates a Client. baseURL is the API origin, e.g. https://stars.example.
+// New creates a Client. baseURL is the API origin, e.g. https://orrery.example.
 func New(baseURL, token string) *Client {
 	return &Client{
 		baseURL:   strings.TrimRight(baseURL, "/"),

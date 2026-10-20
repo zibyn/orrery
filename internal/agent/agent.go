@@ -24,17 +24,17 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/buildinfo"
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/buildinfo"
+	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
 const (
 	// HeartbeatInterval is a constant in defaults.md.
 	HeartbeatInterval   = 15 * time.Second
-	DefaultStatePath    = "/var/lib/stars-sandbox-agent/identity.json"
+	DefaultStatePath    = "/var/lib/orrery-agent/identity.json"
 	DefaultDockerSock   = "/var/run/docker.sock"
-	DefaultDataRoot     = "/var/lib/stars-sandbox"
+	DefaultDataRoot     = "/var/lib/orrery"
 	DefaultReserveCPU   = 1.0
 	DefaultReserveBytes = 2 << 30 // 2 GiB
 	// DefaultDiskWatermark is the fraction of the disk that must stay free

@@ -14,9 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/zibyn/stars-sandbox/internal/manifest"
-	"github.com/zibyn/stars-sandbox/internal/objectstore"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/manifest"
+	"github.com/zibyn/orrery/internal/objectstore"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // uploadTTL is how long an upload session resumes (defaults.md, 24 hours).

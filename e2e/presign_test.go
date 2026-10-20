@@ -18,7 +18,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 )
 
 // TestPresignAuthorization is #84's acceptance scenario for the Presign RPC: a

@@ -44,7 +44,7 @@ func TestEnrollNode(t *testing.T) {
 		ExpiresAt string `json:"expires_at"`
 	}
 	mustJSON(t, data, &packet)
-	if !strings.HasPrefix(packet.Packet, "sse_") || packet.ExpiresAt == "" {
+	if !strings.HasPrefix(packet.Packet, "ore_") || packet.ExpiresAt == "" {
 		t.Fatalf("Enrollment Packet = %+v", packet)
 	}
 
@@ -60,7 +60,7 @@ func TestEnrollNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity was not written: %v", err)
 	}
-	if !bytes.Contains(raw, []byte("ssn_")) {
+	if !bytes.Contains(raw, []byte("orn_")) {
 		t.Fatalf("identity does not hold a Node Token: %s", raw)
 	}
 
@@ -179,7 +179,7 @@ func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 			hasRoot = true
 		}
 	}
-	if socket := os.Getenv("STARS_E2E_DOCKER_SOCKET"); socket != "" && !hasDocker {
+	if socket := os.Getenv("ORRERY_E2E_DOCKER_SOCKET"); socket != "" && !hasDocker {
 		args = append(args, "--docker", socket)
 	}
 	if !hasRoot {
@@ -190,22 +190,22 @@ func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 
 func agentPath(t *testing.T) string {
 	t.Helper()
-	if v := os.Getenv("STARS_E2E_AGENT"); v != "" {
+	if v := os.Getenv("ORRERY_E2E_AGENT"); v != "" {
 		return v
 	}
-	t.Fatal("STARS_E2E_AGENT is not set; run make e2e")
+	t.Fatal("ORRERY_E2E_AGENT is not set; run make e2e")
 	return ""
 }
 
 func nodeURL() string {
-	if v := os.Getenv("STARS_E2E_NODE_URL"); v != "" {
+	if v := os.Getenv("ORRERY_E2E_NODE_URL"); v != "" {
 		return v
 	}
 	return "127.0.0.1:18081"
 }
 
 func nodeCA() string {
-	if v := os.Getenv("STARS_E2E_NODE_CA"); v != "" {
+	if v := os.Getenv("ORRERY_E2E_NODE_CA"); v != "" {
 		return v
 	}
 	return ".e2e/tls/server.crt"

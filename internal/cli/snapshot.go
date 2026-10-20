@@ -12,14 +12,14 @@ import (
 
 	"github.com/google/uuid"
 
-	starsclient "github.com/zibyn/stars-sandbox/client"
+	orreryclient "github.com/zibyn/orrery/client"
 )
 
 // snapshot import|ls|rm|versions|current (api.md §3). Imports are
 // asynchronous, so `import` follows the version to its terminal state.
 func runSnapshot(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox snapshot build|import|ls|rm|versions|current")
+		return fmt.Errorf("usage: orrery snapshot build|import|ls|rm|versions|current")
 	}
 	switch args[0] {
 	case "build":
@@ -46,7 +46,7 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox snapshot rm <name-or-id>")
+			return fmt.Errorf("usage: orrery snapshot rm <name-or-id>")
 		}
 		id, err := resolveSnapshotID(c, fs.Arg(0))
 		if err != nil {
@@ -66,7 +66,7 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox snapshot versions <name-or-id>")
+			return fmt.Errorf("usage: orrery snapshot versions <name-or-id>")
 		}
 		id, err := resolveSnapshotID(c, fs.Arg(0))
 		if err != nil {
@@ -84,7 +84,7 @@ func runSnapshot(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() < 1 || fs.NArg() > 2 {
-			return fmt.Errorf("usage: stars-sandbox snapshot current <name-or-id> [<version-id>]")
+			return fmt.Errorf("usage: orrery snapshot current <name-or-id> [<version-id>]")
 		}
 		id, err := resolveSnapshotID(c, fs.Arg(0))
 		if err != nil {
@@ -155,7 +155,7 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 		}
 	}
 	if len(positional) != 1 || file == "" {
-		return fmt.Errorf("usage: stars-sandbox snapshot build <name> -f Dockerfile [--base SNAPSHOT] [--context name=resource[@version] ...] [--secret id=secret ...]")
+		return fmt.Errorf("usage: orrery snapshot build <name> -f Dockerfile [--base SNAPSHOT] [--context name=resource[@version] ...] [--secret id=secret ...]")
 	}
 	dockerfile := []byte(nil)
 	if file == "-" {
@@ -171,7 +171,7 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 		}
 		dockerfile = data
 	}
-	build := &starsclient.SnapshotBuild{Dockerfile: string(dockerfile)}
+	build := &orreryclient.SnapshotBuild{Dockerfile: string(dockerfile)}
 	if base != "" {
 		build.Base = &base
 	}
@@ -202,7 +202,7 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 		return err
 	}
 	version, err := c.CreateSnapshotVersion(ctx, snapshotID,
-		starsclient.SnapshotVersionRequest{Build: build}, idem)
+		orreryclient.SnapshotVersionRequest{Build: build}, idem)
 	if err != nil {
 		return err
 	}
@@ -224,7 +224,7 @@ func runSnapshotBuild(c *client, args []string, stderr io.Writer) error {
 
 // pollSnapshotVersion waits for a terminal state and returns the final
 // version.
-func pollSnapshotVersion(c *client, snapshotID, versionID string) (*starsclient.SnapshotVersion, error) {
+func pollSnapshotVersion(c *client, snapshotID, versionID string) (*orreryclient.SnapshotVersion, error) {
 	deadline := time.Now().Add(time.Hour)
 	for {
 		version, err := c.GetSnapshotVersion(ctx, snapshotID, versionID)
@@ -259,19 +259,19 @@ func runSnapshotImport(c *client, args []string) error {
 		}
 	}
 	if len(positional) != 2 {
-		return fmt.Errorf("usage: stars-sandbox snapshot import <name> <ref@sha256:…> [--auth-secret NAME]")
+		return fmt.Errorf("usage: orrery snapshot import <name> <ref@sha256:…> [--auth-secret NAME]")
 	}
 	name, ref := positional[0], positional[1]
 	snapshotID, err := ensureSnapshot(c, name)
 	if err != nil {
 		return err
 	}
-	imp := &starsclient.SnapshotImport{Ref: ref}
+	imp := &orreryclient.SnapshotImport{Ref: ref}
 	if authSecret != "" {
 		imp.AuthSecret = &authSecret
 	}
 	version, err := c.CreateSnapshotVersion(ctx, snapshotID,
-		starsclient.SnapshotVersionRequest{Import: imp}, "")
+		orreryclient.SnapshotVersionRequest{Import: imp}, "")
 	if err != nil {
 		return err
 	}
@@ -291,7 +291,7 @@ func ensureSnapshot(c *client, name string) (string, error) {
 	if err == nil {
 		return snapshot.ID, nil
 	}
-	var problem *starsclient.Error
+	var problem *orreryclient.Error
 	if errors.As(err, &problem) && problem.Status == http.StatusConflict {
 		return findSnapshotByName(c, name, true)
 	}
@@ -353,7 +353,7 @@ func showSnapshotCurrent(c *client, snapshotID string) error {
 
 // printSnapshotVersion prints the final version and fails when it did not
 // become ready.
-func printSnapshotVersion(c *client, version *starsclient.SnapshotVersion) error {
+func printSnapshotVersion(c *client, version *orreryclient.SnapshotVersion) error {
 	if err := c.print(version); err != nil {
 		return err
 	}

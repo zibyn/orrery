@@ -107,7 +107,7 @@ function AuthedShell() {
         <div className="flex h-14 items-center px-4">
           <Link to="/sandboxes" className="flex items-center gap-2.5">
             <Logo />
-            <span className="text-sm font-semibold tracking-tight">stars-sandbox</span>
+            <span className="text-sm font-semibold tracking-tight">Orrery</span>
           </Link>
         </div>
 
@@ -190,7 +190,7 @@ function AuthedShell() {
           <div className="flex h-14 items-center gap-2.5 px-4">
             <Link to="/sandboxes" className="flex items-center gap-2.5">
               <Logo />
-              <span className="text-sm font-semibold tracking-tight">stars-sandbox</span>
+              <span className="text-sm font-semibold tracking-tight">Orrery</span>
             </Link>
             <div className="ml-auto flex items-center gap-1.5">
               <Link

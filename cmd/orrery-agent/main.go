@@ -1,4 +1,4 @@
-// stars-sandbox-agent enrolls and runs a Node, and doubles as the in-container
+// orrery-agent enrolls and runs a Node, and doubles as the in-container
 // Supervisor (`supervisor init|probe`).
 package main
 
@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/zibyn/stars-sandbox/internal/agent"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	"github.com/zibyn/orrery/internal/agent"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 func main() {
@@ -31,7 +31,7 @@ func main() {
 
 	var err error
 	// Inside a Sandbox the binary is mounted as `supervisor`, so argv[0] picks
-	// the mode set; otherwise `stars-sandbox-agent supervisor <mode>` does.
+	// the mode set; otherwise `orrery-agent supervisor <mode>` does.
 	if filepath.Base(os.Args[0]) == "supervisor" {
 		err = supervise(os.Args[1:])
 	} else {
@@ -43,7 +43,7 @@ func main() {
 		case "supervisor":
 			err = supervise(os.Args[2:])
 		case "init", "probe":
-			// runtime.md names the mounted binary `/.stars/bin/supervisor` and calls
+			// runtime.md names the mounted binary `/.orrery/bin/supervisor` and calls
 			// it as `supervisor init|probe`, so accept the mode on its own too.
 			err = supervise(os.Args[1:])
 		default:
@@ -51,19 +51,19 @@ func main() {
 		}
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "stars-sandbox-agent:", err)
+		fmt.Fprintln(os.Stderr, "orrery-agent:", err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  stars-sandbox-agent enroll --server HOST:PORT --packet sse_... [--ca FILE] [--name NAME] [--state FILE]
-  stars-sandbox-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime docker|podman|local] [--local-user USER] [--docker SOCKET] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
-  stars-sandbox-agent supervisor init
-  stars-sandbox-agent supervisor probe [WORKSPACE]
-  stars-sandbox-agent supervisor run EXEC_ID
-  stars-sandbox-agent supervisor forward PORT SOCKET`)
+  orrery-agent enroll --server HOST:PORT --packet ore_... [--ca FILE] [--name NAME] [--state FILE]
+  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime docker|podman|local] [--local-user USER] [--docker SOCKET] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
+  orrery-agent supervisor init
+  orrery-agent supervisor probe [WORKSPACE]
+  orrery-agent supervisor run EXEC_ID
+  orrery-agent supervisor forward PORT SOCKET`)
 	os.Exit(2)
 }
 

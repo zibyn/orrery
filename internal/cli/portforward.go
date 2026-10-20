@@ -14,7 +14,7 @@ import (
 // connection.
 func runPortForward(c *client, args []string) error {
 	if len(args) != 2 {
-		return fmt.Errorf("usage: stars-sandbox port-forward <sandbox-id> [LOCAL:]REMOTE")
+		return fmt.Errorf("usage: orrery port-forward <sandbox-id> [LOCAL:]REMOTE")
 	}
 	sandboxID := args[0]
 	local, remoteRaw, colon := strings.Cut(args[1], ":")

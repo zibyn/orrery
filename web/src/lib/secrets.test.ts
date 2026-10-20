@@ -23,6 +23,6 @@ describe('secretNameError', () => {
     expect(secretNameError('HOME')).not.toBeNull()
     expect(secretNameError('GIT_ASKPASS')).not.toBeNull()
     expect(secretNameError('LD_PRELOAD')).not.toBeNull()
-    expect(secretNameError('STARS_TOKEN')).not.toBeNull()
+    expect(secretNameError('ORRERY_TOKEN')).not.toBeNull()
   })
 })

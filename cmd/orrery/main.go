@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/zibyn/stars-sandbox/internal/cli"
+	"github.com/zibyn/orrery/internal/cli"
 )
 
 func main() {

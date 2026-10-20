@@ -58,7 +58,7 @@ func runCLI(t *testing.T, stdin *os.File, args ...string) (int, string, string) 
 		os.Stdin = stdin
 		t.Cleanup(func() { os.Stdin = old })
 	}
-	t.Setenv("STARS_SANDBOX_CONFIG", filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv("ORRERY_SANDBOX_CONFIG", filepath.Join(t.TempDir(), "missing.json"))
 	var stdout, stderr bytes.Buffer
 	code := Run(args, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
@@ -66,7 +66,7 @@ func runCLI(t *testing.T, stdin *os.File, args ...string) (int, string, string) 
 
 func TestSecretCLICreateUpdateListDelete(t *testing.T) {
 	srv, values := secretAPI(t)
-	global := []string{"--api-url", srv.URL, "--token", "ssk_test"}
+	global := []string{"--api-url", srv.URL, "--token", "orr_test"}
 	valueFile := filepath.Join(t.TempDir(), "value")
 	if err := os.WriteFile(valueFile, []byte("first-value"), 0o600); err != nil {
 		t.Fatal(err)
