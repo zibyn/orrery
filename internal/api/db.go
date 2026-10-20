@@ -10,12 +10,12 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // migrationLockID is an arbitrary fixed advisory lock id, so two Control
 // Plane processes starting together serialize their migrations.
-const migrationLockID int64 = 0x5354415253 // "STARS"
+const migrationLockID int64 = 0x4F5252455259 // "ORRERY"
 
 func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, dsn)

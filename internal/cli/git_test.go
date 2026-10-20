@@ -50,7 +50,7 @@ func TestGitCredentialGet(t *testing.T) {
 	srv, seen := credentialAPI(t, func(w http.ResponseWriter, body map[string]string) {
 		_, _ = w.Write([]byte(`{"username":"x-access-token","password":"ghs_value"}`))
 	})
-	global := []string{"--api-url", srv.URL, "--token", "sst_test"}
+	global := []string{"--api-url", srv.URL, "--token", "ors_test"}
 	stdin := gitCredentialStdin(t, "protocol=https\nhost=github.com\nusername=\n\n")
 
 	code, stdout, stderr := runCLI(t, stdin, append(global, "git-credential", "get")...)
@@ -72,9 +72,9 @@ func TestGitCredentialNotFound(t *testing.T) {
 	srv, _ := credentialAPI(t, func(w http.ResponseWriter, body map[string]string) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"type":"about:blank","title":"Not Found","status":404,` +
-			`"code":"not_found","authorize_url":"https://stars.example/git"}`))
+			`"code":"not_found","authorize_url":"https://orrery.example/git"}`))
 	})
-	global := []string{"--api-url", srv.URL, "--token", "sst_test"}
+	global := []string{"--api-url", srv.URL, "--token", "ors_test"}
 	stdin := gitCredentialStdin(t, "protocol=https\nhost=github.com\n\n")
 
 	code, stdout, stderr := runCLI(t, stdin, append(global, "git-credential", "get")...)
@@ -84,7 +84,7 @@ func TestGitCredentialNotFound(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty", stdout)
 	}
-	if !strings.Contains(stderr, "https://stars.example/git") {
+	if !strings.Contains(stderr, "https://orrery.example/git") {
 		t.Fatalf("stderr = %q, want the authorize_url", stderr)
 	}
 }
@@ -95,7 +95,7 @@ func TestGitCredentialStoreErase(t *testing.T) {
 	for _, action := range []string{"store", "erase"} {
 		t.Run(action, func(t *testing.T) {
 			stdin := gitCredentialStdin(t, "protocol=https\nhost=github.com\n\n")
-			code, stdout, stderr := runCLI(t, stdin, "--api-url", "http://127.0.0.1:1", "--token", "sst_test",
+			code, stdout, stderr := runCLI(t, stdin, "--api-url", "http://127.0.0.1:1", "--token", "ors_test",
 				"git-credential", action)
 			if code != 0 || stdout != "" {
 				t.Fatalf("%s: exit %d, stdout %q, stderr %q", action, code, stdout, stderr)
@@ -104,13 +104,13 @@ func TestGitCredentialStoreErase(t *testing.T) {
 	}
 }
 
-// `token <provider>` prints just the token, so `GH_TOKEN=$(stars-sandbox
+// `token <provider>` prints just the token, so `GH_TOKEN=$(orrery
 // token github) gh pr create` works (api.md §3).
 func TestTokenProvider(t *testing.T) {
 	srv, seen := credentialAPI(t, func(w http.ResponseWriter, body map[string]string) {
 		_, _ = w.Write([]byte(`{"username":"oauth2","password":"gitea_token_value"}`))
 	})
-	code, stdout, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "sst_test", "token", "github")
+	code, stdout, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "ors_test", "token", "github")
 	if code != 0 {
 		t.Fatalf("token github: exit %d, %s", code, stderr)
 	}
@@ -126,13 +126,13 @@ func TestTokenProvider(t *testing.T) {
 func TestTokenProviderUnlinked(t *testing.T) {
 	srv, _ := credentialAPI(t, func(w http.ResponseWriter, body map[string]string) {
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"code":"not_found","status":404,"authorize_url":"https://stars.example/git"}`))
+		_, _ = w.Write([]byte(`{"code":"not_found","status":404,"authorize_url":"https://orrery.example/git"}`))
 	})
-	code, _, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "sst_test", "token", "gitea")
+	code, _, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "ors_test", "token", "gitea")
 	if code == 0 {
 		t.Fatal("an unlinked provider must fail")
 	}
-	if !strings.Contains(stderr, "https://stars.example/git") {
+	if !strings.Contains(stderr, "https://orrery.example/git") {
 		t.Fatalf("stderr = %q, want the authorize URL", stderr)
 	}
 }
@@ -153,7 +153,7 @@ func TestGitLinksAndUnlink(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	code, stdout, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "ssk_test", "git", "links")
+	code, stdout, stderr := runCLI(t, nil, "--api-url", srv.URL, "--token", "orr_test", "git", "links")
 	if code != 0 {
 		t.Fatalf("git links: exit %d, %s", code, stderr)
 	}
@@ -161,7 +161,7 @@ func TestGitLinksAndUnlink(t *testing.T) {
 		t.Fatalf("git links stdout = %q", stdout)
 	}
 
-	code, _, stderr = runCLI(t, nil, "--api-url", srv.URL, "--token", "ssk_test", "git", "unlink", "gitea")
+	code, _, stderr = runCLI(t, nil, "--api-url", srv.URL, "--token", "orr_test", "git", "unlink", "gitea")
 	if code != 0 {
 		t.Fatalf("git unlink: exit %d, %s", code, stderr)
 	}

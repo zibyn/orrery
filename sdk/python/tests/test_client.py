@@ -13,19 +13,19 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from stars_sandbox import StarsSandbox, StarsSandboxError  # noqa: E402
+from orrery import Orrery, OrreryError  # noqa: E402
 
 
-def client(handler) -> StarsSandbox:
-    return StarsSandbox("http://api", "tok", transport=httpx.MockTransport(handler))
+def client(handler) -> Orrery:
+    return Orrery("http://api", "tok", transport=httpx.MockTransport(handler))
 
 
 class ErrorTest(unittest.TestCase):
-    def test_problem_json_becomes_stars_sandbox_error(self) -> None:
+    def test_problem_json_becomes_orrery_error(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(409, json={"code": "conflict", "detail": "the Sandbox is not ready"})
 
-        with self.assertRaises(StarsSandboxError) as caught:
+        with self.assertRaises(OrreryError) as caught:
             client(handler).get_sandbox("sb-1")
         err = caught.exception
         self.assertEqual((err.status, err.code, err.detail), (409, "conflict", "the Sandbox is not ready"))

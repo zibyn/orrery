@@ -11,9 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/registry"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/registry"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // --- Reconciler ---------------------------------------------------------

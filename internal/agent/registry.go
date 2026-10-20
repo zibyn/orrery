@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/zibyn/stars-sandbox/internal/registry"
+	"github.com/zibyn/orrery/internal/registry"
 )
 
 // authHeader is the X-Registry-Auth value for an image reference, or "" when

@@ -37,7 +37,7 @@ PTY output is not an Execution Log: it lives only in the Node's ring buffer, and
 
 ### Ports
 
-The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port subdomain, through which the Node Agent enters the Sandbox's network namespace and dials `127.0.0.1:PORT`, plus a TCP tunnel in the CLI (`stars-sandbox port-forward`). Nothing in a Sandbox is exposed on a network address, and there is no public sharing. SSH and IDE access is not a platform feature; a User runs `sshd` in the Sandbox and tunnels to it.
+The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port subdomain, through which the Node Agent enters the Sandbox's network namespace and dials `127.0.0.1:PORT`, plus a TCP tunnel in the CLI (`orrery port-forward`). Nothing in a Sandbox is exposed on a network address, and there is no public sharing. SSH and IDE access is not a platform feature; a User runs `sshd` in the Sandbox and tunnels to it.
 
 ### Users, tokens and audit
 
@@ -79,7 +79,7 @@ The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port 
 
 ### Command lines
 
-The CLI a caller uses is separate from the server-side commands. `stars-sandbox` is the external CLI: it speaks only the public REST API and the Gateway, with an API Token or, inside a Sandbox, the Sandbox Token, and holds every caller-facing command, `admin` operations through REST included. The server-side binaries are `stars-sandbox-server` (run the Control Plane, migrate, bootstrap the first `admin`) and `stars-sandbox-agent` (enroll and run a Node Agent); they are installed only on platform hosts and are never needed by a caller.
+The CLI a caller uses is separate from the server-side commands. `orrery` is the external CLI: it speaks only the public REST API and the Gateway, with an API Token or, inside a Sandbox, the Sandbox Token, and holds every caller-facing command, `admin` operations through REST included. The server-side binaries are `orrery-server` (run the Control Plane, migrate, bootstrap the first `admin`) and `orrery-agent` (enroll and run a Node Agent); they are installed only on platform hosts and are never needed by a caller.
 
 ### Web console
 

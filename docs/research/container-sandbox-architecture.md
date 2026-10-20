@@ -511,7 +511,7 @@ arguments:
 
 | | 对象模型（谁包含谁、谁更长寿） | 谁建容器 | exec 形态 | 文件面 | 默认网络 |
 |---|---|---|---|---|---|
-| **Stars Sandbox**（我们） | Worker（稳定身份，跨重连）⊃ Workspace（比 Sandbox 长寿）⊃ Task（串行） | **归属 Worker**（沙箱机器上），控制层只决定「在哪」 | Task 多路复用在那**一条** Worker→控制层 BIDI 流上 | 按路径 + 对象存储预签名：`ls_files`/`download_file`/`upload_files`/`complete_upload`，元数据走流、字节走对象存储 | `egress: public`（公网可达，私有段/loopback/link-local/metadata/宿主全拒）；能力通道一条 UDS |
+| **Orrery**（我们） | Worker（稳定身份，跨重连）⊃ Workspace（比 Sandbox 长寿）⊃ Task（串行） | **归属 Worker**（沙箱机器上），控制层只决定「在哪」 | Task 多路复用在那**一条** Worker→控制层 BIDI 流上 | 按路径 + 对象存储预签名：`ls_files`/`download_file`/`upload_files`/`complete_upload`，元数据走流、字节走对象存储 | `egress: public`（公网可达，私有段/loopback/link-local/metadata/宿主全拒）；能力通道一条 UDS |
 | **Agent Sandbox** | Sandbox（单个 stateful pod，稳定 hostname）← SandboxClaim ← WarmPool ← SandboxTemplate | K8s 控制器（从模板或预热池） | 沙箱内 `sandboxd`：gRPC `ProcessService` :9090（`Start` 服务端流）；外面经 router（`X-Sandbox-ID`）或 Service DNS 进入 | 同一守护进程的 REST `FilesystemService` :8080，`/v1/files/{path}` 原始字节，两个**独立协议端口** | `NetworkPolicySpec` 空列表 = ingress 与 egress **双 Default Deny** |
 | **Docker Sandboxes** | sandbox（稳定名）+ 宿主目录 = 工作区；另有两套持久化（template / cloud volume） | 本地 `sandboxd`（宿主守护进程）；云端 Docker Cloud Sandboxes API | `sbx exec`（**容器内是 microVM，自带 docker daemon**）；不支持 detached | `sbx cp SANDBOX:PATH`（`docker cp` 语义，无列表、无完成信号）；云端走 Cloud file API | 未初始化前无默认；初始化后白名单制（`allow-all`/`balanced`/`deny-all`），**宿主侧代理** |
 | **OpenHands** | `Sandbox ⊃ Conversation`；`SandboxRecord`（持久身份） vs `SandboxInfo`（活体状态）分型 | **控制层**（持 docker client 的进程，或 remote Runtime API 的 `POST /start`） | 容器内一个 HTTP 服务器（V0 端口取 30000–39999 且宿主端口 = 容器端口；V1 固定 8000），`X-Session-API-Key` | **两个面**：读/写/编辑是 action、走命令通道；列表 + 批量搬运走 `/api/file/*` | 未声明；可选 `network_mode='host'` |
@@ -526,7 +526,7 @@ arguments:
 
 
 
-## 8. 对 Stars Sandbox 的推论
+## 8. 对 Orrery 的推论
 
 1. **「Runtime Provider」这个词在这批材料里对应两件不同的东西，别混。** 我们的 `Runtime Provider`（Go interface，`Create`/`Exec`/`Inspect`/`Stop`/`Destroy` + `Capabilities()`）跑在 **Worker 进程内**，对应的是 OpenHands remote API 的 `/start` 请求体所表达的那件事——**「在哪里跑、以谁的身份跑、跑什么镜像命令」由调用方裁决，执行侧只负责落地或拒绝**。而 Agent Sandbox 的 `sandboxd` / OpenHands 的 agent server 是**沙箱内的第二个守护进程**，对应的是我们**刻意不做**的那一层。**两份材料里形状最像我们的，恰恰是那个 HTTP `/start` 契约，而不是那个 proto。** 读的时候要把这两层分开。
 2. **`sandboxd` 的 proto 值得当作我们 Task 消息的对照检查表**：`Start`（服务端流，`oneof{InitEvent, stdout, stderr, ExitEvent}`）+ `Execute`（一元同步）+ `WriteStdin` + `SendSignal(SIGINT/SIGTERM/SIGKILL)` + `ResizeTTY`，配置是 `{command[], env_vars{}, cwd}`。**我们已经有 `command` / `cwd` / `env` / `timeout` → exit code + 日志流**；差的是：**一个「短命令不必开流」的 `Execute` 形态**、**一个显式的 `InitEvent`（命令真的起来了，才从 `assigned` 变 `running`）**、以及 **`exit_code` 用 `128+n` 表示被信号杀死**（*"as a shell reports it"*）这条约定。这三条都是便宜的、且事后难补的。

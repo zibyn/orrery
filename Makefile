@@ -28,7 +28,7 @@ e2e:
 # Playwright against the same Compose deployment as `make e2e`; the script
 # enrolls a local Node Agent so a Sandbox can reach ready.
 e2e-console:
-	STARS_E2E_CONSOLE=1 ./scripts/e2e.sh
+	ORRERY_E2E_CONSOLE=1 ./scripts/e2e.sh
 
 sqlc:
 	sqlc generate

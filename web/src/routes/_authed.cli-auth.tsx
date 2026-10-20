@@ -74,7 +74,7 @@ function CliAuthPage() {
         above={
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
             <Terminal className="size-3.5" />
-            stars-sandbox login
+            orrery login
           </span>
         }
         title={m.cli_title()}

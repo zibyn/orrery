@@ -175,14 +175,14 @@ test('opens the port URL and reaches the Sandbox through the Gateway', async ({ 
     )
     .toEqual([ticket.url])
 
-  // Exchange the ticket for the stars_port cookie, then fetch the app through
+  // Exchange the ticket for the orrery_port cookie, then fetch the app through
   // the Gateway. The nc loop restarts between connections, so retry briefly.
   const host = ticketUrl.hostname
   const exchange = await gatewayRequest(host, `/${ticketUrl.search}`)
   expect(exchange.status).toBe(303)
   expect(exchange.location).toBe('/')
-  const grant = exchange.setCookie.find((value) => value.startsWith('stars_port='))
-  expect(grant, 'the ticket exchange sets the stars_port cookie').toBeTruthy()
+  const grant = exchange.setCookie.find((value) => value.startsWith('orrery_port='))
+  expect(grant, 'the ticket exchange sets the orrery_port cookie').toBeTruthy()
 
   let app = await gatewayRequest(host, '/', grant!.split(';')[0])
   for (let attempt = 0; attempt < 20 && app.status !== 200; attempt += 1) {

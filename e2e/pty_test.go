@@ -44,13 +44,13 @@ var ptyTestCodec = websocket.Codec{
 // the default is 300s.
 func ptyIdle(t *testing.T) time.Duration {
 	t.Helper()
-	raw := os.Getenv("STARS_E2E_PTY_IDLE_SECONDS")
+	raw := os.Getenv("ORRERY_E2E_PTY_IDLE_SECONDS")
 	if raw == "" {
-		t.Skip("STARS_E2E_PTY_IDLE_SECONDS is not set; the deployment default is 300s")
+		t.Skip("ORRERY_E2E_PTY_IDLE_SECONDS is not set; the deployment default is 300s")
 	}
 	seconds, err := strconv.Atoi(raw)
 	if err != nil || seconds <= 0 {
-		t.Fatalf("STARS_E2E_PTY_IDLE_SECONDS = %q", raw)
+		t.Fatalf("ORRERY_E2E_PTY_IDLE_SECONDS = %q", raw)
 	}
 	return time.Duration(seconds) * time.Second
 }

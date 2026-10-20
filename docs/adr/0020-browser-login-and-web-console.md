@@ -23,13 +23,13 @@
 - **A Session is an `api_tokens` row with `kind=session`.**
   - Its scope is `user`, or `admin` for an admin User.
   - It expires after 24 hours idle, and use slides that expiry.
-  - It travels as a host-only cookie, `stars_session; HttpOnly; Secure; SameSite=Lax; Path=/`, with no `Domain` attribute, so port-forward subdomains never receive it.
+  - It travels as a host-only cookie, `orrery_session; HttpOnly; Secure; SameSite=Lax; Path=/`, with no `Domain` attribute, so port-forward subdomains never receive it.
   - The API treats cookie and Bearer identically.
   - Requests that authenticate by cookie face two checks: unsafe methods pass `http.CrossOriginProtection`, and WebSocket upgrades must carry `Origin` equal to `api`'s own origin. Bearer requests face neither.
   - Port-forward subdomains are same-site with `api`, which is why `SameSite` alone is not the CSRF defence.
-- **The CLI gets an API Token by logging in.** `stars-sandbox login` asks a password User for their password and exchanges it for a named API Token. It sends an OIDC User to the console's `/cli-auth` page, which creates a token with the Session; the User pastes it back, as with `coder login`.
+- **The CLI gets an API Token by logging in.** `orrery login` asks a password User for their password and exchanges it for a named API Token. It sends an OIDC User to the console's `/cli-auth` page, which creates a token with the Session; the User pastes it back, as with `coder login`.
 - **Git account linking requires a Session.** Both `authorize` and `callback` accept only the cookie, and `callback` requires the User bound to `state` to be the Session's User. Without that check, one User could send another a link that ends with the second User's Git account linked to the first User. `authorize_url` points at the console's Git link page.
-- **The Web console is separate source, built as static files and embedded in `stars-sandbox-server`.** It is served at `/` on the `api` listener, on the same origin as `/api/v1`, with no CORS. It calls only public endpoints, and a fixed page list in `docs/spec/api.md` defines its reach rather than parity with every operation.
+- **The Web console is separate source, built as static files and embedded in `orrery-server`.** It is served at `/` on the `api` listener, on the same origin as `/api/v1`, with no CORS. It calls only public endpoints, and a fixed page list in `docs/spec/api.md` defines its reach rather than parity with every operation.
 
 ## Consequences
 

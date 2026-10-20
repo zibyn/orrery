@@ -75,7 +75,7 @@ function LoginPage() {
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
           <Logo />
           <div className="space-y-1">
-            <h1 className="text-lg font-semibold tracking-tight">stars-sandbox</h1>
+            <h1 className="text-lg font-semibold tracking-tight">Orrery</h1>
             <p className="text-sm text-muted-foreground">{m.login_subtitle()}</p>
           </div>
         </div>

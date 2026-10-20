@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/zibyn/stars-sandbox/internal/registry"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/registry"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // Snapshot import (api.md §3, ADR-0021). The Control Plane copies a whole
@@ -289,7 +289,7 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if s.cfg.RegistryPushAddr == "" {
-		writeProblem(w, "unavailable", "the platform registry is not configured; set STARS_REGISTRY_ADDR")
+		writeProblem(w, "unavailable", "the platform registry is not configured; set ORRERY_REGISTRY_ADDR")
 		return
 	}
 	sourceAuth, code, detail := s.sourceCredential(ctx, p.user.ID, req.Import.AuthSecret)
@@ -697,7 +697,7 @@ func pinVersion(cfg Config, snap store.Snapshot, version store.SnapshotVersion) 
 		return "", "conflict", "the SnapshotVersion is not ready"
 	}
 	if cfg.RegistryAddr == "" {
-		return "", "internal", "the platform registry is not configured; set STARS_REGISTRY_ADDR"
+		return "", "internal", "the platform registry is not configured; set ORRERY_REGISTRY_ADDR"
 	}
 	return registry.Ref(cfg.RegistryAddr, registry.Repo(snap.ID, platformName(snap)), *version.Digest), "", ""
 }

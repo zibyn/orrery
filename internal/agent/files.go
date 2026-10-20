@@ -16,7 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/stars-sandbox/internal/httpjson"
+	"github.com/zibyn/orrery/internal/httpjson"
 )
 
 // maxFileSize mirrors api.md §2: a single file is at most 5 GiB.
@@ -482,14 +482,14 @@ var errTooLarge = errors.New("file exceeds 5 GiB")
 // it into place, so readers never observe a half-written file (ADR-0018,
 // file-transfer-mechanics-and-path-safety.md §9).
 //
-// ponytail: a crash between create and rename can leave a .stars-tmp-* file;
+// ponytail: a crash between create and rename can leave a .orrery-tmp-* file;
 // sweep those when Workspace maintenance exists.
 func writeAtomic(root *os.Root, path string, body io.Reader, perm fs.FileMode) (int64, error) {
 	parent := filepath.Dir(path)
 	if err := ensureDir(root, parent); err != nil {
 		return 0, err
 	}
-	tmp := filepath.Join(parent, ".stars-tmp-"+uuid.NewString())
+	tmp := filepath.Join(parent, ".orrery-tmp-"+uuid.NewString())
 	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
 	if err != nil {
 		return 0, err

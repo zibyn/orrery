@@ -12,9 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/stars-sandbox/internal/dockerfile"
-	"github.com/zibyn/stars-sandbox/internal/registry"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/dockerfile"
+	"github.com/zibyn/orrery/internal/registry"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // Snapshot builds (api.md §3 "build", node-protocol.md "构建", runtime.md §12,
@@ -194,7 +194,7 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 		return
 	}
 	if s.cfg.RegistryAddr == "" {
-		writeProblem(w, "unavailable", "the platform registry is not configured; set STARS_REGISTRY_ADDR")
+		writeProblem(w, "unavailable", "the platform registry is not configured; set ORRERY_REGISTRY_ADDR")
 		return
 	}
 	if len(req.Secrets) > 0 && s.cfg.EncryptionKeys == nil {

@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 // TestPodmanUIDFromSocket pins the one socket layout rootless Podman may use

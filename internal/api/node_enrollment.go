@@ -15,9 +15,9 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 type nodeService struct {
@@ -29,7 +29,7 @@ type nodeService struct {
 // certificate is deployment configuration.
 func (s *Server) nodeServer() (*grpc.Server, net.Listener, error) {
 	if s.cfg.NodeTLSCert == "" || s.cfg.NodeTLSKey == "" {
-		return nil, nil, fmt.Errorf("STARS_NODE_TLS_CERT and STARS_NODE_TLS_KEY are required")
+		return nil, nil, fmt.Errorf("ORRERY_NODE_TLS_CERT and ORRERY_NODE_TLS_KEY are required")
 	}
 	cert, err := tls.LoadX509KeyPair(s.cfg.NodeTLSCert, s.cfg.NodeTLSKey)
 	if err != nil {

@@ -27,11 +27,11 @@ fi
 API_URL="http://127.0.0.1:18080"
 NODE_URL="127.0.0.1:18081"
 COMPOSE_FILE="$PWD/deploy/compose.yaml"
-COMPOSE_PROJECT="stars-sandbox-e2e"
+COMPOSE_PROJECT="orrery-e2e"
 COMPOSE_FILES=(-f "$COMPOSE_FILE")
 # CI adds a BuildKit cache override; local runs stay on the plain file.
-if [ -n "${STARS_E2E_COMPOSE_OVERRIDE:-}" ]; then
-  COMPOSE_FILES+=(-f "$STARS_E2E_COMPOSE_OVERRIDE")
+if [ -n "${ORRERY_E2E_COMPOSE_OVERRIDE:-}" ]; then
+  COMPOSE_FILES+=(-f "$ORRERY_E2E_COMPOSE_OVERRIDE")
 fi
 COMPOSE=(docker compose --profile oidc --profile e2e "${COMPOSE_FILES[@]}" -p "$COMPOSE_PROJECT")
 
@@ -51,20 +51,20 @@ wait_for_http() {
 # The e2e Agents copy their binaries into every Sandbox data root. On hosts
 # where /tmp is a small quota'd tmpfs that exhausts quickly, keep the test
 # directories on the regular filesystem instead.
-export TMPDIR="${STARS_E2E_TMPDIR:-/var/tmp/${COMPOSE_PROJECT}-$$}"
+export TMPDIR="${ORRERY_E2E_TMPDIR:-/var/tmp/${COMPOSE_PROJECT}-$$}"
 mkdir -p "$TMPDIR"
 
 # Object store and registry (defaults.md, ADR-0014). The Control Plane reaches
 # RustFS as http://rustfs:9000 inside Compose; presigned URLs and the tests use
 # the host-mapped http://127.0.0.1:19000. The registry listens on host port
 # 15000 because it signs redirects for the Node-reachable address.
-export STARS_S3_ENDPOINT="${STARS_S3_ENDPOINT:-http://rustfs:9000}"
-export STARS_S3_PUBLIC_ENDPOINT="${STARS_S3_PUBLIC_ENDPOINT:-http://127.0.0.1:19000}"
-export STARS_S3_BUCKET="${STARS_S3_BUCKET:-stars}"
-export STARS_S3_REGION="${STARS_S3_REGION:-us-east-1}"
-export STARS_S3_ACCESS_KEY="${STARS_S3_ACCESS_KEY:-stars}"
-export STARS_S3_SECRET_KEY="${STARS_S3_SECRET_KEY:-stars-secret}"
-export STARS_REGISTRY_ADDR="${STARS_REGISTRY_ADDR:-127.0.0.1:15000}"
+export ORRERY_S3_ENDPOINT="${ORRERY_S3_ENDPOINT:-http://rustfs:9000}"
+export ORRERY_S3_PUBLIC_ENDPOINT="${ORRERY_S3_PUBLIC_ENDPOINT:-http://127.0.0.1:19000}"
+export ORRERY_S3_BUCKET="${ORRERY_S3_BUCKET:-orrery}"
+export ORRERY_S3_REGION="${ORRERY_S3_REGION:-us-east-1}"
+export ORRERY_S3_ACCESS_KEY="${ORRERY_S3_ACCESS_KEY:-orrery}"
+export ORRERY_S3_SECRET_KEY="${ORRERY_S3_SECRET_KEY:-orrery-secret}"
+export ORRERY_REGISTRY_ADDR="${ORRERY_REGISTRY_ADDR:-127.0.0.1:15000}"
 
 # The node listener always uses TLS (ADR-0014); a throwaway self-signed cert is
 # enough for the black-box tests. Backdate it: a remote Node whose clock is a
@@ -81,7 +81,7 @@ tls_cert() {
 tls_cert -not_before 20200101000000Z || tls_cert
 # The server container runs as an unprivileged user; this is a throwaway cert.
 chmod 644 .e2e/tls/server.key .e2e/tls/server.crt
-export STARS_NODE_TLS_DIR="$PWD/.e2e/tls"
+export ORRERY_NODE_TLS_DIR="$PWD/.e2e/tls"
 
 # Secrets are encrypted at rest (ADR-0013); the e2e deployment gets a throwaway
 # key, written into the scenario's config.yaml below.
@@ -91,66 +91,66 @@ E2E_ENCRYPTION_KEY="$(head -c 32 /dev/urandom | base64)"
 # static. The external CLI is copied into Sandboxes, so it has to be static too
 # (alpine and distroless images do not have this host's libc).
 mkdir -p .e2e
-CGO_ENABLED=0 "$GO" build -o .e2e/stars-sandbox-agent ./cmd/stars-sandbox-agent
-CGO_ENABLED=0 "$GO" build -o .e2e/stars-sandbox ./cmd/stars-sandbox
+CGO_ENABLED=0 "$GO" build -o .e2e/orrery-agent ./cmd/orrery-agent
+CGO_ENABLED=0 "$GO" build -o .e2e/orrery ./cmd/orrery
 
 # A small Exec log cap keeps the truncation scenario fast, and a short PTY
 # idle window keeps the pty-idle scenario fast. A short admission deadline
 # keeps the queue-and-deadline scenario fast.
-export STARS_EXEC_LOG_CAP="${STARS_EXEC_LOG_CAP:-1048576}"
-export STARS_PTY_IDLE_SECONDS="${STARS_PTY_IDLE_SECONDS:-10}"
-export STARS_ADMISSION_TIMEOUT="${STARS_ADMISSION_TIMEOUT:-10s}"
+export ORRERY_EXEC_LOG_CAP="${ORRERY_EXEC_LOG_CAP:-1048576}"
+export ORRERY_PTY_IDLE_SECONDS="${ORRERY_PTY_IDLE_SECONDS:-10}"
+export ORRERY_ADMISSION_TIMEOUT="${ORRERY_ADMISSION_TIMEOUT:-10s}"
 # The retention scenario (#90) observes a real sweep without waiting for the
 # documented 10-minute cadence and 30-day TTL. Production defaults are
 # untouched; these are e2e-only overrides.
-export STARS_RESOURCE_VERSION_TTL="${STARS_RESOURCE_VERSION_TTL:-1s}"
+export ORRERY_RESOURCE_VERSION_TTL="${ORRERY_RESOURCE_VERSION_TTL:-1s}"
 # Test hook only: production uses the 10-minute constant (defaults.md).
-export STARS_TEST_PURGE_INTERVAL="${STARS_TEST_PURGE_INTERVAL:-1s}"
+export ORRERY_TEST_PURGE_INTERVAL="${ORRERY_TEST_PURGE_INTERVAL:-1s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
-export STARS_APPS_DOMAIN="${STARS_APPS_DOMAIN:-apps.test}"
+export ORRERY_APPS_DOMAIN="${ORRERY_APPS_DOMAIN:-apps.test}"
 # GPU scenarios are skipped unless a GPU host is reachable over SSH:
-#   STARS_E2E_GPU_SSH=user@gpu-host ./scripts/e2e.sh -run GPU
+#   ORRERY_E2E_GPU_SSH=user@gpu-host ./scripts/e2e.sh -run GPU
 # The test deploys the Agent there and tunnels back to this machine's node
-# listener. STARS_E2E_GPU_REMOTE_PORT overrides the remote tunnel port
+# listener. ORRERY_E2E_GPU_REMOTE_PORT overrides the remote tunnel port
 # (default 18081).
 
-# STARS_URL inside a Sandbox must reach the Control Plane. Published ports bind
+# ORRERY_URL inside a Sandbox must reach the Control Plane. Published ports bind
 # on the host, so the Docker bridge gateway is the address a Sandbox can use.
 HOST_GATEWAY="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
 HOST_GATEWAY="${HOST_GATEWAY:-172.17.0.1}"
-if [ -z "${STARS_ACCESS_URL:-}" ]; then
-  export STARS_ACCESS_URL="http://${HOST_GATEWAY}:18080"
+if [ -z "${ORRERY_ACCESS_URL:-}" ]; then
+  export ORRERY_ACCESS_URL="http://${HOST_GATEWAY}:18080"
 fi
 
 # The Control Plane is a container: it cannot push to the registry through
 # 127.0.0.1, so imports use the host gateway. Nodes still pull from
 # 127.0.0.1:15000. The one credential document lists both hosts
 # (deploy/registry/htpasswd holds the same user and password).
-export STARS_REGISTRY_PUSH_ADDR="${STARS_REGISTRY_PUSH_ADDR:-${HOST_GATEWAY}:15000}"
+export ORRERY_REGISTRY_PUSH_ADDR="${ORRERY_REGISTRY_PUSH_ADDR:-${HOST_GATEWAY}:15000}"
 # Blob redirects must be reachable from both the host (Agents) and the
 # Control Plane container, so sign them for the bridge gateway.
-export STARS_REGISTRY_S3_REGIONENDPOINT="${STARS_REGISTRY_S3_REGIONENDPOINT:-http://${HOST_GATEWAY}:19000}"
-REGISTRY_AUTH="c3RhcnM6c3RhcnMtcmVnaXN0cnktcGFzc3dvcmQ="
-export STARS_REGISTRY_CREDENTIAL="${STARS_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"${REGISTRY_AUTH}\"},\"${HOST_GATEWAY}:15000\":{\"auth\":\"${REGISTRY_AUTH}\"}}}}"
+export ORRERY_REGISTRY_S3_REGIONENDPOINT="${ORRERY_REGISTRY_S3_REGIONENDPOINT:-http://${HOST_GATEWAY}:19000}"
+REGISTRY_AUTH="b3JyZXJ5Om9ycmVyeS1yZWdpc3RyeS1wYXNzd29yZA=="
+export ORRERY_REGISTRY_CREDENTIAL="${ORRERY_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"${REGISTRY_AUTH}\"},\"${HOST_GATEWAY}:15000\":{\"auth\":\"${REGISTRY_AUTH}\"}}}}"
 
 # OIDC e2e: Dex is the deployment's one external issuer (ADR-0020). Its issuer
 # is the Compose service name, which the Control Plane resolves; the redirect
-# URIs use the host gateway because STARS_ACCESS_URL also does (defaults.md).
-export STARS_OIDC_ISSUER_URL="${STARS_OIDC_ISSUER_URL:-http://dex:5556/dex}"
-export STARS_OIDC_CLIENT_ID="${STARS_OIDC_CLIENT_ID:-stars-sandbox}"
-export STARS_OIDC_ALLOW_SIGNUPS="${STARS_OIDC_ALLOW_SIGNUPS:-false}"
-export STARS_OIDC_ACCESS_URL="${STARS_OIDC_ACCESS_URL:-http://${HOST_GATEWAY}:18082}"
+# URIs use the host gateway because ORRERY_ACCESS_URL also does (defaults.md).
+export ORRERY_OIDC_ISSUER_URL="${ORRERY_OIDC_ISSUER_URL:-http://dex:5556/dex}"
+export ORRERY_OIDC_CLIENT_ID="${ORRERY_OIDC_CLIENT_ID:-orrery}"
+export ORRERY_OIDC_ALLOW_SIGNUPS="${ORRERY_OIDC_ALLOW_SIGNUPS:-false}"
+export ORRERY_OIDC_ACCESS_URL="${ORRERY_OIDC_ACCESS_URL:-http://${HOST_GATEWAY}:18082}"
 mkdir -p .e2e/oidc .e2e/dex
-E2E_OIDC_SECRET="stars-sandbox-oidc-secret"
+E2E_OIDC_SECRET="orrery-oidc-secret"
 printf '%s' "$E2E_OIDC_SECRET" > .e2e/oidc/client
 chmod 644 .e2e/oidc/client
-export STARS_OIDC_SECRET_DIR="$PWD/.e2e/oidc"
-export STARS_OIDC_CLIENT_SECRET_FILE=/oidc/client
-sed -e "s|__MAIN_CALLBACK__|${STARS_ACCESS_URL%/}/api/v1/oidc/callback|" \
-    -e "s|__OIDC_CALLBACK__|${STARS_OIDC_ACCESS_URL%/}/api/v1/oidc/callback|" \
+export ORRERY_OIDC_SECRET_DIR="$PWD/.e2e/oidc"
+export ORRERY_OIDC_CLIENT_SECRET_FILE=/oidc/client
+sed -e "s|__MAIN_CALLBACK__|${ORRERY_ACCESS_URL%/}/api/v1/oidc/callback|" \
+    -e "s|__OIDC_CALLBACK__|${ORRERY_OIDC_ACCESS_URL%/}/api/v1/oidc/callback|" \
     deploy/dex.yaml > .e2e/dex/dex.yaml
-export STARS_DEX_DIR="$PWD/.e2e/dex"
+export ORRERY_DEX_DIR="$PWD/.e2e/dex"
 
 # Every Sandbox without an explicit snapshot runs the deployment default
 # platform Snapshot (api.md §3, defaults.md). The Control Plane imports it into
@@ -161,7 +161,7 @@ export STARS_DEX_DIR="$PWD/.e2e/dex"
 if ! docker image inspect alpine:3.22 >/dev/null 2>&1; then
   docker pull alpine:3.22 >/dev/null
 fi
-export STARS_DEFAULT_SNAPSHOT="${STARS_DEFAULT_SNAPSHOT:-default}"
+export ORRERY_DEFAULT_SNAPSHOT="${ORRERY_DEFAULT_SNAPSHOT:-default}"
 
 CONSOLE_AGENT_PID=""
 cleanup() {
@@ -183,14 +183,14 @@ cleanup() {
 trap cleanup EXIT
 
 # A killed previous run leaves a volume whose postgres-init.sql never ran, so
-# stars_oidc would be missing. Start from a clean volume every time.
+# orrery_oidc would be missing. Start from a clean volume every time.
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 
 # Gitea is the e2e Git backend. It needs its administrator, its OAuth2
 # application and a user for the browser half of the link flow before the
 # Control Plane starts, because the provider file names the application's
 # secret (ADR-0013).
-export STARS_GITEA_URL="http://${HOST_GATEWAY}:13000"
+export ORRERY_GITEA_URL="http://${HOST_GATEWAY}:13000"
 GITEA_ADMIN="gitea-admin"
 GITEA_ADMIN_PASSWORD="gitea-admin-password-123"
 GITEA_USER="gitea-user"
@@ -220,7 +220,7 @@ if [ -z "$GITEA_TOKEN" ]; then
   exit 1
 fi
 GITEA_APP="$(curl -fsS -H "Authorization: token $GITEA_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"stars-sandbox\",\"redirect_uris\":[\"${STARS_ACCESS_URL%/}/api/v1/external-auth/gitea/callback\"],\"confidential_client\":true,\"skip_secondary_authorization\":true}" \
+  -d "{\"name\":\"orrery\",\"redirect_uris\":[\"${ORRERY_ACCESS_URL%/}/api/v1/external-auth/gitea/callback\"],\"confidential_client\":true,\"skip_secondary_authorization\":true}" \
   "http://127.0.0.1:13000/api/v1/user/applications/oauth2")"
 read -r GITEA_CLIENT_ID GITEA_CLIENT_SECRET < <(printf '%s' "$GITEA_APP" |
   python3 -c 'import json, sys; app = json.load(sys.stdin); print(app["client_id"], app["client_secret"])')
@@ -270,14 +270,14 @@ if [ -z "$SOURCE_DIGEST" ]; then
   echo "the local source registry did not return a digest for alpine:3.22" >&2
   exit 1
 fi
-STARS_E2E_ALPINE_REF="${SOURCE_HOST}:5000/alpine@${SOURCE_DIGEST}"
-export STARS_E2E_ALPINE_REF
-SNAPSHOTS_YAML="  - {name: ${STARS_DEFAULT_SNAPSHOT}, ref: ${STARS_E2E_ALPINE_REF}, default: true}"
+ORRERY_E2E_ALPINE_REF="${SOURCE_HOST}:5000/alpine@${SOURCE_DIGEST}"
+export ORRERY_E2E_ALPINE_REF
+SNAPSHOTS_YAML="  - {name: ${ORRERY_DEFAULT_SNAPSHOT}, ref: ${ORRERY_E2E_ALPINE_REF}, default: true}"
 # gpu-sandbox-ready runs nvidia-smi inside the Sandbox, which the default
-# Alpine image cannot (gpu_test.go). STARS_E2E_CUDA_IMAGE names a local image
+# Alpine image cannot (gpu_test.go). ORRERY_E2E_CUDA_IMAGE names a local image
 # to publish as the `cuda` platform Snapshot for GPU hosts.
-if [ -n "${STARS_E2E_CUDA_IMAGE:-}" ]; then
-  docker tag "${STARS_E2E_CUDA_IMAGE}" "${SOURCE_REGISTRY}/e2e-cuda:latest"
+if [ -n "${ORRERY_E2E_CUDA_IMAGE:-}" ]; then
+  docker tag "${ORRERY_E2E_CUDA_IMAGE}" "${SOURCE_REGISTRY}/e2e-cuda:latest"
   docker push "${SOURCE_REGISTRY}/e2e-cuda:latest" >/dev/null
   CUDA_DIGEST="$(curl -fsSI -H "Accept: ${SOURCE_ACCEPT}" \
     "http://${SOURCE_HOST}:5000/v2/e2e-cuda/manifests/latest" 2>/dev/null | tr -d '\r' |
@@ -286,35 +286,35 @@ if [ -n "${STARS_E2E_CUDA_IMAGE:-}" ]; then
     echo "the local source registry did not return a digest for the CUDA image" >&2
     exit 1
   fi
-  SNAPSHOTS_YAML+=$'\n'"  - {name: ${STARS_E2E_GPU_SNAPSHOT:-cuda}, ref: ${SOURCE_HOST}:5000/e2e-cuda@${CUDA_DIGEST}}"
+  SNAPSHOTS_YAML+=$'\n'"  - {name: ${ORRERY_E2E_GPU_SNAPSHOT:-cuda}, ref: ${SOURCE_HOST}:5000/e2e-cuda@${CUDA_DIGEST}}"
 fi
 
 # The main Control Plane runs from config.yaml: the e2e scenario for ADR-0024.
 # server-oidc keeps the environment mode, so both paths stay covered.
-export STARS_CONFIG_DIR="$PWD/.e2e/config"
-mkdir -p "$STARS_CONFIG_DIR"
-cat > "$STARS_CONFIG_DIR/config.yaml" <<EOF
+export ORRERY_CONFIG_DIR="$PWD/.e2e/config"
+mkdir -p "$ORRERY_CONFIG_DIR"
+cat > "$ORRERY_CONFIG_DIR/config.yaml" <<EOF
 # Generated by scripts/e2e.sh; never a deployment file.
 database:
   host: postgres
   port: 5432
-  user: stars
-  password: stars
-  name: stars
+  user: orrery
+  password: orrery
+  name: orrery
 access:
-  url: ${STARS_ACCESS_URL}
-  apps_domain: ${STARS_APPS_DOMAIN}
+  url: ${ORRERY_ACCESS_URL}
+  apps_domain: ${ORRERY_APPS_DOMAIN}
   ticket_key: $(openssl rand -hex 32)
 logs:
-  exec_cap: ${STARS_EXEC_LOG_CAP}
+  exec_cap: ${ORRERY_EXEC_LOG_CAP}
   exec_retention: 720h
   audit_retention: 0
-  resource_version_ttl: ${STARS_RESOURCE_VERSION_TTL}
+  resource_version_ttl: ${ORRERY_RESOURCE_VERSION_TTL}
   cas_grace: 24h
 lifecycle:
-  pty_idle_seconds: ${STARS_PTY_IDLE_SECONDS}
+  pty_idle_seconds: ${ORRERY_PTY_IDLE_SECONDS}
   idle_stop_seconds: 900
-  admission_timeout: ${STARS_ADMISSION_TIMEOUT}
+  admission_timeout: ${ORRERY_ADMISSION_TIMEOUT}
 builds:
   cpu: 4
   memory: 8589934592
@@ -326,28 +326,28 @@ git_providers:
     type: gitea
     client_id: ${GITEA_CLIENT_ID}
     client_secret: ${GITEA_CLIENT_SECRET}
-    base_url: ${STARS_GITEA_URL}
+    base_url: ${ORRERY_GITEA_URL}
     scopes: [read:user, read:repository, write:repository]
 oidc:
-  issuer_url: ${STARS_OIDC_ISSUER_URL}
-  client_id: ${STARS_OIDC_CLIENT_ID}
+  issuer_url: ${ORRERY_OIDC_ISSUER_URL}
+  client_id: ${ORRERY_OIDC_CLIENT_ID}
   client_secret: ${E2E_OIDC_SECRET}
   email_domains: []
-  allow_signups: ${STARS_OIDC_ALLOW_SIGNUPS}
+  allow_signups: ${ORRERY_OIDC_ALLOW_SIGNUPS}
 s3:
-  endpoint: ${STARS_S3_ENDPOINT}
-  public_endpoint: ${STARS_S3_PUBLIC_ENDPOINT}
-  secret_key: ${STARS_S3_SECRET_KEY}
+  endpoint: ${ORRERY_S3_ENDPOINT}
+  public_endpoint: ${ORRERY_S3_PUBLIC_ENDPOINT}
+  secret_key: ${ORRERY_S3_SECRET_KEY}
 registry:
-  addr: ${STARS_REGISTRY_ADDR}
-  push_addr: ${STARS_REGISTRY_PUSH_ADDR}
-  username: stars
-  password: stars-registry-password
+  addr: ${ORRERY_REGISTRY_ADDR}
+  push_addr: ${ORRERY_REGISTRY_PUSH_ADDR}
+  username: orrery
+  password: orrery-registry-password
 platform_snapshots:
 ${SNAPSHOTS_YAML}
 EOF
-chmod 644 "$STARS_CONFIG_DIR/config.yaml"
-echo "config.yaml: ${STARS_CONFIG_DIR}/config.yaml"
+chmod 644 "$ORRERY_CONFIG_DIR/config.yaml"
+echo "config.yaml: ${ORRERY_CONFIG_DIR}/config.yaml"
 
 "${COMPOSE[@]}" up -d --build
 
@@ -367,25 +367,25 @@ fi
 # until it is ready so every Sandbox that omits `snapshot` can be created.
 ready=""
 for _ in $(seq 1 180); do
-  ready="$("${COMPOSE[@]}" exec -T postgres psql -U stars -d stars -tAc \
+  ready="$("${COMPOSE[@]}" exec -T postgres psql -U orrery -d orrery -tAc \
     "SELECT count(*) FROM snapshot_versions sv JOIN snapshots s ON s.id = sv.snapshot_id
-     WHERE s.owner_id IS NULL AND s.name = '${STARS_DEFAULT_SNAPSHOT}' AND sv.state = 'ready'" \
+     WHERE s.owner_id IS NULL AND s.name = '${ORRERY_DEFAULT_SNAPSHOT}' AND sv.state = 'ready'" \
     2>/dev/null | tr -d '[:space:]')"
   [ "$ready" = "1" ] && break
   sleep 1
 done
 if [ "$ready" != "1" ]; then
-  echo "platform Snapshot ${STARS_DEFAULT_SNAPSHOT} did not become ready" >&2
+  echo "platform Snapshot ${ORRERY_DEFAULT_SNAPSHOT} did not become ready" >&2
   "${COMPOSE[@]}" logs --no-color server registry >&2 || true
   exit 1
 fi
 
 # The GPU scenario names its own platform Snapshot (gpu_test.go).
-if [ -n "${STARS_E2E_CUDA_IMAGE:-}" ]; then
-  gpu_snapshot="${STARS_E2E_GPU_SNAPSHOT:-cuda}"
+if [ -n "${ORRERY_E2E_CUDA_IMAGE:-}" ]; then
+  gpu_snapshot="${ORRERY_E2E_GPU_SNAPSHOT:-cuda}"
   ready=""
   for _ in $(seq 1 180); do
-    ready="$("${COMPOSE[@]}" exec -T postgres psql -U stars -d stars -tAc \
+    ready="$("${COMPOSE[@]}" exec -T postgres psql -U orrery -d orrery -tAc \
       "SELECT count(*) FROM snapshot_versions sv JOIN snapshots s ON s.id = sv.snapshot_id
        WHERE s.owner_id IS NULL AND s.name = '${gpu_snapshot}' AND sv.state = 'ready'" \
       2>/dev/null | tr -d '[:space:]')"
@@ -430,7 +430,7 @@ esac
 # would never leave pending. Bootstrap the admin, mint an admin Token, enroll a
 # local Agent and wait until the Control Plane reports it ready, then drive the
 # embedded console with Playwright. The Go e2e path below is untouched when
-# STARS_E2E_CONSOLE is unset.
+# ORRERY_E2E_CONSOLE is unset.
 run_console_e2e() {
   local state="$TMPDIR/console-agent/identity.json"
   local data_root="$TMPDIR/console-agent/data"
@@ -439,7 +439,7 @@ run_console_e2e() {
   mkdir -p "$TMPDIR/console-agent" "$data_root"
 
   printf '%s\n' admin-password-123 | "${COMPOSE[@]}" exec -T server \
-    stars-sandbox-server bootstrap --username admin --email admin@example.com --password-stdin \
+    orrery-server bootstrap --username admin --email admin@example.com --password-stdin \
     >/dev/null 2>&1 || true
 
   admin_token="$(curl -fsS -H 'Content-Type: application/json' \
@@ -456,11 +456,11 @@ run_console_e2e() {
     python3 -c 'import json, sys; print(json.load(sys.stdin)["packet"])')"
 
   node_name="e2e-console-$(date +%s)"
-  .e2e/stars-sandbox-agent enroll --server "$NODE_URL" --ca "$PWD/.e2e/tls/server.crt" \
+  .e2e/orrery-agent enroll --server "$NODE_URL" --ca "$PWD/.e2e/tls/server.crt" \
     --packet "$packet" --name "$node_name" --state "$state"
   local run_args=(run --ca "$PWD/.e2e/tls/server.crt" --state "$state" --data-root "$data_root")
   [ -n "$DOCKER_SOCKET" ] && run_args+=(--docker "$DOCKER_SOCKET")
-  .e2e/stars-sandbox-agent "${run_args[@]}" >"$log" 2>&1 &
+  .e2e/orrery-agent "${run_args[@]}" >"$log" 2>&1 &
   CONSOLE_AGENT_PID=$!
 
   ready=""
@@ -494,41 +494,41 @@ print("ready" if any(n["name"] == name and n["status"] == "ready" for n in json.
     cd web
     "$pnpm" install --frozen-lockfile
     "$pnpm" exec playwright install chromium
-    STARS_E2E_API_URL="$API_URL" STARS_E2E_APPS_DOMAIN="$STARS_APPS_DOMAIN" \
+    ORRERY_E2E_API_URL="$API_URL" ORRERY_E2E_APPS_DOMAIN="$ORRERY_APPS_DOMAIN" \
       "$pnpm" exec playwright test
   )
 }
 
-if [ -n "${STARS_E2E_CONSOLE:-}" ]; then
+if [ -n "${ORRERY_E2E_CONSOLE:-}" ]; then
   run_console_e2e
   exit 0
 fi
 
-STARS_E2E_API_URL="$API_URL" \
-STARS_E2E_ACCESS_URL="$STARS_ACCESS_URL" \
-STARS_E2E_OIDC_ACCESS_URL="$STARS_OIDC_ACCESS_URL" \
-STARS_E2E_OIDC_ISSUER_URL="$STARS_OIDC_ISSUER_URL" \
-STARS_E2E_DEX_URL="http://127.0.0.1:15556/dex" \
-STARS_E2E_GITEA_URL="$STARS_GITEA_URL" \
-STARS_E2E_GITEA_USER="$GITEA_USER" \
-STARS_E2E_GITEA_PASSWORD="$GITEA_USER_PASSWORD" \
-STARS_E2E_GITEA_TOKEN="$GITEA_TOKEN" \
-STARS_E2E_GIT_PROVIDER="gitea" \
-STARS_E2E_CLI="$PWD/.e2e/stars-sandbox" \
-STARS_E2E_AGENT="$PWD/.e2e/stars-sandbox-agent" \
-STARS_E2E_NODE_URL="$NODE_URL" \
-STARS_E2E_NODE_CA="$PWD/.e2e/tls/server.crt" \
-STARS_E2E_DOCKER_SOCKET="$DOCKER_SOCKET" \
-STARS_E2E_COMPOSE_FILE="$COMPOSE_FILE" \
-STARS_E2E_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
-STARS_E2E_EXEC_LOG_CAP="$STARS_EXEC_LOG_CAP" \
-STARS_E2E_PTY_IDLE_SECONDS="$STARS_PTY_IDLE_SECONDS" \
-STARS_E2E_S3_ENDPOINT="${STARS_E2E_S3_ENDPOINT:-http://127.0.0.1:19000}" \
-STARS_E2E_S3_BUCKET="$STARS_S3_BUCKET" \
-STARS_E2E_S3_ACCESS_KEY="$STARS_S3_ACCESS_KEY" \
-STARS_E2E_S3_SECRET_KEY="$STARS_S3_SECRET_KEY" \
-STARS_E2E_REGISTRY_ADDR="$STARS_REGISTRY_ADDR" \
-STARS_E2E_REGISTRY_CREDENTIAL="$STARS_REGISTRY_CREDENTIAL" \
-STARS_E2E_ALPINE_REF="$STARS_E2E_ALPINE_REF" \
-STARS_E2E_PLATFORM_SNAPSHOT="$STARS_DEFAULT_SNAPSHOT" \
+ORRERY_E2E_API_URL="$API_URL" \
+ORRERY_E2E_ACCESS_URL="$ORRERY_ACCESS_URL" \
+ORRERY_E2E_OIDC_ACCESS_URL="$ORRERY_OIDC_ACCESS_URL" \
+ORRERY_E2E_OIDC_ISSUER_URL="$ORRERY_OIDC_ISSUER_URL" \
+ORRERY_E2E_DEX_URL="http://127.0.0.1:15556/dex" \
+ORRERY_E2E_GITEA_URL="$ORRERY_GITEA_URL" \
+ORRERY_E2E_GITEA_USER="$GITEA_USER" \
+ORRERY_E2E_GITEA_PASSWORD="$GITEA_USER_PASSWORD" \
+ORRERY_E2E_GITEA_TOKEN="$GITEA_TOKEN" \
+ORRERY_E2E_GIT_PROVIDER="gitea" \
+ORRERY_E2E_CLI="$PWD/.e2e/orrery" \
+ORRERY_E2E_AGENT="$PWD/.e2e/orrery-agent" \
+ORRERY_E2E_NODE_URL="$NODE_URL" \
+ORRERY_E2E_NODE_CA="$PWD/.e2e/tls/server.crt" \
+ORRERY_E2E_DOCKER_SOCKET="$DOCKER_SOCKET" \
+ORRERY_E2E_COMPOSE_FILE="$COMPOSE_FILE" \
+ORRERY_E2E_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
+ORRERY_E2E_EXEC_LOG_CAP="$ORRERY_EXEC_LOG_CAP" \
+ORRERY_E2E_PTY_IDLE_SECONDS="$ORRERY_PTY_IDLE_SECONDS" \
+ORRERY_E2E_S3_ENDPOINT="${ORRERY_E2E_S3_ENDPOINT:-http://127.0.0.1:19000}" \
+ORRERY_E2E_S3_BUCKET="$ORRERY_S3_BUCKET" \
+ORRERY_E2E_S3_ACCESS_KEY="$ORRERY_S3_ACCESS_KEY" \
+ORRERY_E2E_S3_SECRET_KEY="$ORRERY_S3_SECRET_KEY" \
+ORRERY_E2E_REGISTRY_ADDR="$ORRERY_REGISTRY_ADDR" \
+ORRERY_E2E_REGISTRY_CREDENTIAL="$ORRERY_REGISTRY_CREDENTIAL" \
+ORRERY_E2E_ALPINE_REF="$ORRERY_E2E_ALPINE_REF" \
+ORRERY_E2E_PLATFORM_SNAPSHOT="$ORRERY_DEFAULT_SNAPSHOT" \
 "$GO" test -tags e2e -count=1 "$@" ./e2e/...

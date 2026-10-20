@@ -38,9 +38,9 @@ type snapshotVersionView struct {
 func TestSnapshotImport(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
-	alpineRef := os.Getenv("STARS_E2E_ALPINE_REF")
+	alpineRef := os.Getenv("ORRERY_E2E_ALPINE_REF")
 	if alpineRef == "" {
-		t.Fatal("STARS_E2E_ALPINE_REF is not set; run ./scripts/e2e.sh")
+		t.Fatal("ORRERY_E2E_ALPINE_REF is not set; run ./scripts/e2e.sh")
 	}
 	suffix := time.Now().UnixNano()
 	name := fmt.Sprintf("e2e-import-%d", suffix)
@@ -74,7 +74,7 @@ func TestSnapshotImport(t *testing.T) {
 	deleteSandbox(t, admin, created.ID)
 
 	// Platform Snapshots are read-only through the API (api.md §3).
-	platformName := os.Getenv("STARS_E2E_PLATFORM_SNAPSHOT")
+	platformName := os.Getenv("ORRERY_E2E_PLATFORM_SNAPSHOT")
 	if platformName != "" {
 		platform := findSnapshot(t, admin, platformName)
 		if platform.OwnerID != nil {
@@ -96,10 +96,10 @@ func TestSnapshotImport(t *testing.T) {
 func TestSnapshotImportPrivateSource(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
-	addr := os.Getenv("STARS_E2E_REGISTRY_ADDR")
-	credential := os.Getenv("STARS_E2E_REGISTRY_CREDENTIAL")
+	addr := os.Getenv("ORRERY_E2E_REGISTRY_ADDR")
+	credential := os.Getenv("ORRERY_E2E_REGISTRY_CREDENTIAL")
 	if addr == "" || credential == "" {
-		t.Fatal("STARS_E2E_REGISTRY_ADDR and STARS_E2E_REGISTRY_CREDENTIAL are not set; run ./scripts/e2e.sh")
+		t.Fatal("ORRERY_E2E_REGISTRY_ADDR and ORRERY_E2E_REGISTRY_CREDENTIAL are not set; run ./scripts/e2e.sh")
 	}
 	suffix := time.Now().UnixNano()
 	dockerConfig := t.TempDir()
@@ -160,9 +160,9 @@ func TestSnapshotImportPrivateSource(t *testing.T) {
 func TestSnapshotDeleteGuard(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
-	addr := os.Getenv("STARS_E2E_REGISTRY_ADDR")
-	credential := os.Getenv("STARS_E2E_REGISTRY_CREDENTIAL")
-	platformName := os.Getenv("STARS_E2E_PLATFORM_SNAPSHOT")
+	addr := os.Getenv("ORRERY_E2E_REGISTRY_ADDR")
+	credential := os.Getenv("ORRERY_E2E_REGISTRY_CREDENTIAL")
+	platformName := os.Getenv("ORRERY_E2E_PLATFORM_SNAPSHOT")
 	if addr == "" || credential == "" || platformName == "" {
 		t.Fatal("the registry and platform Snapshot environment is not set; run ./scripts/e2e.sh")
 	}
@@ -339,7 +339,7 @@ func dockerCLI(t *testing.T, configDir string, args ...string) string {
 func runDocker(configDir string, args ...string) *exec.Cmd {
 	cmd := exec.Command("docker", args...)
 	cmd.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
-	if socket := os.Getenv("STARS_E2E_DOCKER_SOCKET"); socket != "" {
+	if socket := os.Getenv("ORRERY_E2E_DOCKER_SOCKET"); socket != "" {
 		cmd.Env = append(cmd.Env, "DOCKER_HOST=unix://"+socket)
 	}
 	return cmd

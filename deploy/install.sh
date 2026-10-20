@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Installs or upgrades a Stars Sandbox host from a GitHub release (ADR-0023).
+# Installs or upgrades a Orrery host from a GitHub release (ADR-0023).
 # Fetch it from the release tag (or from main for a bootstrap) and run it as
 # root; --version defaults to the newest release. docs/deploy.md has the full
 # walkthrough. Re-run with a newer --version to upgrade, Control Plane first,
 # then Nodes (ADR-0014).
 set -euo pipefail
 
-REPO=zibyn/stars-sandbox
+REPO=zibyn/orrery
 
 usage() {
   cat >&2 <<'EOF'
@@ -17,10 +17,10 @@ usage:
                     [--tls-cert FILE --tls-key FILE] [--ca FILE]
                     [--registry-addr HOST[:PORT]]
                     [--auto-update | --no-auto-update]
-  install.sh node   [--version vX.Y.Z] [--server HOST:PORT --packet sse_...] [--ca FILE]
+  install.sh node   [--version vX.Y.Z] [--server HOST:PORT --packet ore_...] [--ca FILE]
                     [--trust-registry HOST[:PORT]]... [--runtime docker|podman|local]
                     [--name NAME] [--auto-update | --no-auto-update]
-                    [-- extra `stars-sandbox-agent run` flags]
+                    [-- extra `orrery-agent run` flags]
 
 --version defaults to the newest published release.
 EOF
@@ -96,7 +96,7 @@ wait_rustfs() {
       status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id")"
       [ "$status" = "healthy" ] && return 0
       [ "$status" = "exited" ] &&
-        die "rustfs exited; see: cd /etc/stars-sandbox && docker compose logs rustfs"
+        die "rustfs exited; see: cd /etc/orrery && docker compose logs rustfs"
     fi
     sleep 1
   done
@@ -106,9 +106,9 @@ wait_rustfs() {
 # create_bucket replaces the old rustfs-init service. It runs before the
 # registry and the Control Plane start; both write to the bucket.
 create_bucket() {
-  local bucket=stars region=us-east-1 access secret network id
-  access="$(env_get STARS_S3_ACCESS_KEY .env)"
-  secret="$(env_get STARS_S3_SECRET_KEY .env)"
+  local bucket=orrery region=us-east-1 access secret network id
+  access="$(env_get ORRERY_S3_ACCESS_KEY .env)"
+  secret="$(env_get ORRERY_S3_SECRET_KEY .env)"
   id="$(docker compose ps -q rustfs)"
   [ -n "$id" ] || die "rustfs is not running"
   network="$(docker inspect "$id" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
@@ -153,16 +153,16 @@ server() {
   docker compose version >/dev/null 2>&1 || die "the docker compose plugin is required"
   case "$version" in "" | latest) version="$(latest_version)" ;; esac
   check_version "$version"
-  mkdir -p /etc/stars-sandbox
+  mkdir -p /etc/orrery
   # Manual runs and the Docker updater share one lock.
-  exec 9>/etc/stars-sandbox/.install.lock
+  exec 9>/etc/orrery/.install.lock
   flock -n 9 || die "another install or auto-update is running"
 
-  local etc=/etc/stars-sandbox backups=/var/lib/stars-sandbox-server/backups previous=""
+  local etc=/etc/orrery backups=/var/lib/orrery-server/backups previous=""
   mkdir -p "$etc" "$backups"
   chmod 700 "$etc" "$backups"
   cd "$etc"
-  [ -f .env ] && previous="$(sed -n 's/^STARS_VERSION=//p' .env)"
+  [ -f .env ] && previous="$(sed -n 's/^ORRERY_VERSION=//p' .env)"
 
   if [ -n "$previous" ] && [ "$previous" != "$version" ]; then
     is_newer "$previous" "$version" ||
@@ -174,19 +174,19 @@ server() {
   else
     [ -f config/config.yaml ] ||
       die "this installation predates config.yaml (issue #147); it is pre-release: move $etc aside and install again"
-    grep -q '^STARS_PUBLIC_PORT=' .env && grep -q '^STARS_S3_PUBLIC_HOST=' .env ||
-      die "this .env predates the nginx front (issue #135); reinstall, or add STARS_PUBLIC_HOST, STARS_PUBLIC_PORT, STARS_S3_PUBLIC_HOST and STARS_PUBLIC_BIND and write nginx/stars.conf"
-    [ -f nginx/stars.conf ] ||
-      die "nginx/stars.conf is missing; recreate it from deploy/release/nginx.conf at this release tag"
+    grep -q '^ORRERY_PUBLIC_PORT=' .env && grep -q '^ORRERY_S3_PUBLIC_HOST=' .env ||
+      die "this .env predates the nginx front (issue #135); reinstall, or add ORRERY_PUBLIC_HOST, ORRERY_PUBLIC_PORT, ORRERY_S3_PUBLIC_HOST and ORRERY_PUBLIC_BIND and write nginx/orrery.conf"
+    [ -f nginx/orrery.conf ] ||
+      die "nginx/orrery.conf is missing; recreate it from deploy/release/nginx.conf at this release tag"
     if [ -n "$host$port$cert$key$ca$access_url$registry_addr$s3_url$bind" ] || [ "$tls" != self-signed ]; then
-      echo "install.sh: $etc/.env exists; addresses and TLS are kept, edit .env, config/config.yaml and nginx/stars.conf to change them" >&2
+      echo "install.sh: $etc/.env exists; addresses and TLS are kept, edit .env, config/config.yaml and nginx/orrery.conf to change them" >&2
     fi
   fi
 
   curl -fsSL "https://raw.githubusercontent.com/$REPO/$version/deploy/release/compose.yaml" -o compose.yaml.new
   mv compose.yaml.new compose.yaml
   # Pull before stopping anything, so the outage is only the restart.
-  STARS_VERSION="$version" docker compose pull --quiet
+  ORRERY_VERSION="$version" docker compose pull --quiet
 
   # ADR-0014 upgrade: stop the Control Plane, back up PostgreSQL, start the
   # new version.
@@ -194,11 +194,11 @@ server() {
     local dump
     dump="$backups/$(date -u +%Y%m%dT%H%M%SZ)-$previous.sql.gz"
     docker compose stop server
-    docker compose exec -T postgres pg_dump -U stars stars | gzip > "$dump" ||
+    docker compose exec -T postgres pg_dump -U orrery orrery | gzip > "$dump" ||
       die "backup failed; the old Control Plane is stopped, start it with: cd $etc && docker compose start server"
     echo "backed up PostgreSQL to $dump"
   fi
-  sed -i "s/^STARS_VERSION=.*/STARS_VERSION=$version/" .env
+  sed -i "s/^ORRERY_VERSION=.*/ORRERY_VERSION=$version/" .env
 
   # The registry and the Control Plane write to the object store at startup,
   # so its bucket must exist before either starts.
@@ -211,9 +211,9 @@ server() {
   docker compose restart nginx
 
   local host port check_addr
-  host="$(env_get STARS_PUBLIC_HOST .env)"
-  port="$(env_get STARS_PUBLIC_PORT .env)"
-  check_addr="$(env_get STARS_PUBLIC_BIND .env)"
+  host="$(env_get ORRERY_PUBLIC_HOST .env)"
+  port="$(env_get ORRERY_PUBLIC_PORT .env)"
+  check_addr="$(env_get ORRERY_PUBLIC_BIND .env)"
   check_addr="${check_addr%:}"
   { [ -z "$check_addr" ] || [ "$check_addr" = "0.0.0.0" ]; } && check_addr=127.0.0.1
   local code=""
@@ -310,7 +310,7 @@ first_install() {
     sans="$(san_of "$host"),$(san_of "$s3_host")"
     # ponytail: ten-year certificates and no rotation; re-issue by hand
     # (docs/deploy.md) if a deployment outlives them.
-    openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj "/CN=Stars Sandbox CA" \
+    openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj "/CN=Orrery CA" \
       -keyout ca.key -out ca/ca.crt 2>/dev/null
     chmod 600 ca.key
     chmod 0644 ca/ca.crt
@@ -337,18 +337,18 @@ first_install() {
   pg="$(rand)"
   s3_secret="$(rand)"
   registry_password="$(rand)"
-  docker run --rm httpd:2.4-alpine htpasswd -Bbn stars "$registry_password" > registry/htpasswd
+  docker run --rm httpd:2.4-alpine htpasswd -Bbn orrery "$registry_password" > registry/htpasswd
   cat > registry/config.yml <<EOF
 version: 0.1
 log:
   level: info
 storage:
   s3:
-    accesskey: stars
+    accesskey: orrery
     secretkey: $s3_secret
     region: us-east-1
     regionendpoint: $s3_url
-    bucket: stars
+    bucket: orrery
     rootdirectory: /registry
     forcepathstyle: true
     secure: true
@@ -358,7 +358,7 @@ http:
   secret: $(rand)
 auth:
   htpasswd:
-    realm: stars-sandbox
+    realm: orrery
     path: /etc/distribution/htpasswd
 EOF
 
@@ -368,9 +368,9 @@ EOF
     die "download deploy/release/nginx.conf"
   sed -e "s|__LISTEN__|$listen|g" \
       -e "s|__PUBLIC_HOST__|$host|g" \
-      -e "s|__S3_HOST__|$s3_host|g" "$tmp" > nginx/stars.conf
+      -e "s|__S3_HOST__|$s3_host|g" "$tmp" > nginx/orrery.conf
   rm -f "$tmp"
-  chmod 0644 nginx/stars.conf
+  chmod 0644 nginx/orrery.conf
 
   # The Control Plane application settings live here (ADR-0024). The server
   # container runs as uid 10001 and reads the directory read-only.
@@ -381,12 +381,12 @@ EOF
 database:
   host: postgres
   port: 5432
-  user: stars
+  user: orrery
   password: $pg
-  name: stars
+  name: orrery
 
 access:
-  # OAuth/OIDC callbacks and the Sandbox's STARS_URL.
+  # OAuth/OIDC callbacks and the Sandbox's ORRERY_URL.
   url: $access_url
   # Wildcard domain for browser port forwarding; empty leaves it off.
   apps_domain: ""
@@ -400,7 +400,7 @@ s3:
 
 registry:
   addr: $registry_addr
-  username: stars
+  username: orrery
   password: $registry_password
 
 encryption_keys:
@@ -431,19 +431,19 @@ EOF
 # Written once by install.sh (ADR-0023, ADR-0024); these values are read by
 # Compose and install.sh before the server starts. Application settings live
 # in config/config.yaml.
-STARS_VERSION=$version
+ORRERY_VERSION=$version
 # The server reads its application settings from this file (ADR-0024).
-STARS_CONFIG_FILE=/config/config.yaml
-STARS_PUBLIC_HOST=$host
-STARS_PUBLIC_PORT=$port
-STARS_PUBLIC_BIND=$public_bind
-STARS_PUBLIC_RESOLVE=$resolve
-STARS_S3_PUBLIC_HOST=$s3_host
+ORRERY_CONFIG_FILE=/config/config.yaml
+ORRERY_PUBLIC_HOST=$host
+ORRERY_PUBLIC_PORT=$port
+ORRERY_PUBLIC_BIND=$public_bind
+ORRERY_PUBLIC_RESOLVE=$resolve
+ORRERY_S3_PUBLIC_HOST=$s3_host
 # The server, registry and object store stay on loopback behind nginx.
-STARS_BIND=127.0.0.1:
-STARS_POSTGRES_PASSWORD=$pg
-STARS_S3_ACCESS_KEY=stars
-STARS_S3_SECRET_KEY=$s3_secret
+ORRERY_BIND=127.0.0.1:
+ORRERY_POSTGRES_PASSWORD=$pg
+ORRERY_S3_ACCESS_KEY=orrery
+ORRERY_S3_SECRET_KEY=$s3_secret
 EOF
   chmod 600 .env
 }
@@ -457,7 +457,7 @@ write_updater_script() {
 # released tag and run that tag's install script. Major upgrades and
 # downgrades are left to a manual run.
 set -uo pipefail
-REPO=zibyn/stars-sandbox
+REPO=zibyn/orrery
 role="${1:-server}"
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
@@ -474,8 +474,8 @@ newer() {
 update_once() {
   local current latest effective current_major latest_major
   case "$role" in
-    server) current="$(sed -n 's/^STARS_VERSION=//p' /etc/stars-sandbox/.env 2>/dev/null)" ;;
-    node) current="$(cat /etc/stars-sandbox-agent/version 2>/dev/null)" ;;
+    server) current="$(sed -n 's/^ORRERY_VERSION=//p' /etc/orrery/.env 2>/dev/null)" ;;
+    node) current="$(cat /etc/orrery-agent/version 2>/dev/null)" ;;
     *) log "unknown role $role"; return 2 ;;
   esac
   [ -n "$current" ] || return 0
@@ -501,20 +501,20 @@ update_once() {
 
 while :; do
   update_once
-  sleep "${STARS_UPDATE_INTERVAL:-21600}"
+  sleep "${ORRERY_UPDATE_INTERVAL:-21600}"
 done
 EOF
 }
 
 install_server_updater() {
-  local etc=/etc/stars-sandbox
+  local etc=/etc/orrery
   mkdir -p "$etc"
   write_updater_script "$etc/updater.sh"
   chmod 0755 "$etc/updater.sh"
   # A separate Compose project: the main project's `up -d --remove-orphans`
   # must not touch the container that is running the update.
   cat > "$etc/updater.yaml" <<'EOF'
-name: stars-sandbox-updater
+name: orrery-updater
 services:
   updater:
     image: docker:27-cli
@@ -525,26 +525,26 @@ services:
       - |
         set -e
         apk add --no-cache bash curl openssl >/dev/null
-        exec bash /etc/stars-sandbox/updater.sh server
+        exec bash /etc/orrery/updater.sh server
     environment:
-      STARS_UPDATE_INTERVAL: "${STARS_UPDATE_INTERVAL:-21600}"
+      ORRERY_UPDATE_INTERVAL: "${ORRERY_UPDATE_INTERVAL:-21600}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /etc/stars-sandbox:/etc/stars-sandbox
-      - /var/lib/stars-sandbox-server/backups:/var/lib/stars-sandbox-server/backups
+      - /etc/orrery:/etc/orrery
+      - /var/lib/orrery-server/backups:/var/lib/orrery-server/backups
 EOF
-  docker compose -p stars-sandbox-updater -f "$etc/updater.yaml" up -d --force-recreate
-  echo "auto-update enabled: docker compose -p stars-sandbox-updater"
+  docker compose -p orrery-updater -f "$etc/updater.yaml" up -d --force-recreate
+  echo "auto-update enabled: docker compose -p orrery-updater"
 }
 
 install_node_updater() {
-  local conf=/etc/stars-sandbox-agent
+  local conf=/etc/orrery-agent
   mkdir -p "$conf" /etc/systemd/system
   write_updater_script "$conf/updater"
   chmod 0755 "$conf/updater"
-  cat > /etc/systemd/system/stars-sandbox-update.service <<EOF
+  cat > /etc/systemd/system/orrery-update.service <<EOF
 [Unit]
-Description=Stars Sandbox auto-update
+Description=Orrery auto-update
 After=network-online.target
 Wants=network-online.target
 
@@ -553,14 +553,14 @@ Type=simple
 ExecStart=$conf/updater node
 Restart=always
 RestartSec=300
-Environment=STARS_UPDATE_INTERVAL=21600
+Environment=ORRERY_UPDATE_INTERVAL=21600
 
 [Install]
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now stars-sandbox-update.service
-  echo "auto-update enabled: stars-sandbox-update.service (node)"
+  systemctl enable --now orrery-update.service
+  echo "auto-update enabled: orrery-update.service (node)"
 }
 
 install_updater() {
@@ -574,13 +574,13 @@ install_updater() {
 remove_updater() {
   case "$1" in
     server)
-      docker compose -p stars-sandbox-updater -f /etc/stars-sandbox/updater.yaml \
+      docker compose -p orrery-updater -f /etc/orrery/updater.yaml \
         down --remove-orphans 2>/dev/null || true
-      rm -f /etc/stars-sandbox/updater.yaml /etc/stars-sandbox/updater.sh
+      rm -f /etc/orrery/updater.yaml /etc/orrery/updater.sh
       ;;
     node)
-      systemctl disable --now stars-sandbox-update.service 2>/dev/null || true
-      rm -f /etc/systemd/system/stars-sandbox-update.service /etc/stars-sandbox-agent/updater
+      systemctl disable --now orrery-update.service 2>/dev/null || true
+      rm -f /etc/systemd/system/orrery-update.service /etc/orrery-agent/updater
       systemctl daemon-reload 2>/dev/null || true
       ;;
     *) die "remove_updater: unknown role $1" ;;
@@ -589,17 +589,17 @@ remove_updater() {
 }
 
 next_steps() {
-  local version="$1" etc=/etc/stars-sandbox
+  local version="$1" etc=/etc/orrery
   local host port bind check_addr registry_addr s3_url s3_host node_host ca_flags="" trust_flags=""
-  host="$(env_get STARS_PUBLIC_HOST "$etc/.env")"
-  port="$(env_get STARS_PUBLIC_PORT "$etc/.env")"
-  bind="$(env_get STARS_PUBLIC_BIND "$etc/.env")"
+  host="$(env_get ORRERY_PUBLIC_HOST "$etc/.env")"
+  port="$(env_get ORRERY_PUBLIC_PORT "$etc/.env")"
+  bind="$(env_get ORRERY_PUBLIC_BIND "$etc/.env")"
   bind="${bind%:}"
   { [ -z "$bind" ] || [ "$bind" = "0.0.0.0" ]; } && check_addr=127.0.0.1 || check_addr="$bind"
   # config.yaml is the source of truth for the Node-reachable registry address.
   registry_addr="$(awk '/^registry:/{r=1;next} /^[^ #]/{r=0} r && /^  addr:/{print $2; exit}' \
     "$etc/config/config.yaml")"
-  s3_host="$(env_get STARS_S3_PUBLIC_HOST "$etc/.env")"
+  s3_host="$(env_get ORRERY_S3_PUBLIC_HOST "$etc/.env")"
   s3_url="https://$s3_host$(port_suffix "$port")"
   node_host="$host:$port"
   if [ -f "$etc/ca/ca.crt" ]; then
@@ -618,12 +618,12 @@ EOF
   cat <<EOF
 
 The public entry is https://$host:$port: /v2/ is the registry,
-/stars.node.v1.Node/ is the Node surface, and everything else is the API.
+/orrery.node.v1.Node/ is the Node surface, and everything else is the API.
 The object store is https://$s3_host.
 
 Next steps:
   1. Create the first admin:
-       cd $etc && docker compose exec server stars-sandbox-server bootstrap
+       cd $etc && docker compose exec server orrery-server bootstrap
   2. Issue an Enrollment Packet (valid for 1 hour):
        TOKEN=\$(curl -ks --connect-to "$host:$port:$check_addr:$port" -H 'Content-Type: application/json' \\
          -d '{"username":"admin","password":"...","token":{"name":"ops","scope":"admin"}}' \\
@@ -632,7 +632,7 @@ Next steps:
          "https://$host:$port/api/v1/enrollment-packets"
   3. On each Node$( [ -n "$ca_flags" ] && echo ", after copying $etc/ca/ca.crt there as ca.crt"):
        curl -fsSL https://raw.githubusercontent.com/$REPO/$version/deploy/install.sh | sudo bash -s -- node \\
-         --version $version --server $node_host --packet sse_... $ca_flags $trust_flags
+         --version $version --server $node_host --packet ore_... $ca_flags $trust_flags
 EOF
 }
 
@@ -657,9 +657,9 @@ node() {
   need curl tar sha256sum systemctl flock
   case "$version" in "" | latest) version="$(latest_version)" ;; esac
   check_version "$version"
-  mkdir -p /etc/stars-sandbox-agent
+  mkdir -p /etc/orrery-agent
   # Manual runs and the updater service share one lock.
-  exec 9>/etc/stars-sandbox-agent/.install.lock
+  exec 9>/etc/orrery-agent/.install.lock
   flock -n 9 || die "another install or auto-update is running"
   case "${runtime:-docker}" in
     docker) need docker ;;
@@ -668,15 +668,15 @@ node() {
     *) die "--runtime is docker, podman or local" ;;
   esac
 
-  local arch bin=/opt/stars-sandbox/bin conf=/etc/stars-sandbox-agent
-  local state=/var/lib/stars-sandbox-agent/identity.json unit=/etc/systemd/system/stars-sandbox-agent.service
+  local arch bin=/opt/orrery/bin conf=/etc/orrery-agent
+  local state=/var/lib/orrery-agent/identity.json unit=/etc/systemd/system/orrery-agent.service
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;
     aarch64 | arm64) arch=arm64 ;;
     *) die "unsupported architecture $(uname -m)" ;;
   esac
 
-  local tmp pkg="stars-sandbox-node_${version}_linux_${arch}.tar.gz"
+  local tmp pkg="orrery-node_${version}_linux_${arch}.tar.gz"
   local base="https://github.com/$REPO/releases/download/$version"
   tmp="$(mktemp -d)"
   trap "rm -rf '$tmp'" EXIT
@@ -686,7 +686,7 @@ node() {
   tar -C "$tmp" -xzf "$tmp/$pkg"
   mkdir -p "$bin" "$conf"
   # The Agent finds the CLI beside its own executable (runtime.md).
-  for b in stars-sandbox-agent stars-sandbox; do
+  for b in orrery-agent orrery; do
     install -m 0755 "$tmp/$b" "$bin/.$b.new"
     mv -f "$bin/.$b.new" "$bin/$b"
   done
@@ -710,19 +710,19 @@ node() {
 
   if [ ! -f "$state" ]; then
     [ -n "$server" ] && [ -n "$packet" ] || die "first install needs --server and --packet"
-    "$bin/stars-sandbox-agent" enroll --server "$server" --packet "$packet" "${ca_flag[@]}" ${name:+--name "$name"}
+    "$bin/orrery-agent" enroll --server "$server" --packet "$packet" "${ca_flag[@]}" ${name:+--name "$name"}
   fi
 
   # An upgrade without --runtime or extra flags keeps the existing unit.
   if [ "$write_unit" = 1 ] || [ ! -f "$unit" ]; then
     cat > "$unit" <<EOF
 [Unit]
-Description=Stars Sandbox Node Agent
+Description=Orrery Node Agent
 After=network-online.target docker.service podman.socket
 Wants=network-online.target
 
 [Service]
-ExecStart=$bin/stars-sandbox-agent run --runtime ${runtime:-docker} ${ca_flag[*]} ${extra[*]}
+ExecStart=$bin/orrery-agent run --runtime ${runtime:-docker} ${ca_flag[*]} ${extra[*]}
 Restart=always
 RestartSec=5
 # Stop signals reach the Agent only, so Exec Supervisors keep running across
@@ -734,12 +734,12 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
   fi
-  systemctl enable --quiet stars-sandbox-agent
-  systemctl restart stars-sandbox-agent
+  systemctl enable --quiet orrery-agent
+  systemctl restart orrery-agent
   # The auto-updater reads this after a successful restart.
   printf '%s\n' "$version" > "$conf/version"
   chmod 0644 "$conf/version"
-  echo "Node Agent $version is running: systemctl status stars-sandbox-agent"
+  echo "Node Agent $version is running: systemctl status orrery-agent"
   [ "$auto_update" = 1 ] && install_updater node
   [ "$auto_update" = 0 ] && remove_updater node
 }

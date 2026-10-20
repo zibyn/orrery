@@ -146,7 +146,7 @@
 |---|---|---|---|---|
 | REST / OpenAPI | swaggo 从代码生成 | 从代码生成（`DA/generate-openapi.ts`） | REST/OpenAPI 是唯一权威（#31、ADR-0015） | **有** |
 | SDK 语言 | Go（`codersdk`） | Python（同步/异步）、TS、Ruby、Go、Java（`DT/libs/sdk-*`） | 「生成基础客户端 + 薄手写层」（#31），**语言没定** | **缺·需决策**（见 §3.7） |
-| CLI | 全量（`C/docs/reference/cli/`） | auth、sandbox（create/list/info/start/stop/archive/pause/delete/exec/ssh/preview_url）、snapshot、volume、organization、mcp（`DT/apps/cli/cmd/`） | 有 CLI（#31；ADR-0013 `stars-sandbox token`），命令清单未定 | **有**；命令清单归实现规格，建议照 REST 资源一对一映射 |
+| CLI | 全量（`C/docs/reference/cli/`） | auth、sandbox（create/list/info/start/stop/archive/pause/delete/exec/ssh/preview_url）、snapshot、volume、organization、mcp（`DT/apps/cli/cmd/`） | 有 CLI（#31；ADR-0013 `orrery token`），命令清单未定 | **有**；命令清单归实现规格，建议照 REST 资源一对一映射 |
 | MCP server | 内建 Streamable HTTP（无状态，只有 tools）+ CLI stdio（`C/docs/ai-coder/mcp-server.md#L10-L100`）；工具清单见 `toolsdk.go#L32-L69` | CLI stdio，`daytona mcp init claude/cursor/windsurf`（`DD/mcp.mdx#L54-L116`） | 「Agent Tool API」形态未定 | **缺·需决策**（见 §3.3） |
 | 沙箱内 Agent 回报状态 | `PATCH /workspaceagents/me/app-status`；MCP `coder_report_task` | 无 | 无；通道动词只有 `git.credential`（ADR-0011） | **缺·可不做**：Agent 的进度属于 Agent 自己的协议 |
 | Web 控制台 | 全功能 dashboard | 全功能 dashboard | 未提及 | **缺·需决策**（见 §3.5） |
@@ -183,18 +183,18 @@
 
 - **两家的做法**：入口都不开在沙箱网络上，而是由平台侧拨沙箱内的 `127.0.0.1:PORT`（§0 第 1 条）。Coder 的共享级别默认 `owner`（`port-forwarding.md#L99-L111`）；Daytona 的 standard token 在沙箱重启后作废，signed URL 默认 60s（`DD/preview.mdx#L27-L113`）。
 - **对我们的影响**：ADR-0010 的「Sandboxes listen on no ports and are never connected into」要改写成「Sandbox 网络上没有可从外部到达的入站口；Gateway 经 Node Agent 代拨 Sandbox 内的回环端口」。Node Agent 本来就在宿主侧，进 netns 拨号不会新增网络暴露面。【推断】实现方式是：Node Agent 在 Sandbox 的 netns 里 `dial 127.0.0.1:PORT`，用 `setns` 或 Exec Supervisor 旁路都行。Local Runtime 没有 netns，直接拨宿主回环，capability 为 `best_effort`。
-- **推荐**：补。范围是 owner-only 的子域名 HTTP/WebSocket 代理，外加 `stars-sandbox port-forward` TCP 隧道，都走 Gateway 和 API Token 鉴权。只用子域名，原因是 Coder 要求关掉 path-based apps（见 `recheck-identity-network-channel-vs-coder-daytona.md` G2）。Gateway 的每次授权判定进 Connection Log 而不是审计表（同文件 §0 第 3 条）。不做公开分享。
+- **推荐**：补。范围是 owner-only 的子域名 HTTP/WebSocket 代理，外加 `orrery port-forward` TCP 隧道，都走 Gateway 和 API Token 鉴权。只用子域名，原因是 Coder 要求关掉 path-based apps（见 `recheck-identity-network-channel-vs-coder-daytona.md` G2）。Gateway 的每次授权判定进 Connection Log 而不是审计表（同文件 §0 第 3 条）。不做公开分享。
 - **不补的代价**：Agent 起了 dev server、TensorBoard、Jupyter 以后，人看不到，只能让 Agent 截图或 curl 回来。
 
 ### 3.2 SSH / 本地 IDE 接入
 
 - **两家的做法**：Coder 的 agent 内建 SSH server，经 tailnet 到达；Daytona 的 `ssh-gateway` 校验 token 后转给 runner，runner 再进 daemon:22220。两家的沙箱都不对外开 22 端口。
-- **推荐**：Phase 1 不做，但要在规格里写明「不做」以及升级路径：Gateway 上加一个 SSH-over-WebSocket 端点，再由 `stars-sandbox ssh` 当 `ProxyCommand`（Coder `config-ssh` 的形状）。服务端可以是 Node Agent 在 netns 里起的 SSH 服务，也可以复用 PTY Attachment。如果目的地里的「remote development」包括人用 VS Code 接进来，就提前到 Phase 1。
+- **推荐**：Phase 1 不做，但要在规格里写明「不做」以及升级路径：Gateway 上加一个 SSH-over-WebSocket 端点，再由 `orrery ssh` 当 `ProxyCommand`（Coder `config-ssh` 的形状）。服务端可以是 Node Agent 在 netns 里起的 SSH 服务，也可以复用 PTY Attachment。如果目的地里的「remote development」包括人用 VS Code 接进来，就提前到 Phase 1。
 
 ### 3.3 Agent Tool API 的形态
 
 - **两家的做法**：都是 MCP，工具和 REST 一一对应。Coder 另外有 `coder_workspace_bash`、`read_file`、`write_file`、`edit_file`、`port_forward` 这类面向 Agent 的复合工具（`toolsdk.go#L50-L59`）。
-- **推荐**：Tool API = MCP。Phase 1 是 `stars-sandbox mcp` 的 stdio 子命令，复用 CLI 的 token；Streamable HTTP 端点留作升级路。工具从 OpenAPI 生成，加少量手写复合工具：「创建 Exec 并等待结果、返回日志尾部」「PTY 一问一答」。后者也解决了 audit L15 的 PTY 映射问题。ADR-0014 的表格里「`api` serves REST and Agent Tool API」要相应改写，因为 stdio 形态不占监听面。
+- **推荐**：Tool API = MCP。Phase 1 是 `orrery mcp` 的 stdio 子命令，复用 CLI 的 token；Streamable HTTP 端点留作升级路。工具从 OpenAPI 生成，加少量手写复合工具：「创建 Exec 并等待结果、返回日志尾部」「PTY 一问一答」。后者也解决了 audit L15 的 PTY 映射问题。ADR-0014 的表格里「`api` serves REST and Agent Tool API」要相应改写，因为 stdio 形态不占监听面。
 
 ### 3.4 单 Sandbox 资源指标（CPU/内存/GPU 利用率）
 

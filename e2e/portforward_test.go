@@ -59,7 +59,7 @@ func TestPortForward(t *testing.T) {
 	}
 	var grant *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == "stars_port" {
+		if c.Name == "orrery_port" {
 			grant = c
 		}
 	}
@@ -126,7 +126,7 @@ func TestPortForward(t *testing.T) {
 
 	// The Sandbox itself publishes nothing on the host.
 	out, err := exec.Command("docker", "inspect", "--format", "{{json .HostConfig.PortBindings}}",
-		"stars-sandbox-"+sandboxID).Output()
+		"orrery-"+sandboxID).Output()
 	if err != nil {
 		t.Fatalf("docker inspect: %v", err)
 	}
@@ -203,7 +203,7 @@ func cliForward(t *testing.T, admin, sandboxID, want string) {
 }
 
 func appsDomain() string {
-	if v := os.Getenv("STARS_APPS_DOMAIN"); v != "" {
+	if v := os.Getenv("ORRERY_APPS_DOMAIN"); v != "" {
 		return v
 	}
 	return "apps.test"

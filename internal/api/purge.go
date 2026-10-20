@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/zibyn/stars-sandbox/internal/registry"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/registry"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // purgeInterval is the periodic cleanup cadence (defaults.md, 10 minutes).

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 )
 
 type fakeStream struct {

@@ -13,13 +13,13 @@ import (
 	"golang.org/x/net/websocket"
 	"golang.org/x/term"
 
-	starsclient "github.com/zibyn/stars-sandbox/client"
-	"github.com/zibyn/stars-sandbox/internal/ptywire"
+	orreryclient "github.com/zibyn/orrery/client"
+	"github.com/zibyn/orrery/internal/ptywire"
 )
 
 func runShell(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox shell <sandbox-id> [-- argv...]")
+		return fmt.Errorf("usage: orrery shell <sandbox-id> [-- argv...]")
 	}
 	sandboxID := args[0]
 	argv := args[1:]
@@ -30,9 +30,9 @@ func runShell(c *client, args []string, stderr io.Writer) error {
 		argv = []string{"sh"}
 	}
 	rows, cols := terminalSize()
-	created, err := c.CreateExec(ctx, sandboxID, starsclient.ExecRequest{
+	created, err := c.CreateExec(ctx, sandboxID, orreryclient.ExecRequest{
 		Argv: argv,
-		PTY:  &starsclient.PTY{Rows: uint16(rows), Cols: uint16(cols)},
+		PTY:  &orreryclient.PTY{Rows: uint16(rows), Cols: uint16(cols)},
 	}, "")
 	if err != nil {
 		return err

@@ -17,8 +17,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 const (
@@ -27,7 +27,7 @@ const (
 	probeMemory     = int64(64 << 20)
 	probePidsLimit  = int64(64)
 	probeWorkspace  = "/workspace"
-	probeSupervisor = "/.stars/bin/supervisor"
+	probeSupervisor = "/.orrery/bin/supervisor"
 )
 
 // dockerProbe runs one probe container and turns the readback into Runtime
@@ -44,7 +44,7 @@ func dockerProbe(ctx context.Context, cfg runtimeConfig) (nodeproto.CapabilityRe
 		return nodeproto.CapabilityReport{}, err
 	}
 
-	dir, err := os.MkdirTemp("", "stars-probe-*")
+	dir, err := os.MkdirTemp("", "orrery-probe-*")
 	if err != nil {
 		return nodeproto.CapabilityReport{}, err
 	}
@@ -226,13 +226,13 @@ func (d *dockerClient) ensureImage(ctx context.Context) error {
 // probe creates, starts and reads back one container. limitsEnforced is true
 // only when the daemon accepted the limits and every readback matched.
 func (d *dockerClient) probe(ctx context.Context, binDir, workspace string, withLimits bool, gpuUUIDs []string) (supervisor.Result, bool, error) {
-	name := "stars-sandbox-probe-" + uuid.NewString()
+	name := "orrery-probe-" + uuid.NewString()
 	hostConfig := map[string]any{
 		"CgroupnsMode": "private",
 		"NetworkMode":  "none",
 		"Binds": []string{
 			workspace + ":" + probeWorkspace + ":rw",
-			binDir + ":/.stars/bin:ro",
+			binDir + ":/.orrery/bin:ro",
 		},
 	}
 	if withLimits {

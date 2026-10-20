@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package stars.node.v1;
+package orrery.node.v1;
 
-option go_package = "github.com/zibyn/stars-sandbox/gen/node/v1;nodev1";
+option go_package = "github.com/zibyn/orrery/gen/node/v1;nodev1";
 
 // Node is the Agent-facing service on the `node` listener
 // (docs/spec/node-protocol.md).

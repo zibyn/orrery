@@ -13,7 +13,7 @@ import (
 // A User who has no password finishes login in the browser: the CLI prints the
 // console URL, takes the pasted token, validates it and stores it (ADR-0020).
 func TestLoginWithoutUsernameUsesTheConsoleToken(t *testing.T) {
-	const token = "ssk_0123456789abcdef_secret"
+	const token = "orr_0123456789abcdef_secret"
 	var authorization string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/users/me" {

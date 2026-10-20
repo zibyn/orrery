@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/zibyn/stars-sandbox/web"
+	"github.com/zibyn/orrery/web"
 )
 
 type handlerFunc func(http.ResponseWriter, *http.Request, *principal)

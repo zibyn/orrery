@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zibyn/stars-sandbox/internal/objectstore"
+	"github.com/zibyn/orrery/internal/objectstore"
 )
 
 // TestObjectStoreChecksum is the object-store half of #84's acceptance:
@@ -28,7 +28,7 @@ func TestObjectStoreChecksum(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	content := []byte("stars-sandbox object store e2e " + fmt.Sprint(time.Now().UnixNano()))
+	content := []byte("orrery object store e2e " + fmt.Sprint(time.Now().UnixNano()))
 	sum := sha256.Sum256(content)
 	digest := hex.EncodeToString(sum[:])
 	owner := fmt.Sprintf("e2e-owner-%d", time.Now().UnixNano())
@@ -88,12 +88,12 @@ func TestObjectStoreChecksum(t *testing.T) {
 
 func e2eObjectStore(t *testing.T) *objectstore.Store {
 	t.Helper()
-	endpoint := os.Getenv("STARS_E2E_S3_ENDPOINT")
-	bucket := os.Getenv("STARS_E2E_S3_BUCKET")
-	access := os.Getenv("STARS_E2E_S3_ACCESS_KEY")
-	secret := os.Getenv("STARS_E2E_S3_SECRET_KEY")
+	endpoint := os.Getenv("ORRERY_E2E_S3_ENDPOINT")
+	bucket := os.Getenv("ORRERY_E2E_S3_BUCKET")
+	access := os.Getenv("ORRERY_E2E_S3_ACCESS_KEY")
+	secret := os.Getenv("ORRERY_E2E_S3_SECRET_KEY")
 	if endpoint == "" || bucket == "" || access == "" || secret == "" {
-		t.Fatal("STARS_E2E_S3_* is not set; run ./scripts/e2e.sh")
+		t.Fatal("ORRERY_E2E_S3_* is not set; run ./scripts/e2e.sh")
 	}
 	store, err := objectstore.New(context.Background(), objectstore.Config{
 		Endpoint: endpoint, PublicEndpoint: endpoint,

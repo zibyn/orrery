@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Run the M1 acceptance scenarios through the Python SDK against a deployment.
 
-    STARS_SANDBOX_API_URL=http://127.0.0.1:18080 \
-    STARS_SANDBOX_TOKEN=<token> \
+    ORRERY_SANDBOX_API_URL=http://127.0.0.1:18080 \
+    ORRERY_SANDBOX_TOKEN=<token> \
     python sdk/python/tests/parity.py
 
 Scenarios: exec-log-stream (#6) and files-api (#15). On a GPU host, set
-STARS_PARITY_GPU=1 to also run gpu-sandbox-ready (#3); STARS_E2E_GPU_SNAPSHOT
+ORRERY_PARITY_GPU=1 to also run gpu-sandbox-ready (#3); ORRERY_E2E_GPU_SNAPSHOT
 names the platform Snapshot (default `cuda`).
 
 Plain script with checks; no test framework.
@@ -23,10 +23,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from stars_sandbox import Exec, Frame, Sandbox, StarsSandbox, StarsSandboxError  # noqa: E402
+from orrery import Exec, Frame, Sandbox, Orrery, OrreryError  # noqa: E402
 
-API_URL = os.environ.get("STARS_SANDBOX_API_URL", "")
-TOKEN = os.environ.get("STARS_SANDBOX_TOKEN", "")
+API_URL = os.environ.get("ORRERY_SANDBOX_API_URL", "")
+TOKEN = os.environ.get("ORRERY_SANDBOX_TOKEN", "")
 
 
 def check(condition: object, message: str) -> None:
@@ -37,13 +37,13 @@ def check(condition: object, message: str) -> None:
 def expect_code(call, code: str) -> None:
     try:
         call()
-    except StarsSandboxError as err:
+    except OrreryError as err:
         check(err.code == code, f"expected {code}, got {err.status} {err.code}: {err.detail}")
         return
     raise AssertionError(f"expected {code}, the call succeeded")
 
 
-def create_ready(client: StarsSandbox, **fields) -> Sandbox:
+def create_ready(client: Orrery, **fields) -> Sandbox:
     sandbox = client.create_sandbox(**fields)
     try:
         ready = client.wait_for_sandbox(sandbox.id, "ready", timeout=300)
@@ -54,13 +54,13 @@ def create_ready(client: StarsSandbox, **fields) -> Sandbox:
         raise
 
 
-def wait_deleted(client: StarsSandbox, sandbox_id: str, timeout: float = 30.0) -> None:
+def wait_deleted(client: Orrery, sandbox_id: str, timeout: float = 30.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             if client.get_sandbox(sandbox_id).state == "deleted":
                 return
-        except StarsSandboxError as err:
+        except OrreryError as err:
             if err.status == 404:
                 return
             raise
@@ -68,7 +68,7 @@ def wait_deleted(client: StarsSandbox, sandbox_id: str, timeout: float = 30.0) -
     raise AssertionError(f"Sandbox {sandbox_id} was not deleted within {timeout}s")
 
 
-def run(client: StarsSandbox, sandbox_id: str, argv: list[str], **fields) -> tuple[Exec, list[Frame]]:
+def run(client: Orrery, sandbox_id: str, argv: list[str], **fields) -> tuple[Exec, list[Frame]]:
     started = client.create_exec(sandbox_id, argv, **fields)
     frames = list(client.follow_output(started.id, after=0, timeout=120))
     return client.wait_exec(started.id, timeout=60), frames
@@ -78,7 +78,7 @@ def stream_text(frames: list[Frame], stream: str) -> bytes:
     return b"".join(f.data_bytes for f in frames if f.stream == stream)
 
 
-def exec_log_stream(client: StarsSandbox) -> None:
+def exec_log_stream(client: Orrery) -> None:
     sandbox = create_ready(client, cpu=0.5, memory=128 << 20, idle_stop=0)
     try:
         finished, frames = run(
@@ -139,7 +139,7 @@ def one_file_tar(name: str, data: bytes) -> bytes:
     return buffer.getvalue()
 
 
-def files_api(client: StarsSandbox) -> None:
+def files_api(client: Orrery) -> None:
     sandbox = create_ready(client, cpu=0.5, memory=128 << 20, idle_stop=0)
     try:
         content = b"hello workspace\n"
@@ -189,7 +189,7 @@ def files_api(client: StarsSandbox) -> None:
         wait_deleted(client, sandbox.id)
 
 
-def secrets(client: StarsSandbox) -> None:
+def secrets(client: Orrery) -> None:
     name = f"SDK_PARITY_{os.getpid()}_{int(time.time())}"
     created = client.put_secret(name, "first-value")
     try:
@@ -200,8 +200,8 @@ def secrets(client: StarsSandbox) -> None:
     check(not any(item.name == name for item in client.list_secrets().items), "the Secret is still listed")
 
 
-def gpu_sandbox_ready(client: StarsSandbox) -> None:
-    snapshot = os.environ.get("STARS_E2E_GPU_SNAPSHOT", "cuda")
+def gpu_sandbox_ready(client: Orrery) -> None:
+    snapshot = os.environ.get("ORRERY_E2E_GPU_SNAPSHOT", "cuda")
     sandbox = create_ready(
         client,
         cpu=0.5,
@@ -226,9 +226,9 @@ def gpu_sandbox_ready(client: StarsSandbox) -> None:
 
 
 def main() -> int:
-    check(API_URL, "STARS_SANDBOX_API_URL is not set")
-    check(TOKEN, "STARS_SANDBOX_TOKEN is not set")
-    with StarsSandbox(API_URL, TOKEN) as client:
+    check(API_URL, "ORRERY_SANDBOX_API_URL is not set")
+    check(TOKEN, "ORRERY_SANDBOX_TOKEN is not set")
+    with Orrery(API_URL, TOKEN) as client:
         for name, scenario in (
             ("exec-log-stream", exec_log_stream),
             ("files-api", files_api),
@@ -236,7 +236,7 @@ def main() -> int:
         ):
             scenario(client)
             print(f"ok {name}")
-        if os.environ.get("STARS_PARITY_GPU") == "1":
+        if os.environ.get("ORRERY_PARITY_GPU") == "1":
             gpu_sandbox_ready(client)
             print("ok gpu-sandbox-ready")
     print("sdk-parity: ok")

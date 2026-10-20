@@ -6,12 +6,12 @@ import (
 	"io"
 	"text/tabwriter"
 
-	starsclient "github.com/zibyn/stars-sandbox/client"
+	orreryclient "github.com/zibyn/orrery/client"
 )
 
 func runResource(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox resource create|ls|rm|versions|current|push|pull")
+		return fmt.Errorf("usage: orrery resource create|ls|rm|versions|current|push|pull")
 	}
 	switch args[0] {
 	case "create":
@@ -21,7 +21,7 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox resource create <name>")
+			return fmt.Errorf("usage: orrery resource create <name>")
 		}
 		resource, err := c.CreateResource(ctx, fs.Arg(0))
 		if err != nil {
@@ -37,12 +37,12 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 0 {
-			return fmt.Errorf("usage: stars-sandbox resource ls")
+			return fmt.Errorf("usage: orrery resource ls")
 		}
 		return listResources(c, *limit, *cursor)
 	case "rm":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: stars-sandbox resource rm <name|id>")
+			return fmt.Errorf("usage: orrery resource rm <name|id>")
 		}
 		resource, err := resolveResource(c, args[1])
 		if err != nil {
@@ -55,12 +55,12 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		return c.print(deleted)
 	case "versions":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: stars-sandbox resource versions <name|id>")
+			return fmt.Errorf("usage: orrery resource versions <name|id>")
 		}
 		return listResourceVersions(c, args[1])
 	case "current":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: stars-sandbox resource current <name|id>")
+			return fmt.Errorf("usage: orrery resource current <name|id>")
 		}
 		resource, err := resolveResource(c, args[1])
 		if err != nil {
@@ -73,7 +73,7 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		return c.print(version)
 	case "push":
 		if len(args) != 3 {
-			return fmt.Errorf("usage: stars-sandbox resource push <dir> <name>")
+			return fmt.Errorf("usage: orrery resource push <dir> <name>")
 		}
 		version, err := c.PushResource(ctx, args[1], args[2])
 		if err != nil {
@@ -82,7 +82,7 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 		return c.print(version)
 	case "pull":
 		if len(args) != 3 {
-			return fmt.Errorf("usage: stars-sandbox resource pull <name>[@version] <dir>")
+			return fmt.Errorf("usage: orrery resource pull <name>[@version] <dir>")
 		}
 		return c.PullResource(ctx, args[1], args[2])
 	default:
@@ -91,7 +91,7 @@ func runResource(c *client, args []string, stderr io.Writer) error {
 }
 
 // resolveResource accepts an id directly or lists pages until the name matches.
-func resolveResource(c *client, arg string) (*starsclient.Resource, error) {
+func resolveResource(c *client, arg string) (*orreryclient.Resource, error) {
 	return c.ResolveResource(ctx, arg)
 }
 
@@ -150,7 +150,7 @@ func listResourceVersions(c *client, ref string) error {
 }
 
 // getResourceVersion resolves an explicit version, or the current one.
-func getResourceVersion(c *client, resource *starsclient.Resource, version string) (*starsclient.ResourceVersion, error) {
+func getResourceVersion(c *client, resource *orreryclient.Resource, version string) (*orreryclient.ResourceVersion, error) {
 	if version == "" {
 		if resource.CurrentVersionID == nil {
 			return nil, fmt.Errorf("Resource %q has no current version", resource.Name)

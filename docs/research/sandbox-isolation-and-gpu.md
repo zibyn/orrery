@@ -1,6 +1,6 @@
 # 沙箱后端的隔离与 GPU 直通
 
-> 调研 ticket：zibyn/stars-sandbox#3。产出供 #10（Runtime Provider 抽象与首发后端）与 #11（Sandbox Scheduler 放置与 GPU 表达）使用。
+> 调研 ticket：zibyn/orrery#3。产出供 #10（Runtime Provider 抽象与首发后端）与 #11（Sandbox Scheduler 放置与 GPU 表达）使用。
 > 术语以 `GLOSSARY.md` 为准：Runtime Provider / Sandbox / Workspace / Control Plane。
 >
 > 所有结论只依据一手来源（官方文档、上游仓库文档），链接见文末 **Sources**。

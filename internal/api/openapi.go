@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zibyn/stars-sandbox/internal/httpjson"
+	"github.com/zibyn/orrery/internal/httpjson"
 )
 
 // OpenAPIDocument is generated from the same route table that serves requests,
@@ -63,7 +63,7 @@ func (s *Server) OpenAPIDocument() map[string]any {
 	return map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
-			"title":       "Stars Sandbox API",
+			"title":       "Orrery API",
 			"version":     "1.0.0",
 			"description": "Generated from the server route table. docs/spec/api.md is the semantic authority.",
 		},

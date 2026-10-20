@@ -137,7 +137,7 @@ func NamespaceID(path string) string {
 }
 
 func workspaceWritable(dir string) bool {
-	probe := filepath.Join(dir, ".stars-probe-"+strconv.Itoa(os.Getpid()))
+	probe := filepath.Join(dir, ".orrery-probe-"+strconv.Itoa(os.Getpid()))
 	if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
 		return false
 	}

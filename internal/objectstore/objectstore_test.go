@@ -25,7 +25,7 @@ func TestKeys(t *testing.T) {
 func TestPresignPutSignsChecksum(t *testing.T) {
 	store, err := New(context.Background(), Config{
 		Endpoint:  "http://rustfs:9000",
-		Bucket:    "stars",
+		Bucket:    "orrery",
 		AccessKey: "access",
 		SecretKey: "secret",
 	})
@@ -41,7 +41,7 @@ func TestPresignPutSignsChecksum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := u.Path, "/stars/cas/owner/sha256/"+digest; got != want {
+	if got, want := u.Path, "/orrery/cas/owner/sha256/"+digest; got != want {
 		t.Fatalf("path = %q, want %q", got, want)
 	}
 	signed := u.Query().Get("X-Amz-SignedHeaders")
@@ -68,7 +68,7 @@ func TestPresignGetUsesPublicEndpoint(t *testing.T) {
 	store, err := New(context.Background(), Config{
 		Endpoint:       "http://rustfs:9000",
 		PublicEndpoint: "http://127.0.0.1:19000",
-		Bucket:         "stars",
+		Bucket:         "orrery",
 		AccessKey:      "access",
 		SecretKey:      "secret",
 	})
@@ -86,7 +86,7 @@ func TestPresignGetUsesPublicEndpoint(t *testing.T) {
 	if got, want := u.Scheme+"://"+u.Host, "http://127.0.0.1:19000"; got != want {
 		t.Fatalf("presigned host = %q, want the Node-reachable public endpoint %q", got, want)
 	}
-	if got, want := u.Path, "/stars/cas/owner/sha256/abc"; got != want {
+	if got, want := u.Path, "/orrery/cas/owner/sha256/abc"; got != want {
 		t.Fatalf("path = %q, want %q", got, want)
 	}
 	if got := u.Query().Get("X-Amz-Expires"); got != "3600" {
@@ -95,7 +95,7 @@ func TestPresignGetUsesPublicEndpoint(t *testing.T) {
 }
 
 func TestManifestPresign(t *testing.T) {
-	store, err := New(context.Background(), Config{Endpoint: "http://127.0.0.1:19000", Bucket: "stars", AccessKey: "a", SecretKey: "s"})
+	store, err := New(context.Background(), Config{Endpoint: "http://127.0.0.1:19000", Bucket: "orrery", AccessKey: "a", SecretKey: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestManifestPresign(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, _ := url.Parse(raw)
-	if got, want := u.Path, "/stars/manifests/owner/addr"; got != want {
+	if got, want := u.Path, "/orrery/manifests/owner/addr"; got != want {
 		t.Fatalf("path = %q, want %q", got, want)
 	}
 }

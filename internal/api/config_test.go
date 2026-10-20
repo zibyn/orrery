@@ -23,8 +23,8 @@ func TestEnvRetention(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("STARS_TEST_RETENTION", tt.value)
-			got, err := envRetention("STARS_TEST_RETENTION", fallback)
+			t.Setenv("ORRERY_TEST_RETENTION", tt.value)
+			got, err := envRetention("ORRERY_TEST_RETENTION", fallback)
 			if (err != nil) != tt.bad || got != tt.want {
 				t.Fatalf("envRetention = (%v, %v), want (%v, bad=%v)", got, err, tt.want, tt.bad)
 			}

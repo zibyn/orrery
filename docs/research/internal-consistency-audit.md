@@ -107,7 +107,7 @@
 - ADR-0009:24 写「the Capability Channel socket … and the read-only Exec Supervisor are the two named mount exceptions」。
 - 实际还有：
   - ADR-0012:18：Resource 以只读方式挂进 Sandbox。
-  - ADR-0013:16：credential helper「mounted next to the Capability Channel socket」，`stars-sandbox token` CLI 也必须在 Sandbox 里。
+  - ADR-0013:16：credential helper「mounted next to the Capability Channel socket」，`orrery token` CLI 也必须在 Sandbox 里。
 - ADR-0010:20 和地图 #29 L28 还停在「the one named exception」。
 - 建议修法：ADR-0009:24 改为三类例外：通道目录（socket、helper、CLI）、Exec Supervisor、只读 Resource 挂载。ADR-0010:20 删掉「one」。
 
@@ -227,7 +227,7 @@ ADR-0012:22 只写了「built as a `system`-priority job on a Node」。下面�
 - **L3. 通道 Capability 的取值说漏了 `best_effort`。** ADR-0010:33 写「reports it honestly as `enforced` or `unsupported`」，但 ADR-0011:26 与 ADR-0009:49 在 Local 上是 `best_effort`。建议：补上 `best_effort`。
 - **L4. 两个悬空小术语。** ADR-0010:22 的「session addresses」没有定义，ADR-0014:46 的减法集里也没有它。GLOSSARY.md:172 用了「Node Identity」，但没有这个词条。建议：前者删掉或换成 ADR-0014 的五个监听面；后者补词条，或改成「Node certificate」。
 - **L5. 通道 fencing 规则没有对象。** ADR-0011:20、:22 的「Workspace-mutating verbs + fencing」找不到对应的动词，唯一的动词 `git.credential` 不改 Workspace。#35 L6 的「no credential may travel on the channel」已被 #35 裁决推翻，这条没问题。建议：注明「目前没有改 Workspace 的动词，此规则留给将来」。
-- **L6. 参数不一致。** ADR-0013:16 中 `stars-sandbox token <provider>` 按 provider 取，而动词 `git.credential {host}` 按 host 取。建议：动词同时接受 host 或 provider id。
+- **L6. 参数不一致。** ADR-0013:16 中 `orrery token <provider>` 按 provider 取，而动词 `git.credential {host}` 按 host 取。建议：动词同时接受 host 或 provider id。
 - **L7. Local Runtime 上的 Git 凭据没交代。** `capability_channel` 在 Local 上是 `best_effort`，而 ADR-0009:34 规定 required Capability 必须 `enforced`，所以 Local 上 Sandbox 还能不能用 `git.credential` 没写。ADR-0013:16「Node Agent sets `credential.helper`」在 Local 上等于改宿主的 git 配置。建议：写明 Local 上照常可用但无隔离，helper 用 `GIT_CONFIG_*` 环境变量注入，不改宿主文件。
 - **L8. 磁盘配额是否必需没写。** ADR-0009:45 中 disk capacity quota 在非 XFS 上是 `unsupported`，再加上 ADR-0009:34 的「required 必须 enforced」，非 XFS 的 Node 可能被判为不能创建；而 ADR-0015:35 的意思是这种 Node 照常可用。建议：声明磁盘配额从来不是 required Capability。
 - **L9. PTY 闲置终止缺 cause。** PTY 闲置被终止后的 Execution Result cause 没定义（ADR-0015:22）。#33 L19「普通断开……不终止 Exec」对 PTY 已被实质推翻，但没点名。建议：cause 用 `pty_idle`，并注明 #33 L19 的那句对 PTY 改写。

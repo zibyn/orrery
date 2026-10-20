@@ -1,4 +1,4 @@
-# Stars Sandbox
+# Orrery
 
 面向 agent 的远程开发与 GPU 执行平台。Control Plane 统一管理身份、Workspace、Sandbox、Exec 和资源；Node Agent 在受信任的主机上通过 Docker、Podman 或 Local Runtime 实际执行命令。
 
@@ -27,60 +27,60 @@
                           └─────────────────────┘
 ```
 
-- **Control Plane**（`stars-sandbox-server`）：身份、调度、生命周期、配额、审计，以及 API、Gateway 和 Web 控制台。它只决策和执行状态，不直接进入 Sandbox。
-- **Node Agent**（`stars-sandbox-agent`）：在 Node 上落地 Sandbox、Exec、文件、Git、端口转发和构建；用 Enrollment Packet 注册后长期出站连接。
+- **Control Plane**（`orrery-server`）：身份、调度、生命周期、配额、审计，以及 API、Gateway 和 Web 控制台。它只决策和执行状态，不直接进入 Sandbox。
+- **Node Agent**（`orrery-agent`）：在 Node 上落地 Sandbox、Exec、文件、Git、端口转发和构建；用 Enrollment Packet 注册后长期出站连接。
 - **Gateway**：文件、Git、Exec 输出、PTY 和端口隧道都走已授权的 Data Plane，不暴露 Sandbox 的网络地址。
-- 部署只有**一个公开端口**：nginx 终止 TLS，按路径分流到 registry（`/v2/`）、Node gRPC（`/stars.node.v1.Node/`）和其余 API/控制台。
+- 部署只有**一个公开端口**：nginx 终止 TLS，按路径分流到 registry（`/v2/`）、Node gRPC（`/orrery.node.v1.Node/`）和其余 API/控制台。
 
 ## 部署
 
 部署是 pull 式的：服务器从 release tag 取 `deploy/install.sh` 执行，GitHub 不持有服务器凭据。详见 [`docs/deploy.md`](docs/deploy.md)（前置条件、TLS、Node 注册、升级与回滚），所有配置项见 [`docs/spec/defaults.md`](docs/spec/defaults.md)。
 
-首次安装后还需要：配置平台 Snapshot、用 `stars-sandbox-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。
+首次安装后还需要：配置平台 Snapshot、用 `orrery-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。
 
 ## 客户端
 
 ### Web 控制台
 
-与 API 同源，由 `stars-sandbox-server` 在 `/` 下提供；Sandbox 创建、终端、文件浏览、Snapshot、用户与节点管理都在这里。控制台支持中文和英文，可在侧栏、移动端顶栏或登录页切换；偏好存在浏览器本地（`PARAGLIDE_LOCALE`），不进入 URL。
+与 API 同源，由 `orrery-server` 在 `/` 下提供；Sandbox 创建、终端、文件浏览、Snapshot、用户与节点管理都在这里。控制台支持中文和英文，可在侧栏、移动端顶栏或登录页切换；偏好存在浏览器本地（`PARAGLIDE_LOCALE`），不进入 URL。
 
 ### CLI
 
-`stars-sandbox` 只调用公开 REST API 和 Gateway。凭据解析顺序：`--token` > `STARS_SANDBOX_TOKEN` > 配置文件（`--config`、`STARS_SANDBOX_CONFIG` 或 `$XDG_CONFIG_HOME/stars-sandbox/config.json`）；API 地址同理用 `--api-url` / `STARS_SANDBOX_API_URL`。
+`orrery` 只调用公开 REST API 和 Gateway。凭据解析顺序：`--token` > `ORRERY_SANDBOX_TOKEN` > 配置文件（`--config`、`ORRERY_SANDBOX_CONFIG` 或 `$XDG_CONFIG_HOME/orrery/config.json`）；API 地址同理用 `--api-url` / `ORRERY_SANDBOX_API_URL`。
 
 Sandbox 的创建走控制台、REST API、SDK 或 MCP；CLI 负责创建之后的操作：
 
 ```sh
-stars-sandbox login --username alice          # 或 --password-stdin
-stars-sandbox exec run <sandbox-id> -- uname -a
-stars-sandbox shell <sandbox-id> -- /bin/bash
-stars-sandbox files ls <sandbox-id> src
-stars-sandbox files cp ./config.toml <sandbox-id>:src/config.toml
-stars-sandbox files cp <sandbox-id>:out/report.txt .
-stars-sandbox port-forward <sandbox-id> 8080:3000
+orrery login --username alice          # 或 --password-stdin
+orrery exec run <sandbox-id> -- uname -a
+orrery shell <sandbox-id> -- /bin/bash
+orrery files ls <sandbox-id> src
+orrery files cp ./config.toml <sandbox-id>:src/config.toml
+orrery files cp <sandbox-id>:out/report.txt .
+orrery port-forward <sandbox-id> 8080:3000
 ```
 
-`stars-sandbox` 还覆盖 Snapshot 导入/构建、Resource 上传/发布、Secret、Git Account、token、用户和节点管理；`stars-sandbox` 无参数时打印全部命令。
+`orrery` 还覆盖 Snapshot 导入/构建、Resource 上传/发布、Secret、Git Account、token、用户和节点管理；`orrery` 无参数时打印全部命令。
 
 ### REST API
 
 ```sh
 curl -fsS -X POST https://cp.example.com/api/v1/sandboxes \
-  -H "Authorization: Bearer $STARS_SANDBOX_TOKEN" \
+  -H "Authorization: Bearer $ORRERY_SANDBOX_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"demo","cpu":1,"memory":1073741824}'
 ```
 
-约定、资源路径、错误码和 Gateway 语义见 [`docs/spec/api.md`](docs/spec/api.md)。`stars-sandbox-server openapi` 输出由代码生成的 OpenAPI 文档。
+约定、资源路径、错误码和 Gateway 语义见 [`docs/spec/api.md`](docs/spec/api.md)。`orrery-server openapi` 输出由代码生成的 OpenAPI 文档。
 
 ### MCP Tool API
 
-`stars-sandbox mcp` 通过 stdio 提供 MCP 工具（ADR-0022；工具清单与语义见 `docs/spec/api.md` §7）。凭据解析与其它子命令一致，但不接受 Sandbox Token。诊断信息写 stderr，stdout 只有协议帧。
+`orrery mcp` 通过 stdio 提供 MCP 工具（ADR-0022；工具清单与语义见 `docs/spec/api.md` §7）。凭据解析与其它子命令一致，但不接受 Sandbox Token。诊断信息写 stderr，stdout 只有协议帧。
 
 Claude Code：
 
 ```sh
-claude mcp add stars-sandbox -- stars-sandbox mcp
+claude mcp add orrery -- orrery mcp
 ```
 
 通用 JSON 配置（Claude Desktop 等）：
@@ -88,12 +88,12 @@ claude mcp add stars-sandbox -- stars-sandbox mcp
 ```json
 {
   "mcpServers": {
-    "stars-sandbox": {
-      "command": "stars-sandbox",
+    "orrery": {
+      "command": "orrery",
       "args": ["mcp"],
       "env": {
-        "STARS_SANDBOX_API_URL": "https://stars.example",
-        "STARS_SANDBOX_TOKEN": "ssk_<id>_<secret>"
+        "ORRERY_SANDBOX_API_URL": "https://orrery.example",
+        "ORRERY_SANDBOX_TOKEN": "orr_<id>_<secret>"
       }
     }
   }
@@ -104,7 +104,7 @@ claude mcp add stars-sandbox -- stars-sandbox mcp
 
 ### SDK
 
-Python SDK 见 [`sdk/python`](sdk/python/README.md)，用 `pip install "git+https://github.com/zibyn/stars-sandbox#subdirectory=sdk/python"` 安装。
+Python SDK 见 [`sdk/python`](sdk/python/README.md)，用 `pip install "git+https://github.com/zibyn/orrery#subdirectory=sdk/python"` 安装。
 
 Go SDK 在 [`client`](client) 包，CLI 和 MCP 都构建在它之上。
 
@@ -129,7 +129,7 @@ make e2e-console  # 同一部署上跑 Playwright
 
 | 路径 | 内容 |
 |---|---|
-| `cmd/` | `stars-sandbox`（CLI）、`stars-sandbox-server`、`stars-sandbox-agent` |
+| `cmd/` | `orrery`（CLI）、`orrery-server`、`orrery-agent` |
 | `internal/` | Control Plane、Node Agent、API、调度、Exec、CLI、MCP |
 | `client/` | Go SDK |
 | `sdk/python/` | Python SDK |

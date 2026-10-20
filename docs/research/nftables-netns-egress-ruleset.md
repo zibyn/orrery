@@ -194,7 +194,7 @@ chain（注意字段名是 `prio` 不是 `priority`）：
 ### B12. `connect` 之前，netns 的 netfilter 是干净的
 **【源码读出】** `null` 驱动**完全不碰 netfilter**：`daemon/libnetwork/drivers/null/null.go` 全文只维护一个 network id，`Join`/`CreateEndpoint` 都是 `return nil`。
 **【源码读出】** 容器 netns 里唯一可能出现 docker 规则的路径是内嵌解析器的 `setupNAT`，而它只在 endpoint join（`needResolver()`）时触发 → `--network none` 期间不会发生。
-→ **connect 之前 netns 内规则集应为空**（`nft list ruleset` 无输出），connect 之后才会多出 docker 的 DNS 表。**【真机实测】确认**（`#26`）：断开态的 netns 里 `nft list tables` 与 `nft list ruleset` 都无输出（exit 0）；`connect` 之后同一 netns 里出现 `table ip nat`（docker 内嵌解析器的规则）与我们的 `table inet stars_sandbox` **并存**。
+→ **connect 之前 netns 内规则集应为空**（`nft list ruleset` 无输出），connect 之后才会多出 docker 的 DNS 表。**【真机实测】确认**（`#26`）：断开态的 netns 里 `nft list tables` 与 `nft list ruleset` 都无输出（exit 0）；`connect` 之后同一 netns 里出现 `table ip nat`（docker 内嵌解析器的规则）与我们的 `table inet orrery` **并存**。
 
 ---
 
@@ -252,8 +252,8 @@ $N nft list ruleset       # 实测：无输出、exit 0 ✅（没有 NET_ADMIN �
 
 # 3) 装规则 + 取真实 JSON（§A4 的实测片段）
 $N nft -f /w/egress.nft                                  # 实测 exit 0 ✅
-$N nft list table inet stars_sandbox                     # 实测：两条 chain 都 policy drop、四个集合齐全 ✅
-$N nft -j list table inet stars_sandbox > ours.json      # 实测：读回判据全部可判（见 §A4）✅
+$N nft list table inet orrery                     # 实测：两条 chain 都 policy drop、四个集合齐全 ✅
+$N nft -j list table inet orrery > ours.json      # 实测：读回判据全部可判（见 §A4）✅
 
 # 4) A6：整文件一个事务、失败不留痕（要内核期错误才测得到）
 printf 'add table inet txprobe2\nadd chain inet txprobe2 c\ndelete table inet nosuchtable\n' > tx-kern.nft
@@ -262,7 +262,7 @@ $N nft list tables            # 实测：没有 inet txprobe2 → 内核侧也�
 
 # 5) A7：幂等重装（本设计用 add + flush，不是 destroy）
 $N nft -f /w/egress.nft ; $N nft -f /w/egress.nft
-$N nft -j list table inet stars_sandbox    # 实测：output 恒 8 条、input 恒 3 条，没叠倍 ✅
+$N nft -j list table inet orrery    # 实测：output 恒 8 条、input 恒 3 条，没叠倍 ✅
 
 # 6) ★ DNS：接网之后（§B10 + Q9）
 docker network connect probe-net $cid          # 实测 exit=0 ✅
@@ -271,11 +271,11 @@ docker exec $cid nslookup <同网络内另一容器名>   # 实测成功（内�
 docker exec $cid nslookup example.com          # 实测成功——但原因是上游是 loopback，见对照组
 #   对照组（每组先测无规则基线）：--dns 192.168.50.2 装规则后 SERVFAIL、@deny +6 包；
 #                                --dns 223.5.5.5   装规则后照常成功、零丢包
-$N nft list tables    # 实测：table ip nat（docker 的）+ table inet stars_sandbox 并存 ✅
+$N nft list tables    # 实测：table ip nat（docker 的）+ table inet orrery 并存 ✅
 
 # 7) A5：oifname / oif 对照
-$N nft add rule inet stars_sandbox output oifname "ethX" accept   # 实测 exit 0 ✅
-$N nft add rule inet stars_sandbox output oif ethX accept         # 实测 exit 1「Interface does not exist」✅
+$N nft add rule inet orrery output oifname "ethX" accept   # 实测 exit 0 ✅
+$N nft add rule inet orrery output oif ethX accept         # 实测 exit 1「Interface does not exist」✅
 
 # 8) A2 收尾：空集
 nft -c -f <(printf 'table inet z {\n chain c {\n  ip daddr != { } drop\n }\n}\n')  # 实测 exit 1 syntax error ✅

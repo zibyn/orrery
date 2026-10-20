@@ -7,8 +7,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/zibyn/stars-sandbox/internal/registry"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/registry"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // importPlatformSnapshots copies configured platform_snapshots entries that are

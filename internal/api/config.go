@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zibyn/stars-sandbox/internal/keyring"
-	"github.com/zibyn/stars-sandbox/internal/registry"
+	"github.com/zibyn/orrery/internal/keyring"
+	"github.com/zibyn/orrery/internal/registry"
 )
 
 // Config is the deployment configuration. Values that defaults.md marks as
@@ -23,10 +23,10 @@ type Config struct {
 	DefaultGPUQuota     int32
 	DefaultSandboxQuota int32
 	// PlatformSnapshots are the deployment's platform images (defaults.md,
-	// STARS_PLATFORM_SNAPSHOTS). The Control Plane imports them at startup.
+	// ORRERY_PLATFORM_SNAPSHOTS). The Control Plane imports them at startup.
 	PlatformSnapshots []PlatformSnapshot
 	// DefaultSnapshot is the platform Snapshot name used when a Sandbox
-	// create omits snapshot (defaults.md, STARS_DEFAULT_SNAPSHOT).
+	// create omits snapshot (defaults.md, ORRERY_DEFAULT_SNAPSHOT).
 	DefaultSnapshot string
 	// ExecLogCap bounds an Execution Log (defaults.md, 16 MiB).
 	ExecLogCap int64
@@ -42,7 +42,7 @@ type Config struct {
 	// (defaults.md, 24 hours; 0 disables the sweep).
 	CASGrace time.Duration
 	// PurgeInterval is the periodic cleanup cadence. Production always uses the
-	// 10-minute constant (defaults.md); STARS_TEST_PURGE_INTERVAL is an
+	// 10-minute constant (defaults.md); ORRERY_TEST_PURGE_INTERVAL is an
 	// explicit test hook so e2e can observe a sweep. It is not a deployment
 	// knob.
 	PurgeInterval time.Duration
@@ -72,7 +72,7 @@ type Config struct {
 	// means those features answer with an explicit error (defaults.md).
 	EncryptionKeys *keyring.Keyring
 	// AccessURL is the externally reachable `api` address. It becomes
-	// STARS_URL in every Exec and the base of Git OAuth URLs; empty turns Git
+	// ORRERY_URL in every Exec and the base of Git OAuth URLs; empty turns Git
 	// account linking off (defaults.md).
 	AccessURL string
 	// GitProviders is the deployment's OAuth applications (ADR-0013).
@@ -98,7 +98,7 @@ type Config struct {
 	RegistryCredentialDoc *registry.Credential
 }
 
-// PlatformSnapshot is one STARS_PLATFORM_SNAPSHOTS entry.
+// PlatformSnapshot is one ORRERY_PLATFORM_SNAPSHOTS entry.
 type PlatformSnapshot struct {
 	Name string
 	Ref  string // ref@sha256:…
@@ -131,98 +131,98 @@ type OIDCConfig struct {
 func (c OIDCConfig) Enabled() bool { return c.IssuerURL != "" }
 
 // ConfigFromEnv reads the environment-only configuration used by tests and CI
-// when STARS_CONFIG_FILE is unset (defaults.md). It is not the deployment
+// when ORRERY_CONFIG_FILE is unset (defaults.md). It is not the deployment
 // contract; LoadConfig reads config.yaml.
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		DatabaseURL:   os.Getenv("STARS_DATABASE_URL"),
-		Addr:          envOr("STARS_API_ADDR", ":8080"),
-		NodeAddr:      envOr("STARS_NODE_ADDR", ":8081"),
-		NodeTLSCert:   os.Getenv("STARS_NODE_TLS_CERT"),
-		NodeTLSKey:    os.Getenv("STARS_NODE_TLS_KEY"),
-		AppsDomain:    os.Getenv("STARS_APPS_DOMAIN"),
-		PortTicketKey: []byte(os.Getenv("STARS_PORT_TICKET_KEY")),
-		AccessURL:     os.Getenv("STARS_ACCESS_URL"),
+		DatabaseURL:   os.Getenv("ORRERY_DATABASE_URL"),
+		Addr:          envOr("ORRERY_API_ADDR", ":8080"),
+		NodeAddr:      envOr("ORRERY_NODE_ADDR", ":8081"),
+		NodeTLSCert:   os.Getenv("ORRERY_NODE_TLS_CERT"),
+		NodeTLSKey:    os.Getenv("ORRERY_NODE_TLS_KEY"),
+		AppsDomain:    os.Getenv("ORRERY_APPS_DOMAIN"),
+		PortTicketKey: []byte(os.Getenv("ORRERY_PORT_TICKET_KEY")),
+		AccessURL:     os.Getenv("ORRERY_ACCESS_URL"),
 	}
 	if cfg.DatabaseURL == "" {
-		return Config{}, fmt.Errorf("STARS_DATABASE_URL is required")
+		return Config{}, fmt.Errorf("ORRERY_DATABASE_URL is required")
 	}
 	var err error
-	if cfg.EnrollmentPacketTTL, err = envDuration("STARS_ENROLLMENT_PACKET_TTL", time.Hour); err != nil {
+	if cfg.EnrollmentPacketTTL, err = envDuration("ORRERY_ENROLLMENT_PACKET_TTL", time.Hour); err != nil {
 		return Config{}, err
 	}
-	if cfg.DefaultGPUQuota, err = envInt32("STARS_DEFAULT_GPU_QUOTA", 0); err != nil {
+	if cfg.DefaultGPUQuota, err = envInt32("ORRERY_DEFAULT_GPU_QUOTA", 0); err != nil {
 		return Config{}, err
 	}
-	if cfg.DefaultSandboxQuota, err = envInt32("STARS_DEFAULT_SANDBOX_QUOTA", 0); err != nil {
+	if cfg.DefaultSandboxQuota, err = envInt32("ORRERY_DEFAULT_SANDBOX_QUOTA", 0); err != nil {
 		return Config{}, err
 	}
-	if cfg.ExecLogCap, err = envInt64("STARS_EXEC_LOG_CAP", 16<<20); err != nil {
+	if cfg.ExecLogCap, err = envInt64("ORRERY_EXEC_LOG_CAP", 16<<20); err != nil {
 		return Config{}, err
 	}
-	if cfg.ExecLogRetention, err = envRetention("STARS_EXEC_LOG_RETENTION", 30*24*time.Hour); err != nil {
+	if cfg.ExecLogRetention, err = envRetention("ORRERY_EXEC_LOG_RETENTION", 30*24*time.Hour); err != nil {
 		return Config{}, err
 	}
-	if cfg.AuditRetention, err = envRetention("STARS_AUDIT_RETENTION", 0); err != nil {
+	if cfg.AuditRetention, err = envRetention("ORRERY_AUDIT_RETENTION", 0); err != nil {
 		return Config{}, err
 	}
-	if cfg.ResourceVersionTTL, err = envRetention("STARS_RESOURCE_VERSION_TTL", 30*24*time.Hour); err != nil {
+	if cfg.ResourceVersionTTL, err = envRetention("ORRERY_RESOURCE_VERSION_TTL", 30*24*time.Hour); err != nil {
 		return Config{}, err
 	}
-	if cfg.CASGrace, err = envRetention("STARS_CAS_GRACE", 24*time.Hour); err != nil {
+	if cfg.CASGrace, err = envRetention("ORRERY_CAS_GRACE", 24*time.Hour); err != nil {
 		return Config{}, err
 	}
 	// Test hook only: production uses the 10-minute constant (defaults.md).
-	if cfg.PurgeInterval, err = envDuration("STARS_TEST_PURGE_INTERVAL", purgeInterval); err != nil {
+	if cfg.PurgeInterval, err = envDuration("ORRERY_TEST_PURGE_INTERVAL", purgeInterval); err != nil {
 		return Config{}, err
 	}
-	if cfg.PtyIdleSeconds, err = envInt64("STARS_PTY_IDLE_SECONDS", 300); err != nil {
+	if cfg.PtyIdleSeconds, err = envInt64("ORRERY_PTY_IDLE_SECONDS", 300); err != nil {
 		return Config{}, err
 	}
-	if cfg.IdleStopSeconds, err = envInt32("STARS_IDLE_STOP_SECONDS", 900); err != nil {
+	if cfg.IdleStopSeconds, err = envInt32("ORRERY_IDLE_STOP_SECONDS", 900); err != nil {
 		return Config{}, err
 	}
-	if cfg.AdmissionTimeout, err = envDuration("STARS_ADMISSION_TIMEOUT", time.Hour); err != nil {
+	if cfg.AdmissionTimeout, err = envDuration("ORRERY_ADMISSION_TIMEOUT", time.Hour); err != nil {
 		return Config{}, err
 	}
-	if cfg.BuildCPU, err = envFloat("STARS_BUILD_CPU", 4); err != nil {
+	if cfg.BuildCPU, err = envFloat("ORRERY_BUILD_CPU", 4); err != nil {
 		return Config{}, err
 	}
-	if cfg.BuildMemory, err = envInt64("STARS_BUILD_MEMORY", 8<<30); err != nil {
+	if cfg.BuildMemory, err = envInt64("ORRERY_BUILD_MEMORY", 8<<30); err != nil {
 		return Config{}, err
 	}
-	if cfg.BuildTimeout, err = envDuration("STARS_BUILD_TIMEOUT", time.Hour); err != nil {
+	if cfg.BuildTimeout, err = envDuration("ORRERY_BUILD_TIMEOUT", time.Hour); err != nil {
 		return Config{}, err
 	}
 	if err := cfg.loadOIDC(); err != nil {
 		return Config{}, err
 	}
-	if path := os.Getenv("STARS_GIT_PROVIDERS_FILE"); path != "" {
+	if path := os.Getenv("ORRERY_GIT_PROVIDERS_FILE"); path != "" {
 		if cfg.GitProviders, err = loadGitProviders(path); err != nil {
 			return Config{}, err
 		}
 	}
-	if path := os.Getenv("STARS_ENCRYPTION_KEYS_FILE"); path != "" {
+	if path := os.Getenv("ORRERY_ENCRYPTION_KEYS_FILE"); path != "" {
 		if cfg.EncryptionKeys, err = keyring.LoadFile(path); err != nil {
 			return Config{}, err
 		}
 	}
 	cfg.S3 = S3Config{
-		Endpoint:       os.Getenv("STARS_S3_ENDPOINT"),
-		PublicEndpoint: os.Getenv("STARS_S3_PUBLIC_ENDPOINT"),
-		Bucket:         os.Getenv("STARS_S3_BUCKET"),
-		Region:         os.Getenv("STARS_S3_REGION"),
-		AccessKey:      os.Getenv("STARS_S3_ACCESS_KEY"),
-		SecretKey:      os.Getenv("STARS_S3_SECRET_KEY"),
+		Endpoint:       os.Getenv("ORRERY_S3_ENDPOINT"),
+		PublicEndpoint: os.Getenv("ORRERY_S3_PUBLIC_ENDPOINT"),
+		Bucket:         os.Getenv("ORRERY_S3_BUCKET"),
+		Region:         os.Getenv("ORRERY_S3_REGION"),
+		AccessKey:      os.Getenv("ORRERY_S3_ACCESS_KEY"),
+		SecretKey:      os.Getenv("ORRERY_S3_SECRET_KEY"),
 	}
 	if cfg.S3.Endpoint != "" || cfg.S3.Bucket != "" {
 		if cfg.S3.Endpoint == "" || cfg.S3.Bucket == "" || cfg.S3.AccessKey == "" || cfg.S3.SecretKey == "" {
-			return Config{}, fmt.Errorf("STARS_S3_ENDPOINT, STARS_S3_BUCKET, STARS_S3_ACCESS_KEY and STARS_S3_SECRET_KEY are required together")
+			return Config{}, fmt.Errorf("ORRERY_S3_ENDPOINT, ORRERY_S3_BUCKET, ORRERY_S3_ACCESS_KEY and ORRERY_S3_SECRET_KEY are required together")
 		}
 	}
-	cfg.RegistryAddr = os.Getenv("STARS_REGISTRY_ADDR")
-	cfg.RegistryPushAddr = envOr("STARS_REGISTRY_PUSH_ADDR", cfg.RegistryAddr)
-	cfg.RegistryCredential = os.Getenv("STARS_REGISTRY_CREDENTIAL")
+	cfg.RegistryAddr = os.Getenv("ORRERY_REGISTRY_ADDR")
+	cfg.RegistryPushAddr = envOr("ORRERY_REGISTRY_PUSH_ADDR", cfg.RegistryAddr)
+	cfg.RegistryCredential = os.Getenv("ORRERY_REGISTRY_CREDENTIAL")
 	if cfg.RegistryCredentialDoc, err = registry.ParseCredential(cfg.RegistryCredential); err != nil {
 		return Config{}, err
 	}
@@ -230,10 +230,10 @@ func ConfigFromEnv() (Config, error) {
 	// the deployment lists only the Node-reachable host, let the push host
 	// reuse that entry instead of failing the platform import at startup.
 	cfg.RegistryCredentialDoc.Alias(cfg.RegistryPushAddr, cfg.RegistryAddr)
-	if cfg.PlatformSnapshots, err = parsePlatformSnapshots(os.Getenv("STARS_PLATFORM_SNAPSHOTS")); err != nil {
+	if cfg.PlatformSnapshots, err = parsePlatformSnapshots(os.Getenv("ORRERY_PLATFORM_SNAPSHOTS")); err != nil {
 		return Config{}, err
 	}
-	cfg.DefaultSnapshot = os.Getenv("STARS_DEFAULT_SNAPSHOT")
+	cfg.DefaultSnapshot = os.Getenv("ORRERY_DEFAULT_SNAPSHOT")
 	if cfg.DefaultSnapshot != "" {
 		found := false
 		for _, snapshot := range cfg.PlatformSnapshots {
@@ -243,7 +243,7 @@ func ConfigFromEnv() (Config, error) {
 			}
 		}
 		if !found {
-			return Config{}, fmt.Errorf("STARS_DEFAULT_SNAPSHOT must name an entry of STARS_PLATFORM_SNAPSHOTS")
+			return Config{}, fmt.Errorf("ORRERY_DEFAULT_SNAPSHOT must name an entry of ORRERY_PLATFORM_SNAPSHOTS")
 		}
 	}
 	return cfg, nil
@@ -265,7 +265,7 @@ func parsePlatformSnapshots(raw string) ([]PlatformSnapshot, error) {
 		}
 		name, ref, ok := strings.Cut(entry, "=")
 		if !ok || name == "" || ref == "" {
-			return nil, fmt.Errorf("STARS_PLATFORM_SNAPSHOTS entries are name=ref@sha256:…, got %q", entry)
+			return nil, fmt.Errorf("ORRERY_PLATFORM_SNAPSHOTS entries are name=ref@sha256:…, got %q", entry)
 		}
 		if !registry.ValidPlatformName(name) {
 			return nil, fmt.Errorf("platform Snapshot name %q must be lowercase alphanumeric with . _ - separators", name)
@@ -285,32 +285,32 @@ func parsePlatformSnapshots(raw string) ([]PlatformSnapshot, error) {
 // loadOIDC reads the deployment's one external issuer (defaults.md identity
 // section). A configured issuer needs a client id and a secret file.
 func (c *Config) loadOIDC() error {
-	c.OIDC.IssuerURL = os.Getenv("STARS_OIDC_ISSUER_URL")
-	c.OIDC.ClientID = os.Getenv("STARS_OIDC_CLIENT_ID")
+	c.OIDC.IssuerURL = os.Getenv("ORRERY_OIDC_ISSUER_URL")
+	c.OIDC.ClientID = os.Getenv("ORRERY_OIDC_CLIENT_ID")
 	if !c.OIDC.Enabled() {
 		return nil
 	}
 	if c.OIDC.ClientID == "" {
-		return fmt.Errorf("STARS_OIDC_CLIENT_ID is required when STARS_OIDC_ISSUER_URL is set")
+		return fmt.Errorf("ORRERY_OIDC_CLIENT_ID is required when ORRERY_OIDC_ISSUER_URL is set")
 	}
-	path := os.Getenv("STARS_OIDC_CLIENT_SECRET_FILE")
+	path := os.Getenv("ORRERY_OIDC_CLIENT_SECRET_FILE")
 	if path == "" {
-		return fmt.Errorf("STARS_OIDC_CLIENT_SECRET_FILE is required when STARS_OIDC_ISSUER_URL is set")
+		return fmt.Errorf("ORRERY_OIDC_CLIENT_SECRET_FILE is required when ORRERY_OIDC_ISSUER_URL is set")
 	}
 	secret, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read OIDC client secret: %w", err)
 	}
 	c.OIDC.ClientSecret = strings.TrimSpace(string(secret))
-	for _, domain := range strings.Split(os.Getenv("STARS_OIDC_EMAIL_DOMAINS"), ",") {
+	for _, domain := range strings.Split(os.Getenv("ORRERY_OIDC_EMAIL_DOMAINS"), ",") {
 		if domain = strings.ToLower(strings.TrimSpace(domain)); domain != "" {
 			c.OIDC.EmailDomains = append(c.OIDC.EmailDomains, domain)
 		}
 	}
-	if raw := os.Getenv("STARS_OIDC_ALLOW_SIGNUPS"); raw != "" {
+	if raw := os.Getenv("ORRERY_OIDC_ALLOW_SIGNUPS"); raw != "" {
 		allow, err := strconv.ParseBool(raw)
 		if err != nil {
-			return fmt.Errorf("STARS_OIDC_ALLOW_SIGNUPS must be true or false")
+			return fmt.Errorf("ORRERY_OIDC_ALLOW_SIGNUPS must be true or false")
 		}
 		c.OIDC.AllowSignups = allow
 	}

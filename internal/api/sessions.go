@@ -10,12 +10,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // handleCreateSession is the password login. Without a "token" field it sets
 // the Session cookie; with one it issues a named API Token and sets no cookie,
-// which is what `stars-sandbox login` uses.
+// which is what `orrery login` uses.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, _ *principal) {
 	var req sessionRequest
 	if !decodeJSON(w, r, &req) {

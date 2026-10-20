@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/stars-sandbox/internal/keyring"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/keyring"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 func testPrincipal() *principal {
@@ -34,7 +34,7 @@ func testKeyring(t *testing.T) *keyring.Keyring {
 // touches the database (ADR-0017).
 func TestPutSecretRejections(t *testing.T) {
 	s := &Server{cfg: Config{EncryptionKeys: testKeyring(t)}}
-	for _, name := range []string{"GIT_TOKEN", "LD_PRELOAD", "STARS_SANDBOX_TOKEN", "PATH", "HOME"} {
+	for _, name := range []string{"GIT_TOKEN", "LD_PRELOAD", "ORRERY_SANDBOX_TOKEN", "PATH", "HOME"} {
 		t.Run(name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPut, "/api/v1/secrets/"+name,
@@ -73,12 +73,12 @@ func TestSecretFeatureWithoutEncryptionKeys(t *testing.T) {
 }
 
 func TestSecretNameAndSizeLimits(t *testing.T) {
-	for _, name := range []string{"GITHUB_TOKEN", "MY_PATH", "PATHX", "git_token", "STARS", "LD"} {
+	for _, name := range []string{"GITHUB_TOKEN", "MY_PATH", "PATHX", "git_token", "ORRERY", "LD"} {
 		if code, _ := secretUploadProblem(name, "x"); code != "" {
 			t.Errorf("secretUploadProblem(%q) = %q, want allowed", name, code)
 		}
 	}
-	for _, name := range []string{"", " padded", "GIT_", "LD_", "STARS_", "PATH", "HOME"} {
+	for _, name := range []string{"", " padded", "GIT_", "LD_", "ORRERY_", "PATH", "HOME"} {
 		if code, _ := secretUploadProblem(name, "x"); code == "" {
 			t.Errorf("secretUploadProblem(%q) allowed a reserved name", name)
 		}
@@ -115,7 +115,7 @@ func TestSecretEnvNameValidation(t *testing.T) {
 			t.Errorf("secretEnvNameProblem(%q) = %q, want allowed", name, code)
 		}
 	}
-	for _, name := range []string{"", " padded", "A=B", "A\x00B", "GIT_", "LD_", "STARS_", "PATH", "HOME"} {
+	for _, name := range []string{"", " padded", "A=B", "A\x00B", "GIT_", "LD_", "ORRERY_", "PATH", "HOME"} {
 		if code, _ := secretEnvNameProblem(name); code == "" {
 			t.Errorf("secretEnvNameProblem(%q) allowed a reserved or malformed name", name)
 		}

@@ -15,7 +15,7 @@ func TestProblemError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"code":"not_found","detail":"no such thing","authorize_url":"https://stars.example/git"}`)
+		_, _ = io.WriteString(w, `{"code":"not_found","detail":"no such thing","authorize_url":"https://orrery.example/git"}`)
 	}))
 	defer srv.Close()
 
@@ -27,7 +27,7 @@ func TestProblemError(t *testing.T) {
 	if problem.Status != http.StatusNotFound || problem.Code != "not_found" || problem.Detail != "no such thing" {
 		t.Fatalf("problem = %+v", problem)
 	}
-	if problem.AuthorizeURL != "https://stars.example/git" {
+	if problem.AuthorizeURL != "https://orrery.example/git" {
 		t.Fatalf("authorize_url = %q", problem.AuthorizeURL)
 	}
 	if got := problem.Error(); got != "not_found: no such thing" {
@@ -63,7 +63,7 @@ func TestSendCarriesAuthBodyAndIdempotencyKey(t *testing.T) {
 	defer srv.Close()
 
 	name, cpu := "box", 0.5
-	sb, err := New(srv.URL, "ssk_test").CreateSandbox(context.Background(), CreateSandboxRequest{
+	sb, err := New(srv.URL, "orr_test").CreateSandbox(context.Background(), CreateSandboxRequest{
 		Name: &name, CPU: &cpu,
 	}, "key-1")
 	if err != nil {
@@ -72,7 +72,7 @@ func TestSendCarriesAuthBodyAndIdempotencyKey(t *testing.T) {
 	if sb.ID != "sb1" || sb.State != "pending" {
 		t.Fatalf("Sandbox = %+v", sb)
 	}
-	if gotAuth != "Bearer ssk_test" {
+	if gotAuth != "Bearer orr_test" {
 		t.Fatalf("Authorization = %q", gotAuth)
 	}
 	if gotKey != "key-1" {
@@ -89,11 +89,11 @@ func TestSendCarriesAuthBodyAndIdempotencyKey(t *testing.T) {
 func TestCreatedTokenEmbedsTokenAndDecodesPlaintext(t *testing.T) {
 	var got CreatedToken
 	body := `{"id":"t1","kind":"api","name":"ci","scope":"user",` +
-		`"created_at":"2026-01-01T00:00:00Z","token":"sst_secret"}`
+		`"created_at":"2026-01-01T00:00:00Z","token":"ors_secret"}`
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.ID != "t1" || got.Name != "ci" || got.Scope != "user" || got.Plaintext != "sst_secret" {
+	if got.ID != "t1" || got.Name != "ci" || got.Scope != "user" || got.Plaintext != "ors_secret" {
 		t.Fatalf("CreatedToken = %+v", got)
 	}
 }

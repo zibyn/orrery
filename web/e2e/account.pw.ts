@@ -22,7 +22,7 @@ test('admin creates a token, uses it, revokes it and it stops working', async ({
   const plaintext = page.getByTestId('token-plaintext')
   await expect(plaintext).toBeVisible()
   const token = (await plaintext.textContent())?.trim() ?? ''
-  expect(token).toMatch(/^ssk_/)
+  expect(token).toMatch(/^orr_/)
 
   // The freshly created token authenticates a real API call.
   const first = await api.get('/api/v1/users/me/tokens', {

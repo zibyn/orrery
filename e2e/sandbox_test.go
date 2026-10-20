@@ -338,9 +338,9 @@ func waitForSandboxDeleted(t *testing.T, id string, timeout time.Duration) strin
 func psqlCount(t *testing.T, query string) string {
 	t.Helper()
 	args := append(composeArgs(), "exec", "-T", "postgres",
-		"psql", "-U", "stars", "-d", "stars", "-tAc", query)
+		"psql", "-U", "orrery", "-d", "orrery", "-tAc", query)
 	if len(composeArgs()) == 0 {
-		t.Fatal("STARS_E2E_COMPOSE_FILE/PROJECT are not set; run make e2e")
+		t.Fatal("ORRERY_E2E_COMPOSE_FILE/PROJECT are not set; run make e2e")
 	}
 	out, err := exec.Command("docker", args...).CombinedOutput()
 	if err != nil {
@@ -350,13 +350,13 @@ func psqlCount(t *testing.T, query string) string {
 }
 
 func containerRunning(id string) bool {
-	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", "stars-sandbox-"+id).CombinedOutput()
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", "orrery-"+id).CombinedOutput()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 func assertLimit(t *testing.T, id, path, want string) {
 	t.Helper()
-	out, err := exec.Command("docker", "exec", "stars-sandbox-"+id, "cat", path).CombinedOutput()
+	out, err := exec.Command("docker", "exec", "orrery-"+id, "cat", path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("read %s: %v\n%s", path, err, out)
 	}

@@ -1,6 +1,6 @@
 # S3 短时授权调研
 
-对应 issue：zibyn/stars-sandbox#5（`wayfinder:research`）。问题：Resource Manager 要让任务读改 S3 资源而不持有长期密钥，**Broker 该下发什么形态的 S3 凭据？**
+对应 issue：zibyn/orrery#5（`wayfinder:research`）。问题：Resource Manager 要让任务读改 S3 资源而不持有长期密钥，**Broker 该下发什么形态的 S3 凭据？**
 
 调研日期：2026-10-15。所有结论都标注了来源；凡是 rustFS 侧无法从官方文档或可达源码确认的，明确写成「未确认」。
 
@@ -154,7 +154,7 @@ rustFS 迭代很快（alpha → beta → rc → 1.0.x），**授权相关的 bug
 1. **自建签名代理（推荐退路）**：控制层保留长期密钥，用一个「签名代理」把长期密钥换成短时的访问入口——沙箱请求带 Broker 签发的短期 token（不是 S3 凭证，就是我们自己的会话令牌）打到代理，代理校验后用自己的长期密钥做 S3 读写。对沙箱暴露的是受控的 HTTP 语义（如 `/objects/tasks/<id>/<key>`），而不是 S3 API。
 2. **控制层代理全部对象读写**：等价于把上一条做成唯一的对象访问通道，沙箱完全不接触任何 S3 凭证。
 
-代价：沙箱侧不能直接用标准 S3 SDK（要面对我们的代理协议），且控制层成为对象 I/O 的数据面瓶颈。这违背了「迁移到 OSS 只是改配置」的初衷（stars-trail ADR 0003 要求后端只用 S3 API），所以只作为版本不支持时的临时退路，不是目标形态。
+代价：沙箱侧不能直接用标准 S3 SDK（要面对我们的代理协议），且控制层成为对象 I/O 的数据面瓶颈。这违背了「迁移到 OSS 只是改配置」的初衷（orrery-trail ADR 0003 要求后端只用 S3 API），所以只作为版本不支持时的临时退路，不是目标形态。
 
 ---
 
@@ -178,14 +178,14 @@ rustFS 官方 policies 文档给的「Read/Write Restricted to a Prefix」就是
       "Sid": "ListOwnPrefix",
       "Effect": "Allow",
       "Action": "s3:ListBucket",
-      "Resource": ["arn:aws:s3:::stars-tasks"],
+      "Resource": ["arn:aws:s3:::orrery-tasks"],
       "Condition": { "StringLike": { "s3:prefix": ["tasks/<id>/*"] } }
     },
     {
       "Sid": "DenyListOutsideOwnPrefix",
       "Effect": "Deny",
       "Action": "s3:ListBucket",
-      "Resource": ["arn:aws:s3:::stars-tasks"],
+      "Resource": ["arn:aws:s3:::orrery-tasks"],
       "Condition": { "StringNotLike": { "s3:prefix": ["tasks/<id>/*"] } }
     },
     {
@@ -197,7 +197,7 @@ rustFS 官方 policies 文档给的「Read/Write Restricted to a Prefix」就是
         "s3:DeleteObject",
         "s3:AbortMultipartUpload"
       ],
-      "Resource": ["arn:aws:s3:::stars-tasks/tasks/<id>/*"]
+      "Resource": ["arn:aws:s3:::orrery-tasks/tasks/<id>/*"]
     }
   ]
 }
@@ -237,7 +237,7 @@ rustFS 官方 policies 文档给的「Read/Write Restricted to a Prefix」就是
 从 rustFS 换到 AWS S3 / OSS，沙箱侧**不需要改协议**：
 
 - 沙箱只看三元组 + endpoint + region，走标准 S3 SDK 的 `session_token` 字段；这三家都接受。
-- 差异只在配置与策略文本：ARN 拼写（`arn:aws:s3:::b/p/*` vs `acs:oss:*:*:b/p/*`）、STS endpoint（AWS 是独立主机，rustFS 是 S3 根路径——但 STS 调用只在控制层发生，沙箱无感）、寻址方式（stars-trail ADR 0003 已记：rustFS 默认 path-style，OSS 不接受 path-style）。
+- 差异只在配置与策略文本：ARN 拼写（`arn:aws:s3:::b/p/*` vs `acs:oss:*:*:b/p/*`）、STS endpoint（AWS 是独立主机，rustFS 是 S3 根路径——但 STS 调用只在控制层发生，沙箱无感）、寻址方式（orrery-trail ADR 0003 已记：rustFS 默认 path-style，OSS 不接受 path-style）。
 - 因此 Broker 应当把「ARN 语法 / endpoint / region / addressing style」做成配置，把 session policy 模板按后端渲染。
 
 ---
@@ -291,4 +291,4 @@ rustFS 官方 policies 文档给的「Read/Write Restricted to a Prefix」就是
 - 阿里云 STS `AssumeRole` API：<https://www.alibabacloud.com/help/en/ram/developer-reference/api-sts-2015-04-01-assumerole>
 - 阿里云 OSS 预签名（ossutil presign）：<https://www.alibabacloud.com/help/en/oss/developer-reference/presign-generate-presigned-url>
 - 阿里云 OSS V1→V4 签名升级：<https://www.alibabacloud.com/help/en/oss/developer-reference/guidelines-for-upgrading-v1-signatures-to-v4-signatures>
-- 相关 ADR：`/home/zibyn/Projects/stars-trail/docs/adr/0003-lan-server-and-rustfs-before-launch.md`
+- 相关 ADR：`/home/zibyn/Projects/orrery-trail/docs/adr/0003-lan-server-and-rustfs-before-launch.md`

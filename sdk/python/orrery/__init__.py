@@ -1,4 +1,4 @@
-"""Stars Sandbox Python SDK: a synchronous client for the public REST API."""
+"""Orrery Python SDK: a synchronous client for the public REST API."""
 
 from .client import (
     Exec,
@@ -9,8 +9,8 @@ from .client import (
     Page,
     Sandbox,
     Secret,
-    StarsSandbox,
-    StarsSandboxError,
+    Orrery,
+    OrreryError,
     WorkspaceRef,
 )
 
@@ -23,7 +23,7 @@ __all__ = [
     "Page",
     "Sandbox",
     "Secret",
-    "StarsSandbox",
-    "StarsSandboxError",
+    "Orrery",
+    "OrreryError",
     "WorkspaceRef",
 ]

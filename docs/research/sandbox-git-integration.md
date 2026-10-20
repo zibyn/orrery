@@ -57,7 +57,7 @@
 **调用方式**
 
 - 「Remote helper programs are invoked with one or (optionally) two arguments.」`git remote-<transport> <repository> [<URL>]`。
-- 「A URL of the form *<transport>::<address>* explicitly instructs Git to invoke *git remote-<transport>* with *<address>* as the second argument.」——`stars::ws-123` 这种 URL 就是我们让 sandbox 里的 git 找到 shim 的方式（不需要 `://`）。
+- 「A URL of the form *<transport>::<address>* explicitly instructs Git to invoke *git remote-<transport>* with *<address>* as the second argument.」——`orrery::ws-123` 这种 URL 就是我们让 sandbox 里的 git 找到 shim 的方式（不需要 `://`）。
 - 「The `GIT_DIR` environment variable is set up for the remote helper」——helper 知道往哪个仓库写对象（实测：`GIT_DIR=/tmp/shimtest/client/.git`；`GIT_WORK_TREE` **未**设置）。
 - 协议策略闸门：未知协议默认策略是 `user`（"protocol is only able to be used when `GIT_PROTOCOL_FROM_USER` is either unset or has a value of 1"）；**如果 shim 要被 submodule 递归这类无用户输入的路径用到，必须显式 `protocol.<name>.allow=always`**——`url.<base>.insteadOf` 的文档原文就是这么说的：「protocols you expect to use for submodules must be set to `always` rather than the default of `user`」。见 [protocol.allow](https://raw.githubusercontent.com/git/git/v2.53.0/Documentation/config/protocol.adoc)、[url.insteadOf](https://raw.githubusercontent.com/git/git/v2.53.0/Documentation/config/url.adoc)、[GIT_ALLOW_PROTOCOL](https://raw.githubusercontent.com/git/git/v2.53.0/Documentation/git.adoc)（「behave as if `protocol.allow` is set to `never`, and each of the listed protocols has `protocol.<name>.allow` set to `always`」）。
 
@@ -125,8 +125,8 @@
 | `GIT_ASKPASS` / `core.askPass` / `GIT_TERMINAL_PROMPT` | 见 §A.1 | 宿主侧若走 HTTP 代发，这三条必须显式堵死（`GIT_TERMINAL_PROMPT=false`） |
 | `GIT_SSL_CAINFO` | `http.sslCAInfo`：「File containing the certificates to verify the peer with when fetching or pushing over HTTPS. Can be overridden by the `GIT_SSL_CAINFO` environment variable.」——[config/http.adoc](https://raw.githubusercontent.com/git/git/v2.53.0/Documentation/config/http.adoc) | 「Git 实例 = 地址 + 证书信任锚」那条的落地钩子 |
 | `http.extraHeader` | 「Pass an additional HTTP header when communicating with a server. If more than one such entry exists, all of them are added as extra headers. To allow overriding the settings inherited from the system config, an empty value will reset the extra headers to the empty list.」 | 与 `GIT_CONFIG_*` 组合可以做到"凭据不进 argv"，但**它会进 `.git/config` 如果被写进配置**——只能靠环境注入 |
-| `url.<base>.insteadOf` / `pushInsteadOf` | 「Any URL that starts with this value will be rewritten to start, instead of, with <base>. ... When more than one insteadOf strings match a given URL, the longest match is used.」 | 把真实远端 URL 在**沙箱内**改写成 `stars::<workspace>` 的标准做法；注意上面那条 submodule / `protocol.allow=always` 的附带要求 |
-| `protocol.<name>.allow` / `GIT_ALLOW_PROTOCOL` | 见 §A.2 | 沙箱内可以收窄到只允许 `stars`（本仓的 `git-short-lived-credentials.md` 已覆盖供应商侧，不再重复） |
+| `url.<base>.insteadOf` / `pushInsteadOf` | 「Any URL that starts with this value will be rewritten to start, instead of, with <base>. ... When more than one insteadOf strings match a given URL, the longest match is used.」 | 把真实远端 URL 在**沙箱内**改写成 `orrery::<workspace>` 的标准做法；注意上面那条 submodule / `protocol.allow=always` 的附带要求 |
+| `protocol.<name>.allow` / `GIT_ALLOW_PROTOCOL` | 见 §A.2 | 沙箱内可以收窄到只允许 `orrery`（本仓的 `git-short-lived-credentials.md` 已覆盖供应商侧，不再重复） |
 | `GIT_ALTERNATE_OBJECT_DIRECTORIES` | 「This variable specifies a ":" separated list of Git object directories which can be used to search for Git objects. **New objects will not be written to these directories.**」——[git(1)](https://raw.githubusercontent.com/git/git/v2.53.0/Documentation/git.adoc) | 宿主侧裸仓镜像的只读共享面 |
 | `safe.directory` / `safe.bareRepository` | 「By default, Git will refuse to even parse a Git config of a repository owned by someone else, let alone run its hooks」；`safe.bareRepository=explicit` 「will protect you from attacks that involve cloning a repository that contains a bare repository and running a Git command within that directory」——[config/safe.adoc](https://raw.githubusercontent.com/git/git/v2.53.0/Documentation/config/safe.adoc) | 宿主上 Worker 以某个 uid 操作他人的 workspace 目录时会撞上；**裸仓镜像若落进 workspace 树内会被 `explicit` 挡** |
 
@@ -338,11 +338,11 @@
 | **Devin** | 环境快照里已 clone（VM 内，Git 集成授权） | Git 集成 + secrets 注入环境变量 | agent（GitHub App） | **agent**（作者可配） | 未证实 |
 | **Google Jules** | VM 内 clone | GitHub App 仓库授权 | **用户点按钮** | **Jules**（发布后 creator 是 Jules） | 未证实 |
 | **CI：Tekton / Prow / Argo** | 流水线里的一步（Tekton：普通 step 跑 git-init；Prow：clonerefs 在 Pod 内；Argo：init container "Load artifacts"） | Tekton：Secret volume → `cp` 成 `$HOME/.git-credentials`（`credential.helper store`）；Prow：token 拼进 `git fetch` 的 **argv**（不写 named remote）；Argo：Secret volume `/argo/secret` + go-git 内存/0600 临时文件 | 平台（流水线不 push 回业务仓） | 平台（CI 不涉及） | Tekton 有 `sparseCheckoutDirectories`/`subdirectory`；Prow 有 `submodule update --init --recursive`；Argo 有 `DisableSubmodules`/`SingleBranch`/`Depth` |
-| **Stars Sandbox 既定形状** | **平台动作**（宿主侧，归属 Worker 代发） | **零凭据进沙箱**；能力通道只交动词 | **平台**（与 shim 共用同一代发器与同一种租约） | 不提供（显式选择） | 1:1 单仓库；不发 pull |
+| **Orrery 既定形状** | **平台动作**（宿主侧，归属 Worker 代发） | **零凭据进沙箱**；能力通道只交动词 | **平台**（与 shim 共用同一代发器与同一种租约） | 不提供（显式选择） | 1:1 单仓库；不发 pull |
 
 ---
 
-## D. 对 Stars Sandbox 的推论
+## D. 对 Orrery 的推论
 
 ### D.1 shim 该实现 remote helper，**不是** credential helper
 

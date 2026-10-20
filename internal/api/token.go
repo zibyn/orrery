@@ -12,13 +12,13 @@ import (
 
 // Tokens are "<prefix>_<id>_<secret>". The prefix lets secret scanners spot
 // them; the id is what the server looks up, the secret is compared by hash.
-// API tokens are ssk_, Node Tokens ssn_, Enrollment Packets sse_. A Sandbox
-// Token is sst_, and its id is the Sandbox id (api.md §1).
+// API tokens are orr_, Node Tokens orn_, Enrollment Packets ore_. A Sandbox
+// Token is ors_, and its id is the Sandbox id (api.md §1).
 const (
-	apiTokenPrefix         = "ssk_"
-	nodeTokenPrefix        = "ssn_"
-	enrollmentPacketPrefix = "sse_"
-	sandboxTokenPrefix     = "sst_"
+	apiTokenPrefix         = "orr_"
+	nodeTokenPrefix        = "orn_"
+	enrollmentPacketPrefix = "ore_"
+	sandboxTokenPrefix     = "ors_"
 )
 
 type TokenParts struct {

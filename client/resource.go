@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/stars-sandbox/internal/castransfer"
-	"github.com/zibyn/stars-sandbox/internal/manifest"
+	"github.com/zibyn/orrery/internal/castransfer"
+	"github.com/zibyn/orrery/internal/manifest"
 )
 
 // PushResource publishes the tree at dir as a Resource Version of name,

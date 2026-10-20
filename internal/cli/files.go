@@ -14,7 +14,7 @@ import (
 
 func runFiles(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox files ls|cp")
+		return fmt.Errorf("usage: orrery files ls|cp")
 	}
 	switch args[0] {
 	case "ls":
@@ -24,7 +24,7 @@ func runFiles(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() < 1 || fs.NArg() > 2 {
-			return fmt.Errorf("usage: stars-sandbox files ls <sandbox-id> [path]")
+			return fmt.Errorf("usage: orrery files ls <sandbox-id> [path]")
 		}
 		id, err := uuid.Parse(fs.Arg(0))
 		if err != nil {
@@ -42,7 +42,7 @@ func runFiles(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 2 {
-			return fmt.Errorf("usage: stars-sandbox files cp <src> <dst> (use <sandbox-id>:<path> for the remote side)")
+			return fmt.Errorf("usage: orrery files cp <src> <dst> (use <sandbox-id>:<path> for the remote side)")
 		}
 		return copyFile(c, fs.Arg(0), fs.Arg(1))
 	default:
@@ -117,7 +117,7 @@ func copyFile(c *client, src, dst string) error {
 // downloadTo writes beside the destination and renames, so a failed transfer
 // neither truncates nor half-overwrites the existing file.
 func downloadTo(c *client, id uuid.UUID, path, dst string) error {
-	f, err := os.CreateTemp(filepath.Dir(dst), ".stars-download-*")
+	f, err := os.CreateTemp(filepath.Dir(dst), ".orrery-download-*")
 	if err != nil {
 		return err
 	}

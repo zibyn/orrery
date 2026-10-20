@@ -13,9 +13,9 @@ oauth2:
   skipApprovalScreen: true
 enablePasswordDB: true
 staticClients:
-  - id: stars-sandbox
-    secret: stars-sandbox-oidc-secret
-    name: stars-sandbox
+  - id: orrery
+    secret: orrery-oidc-secret
+    name: orrery
     redirectURIs:
       - __MAIN_CALLBACK__
       - __OIDC_CALLBACK__

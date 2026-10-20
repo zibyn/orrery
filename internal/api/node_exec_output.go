@@ -10,9 +10,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/store"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/store"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 // ExecOutput is one stream per Exec: frames in, acknowledgements out. The

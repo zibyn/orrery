@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zibyn/stars-sandbox/client"
+	"github.com/zibyn/orrery/client"
 )
 
 // sdkClient is the public Go SDK pointed at the running e2e deployment.
@@ -349,17 +349,17 @@ func TestSDKParityPython(t *testing.T) {
 	waitForNodeReady(t, admin, nodeName)
 
 	env := append(os.Environ(),
-		"STARS_SANDBOX_API_URL="+apiURL(),
-		"STARS_SANDBOX_TOKEN="+admin,
+		"ORRERY_SANDBOX_API_URL="+apiURL(),
+		"ORRERY_SANDBOX_TOKEN="+admin,
 	)
-	if os.Getenv("STARS_E2E_GPU_SSH") != "" {
+	if os.Getenv("ORRERY_E2E_GPU_SSH") != "" {
 		host := startGPUHost(t, "e2e-sdk-parity-gpu")
 		waitForNodeReady(t, admin, host.nodeName)
 		cards := requireGPUs(t, findNode(t, admin, host.nodeName))
 		setGPUQuota(t, admin, 1, int32(cards)+2)
 		env = append(env,
-			"STARS_PARITY_GPU=1",
-			"STARS_E2E_GPU_SNAPSHOT="+envOr("STARS_E2E_GPU_SNAPSHOT", "cuda"),
+			"ORRERY_PARITY_GPU=1",
+			"ORRERY_E2E_GPU_SNAPSHOT="+envOr("ORRERY_E2E_GPU_SNAPSHOT", "cuda"),
 		)
 	}
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 )
 
 // gpuInfo is one card as nvidia-smi names it: the platform UUID and the model.

@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "stars-sandbox"
+name = "orrery"
 version = "0.1.0"
-description = "Synchronous Python client for the Stars Sandbox public REST API"
+description = "Synchronous Python client for the Orrery public REST API"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["httpx>=0.27"]
@@ -15,7 +15,7 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/zibyn/stars-sandbox"
+Repository = "https://github.com/zibyn/orrery"
 
 [tool.setuptools.packages.find]
-include = ["stars_sandbox*"]
+include = ["orrery*"]

@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 func (s *Server) authenticateNode(ctx context.Context) (store.Node, error) {
@@ -61,7 +61,7 @@ func incompatibleError(detail string) error {
 	st := status.New(codes.FailedPrecondition, detail)
 	withDetails, err := st.WithDetails(&errdetails.ErrorInfo{
 		Reason:   "incompatible",
-		Domain:   "stars-sandbox",
+		Domain:   "orrery",
 		Metadata: map[string]string{"detail": detail},
 	})
 	if err != nil {

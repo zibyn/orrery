@@ -17,13 +17,13 @@ Supervisor 是同一个平台二进制，有三种模式：
 | 容器内 | 来源 | 模式 |
 |---|---|---|
 | `/workspace` | Workspace | 按 Attachment 的模式，读写或只读 |
-| `/.stars/bin` | Supervisor 二进制和外部 CLI `stars-sandbox` | 只读 |
-| `/.stars/run` | 宿主 `/var/lib/stars-sandbox/sandboxes/<sandbox_id>/run` | 读写 |
+| `/.orrery/bin` | Supervisor 二进制和外部 CLI `orrery` | 只读 |
+| `/.orrery/run` | 宿主 `/var/lib/orrery/sandboxes/<sandbox_id>/run` | 读写 |
 | `/resources/<mount>` | Node 的 Resource 缓存（§11） | 只读 |
 
-Node 的部署包同时带外部 CLI。Agent 在自身可执行文件旁边找到 `stars-sandbox`，和 Supervisor 一起放进 `/.stars/bin`。沙箱内的 Git credential helper 和 `stars-sandbox token <provider>` 就是它；CA 的信任见 `defaults.md` 的 `access.url`。每个 Exec 的 `PATH` 末尾追加 `/.stars/bin`，环境变量的拼装见 `node-protocol.md`。Supervisor 把 spec 里的 `env` 和 `secret_env` 原样合进命令的环境，不再改动。
+Node 的部署包同时带外部 CLI。Agent 在自身可执行文件旁边找到 `orrery`，和 Supervisor 一起放进 `/.orrery/bin`。沙箱内的 Git credential helper 和 `orrery token <provider>` 就是它；CA 的信任见 `defaults.md` 的 `access.url`。每个 Exec 的 `PATH` 末尾追加 `/.orrery/bin`，环境变量的拼装见 `node-protocol.md`。Supervisor 把 spec 里的 `env` 和 `secret_env` 原样合进命令的环境，不再改动。
 
-Supervisor 和命令都以镜像默认的 USER 运行，平台不另选 uid。`/.stars/run` 的宿主属主要按 rootful 或 rootless 的映射来设，保证这个用户可写。沙箱内的进程能篡改本 Sandbox 的记录。记录不是防 Sandbox 自身进程的边界：Sandbox 本来就属于它的 owner，而记录按 Sandbox 分目录，影响不到别的 Sandbox。
+Supervisor 和命令都以镜像默认的 USER 运行，平台不另选 uid。`/.orrery/run` 的宿主属主要按 rootful 或 rootless 的映射来设，保证这个用户可写。沙箱内的进程能篡改本 Sandbox 的记录。记录不是防 Sandbox 自身进程的边界：Sandbox 本来就属于它的 owner，而记录按 Sandbox 分目录，影响不到别的 Sandbox。
 
 ## 3. 记录目录 `run/<exec_id>/`
 
@@ -82,16 +82,16 @@ Agent 对它掌握的每个 Sandbox 扫描 `run/*`，对每个目录做如下判
 | 没有 `exit`，连不上 socket，Runtime 还活着 | Supervisor 死了。Agent 代写 `exit`，cause 为 `runtime_lost` |
 | Runtime 已经没了 | 所有未结束的 Exec，由 Agent 代写 `exit`，cause 为 `runtime_lost`（ADR-0017） |
 
-Agent 只接管带本 Node `stars.node=<node_id>` 标签的 Runtime 实例；其余带 `stars.managed` 的容器（例如宿主以新身份重新注册前、上一个身份留下的）直接 `rm -f`。Workspace 目录不动，只记一条日志：宣告 lost 可能是误判，那里也许是最后一份数据。
+Agent 只接管带本 Node `orrery.node=<node_id>` 标签的 Runtime 实例；其余带 `orrery.managed` 的容器（例如宿主以新身份重新注册前、上一个身份留下的）直接 `rm -f`。Workspace 目录不动，只记一条日志：宣告 lost 可能是误判，那里也许是最后一份数据。
 
 ## 9. Docker 与 Podman
 
 两者共用同一个 Docker Engine API 客户端，除 socket 外的区别见下面 Podman 一条。Podman 的兼容 API 支持 detach exec 和 CDI。
 
-- **Podman 只支持 rootless**。Agent 仍以 root 运行，连接 `/run/user/<uid>/podman/podman.sock`。`/.stars/run` 和 Workspace 在宿主上的属主按 rootless 的 uid 映射设置。端口转发进入网络命名空间时用 inspect 里的 `NetworkSettings.SandboxKey`，不用 PID。
+- **Podman 只支持 rootless**。Agent 仍以 root 运行，连接 `/run/user/<uid>/podman/podman.sock`。`/.orrery/run` 和 Workspace 在宿主上的属主按 rootless 的 uid 映射设置。端口转发进入网络命名空间时用 inspect 里的 `NetworkSettings.SandboxKey`，不用 PID。
 - **Create**：先用 Node 的 registry 凭据按 digest 拉取镜像（失败时为 `image_pull_failed`）。然后创建容器，配置如下：
-  - 标签 `stars.managed` 和 `stars.node=<node_id>`（§8）；
-  - Entrypoint 设为 `/.stars/bin/supervisor init`，Cmd 留空，`Init: false`；
+  - 标签 `orrery.managed` 和 `orrery.node=<node_id>`（§8）；
+  - Entrypoint 设为 `/.orrery/bin/supervisor init`，Cmd 留空，`Init: false`；
   - 挂载按 §2；
   - `CgroupnsMode: private` 必须显式传，因为默认值随版本和配置而变；
   - 设置 CPU、内存、PID 限额；
@@ -107,12 +107,12 @@ Agent 只接管带本 Node `stars.node=<node_id>` 标签的 Runtime 实例；其
 
 Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用，与 Coder 的 External workspace 一致（ADR-0009）。以后要升级，就是改成每个 User 一个宿主 uid、Workspace 目录 0700，再加 systemd 加固，接口不变。
 
-- **Create**：先执行 `systemctl set-property --runtime stars-sb-<id>.slice CPUQuota= MemoryMax= TasksMax=`，再执行 `systemd-run --unit=stars-sb-<id> --slice=stars-sb-<id>.slice supervisor init` 起占位进程。占位进程就是这个 Runtime 实例，只要它在，slice 就不会因为空闲被回收。回读直接读宿主上这个 slice 的 cgroup 文件。
-- **Exec**：执行 `systemd-run --unit=stars-exec-<exec_id> --slice=stars-sb-<id>.slice --uid=<Node 配置的非特权用户> supervisor run <exec_id>`。这是一个瞬态 service，与 Agent 进程无关。Agent 拒绝以 root 运行 Local Exec。瞬态 service 成功退出后，systemd 会直接卸载这个单元，不留退出状态，所以退出状态以 `exit` 文件为准。
-- **路径**：没有 §2 的挂载。cwd 是 Workspace 在宿主上的路径，同时设置 `STARS_WORKSPACE` 为这个路径；`PATH` 追加和 credential helper 用 Agent 自己的 bin 目录（`node-protocol.md`）；Supervisor 的记录目录是 `<data-root>/sandboxes/<id>/run`，`<data-root>` 即 Agent 的 `--data-root`。
+- **Create**：先执行 `systemctl set-property --runtime orrery-sb-<id>.slice CPUQuota= MemoryMax= TasksMax=`，再执行 `systemd-run --unit=orrery-sb-<id> --slice=orrery-sb-<id>.slice supervisor init` 起占位进程。占位进程就是这个 Runtime 实例，只要它在，slice 就不会因为空闲被回收。回读直接读宿主上这个 slice 的 cgroup 文件。
+- **Exec**：执行 `systemd-run --unit=orrery-exec-<exec_id> --slice=orrery-sb-<id>.slice --uid=<Node 配置的非特权用户> supervisor run <exec_id>`。这是一个瞬态 service，与 Agent 进程无关。Agent 拒绝以 root 运行 Local Exec。瞬态 service 成功退出后，systemd 会直接卸载这个单元，不留退出状态，所以退出状态以 `exit` 文件为准。
+- **路径**：没有 §2 的挂载。cwd 是 Workspace 在宿主上的路径，同时设置 `ORRERY_WORKSPACE` 为这个路径；`PATH` 追加和 credential helper 用 Agent 自己的 bin 目录（`node-protocol.md`）；Supervisor 的记录目录是 `<data-root>/sandboxes/<id>/run`，`<data-root>` 即 Agent 的 `--data-root`。
 - **Inspect**：看占位 unit 是否 active。
-- **Stop**：`systemctl stop stars-sb-<id>.slice`，停掉 slice 里的所有单元。
-- **GPU**：每个 `stars-exec-<exec_id>` 瞬态 service 带 `DevicePolicy=closed` 和 `DeviceAllow`（所分配卡的 `/dev/nvidia<N>`，以及 `/dev/nvidiactl`、`/dev/nvidia-uvm`），同时设置 `CUDA_VISIBLE_DEVICES`。注册时由能力自检验证：通过就报 `enforced`，否则报 `best_effort`。`runtime: local` 的请求接受 `best_effort`（ADR-0009）。
+- **Stop**：`systemctl stop orrery-sb-<id>.slice`，停掉 slice 里的所有单元。
+- **GPU**：每个 `orrery-exec-<exec_id>` 瞬态 service 带 `DevicePolicy=closed` 和 `DeviceAllow`（所分配卡的 `/dev/nvidia<N>`，以及 `/dev/nvidiactl`、`/dev/nvidia-uvm`），同时设置 `CUDA_VISIBLE_DEVICES`。注册时由能力自检验证：通过就报 `enforced`，否则报 `best_effort`。`runtime: local` 的请求接受 `best_effort`（ADR-0009）。
 - **Resource 与构建**：`resource_mount` 报 `unsupported`；`snapshot_build` 由 §12 的自检决定。
 
 ## 11. Node 的 Resource 缓存
@@ -128,7 +128,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 
 - **能力**：Node 能否构建与它用哪种 Runtime 无关，Podman 和 Local Node 配了 buildkitd 也能构建。`snapshot_build` 由注册时的自检决定：连不上端点或自检失败就报 `unsupported`。
 - **待验证**：实现时先验证 Go 客户端能否经 dockerd 的 `/grpc` 驱动它内置的 BuildKit。如果不行，Docker Node 改走 `ImageBuild` 加 session（Daytona 的做法），输入、凭据和资源的传法不变。
-- **资源限制**：Agent 仿照 Local Runtime 建一个带 CPU/内存上限的 slice（`stars-build-<version_id>.slice`，上限见 `defaults.md`），用 frontend 属性 `cgroup-parent` 指向它。实现时要验证 RUN 进程确实落在这个 slice 里；如果没有，改用 Node 级的构建上限。
+- **资源限制**：Agent 仿照 Local Runtime 建一个带 CPU/内存上限的 slice（`orrery-build-<version_id>.slice`，上限见 `defaults.md`），用 frontend 属性 `cgroup-parent` 指向它。实现时要验证 RUN 进程确实落在这个 slice 里；如果没有，改用 Node 级的构建上限。
 - **输入**：没有默认构建上下文。`contexts` 的每一项经 §11 的缓存拼出版本树，经 session 的 `LocalMounts` 作为命名上下文 `context:<name>` 提供；`base` 以 `context:base=docker-image://<registry>/…@<digest>` 注入。Dockerfile 的 `FROM` 也可以写外部 `ref@digest`。
 - **凭据**：拉取 `base` 和推送用的 registry 凭据由 session 的 authprovider 提供。
 - **Secret**：由 session 的 secretsprovider 提供，Dockerfile 用 `RUN --mount=type=secret,id=<id>` 读取。带 Secret 的构建一律 `no-cache`：secret 不进缓存键，而 buildkitd 的缓存由所有客户端共用，否则别的 User 用同一份 Dockerfile 就能命中缓存，拿到用 Secret 生成的层。

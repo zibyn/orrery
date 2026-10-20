@@ -7,12 +7,12 @@ import (
 
 	"github.com/google/uuid"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 // runtime.md §8: an Agent adopts only containers carrying its own
-// stars.node=<node_id> label, so two Agents sharing a daemon never take over
+// orrery.node=<node_id> label, so two Agents sharing a daemon never take over
 // each other's Runtimes.
 func TestContainerOwnedBy(t *testing.T) {
 	const mine = "11111111-1111-1111-1111-111111111111"
@@ -21,19 +21,19 @@ func TestContainerOwnedBy(t *testing.T) {
 		want   bool
 	}{
 		"this Node": {
-			labels: map[string]string{"stars.managed": "true", "stars.node": mine},
+			labels: map[string]string{"orrery.managed": "true", "orrery.node": mine},
 			want:   true,
 		},
 		"another Node": {
-			labels: map[string]string{"stars.managed": "true", "stars.node": "22222222-2222-2222-2222-222222222222"},
+			labels: map[string]string{"orrery.managed": "true", "orrery.node": "22222222-2222-2222-2222-222222222222"},
 			want:   false,
 		},
 		"no Node label": {
-			labels: map[string]string{"stars.managed": "true"},
+			labels: map[string]string{"orrery.managed": "true"},
 			want:   false,
 		},
 		"not managed": {
-			labels: map[string]string{"stars.node": mine},
+			labels: map[string]string{"orrery.node": mine},
 			want:   false,
 		},
 	} {

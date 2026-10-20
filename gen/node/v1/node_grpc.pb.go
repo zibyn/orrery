@@ -19,12 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Node_Redeem_FullMethodName         = "/stars.node.v1.Node/Redeem"
-	Node_Control_FullMethodName        = "/stars.node.v1.Node/Control"
-	Node_ExecOutput_FullMethodName     = "/stars.node.v1.Node/ExecOutput"
-	Node_Tunnel_FullMethodName         = "/stars.node.v1.Node/Tunnel"
-	Node_Presign_FullMethodName        = "/stars.node.v1.Node/Presign"
-	Node_SubmitManifest_FullMethodName = "/stars.node.v1.Node/SubmitManifest"
+	Node_Redeem_FullMethodName         = "/orrery.node.v1.Node/Redeem"
+	Node_Control_FullMethodName        = "/orrery.node.v1.Node/Control"
+	Node_ExecOutput_FullMethodName     = "/orrery.node.v1.Node/ExecOutput"
+	Node_Tunnel_FullMethodName         = "/orrery.node.v1.Node/Tunnel"
+	Node_Presign_FullMethodName        = "/orrery.node.v1.Node/Presign"
+	Node_SubmitManifest_FullMethodName = "/orrery.node.v1.Node/SubmitManifest"
 )
 
 // NodeClient is the client API for Node service.
@@ -274,7 +274,7 @@ type Node_SubmitManifestServer = grpc.ClientStreamingServer[ManifestChunk, Manif
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var Node_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "stars.node.v1.Node",
+	ServiceName: "orrery.node.v1.Node",
 	HandlerType: (*NodeServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

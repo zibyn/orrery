@@ -8,7 +8,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/zibyn/stars-sandbox/internal/mcpserver"
+	"github.com/zibyn/orrery/internal/mcpserver"
 )
 
 // runMCP serves the MCP Tool API over stdio (api.md §7). Stdout carries only
@@ -18,7 +18,7 @@ func runMCP(c *client, args []string, stderr io.Writer) error {
 		return fmt.Errorf("mcp takes no arguments")
 	}
 	// A Sandbox Token only works for POST /git/credential (api.md §1).
-	if strings.HasPrefix(c.Token(), "sst_") {
+	if strings.HasPrefix(c.Token(), "ors_") {
 		return fmt.Errorf("Sandbox Tokens are not accepted by the MCP server; use an API Token")
 	}
 	srv := mcpserver.New(c.Client, slog.New(slog.NewTextHandler(stderr, nil)))

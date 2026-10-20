@@ -266,10 +266,10 @@ func TestExecLogCap(t *testing.T) {
 	sandboxID := readyExecSandbox(t, admin, 128<<20)
 
 	capBytes := int64(1 << 20)
-	if v := os.Getenv("STARS_E2E_EXEC_LOG_CAP"); v != "" {
+	if v := os.Getenv("ORRERY_E2E_EXEC_LOG_CAP"); v != "" {
 		parsed, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || parsed <= 0 {
-			t.Fatalf("STARS_E2E_EXEC_LOG_CAP = %q", v)
+			t.Fatalf("ORRERY_E2E_EXEC_LOG_CAP = %q", v)
 		}
 		capBytes = parsed
 	}

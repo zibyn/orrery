@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	sessionCookieName = "stars_session"
+	sessionCookieName = "orrery_session"
 	sessionIdleTTL    = 24 * time.Hour
 )
 

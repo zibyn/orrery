@@ -109,7 +109,7 @@ func TestCacheEviction(t *testing.T) {
 		t.Fatal("the build added no BuildKit cache entries")
 	}
 	// The running Sandbox's image is pinned and must survive.
-	pinnedImage := dockerInspect(t, "stars-sandbox-"+a.ID, "{{.Image}}")
+	pinnedImage := dockerInspect(t, "orrery-"+a.ID, "{{.Image}}")
 
 	// Restart with a watermark no disk can satisfy: eviction keeps running and
 	// the free-space check cannot stop it mid-pass. Pins live in the data root,

@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
 // Runtime Provider names reported in Capabilities (node-protocol.md). One Node

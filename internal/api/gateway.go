@@ -16,13 +16,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/store"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/store"
 )
 
 const (
 	// gatewayCookieName carries the exchanged ticket on a port subdomain.
-	gatewayCookieName = "stars_port"
+	gatewayCookieName = "orrery_port"
 	// portTicketTTL is the signed URL's life (defaults.md, 60 s).
 	portTicketTTL = time.Minute
 	// portGrantTTL keeps a browser's cookie valid while it uses the app; the
@@ -127,7 +127,7 @@ func (s *Server) handlePortTicket(w http.ResponseWriter, r *http.Request, p *pri
 		return
 	}
 	if s.cfg.AppsDomain == "" {
-		writeProblem(w, "unavailable", "port forwarding is not configured: set STARS_APPS_DOMAIN")
+		writeProblem(w, "unavailable", "port forwarding is not configured: set ORRERY_APPS_DOMAIN")
 		return
 	}
 	t := portTicket{

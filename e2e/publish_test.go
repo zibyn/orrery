@@ -149,8 +149,8 @@ chmod -R a+rwX /workspace/src
 	cli.run(t, "", "resource", "pull", name+"@"+version.ID, dst)
 	assertTreesEqual(t, writeExpectedTree(t), dst)
 
-	// #90 retention: STARS_RESOURCE_VERSION_TTL=1s and
-	// STARS_TEST_PURGE_INTERVAL=1s (scripts/e2e.sh). A Sandbox pins the first
+	// #90 retention: ORRERY_RESOURCE_VERSION_TTL=1s and
+	// ORRERY_TEST_PURGE_INTERVAL=1s (scripts/e2e.sh). A Sandbox pins the first
 	// version; two more publishes make it non-current, and the middle one
 	// becomes a non-current version with no reference.
 	status, data = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
@@ -243,7 +243,7 @@ func TestPublishAgentRestart(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(src, "many"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	blob := bytes.Repeat([]byte("stars-sandbox\n"), 1<<19) // 8 MiB
+	blob := bytes.Repeat([]byte("orrery\n"), 1<<19) // 8 MiB
 	if err := os.WriteFile(filepath.Join(src, "blob.bin"), blob, 0o644); err != nil {
 		t.Fatal(err)
 	}

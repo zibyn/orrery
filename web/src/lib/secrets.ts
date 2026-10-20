@@ -3,7 +3,7 @@ import { m } from '@/paraglide/messages'
 // Mirror the server's Secret name rules (api.md §8 / internal/api/secrets.go)
 // so the form can reject a doomed request before it is sent.
 const RESERVED_NAMES = new Set(['PATH', 'HOME'])
-const RESERVED_PREFIXES = ['GIT_', 'LD_', 'STARS_']
+const RESERVED_PREFIXES = ['GIT_', 'LD_', 'ORRERY_']
 
 export function secretNameError(raw: string): string | null {
   const name = raw.trim()

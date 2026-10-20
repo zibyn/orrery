@@ -19,8 +19,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/nodeproto"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
 // startAgentNode enrolls and starts one Agent, waits for its Node to become
@@ -107,8 +107,8 @@ func TestMultiNodePlacement(t *testing.T) {
 			sb.NodeID, second.ID, first.ID)
 	}
 	// Every Runtime instance carries its Node's ownership label (runtime.md §8).
-	if got := sandboxContainerLabel(t, sb.ID, "stars.node"); got != second.ID {
-		t.Fatalf("container stars.node = %q, want %q", got, second.ID)
+	if got := sandboxContainerLabel(t, sb.ID, "orrery.node"); got != second.ID {
+		t.Fatalf("container orrery.node = %q, want %q", got, second.ID)
 	}
 
 	deleteSandbox(t, admin, sb.ID)
@@ -235,7 +235,7 @@ func rawHello(t *testing.T, client nodev1.NodeClient, nodeID, token string, majo
 func sandboxContainerLabel(t *testing.T, sandboxID, key string) string {
 	t.Helper()
 	out, err := exec.Command("docker", "inspect", "-f",
-		fmt.Sprintf(`{{index .Config.Labels %q}}`, key), "stars-sandbox-"+sandboxID).CombinedOutput()
+		fmt.Sprintf(`{{index .Config.Labels %q}}`, key), "orrery-"+sandboxID).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker inspect label %s: %v\n%s", key, err, out)
 	}

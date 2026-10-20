@@ -28,7 +28,7 @@ func TestSandboxTokenScope(t *testing.T) {
 
 	sandboxID := createReadySandbox(t, admin, fmt.Sprintf("token-%d", suffix), 256<<20)
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", "stars-sandbox-"+sandboxID).Run()
+		_ = exec.Command("docker", "rm", "-f", "orrery-"+sandboxID).Run()
 	})
 
 	run := func(argv ...string) (string, string) {
@@ -41,16 +41,16 @@ func TestSandboxTokenScope(t *testing.T) {
 		return string(stdout), string(stderr)
 	}
 
-	token, _ := run("sh", "-c", `printf %s "$STARS_SANDBOX_TOKEN"`)
-	if !strings.HasPrefix(token, "sst_") {
-		t.Fatalf("STARS_SANDBOX_TOKEN = %q, want an sst_ token", token)
+	token, _ := run("sh", "-c", `printf %s "$ORRERY_SANDBOX_TOKEN"`)
+	if !strings.HasPrefix(token, "ors_") {
+		t.Fatalf("ORRERY_SANDBOX_TOKEN = %q, want an ors_ token", token)
 	}
 	if !strings.Contains(token, sandboxID) {
-		t.Fatalf("STARS_SANDBOX_TOKEN %q does not name Sandbox %s", token, sandboxID)
+		t.Fatalf("ORRERY_SANDBOX_TOKEN %q does not name Sandbox %s", token, sandboxID)
 	}
-	starsURL, _ := run("sh", "-c", `printf %s "$STARS_URL"`)
-	if starsURL == "" {
-		t.Fatal("STARS_URL is empty; STARS_ACCESS_URL did not reach the Exec")
+	orreryURL, _ := run("sh", "-c", `printf %s "$ORRERY_URL"`)
+	if orreryURL == "" {
+		t.Fatal("ORRERY_URL is empty; ORRERY_ACCESS_URL did not reach the Exec")
 	}
 
 	// A Sandbox Token may only call POST /git/credential (api.md §1).
@@ -84,23 +84,23 @@ func TestSandboxTokenScope(t *testing.T) {
 	// The external CLI is staged and is the only credential helper. Installing
 	// git in the image proves the helper config travels in the environment,
 	// not in a file (node-protocol.md, runtime.md §2).
-	if out, _ := run("sh", "-c", `test -x /.stars/bin/stars-sandbox && echo ok`); strings.TrimSpace(out) != "ok" {
-		t.Fatal("the external CLI is not staged in /.stars/bin")
+	if out, _ := run("sh", "-c", `test -x /.orrery/bin/orrery && echo ok`); strings.TrimSpace(out) != "ok" {
+		t.Fatal("the external CLI is not staged in /.orrery/bin")
 	}
 	run("sh", "-c", `apk add --no-cache git >/dev/null 2>&1 || true`)
 	helpers, _ := run("sh", "-c", `git config --get-all credential.helper | sed '/^$/d'`)
-	if got := strings.TrimSpace(helpers); got != "/.stars/bin/stars-sandbox git-credential" {
+	if got := strings.TrimSpace(helpers); got != "/.orrery/bin/orrery git-credential" {
 		t.Fatalf("credential.helper = %q, want only the platform helper", got)
 	}
 	path, _ := run("sh", "-c", `printf %s "$PATH"`)
-	if !strings.HasSuffix(path, ":/.stars/bin") && path != "/.stars/bin" {
-		t.Fatalf("PATH = %q, want /.stars/bin appended", path)
+	if !strings.HasSuffix(path, ":/.orrery/bin") && path != "/.orrery/bin" {
+		t.Fatalf("PATH = %q, want /.orrery/bin appended", path)
 	}
 
 	// An unmatched host passes through: no output, and a not_found round
-	// trip through STARS_URL still exits 0 so git can try the next helper.
+	// trip through ORRERY_URL still exits 0 so git can try the next helper.
 	stdout, stderr := run("sh", "-c",
-		`printf 'protocol=https\nhost=github.com\n\n' | /.stars/bin/stars-sandbox git-credential get`)
+		`printf 'protocol=https\nhost=github.com\n\n' | /.orrery/bin/orrery git-credential get`)
 	if stdout != "" {
 		t.Fatalf("pass-through helper stdout = %q, want empty", stdout)
 	}
@@ -110,7 +110,7 @@ func TestSandboxTokenScope(t *testing.T) {
 
 	// The token is never persisted: not in the Workspace, not in the
 	// container configuration.
-	workspace, _ := run("sh", "-c", `grep -rl "$STARS_SANDBOX_TOKEN" /workspace 2>/dev/null || true`)
+	workspace, _ := run("sh", "-c", `grep -rl "$ORRERY_SANDBOX_TOKEN" /workspace 2>/dev/null || true`)
 	if workspace != "" {
 		t.Fatalf("the Sandbox Token is written under /workspace: %s", workspace)
 	}
@@ -118,7 +118,7 @@ func TestSandboxTokenScope(t *testing.T) {
 	if home != "" {
 		t.Fatalf("git credential files exist: %s", home)
 	}
-	out, err := exec.Command("docker", "inspect", "stars-sandbox-"+sandboxID).CombinedOutput()
+	out, err := exec.Command("docker", "inspect", "orrery-"+sandboxID).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker inspect: %v\n%s", err, out)
 	}

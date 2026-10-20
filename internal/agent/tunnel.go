@@ -16,10 +16,10 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/net/websocket"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/ptywire"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
-	"github.com/zibyn/stars-sandbox/internal/tunnel"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/ptywire"
+	"github.com/zibyn/orrery/internal/supervisor"
+	"github.com/zibyn/orrery/internal/tunnel"
 )
 
 // openTunnel dials the Tunnel RPC and serves the Agent's internal HTTP over it

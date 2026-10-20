@@ -1,11 +1,11 @@
-# Stars Sandbox Python SDK
+# Orrery Python SDK
 
 同步客户端，手写于 `httpx` 之上，对应 `docs/spec/api.md` §9。只依赖 httpx，Python ≥ 3.10，模型是 `dataclasses`。
 
 不发布到 PyPI，直接用 git 安装：
 
 ```bash
-pip install "git+https://github.com/zibyn/stars-sandbox#subdirectory=sdk/python"
+pip install "git+https://github.com/zibyn/orrery#subdirectory=sdk/python"
 ```
 
 版本号跟仓库 tag 锁步。
@@ -13,9 +13,9 @@ pip install "git+https://github.com/zibyn/stars-sandbox#subdirectory=sdk/python"
 ## 用法
 
 ```python
-from stars_sandbox import StarsSandbox, StarsSandboxError
+from orrery import Orrery, OrreryError
 
-with StarsSandbox("http://127.0.0.1:8080", token) as client:
+with Orrery("http://127.0.0.1:8080", token) as client:
     sandbox = client.create_sandbox(cpu=0.5, memory=128 << 20, idle_stop=0)
     sandbox = client.wait_for_sandbox(sandbox.id, "ready")
 
@@ -41,12 +41,12 @@ with StarsSandbox("http://127.0.0.1:8080", token) as client:
     client.delete_sandbox(sandbox.id)
 ```
 
-`StarsSandboxError` 带 `status`、`code`（`api.md` §2 的封闭目录）和 `detail`：
+`OrreryError` 带 `status`、`code`（`api.md` §2 的封闭目录）和 `detail`：
 
 ```python
 try:
     client.get_sandbox("missing")
-except StarsSandboxError as err:
+except OrreryError as err:
     print(err.status, err.code, err.detail)  # 404 not_found ...
 ```
 
@@ -68,9 +68,9 @@ python -m unittest discover -s sdk/python/tests
 `tests/parity.py` 对真实部署跑 M1 场景，由环境变量提供地址与 token：
 
 ```bash
-STARS_SANDBOX_API_URL=http://127.0.0.1:18080 \
-STARS_SANDBOX_TOKEN=<admin token> \
+ORRERY_SANDBOX_API_URL=http://127.0.0.1:18080 \
+ORRERY_SANDBOX_TOKEN=<admin token> \
 python sdk/python/tests/parity.py
 ```
 
-GPU 主机上再加 `STARS_PARITY_GPU=1`（可用 `STARS_E2E_GPU_SNAPSHOT` 指定平台 Snapshot 名，默认 `cuda`）跑 `gpu-sandbox-ready`。
+GPU 主机上再加 `ORRERY_PARITY_GPU=1`（可用 `ORRERY_E2E_GPU_SNAPSHOT` 指定平台 Snapshot 名，默认 `cuda`）跑 `gpu-sandbox-ready`。

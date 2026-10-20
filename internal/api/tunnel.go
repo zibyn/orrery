@@ -14,9 +14,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/store"
-	"github.com/zibyn/stars-sandbox/internal/tunnel"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/store"
+	"github.com/zibyn/orrery/internal/tunnel"
 )
 
 // tunnelDialTimeout bounds the Agent's reverse dial after OpenTunnel.

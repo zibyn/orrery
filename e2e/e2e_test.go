@@ -171,8 +171,8 @@ func TestPasswordSession(t *testing.T) {
 		t.Fatalf("password login: %d %s", resp.StatusCode, data)
 	}
 	cookies := resp.Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "stars_session" {
-		t.Fatalf("Set-Cookie = %v, want one stars_session", resp.Header.Values("Set-Cookie"))
+	if len(cookies) != 1 || cookies[0].Name != "orrery_session" {
+		t.Fatalf("Set-Cookie = %v, want one orrery_session", resp.Header.Values("Set-Cookie"))
 	}
 	session := cookies[0]
 	if !session.HttpOnly || !session.Secure || session.SameSite != http.SameSiteLaxMode || session.Path != "/" || session.Domain != "" {
@@ -393,7 +393,7 @@ func TestCLILogin(t *testing.T) {
 		"--username", username, "--name", fmt.Sprintf("cli-%d", suffix), "--password-stdin")
 	cmd.Stdin = strings.NewReader(password + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("stars-sandbox login: %v\n%s", err, out)
+		t.Fatalf("orrery login: %v\n%s", err, out)
 	}
 
 	out, err := exec.Command(cliPath(t), "--config", config, "user", "get", "me").CombinedOutput()
@@ -535,7 +535,7 @@ func ensureAdmin() (string, error) {
 // twice against an already bootstrapped database is harmless for the test.
 func bootstrap() error {
 	args := append(composeArgs(), "exec", "-T", "server",
-		"stars-sandbox-server", "bootstrap",
+		"orrery-server", "bootstrap",
 		"--username", adminUsername, "--email", adminEmail, "--password-stdin")
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = strings.NewReader(adminPassword + "\n")
@@ -598,7 +598,7 @@ func (r *cliRunner) run(t *testing.T, stdin string, args ...string) []byte {
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("stars-sandbox %s: %v\n%s", strings.Join(args, " "), err, out)
+		t.Fatalf("orrery %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return out
 }
@@ -648,7 +648,7 @@ func mustJSON(t *testing.T, data []byte, dst any) {
 }
 
 func apiURL() string {
-	if v := os.Getenv("STARS_E2E_API_URL"); v != "" {
+	if v := os.Getenv("ORRERY_E2E_API_URL"); v != "" {
 		return v
 	}
 	return "http://127.0.0.1:18080"
@@ -656,16 +656,16 @@ func apiURL() string {
 
 func cliPath(t *testing.T) string {
 	t.Helper()
-	v := os.Getenv("STARS_E2E_CLI")
+	v := os.Getenv("ORRERY_E2E_CLI")
 	if v == "" {
-		t.Fatal("STARS_E2E_CLI is not set; run make e2e")
+		t.Fatal("ORRERY_E2E_CLI is not set; run make e2e")
 	}
 	return v
 }
 
 func composeArgs() []string {
-	file := os.Getenv("STARS_E2E_COMPOSE_FILE")
-	project := os.Getenv("STARS_E2E_COMPOSE_PROJECT")
+	file := os.Getenv("ORRERY_E2E_COMPOSE_FILE")
+	project := os.Getenv("ORRERY_E2E_COMPOSE_PROJECT")
 	if file == "" || project == "" {
 		return nil
 	}

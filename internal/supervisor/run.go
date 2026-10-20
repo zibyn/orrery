@@ -22,7 +22,7 @@ import (
 )
 
 // RunMount is where the Sandbox's run directory is mounted (runtime.md §2).
-const RunMount = "/.stars/run"
+const RunMount = "/.orrery/run"
 
 const (
 	// SpecWait is the Supervisor's wait for the first `spec` message
@@ -71,10 +71,10 @@ type Exit struct {
 
 // Run is `supervisor run <exec_id>`. A container mounts the record directory
 // at RunMount; Local Runtime has no mounts, so its transient service names the
-// host path in STARS_RUN_ROOT (runtime.md §10).
+// host path in ORRERY_RUN_ROOT (runtime.md §10).
 func Run(execID string) error {
 	root := RunMount
-	if dir := os.Getenv("STARS_RUN_ROOT"); dir != "" {
+	if dir := os.Getenv("ORRERY_RUN_ROOT"); dir != "" {
 		root = dir
 	}
 	return RunIn(root, execID)
@@ -101,7 +101,7 @@ func RunIn(root, execID string) error {
 // abstract name because the host record path can exceed sun_path's 108-byte
 // limit (runtime.md §10); a container keeps the filesystem socket.
 func ctlSocketAddress(dir string) (string, bool) {
-	if socket := os.Getenv("STARS_CTL_SOCKET"); socket != "" {
+	if socket := os.Getenv("ORRERY_CTL_SOCKET"); socket != "" {
 		return socket, true
 	}
 	return filepath.Join(dir, "ctl.sock"), false

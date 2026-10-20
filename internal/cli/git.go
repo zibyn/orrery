@@ -10,13 +10,13 @@ import (
 	"os"
 	"strings"
 
-	starsclient "github.com/zibyn/stars-sandbox/client"
+	orreryclient "github.com/zibyn/orrery/client"
 )
 
 // runGit manages the caller's Git Account Links (ADR-0013).
 func runGit(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox git links|unlink <provider-id>")
+		return fmt.Errorf("usage: orrery git links|unlink <provider-id>")
 	}
 	switch args[0] {
 	case "links":
@@ -26,7 +26,7 @@ func runGit(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 0 {
-			return fmt.Errorf("usage: stars-sandbox git links")
+			return fmt.Errorf("usage: orrery git links")
 		}
 		links, err := c.ListGitLinks(ctx)
 		if err != nil {
@@ -40,7 +40,7 @@ func runGit(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: stars-sandbox git unlink <provider-id>")
+			return fmt.Errorf("usage: orrery git unlink <provider-id>")
 		}
 		link, err := c.DeleteGitLink(ctx, fs.Arg(0))
 		if err != nil {
@@ -71,7 +71,7 @@ func runGitCredential(c *client, args []string, stdout, stderr io.Writer) error 
 		return fmt.Errorf("unknown git-credential action %q", action)
 	}
 
-	body := starsclient.GitCredentialRequest{}
+	body := orreryclient.GitCredentialRequest{}
 	if host := input["host"]; host != "" {
 		body.Host = host
 	}
@@ -79,7 +79,7 @@ func runGitCredential(c *client, args []string, stdout, stderr io.Writer) error 
 	if err != nil {
 		// A missing link is not a helper failure: name the console page on
 		// stderr and let git try the next helper (api.md §3).
-		var problem *starsclient.Error
+		var problem *orreryclient.Error
 		if errors.As(err, &problem) && problem.Status == http.StatusNotFound {
 			if problem.AuthorizeURL != "" {
 				fmt.Fprintf(stderr, "authorize this Sandbox's owner for Git at %s\n", problem.AuthorizeURL)

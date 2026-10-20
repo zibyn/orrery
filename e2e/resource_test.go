@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zibyn/stars-sandbox/internal/manifest"
+	"github.com/zibyn/orrery/internal/manifest"
 )
 
 // TestResourceUploadChecksum is the "upload-checksum" acceptance scenario

@@ -14,8 +14,8 @@ func TestMCPRejectsSandboxTokensAndArguments(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"sandbox token", []string{"--token", "sst_0123456789abcdef_secret", "mcp"}, "Sandbox Token"},
-		{"extra argument", []string{"--token", "ssk_0123456789abcdef_secret", "mcp", "start"}, "takes no arguments"},
+		{"sandbox token", []string{"--token", "ors_0123456789abcdef_secret", "mcp"}, "Sandbox Token"},
+		{"extra argument", []string{"--token", "orr_0123456789abcdef_secret", "mcp", "start"}, "takes no arguments"},
 	} {
 		var stdout, stderr bytes.Buffer
 		code := Run(tc.args, &stdout, &stderr)

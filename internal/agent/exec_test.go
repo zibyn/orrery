@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc/metadata"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
-	"github.com/zibyn/stars-sandbox/internal/supervisor"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 // fakeExecOutput is an ExecOutput stream that acknowledges every batch.
@@ -267,7 +267,7 @@ func TestFinalizeLostEndsUnfinishedExecs(t *testing.T) {
 	}
 }
 
-// execEnv merges the platform's values last: PATH gets /.stars/bin appended
+// execEnv merges the platform's values last: PATH gets /.orrery/bin appended
 // without hiding the image's commands, and the helper config clears any
 // inherited helpers first (node-protocol.md).
 func TestExecEnv(t *testing.T) {
@@ -279,8 +279,8 @@ func TestExecEnv(t *testing.T) {
 	}
 	env := execEnv(caller, "/image/bin", binaryDir)
 
-	if got := env["PATH"]; got != "/usr/local/bin:/usr/bin:/.stars/bin" {
-		t.Fatalf("PATH = %q, want the caller PATH plus /.stars/bin", got)
+	if got := env["PATH"]; got != "/usr/local/bin:/usr/bin:/.orrery/bin" {
+		t.Fatalf("PATH = %q, want the caller PATH plus /.orrery/bin", got)
 	}
 	if env["KEEP"] != "kept" {
 		t.Fatalf("caller variable dropped: %v", env)
@@ -290,7 +290,7 @@ func TestExecEnv(t *testing.T) {
 		"GIT_CONFIG_KEY_0":   "credential.helper",
 		"GIT_CONFIG_VALUE_0": "",
 		"GIT_CONFIG_KEY_1":   "credential.helper",
-		"GIT_CONFIG_VALUE_1": "/.stars/bin/stars-sandbox git-credential",
+		"GIT_CONFIG_VALUE_1": "/.orrery/bin/orrery git-credential",
 	}
 	for key, want := range wantConfig {
 		if got := env[key]; got != want {
@@ -302,11 +302,11 @@ func TestExecEnv(t *testing.T) {
 	}
 
 	// Without a caller PATH the image's PATH is the base.
-	if got := execEnv(map[string]string{}, "/image/bin", binaryDir)["PATH"]; got != "/image/bin:/.stars/bin" {
+	if got := execEnv(map[string]string{}, "/image/bin", binaryDir)["PATH"]; got != "/image/bin:/.orrery/bin" {
 		t.Fatalf("image PATH base = %q", got)
 	}
 	// No base at all still exposes the platform binaries.
-	if got := execEnv(nil, "", binaryDir)["PATH"]; got != "/.stars/bin" {
+	if got := execEnv(nil, "", binaryDir)["PATH"]; got != "/.orrery/bin" {
 		t.Fatalf("empty PATH base = %q", got)
 	}
 }

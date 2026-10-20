@@ -971,7 +971,7 @@ func (x *Capabilities) GetGpus() []*GPU {
 type CapabilityEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Value         CapabilityValue        `protobuf:"varint,2,opt,name=value,proto3,enum=stars.node.v1.CapabilityValue" json:"value,omitempty"`
+	Value         CapabilityValue        `protobuf:"varint,2,opt,name=value,proto3,enum=orrery.node.v1.CapabilityValue" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3091,11 +3091,11 @@ var File_node_v1_node_proto protoreflect.FileDescriptor
 
 const file_node_v1_node_proto_rawDesc = "" +
 	"\n" +
-	"\x12node/v1/node.proto\x12\rstars.node.v1\"f\n" +
+	"\x12node/v1/node.proto\x12\x0eorrery.node.v1\"g\n" +
 	"\rManifestChunk\x12\x1d\n" +
 	"\n" +
-	"version_id\x18\x01 \x01(\tR\tversionId\x126\n" +
-	"\aentries\x18\x02 \x03(\v2\x1c.stars.node.v1.ManifestEntryR\aentries\"\xa9\x01\n" +
+	"version_id\x18\x01 \x01(\tR\tversionId\x127\n" +
+	"\aentries\x18\x02 \x03(\v2\x1d.orrery.node.v1.ManifestEntryR\aentries\"\xa9\x01\n" +
 	"\rManifestEntry\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x17\n" +
@@ -3125,16 +3125,16 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\x0eRedeemResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1d\n" +
 	"\n" +
-	"node_token\x18\x02 \x01(\tR\tnodeToken\"\xb6\x04\n" +
-	"\fAgentMessage\x12,\n" +
-	"\x05hello\x18\x01 \x01(\v2\x14.stars.node.v1.HelloH\x00R\x05hello\x128\n" +
-	"\theartbeat\x18\x02 \x01(\v2\x18.stars.node.v1.HeartbeatH\x00R\theartbeat\x12A\n" +
-	"\fcapabilities\x18\x03 \x01(\v2\x1b.stars.node.v1.CapabilitiesH\x00R\fcapabilities\x12K\n" +
-	"\x10sandbox_observed\x18\x04 \x01(\v2\x1e.stars.node.v1.SandboxObservedH\x00R\x0fsandboxObserved\x12Q\n" +
-	"\x12workspace_observed\x18\x05 \x01(\v2 .stars.node.v1.WorkspaceObservedH\x00R\x11workspaceObserved\x12E\n" +
-	"\x0ecommand_result\x18\x06 \x01(\v2\x1c.stars.node.v1.CommandResultH\x00R\rcommandResult\x12B\n" +
-	"\rexec_observed\x18\a \x01(\v2\x1b.stars.node.v1.ExecObservedH\x00R\fexecObserved\x12E\n" +
-	"\x0ebuild_observed\x18\b \x01(\v2\x1c.stars.node.v1.BuildObservedH\x00R\rbuildObservedB\t\n" +
+	"node_token\x18\x02 \x01(\tR\tnodeToken\"\xbe\x04\n" +
+	"\fAgentMessage\x12-\n" +
+	"\x05hello\x18\x01 \x01(\v2\x15.orrery.node.v1.HelloH\x00R\x05hello\x129\n" +
+	"\theartbeat\x18\x02 \x01(\v2\x19.orrery.node.v1.HeartbeatH\x00R\theartbeat\x12B\n" +
+	"\fcapabilities\x18\x03 \x01(\v2\x1c.orrery.node.v1.CapabilitiesH\x00R\fcapabilities\x12L\n" +
+	"\x10sandbox_observed\x18\x04 \x01(\v2\x1f.orrery.node.v1.SandboxObservedH\x00R\x0fsandboxObserved\x12R\n" +
+	"\x12workspace_observed\x18\x05 \x01(\v2!.orrery.node.v1.WorkspaceObservedH\x00R\x11workspaceObserved\x12F\n" +
+	"\x0ecommand_result\x18\x06 \x01(\v2\x1d.orrery.node.v1.CommandResultH\x00R\rcommandResult\x12C\n" +
+	"\rexec_observed\x18\a \x01(\v2\x1c.orrery.node.v1.ExecObservedH\x00R\fexecObserved\x12F\n" +
+	"\x0ebuild_observed\x18\b \x01(\v2\x1d.orrery.node.v1.BuildObservedH\x00R\rbuildObservedB\t\n" +
 	"\amessage\"\x87\x01\n" +
 	"\x05Hello\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12#\n" +
@@ -3142,12 +3142,12 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\vproto_major\x18\x03 \x01(\rR\n" +
 	"protoMajor\x12\x1f\n" +
 	"\vproto_minor\x18\x04 \x01(\rR\n" +
-	"protoMinor\"\xda\x02\n" +
+	"protoMinor\"\xdb\x02\n" +
 	"\tHeartbeat\x12%\n" +
 	"\x0eruntime_health\x18\x01 \x01(\tR\rruntimeHealth\x12\x1b\n" +
-	"\tdisk_free\x18\x02 \x01(\x04R\bdiskFree\x127\n" +
+	"\tdisk_free\x18\x02 \x01(\x04R\bdiskFree\x128\n" +
 	"\n" +
-	"gpu_health\x18\x03 \x03(\v2\x18.stars.node.v1.GPUHealthR\tgpuHealth\x12\x1b\n" +
+	"gpu_health\x18\x03 \x03(\v2\x19.orrery.node.v1.GPUHealthR\tgpuHealth\x12\x1b\n" +
 	"\tcpu_cores\x18\x04 \x01(\x01R\bcpuCores\x12!\n" +
 	"\fmemory_bytes\x18\x05 \x01(\x04R\vmemoryBytes\x12!\n" +
 	"\freserved_cpu\x18\x06 \x01(\x01R\vreservedCpu\x12'\n" +
@@ -3157,14 +3157,14 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\x0edisk_watermark\x18\t \x01(\x01R\rdiskWatermark\"5\n" +
 	"\tGPUHealth\x12\x12\n" +
 	"\x04uuid\x18\x01 \x01(\tR\x04uuid\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\tR\x05state\"\x9b\x01\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\"\x9d\x01\n" +
 	"\fCapabilities\x12)\n" +
-	"\x10runtime_provider\x18\x01 \x01(\tR\x0fruntimeProvider\x128\n" +
-	"\aentries\x18\x02 \x03(\v2\x1e.stars.node.v1.CapabilityEntryR\aentries\x12&\n" +
-	"\x04gpus\x18\x03 \x03(\v2\x12.stars.node.v1.GPUR\x04gpus\"[\n" +
+	"\x10runtime_provider\x18\x01 \x01(\tR\x0fruntimeProvider\x129\n" +
+	"\aentries\x18\x02 \x03(\v2\x1f.orrery.node.v1.CapabilityEntryR\aentries\x12'\n" +
+	"\x04gpus\x18\x03 \x03(\v2\x13.orrery.node.v1.GPUR\x04gpus\"\\\n" +
 	"\x0fCapabilityEntry\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x124\n" +
-	"\x05value\x18\x02 \x01(\x0e2\x1e.stars.node.v1.CapabilityValueR\x05value\"/\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x125\n" +
+	"\x05value\x18\x02 \x01(\x0e2\x1f.orrery.node.v1.CapabilityValueR\x05value\"/\n" +
 	"\x03GPU\x12\x12\n" +
 	"\x04uuid\x18\x01 \x01(\tR\x04uuid\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\"|\n" +
@@ -3196,22 +3196,22 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"version_id\x18\x01 \x01(\tR\tversionId\x12\x16\n" +
 	"\x06digest\x18\x02 \x01(\tR\x06digest\x12!\n" +
 	"\ffrom_digests\x18\x03 \x03(\tR\vfromDigests\x12\x14\n" +
-	"\x05cause\x18\x04 \x01(\tR\x05cause\"\xcc\x05\n" +
-	"\x0eControlMessage\x126\n" +
-	"\thello_ack\x18\x01 \x01(\v2\x17.stars.node.v1.HelloAckH\x00R\bhelloAck\x12T\n" +
-	"\x13provision_workspace\x18\x02 \x01(\v2!.stars.node.v1.ProvisionWorkspaceH\x00R\x12provisionWorkspace\x12K\n" +
-	"\x10delete_workspace\x18\x03 \x01(\v2\x1e.stars.node.v1.DeleteWorkspaceH\x00R\x0fdeleteWorkspace\x12E\n" +
-	"\x0ecreate_sandbox\x18\x04 \x01(\v2\x1c.stars.node.v1.CreateSandboxH\x00R\rcreateSandbox\x12?\n" +
-	"\fstop_sandbox\x18\x05 \x01(\v2\x1a.stars.node.v1.StopSandboxH\x00R\vstopSandbox\x129\n" +
+	"\x05cause\x18\x04 \x01(\tR\x05cause\"\xd6\x05\n" +
+	"\x0eControlMessage\x127\n" +
+	"\thello_ack\x18\x01 \x01(\v2\x18.orrery.node.v1.HelloAckH\x00R\bhelloAck\x12U\n" +
+	"\x13provision_workspace\x18\x02 \x01(\v2\".orrery.node.v1.ProvisionWorkspaceH\x00R\x12provisionWorkspace\x12L\n" +
+	"\x10delete_workspace\x18\x03 \x01(\v2\x1f.orrery.node.v1.DeleteWorkspaceH\x00R\x0fdeleteWorkspace\x12F\n" +
+	"\x0ecreate_sandbox\x18\x04 \x01(\v2\x1d.orrery.node.v1.CreateSandboxH\x00R\rcreateSandbox\x12@\n" +
+	"\fstop_sandbox\x18\x05 \x01(\v2\x1b.orrery.node.v1.StopSandboxH\x00R\vstopSandbox\x12:\n" +
 	"\n" +
-	"start_exec\x18\x06 \x01(\v2\x18.stars.node.v1.StartExecH\x00R\tstartExec\x12<\n" +
-	"\vcancel_exec\x18\a \x01(\v2\x19.stars.node.v1.CancelExecH\x00R\n" +
-	"cancelExec\x12<\n" +
-	"\vopen_tunnel\x18\b \x01(\v2\x19.stars.node.v1.OpenTunnelH\x00R\n" +
-	"openTunnel\x12N\n" +
-	"\x11publish_workspace\x18\t \x01(\v2\x1f.stars.node.v1.PublishWorkspaceH\x00R\x10publishWorkspace\x12E\n" +
+	"start_exec\x18\x06 \x01(\v2\x19.orrery.node.v1.StartExecH\x00R\tstartExec\x12=\n" +
+	"\vcancel_exec\x18\a \x01(\v2\x1a.orrery.node.v1.CancelExecH\x00R\n" +
+	"cancelExec\x12=\n" +
+	"\vopen_tunnel\x18\b \x01(\v2\x1a.orrery.node.v1.OpenTunnelH\x00R\n" +
+	"openTunnel\x12O\n" +
+	"\x11publish_workspace\x18\t \x01(\v2 .orrery.node.v1.PublishWorkspaceH\x00R\x10publishWorkspace\x12F\n" +
 	"\x0ebuild_snapshot\x18\n" +
-	" \x01(\v2\x1c.stars.node.v1.BuildSnapshotH\x00R\rbuildSnapshotB\t\n" +
+	" \x01(\v2\x1d.orrery.node.v1.BuildSnapshotH\x00R\rbuildSnapshotB\t\n" +
 	"\amessage\"\x87\x01\n" +
 	"\x10PublishWorkspace\x12\x1d\n" +
 	"\n" +
@@ -3219,7 +3219,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\n" +
 	"version_id\x18\x02 \x01(\tR\tversionId\x12!\n" +
 	"\fworkspace_id\x18\x03 \x01(\tR\vworkspaceId\x12\x12\n" +
-	"\x04path\x18\x04 \x01(\tR\x04path\"\xb6\x03\n" +
+	"\x04path\x18\x04 \x01(\tR\x04path\"\xb9\x03\n" +
 	"\rBuildSnapshot\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x1d\n" +
@@ -3232,10 +3232,10 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"dockerfile\x18\x05 \x01(\tR\n" +
 	"dockerfile\x12\x1f\n" +
 	"\vbase_digest\x18\x06 \x01(\tR\n" +
-	"baseDigest\x127\n" +
-	"\bcontexts\x18\a \x03(\v2\x1b.stars.node.v1.BuildContextR\bcontexts\x124\n" +
-	"\asecrets\x18\b \x03(\v2\x1a.stars.node.v1.BuildSecretR\asecrets\x12-\n" +
-	"\x06limits\x18\t \x01(\v2\x15.stars.node.v1.LimitsR\x06limits\x12'\n" +
+	"baseDigest\x128\n" +
+	"\bcontexts\x18\a \x03(\v2\x1c.orrery.node.v1.BuildContextR\bcontexts\x125\n" +
+	"\asecrets\x18\b \x03(\v2\x1b.orrery.node.v1.BuildSecretR\asecrets\x12.\n" +
+	"\x06limits\x18\t \x01(\v2\x16.orrery.node.v1.LimitsR\x06limits\x12'\n" +
 	"\x0ftimeout_seconds\x18\n" +
 	" \x01(\x03R\x0etimeoutSeconds\x12'\n" +
 	"\x0fpush_repository\x18\v \x01(\tR\x0epushRepository\"<\n" +
@@ -3244,15 +3244,15 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\"3\n" +
 	"\vBuildSecret\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value\"\xce\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\"\xd0\x01\n" +
 	"\n" +
 	"OpenTunnel\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x1b\n" +
-	"\ttunnel_id\x18\x02 \x01(\tR\btunnelId\x129\n" +
+	"\ttunnel_id\x18\x02 \x01(\tR\btunnelId\x12:\n" +
 	"\n" +
-	"agent_http\x18\x03 \x01(\v2\x18.stars.node.v1.AgentHTTPH\x00R\tagentHttp\x12?\n" +
-	"\fsandbox_port\x18\x04 \x01(\v2\x1a.stars.node.v1.SandboxPortH\x00R\vsandboxPortB\b\n" +
+	"agent_http\x18\x03 \x01(\v2\x19.orrery.node.v1.AgentHTTPH\x00R\tagentHttp\x12@\n" +
+	"\fsandbox_port\x18\x04 \x01(\v2\x1b.orrery.node.v1.SandboxPortH\x00R\vsandboxPortB\b\n" +
 	"\x06target\"\v\n" +
 	"\tAgentHTTP\"@\n" +
 	"\vSandboxPort\x12\x1d\n" +
@@ -3278,7 +3278,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x03R\n" +
-	"generation\"\xd5\x02\n" +
+	"generation\"\xd8\x02\n" +
 	"\rCreateSandbox\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x1d\n" +
@@ -3287,11 +3287,11 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x03 \x01(\x03R\n" +
 	"generation\x12!\n" +
-	"\fimage_digest\x18\x04 \x01(\tR\vimageDigest\x12-\n" +
-	"\x06limits\x18\x05 \x01(\v2\x15.stars.node.v1.LimitsR\x06limits\x12;\n" +
-	"\tworkspace\x18\x06 \x01(\v2\x1d.stars.node.v1.WorkspaceMountR\tworkspace\x12\x1b\n" +
-	"\tgpu_uuids\x18\a \x03(\tR\bgpuUuids\x12:\n" +
-	"\tresources\x18\b \x03(\v2\x1c.stars.node.v1.ResourceMountR\tresources\"?\n" +
+	"\fimage_digest\x18\x04 \x01(\tR\vimageDigest\x12.\n" +
+	"\x06limits\x18\x05 \x01(\v2\x16.orrery.node.v1.LimitsR\x06limits\x12<\n" +
+	"\tworkspace\x18\x06 \x01(\v2\x1e.orrery.node.v1.WorkspaceMountR\tworkspace\x12\x1b\n" +
+	"\tgpu_uuids\x18\a \x03(\tR\bgpuUuids\x12;\n" +
+	"\tresources\x18\b \x03(\v2\x1d.orrery.node.v1.ResourceMountR\tresources\"?\n" +
 	"\rResourceMount\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x14\n" +
 	"\x05mount\x18\x02 \x01(\tR\x05mount\"2\n" +
@@ -3308,7 +3308,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"sandbox_id\x18\x02 \x01(\tR\tsandboxId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x03R\n" +
-	"generation\"\xc7\x04\n" +
+	"generation\"\xca\x04\n" +
 	"\tStartExec\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x17\n" +
@@ -3318,16 +3318,16 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x04 \x01(\x03R\n" +
 	"generation\x12\x12\n" +
-	"\x04argv\x18\x05 \x03(\tR\x04argv\x123\n" +
-	"\x03env\x18\x06 \x03(\v2!.stars.node.v1.StartExec.EnvEntryR\x03env\x12F\n" +
+	"\x04argv\x18\x05 \x03(\tR\x04argv\x124\n" +
+	"\x03env\x18\x06 \x03(\v2\".orrery.node.v1.StartExec.EnvEntryR\x03env\x12G\n" +
 	"\n" +
-	"secret_env\x18\a \x03(\v2'.stars.node.v1.StartExec.SecretEnvEntryR\tsecretEnv\x12\x10\n" +
+	"secret_env\x18\a \x03(\v2(.orrery.node.v1.StartExec.SecretEnvEntryR\tsecretEnv\x12\x10\n" +
 	"\x03cwd\x18\b \x01(\tR\x03cwd\x12'\n" +
 	"\x0ftimeout_seconds\x18\t \x01(\x03R\x0etimeoutSeconds\x12\x17\n" +
 	"\alog_cap\x18\n" +
 	" \x01(\x03R\x06logCap\x12\x14\n" +
-	"\x05stdin\x18\v \x01(\fR\x05stdin\x12(\n" +
-	"\x03pty\x18\f \x01(\v2\x16.stars.node.v1.PtySpecR\x03pty\x12(\n" +
+	"\x05stdin\x18\v \x01(\fR\x05stdin\x12)\n" +
+	"\x03pty\x18\f \x01(\v2\x17.orrery.node.v1.PtySpecR\x03pty\x12(\n" +
 	"\x10pty_idle_seconds\x18\r \x01(\x03R\x0eptyIdleSeconds\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -3349,10 +3349,10 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\x06signal\x18\x06 \x01(\x05H\x01R\x06signal\x88\x01\x01B\f\n" +
 	"\n" +
 	"_exit_codeB\t\n" +
-	"\a_signal\"Z\n" +
+	"\a_signal\"[\n" +
 	"\vOutputBatch\x12\x17\n" +
-	"\aexec_id\x18\x01 \x01(\tR\x06execId\x122\n" +
-	"\x06frames\x18\x02 \x03(\v2\x1a.stars.node.v1.OutputFrameR\x06frames\"C\n" +
+	"\aexec_id\x18\x01 \x01(\tR\x06execId\x123\n" +
+	"\x06frames\x18\x02 \x03(\v2\x1b.orrery.node.v1.OutputFrameR\x06frames\"C\n" +
 	"\tOutputAck\x12\x17\n" +
 	"\aexec_id\x18\x01 \x01(\tR\x06execId\x12\x1d\n" +
 	"\n" +
@@ -3364,15 +3364,15 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\x1cCAPABILITY_VALUE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19CAPABILITY_VALUE_ENFORCED\x10\x01\x12 \n" +
 	"\x1cCAPABILITY_VALUE_BEST_EFFORT\x10\x02\x12 \n" +
-	"\x1cCAPABILITY_VALUE_UNSUPPORTED\x10\x032\xbe\x03\n" +
-	"\x04Node\x12E\n" +
-	"\x06Redeem\x12\x1c.stars.node.v1.RedeemRequest\x1a\x1d.stars.node.v1.RedeemResponse\x12I\n" +
-	"\aControl\x12\x1b.stars.node.v1.AgentMessage\x1a\x1d.stars.node.v1.ControlMessage(\x010\x01\x12F\n" +
+	"\x1cCAPABILITY_VALUE_UNSUPPORTED\x10\x032\xca\x03\n" +
+	"\x04Node\x12G\n" +
+	"\x06Redeem\x12\x1d.orrery.node.v1.RedeemRequest\x1a\x1e.orrery.node.v1.RedeemResponse\x12K\n" +
+	"\aControl\x12\x1c.orrery.node.v1.AgentMessage\x1a\x1e.orrery.node.v1.ControlMessage(\x010\x01\x12H\n" +
 	"\n" +
-	"ExecOutput\x12\x1a.stars.node.v1.OutputBatch\x1a\x18.stars.node.v1.OutputAck(\x010\x01\x12D\n" +
-	"\x06Tunnel\x12\x1a.stars.node.v1.TunnelFrame\x1a\x1a.stars.node.v1.TunnelFrame(\x010\x01\x12H\n" +
-	"\aPresign\x12\x1d.stars.node.v1.PresignRequest\x1a\x1e.stars.node.v1.PresignResponse\x12L\n" +
-	"\x0eSubmitManifest\x12\x1c.stars.node.v1.ManifestChunk\x1a\x1a.stars.node.v1.ManifestAck(\x01B3Z1github.com/zibyn/stars-sandbox/gen/node/v1;nodev1b\x06proto3"
+	"ExecOutput\x12\x1b.orrery.node.v1.OutputBatch\x1a\x19.orrery.node.v1.OutputAck(\x010\x01\x12F\n" +
+	"\x06Tunnel\x12\x1b.orrery.node.v1.TunnelFrame\x1a\x1b.orrery.node.v1.TunnelFrame(\x010\x01\x12J\n" +
+	"\aPresign\x12\x1e.orrery.node.v1.PresignRequest\x1a\x1f.orrery.node.v1.PresignResponse\x12N\n" +
+	"\x0eSubmitManifest\x12\x1d.orrery.node.v1.ManifestChunk\x1a\x1b.orrery.node.v1.ManifestAck(\x01B,Z*github.com/zibyn/orrery/gen/node/v1;nodev1b\x06proto3"
 
 var (
 	file_node_v1_node_proto_rawDescOnce sync.Once
@@ -3389,100 +3389,100 @@ func file_node_v1_node_proto_rawDescGZIP() []byte {
 var file_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_node_v1_node_proto_goTypes = []any{
-	(CapabilityValue)(0),       // 0: stars.node.v1.CapabilityValue
-	(*ManifestChunk)(nil),      // 1: stars.node.v1.ManifestChunk
-	(*ManifestEntry)(nil),      // 2: stars.node.v1.ManifestEntry
-	(*ManifestAck)(nil),        // 3: stars.node.v1.ManifestAck
-	(*PresignRequest)(nil),     // 4: stars.node.v1.PresignRequest
-	(*PresignResponse)(nil),    // 5: stars.node.v1.PresignResponse
-	(*RedeemRequest)(nil),      // 6: stars.node.v1.RedeemRequest
-	(*RedeemResponse)(nil),     // 7: stars.node.v1.RedeemResponse
-	(*AgentMessage)(nil),       // 8: stars.node.v1.AgentMessage
-	(*Hello)(nil),              // 9: stars.node.v1.Hello
-	(*Heartbeat)(nil),          // 10: stars.node.v1.Heartbeat
-	(*GPUHealth)(nil),          // 11: stars.node.v1.GPUHealth
-	(*Capabilities)(nil),       // 12: stars.node.v1.Capabilities
-	(*CapabilityEntry)(nil),    // 13: stars.node.v1.CapabilityEntry
-	(*GPU)(nil),                // 14: stars.node.v1.GPU
-	(*SandboxObserved)(nil),    // 15: stars.node.v1.SandboxObserved
-	(*WorkspaceObserved)(nil),  // 16: stars.node.v1.WorkspaceObserved
-	(*CommandResult)(nil),      // 17: stars.node.v1.CommandResult
-	(*ExecObserved)(nil),       // 18: stars.node.v1.ExecObserved
-	(*BuildObserved)(nil),      // 19: stars.node.v1.BuildObserved
-	(*ControlMessage)(nil),     // 20: stars.node.v1.ControlMessage
-	(*PublishWorkspace)(nil),   // 21: stars.node.v1.PublishWorkspace
-	(*BuildSnapshot)(nil),      // 22: stars.node.v1.BuildSnapshot
-	(*BuildContext)(nil),       // 23: stars.node.v1.BuildContext
-	(*BuildSecret)(nil),        // 24: stars.node.v1.BuildSecret
-	(*OpenTunnel)(nil),         // 25: stars.node.v1.OpenTunnel
-	(*AgentHTTP)(nil),          // 26: stars.node.v1.AgentHTTP
-	(*SandboxPort)(nil),        // 27: stars.node.v1.SandboxPort
-	(*TunnelFrame)(nil),        // 28: stars.node.v1.TunnelFrame
-	(*PtySpec)(nil),            // 29: stars.node.v1.PtySpec
-	(*ProvisionWorkspace)(nil), // 30: stars.node.v1.ProvisionWorkspace
-	(*DeleteWorkspace)(nil),    // 31: stars.node.v1.DeleteWorkspace
-	(*CreateSandbox)(nil),      // 32: stars.node.v1.CreateSandbox
-	(*ResourceMount)(nil),      // 33: stars.node.v1.ResourceMount
-	(*Limits)(nil),             // 34: stars.node.v1.Limits
-	(*WorkspaceMount)(nil),     // 35: stars.node.v1.WorkspaceMount
-	(*StopSandbox)(nil),        // 36: stars.node.v1.StopSandbox
-	(*StartExec)(nil),          // 37: stars.node.v1.StartExec
-	(*CancelExec)(nil),         // 38: stars.node.v1.CancelExec
-	(*OutputFrame)(nil),        // 39: stars.node.v1.OutputFrame
-	(*OutputBatch)(nil),        // 40: stars.node.v1.OutputBatch
-	(*OutputAck)(nil),          // 41: stars.node.v1.OutputAck
-	(*HelloAck)(nil),           // 42: stars.node.v1.HelloAck
-	nil,                        // 43: stars.node.v1.StartExec.EnvEntry
-	nil,                        // 44: stars.node.v1.StartExec.SecretEnvEntry
+	(CapabilityValue)(0),       // 0: orrery.node.v1.CapabilityValue
+	(*ManifestChunk)(nil),      // 1: orrery.node.v1.ManifestChunk
+	(*ManifestEntry)(nil),      // 2: orrery.node.v1.ManifestEntry
+	(*ManifestAck)(nil),        // 3: orrery.node.v1.ManifestAck
+	(*PresignRequest)(nil),     // 4: orrery.node.v1.PresignRequest
+	(*PresignResponse)(nil),    // 5: orrery.node.v1.PresignResponse
+	(*RedeemRequest)(nil),      // 6: orrery.node.v1.RedeemRequest
+	(*RedeemResponse)(nil),     // 7: orrery.node.v1.RedeemResponse
+	(*AgentMessage)(nil),       // 8: orrery.node.v1.AgentMessage
+	(*Hello)(nil),              // 9: orrery.node.v1.Hello
+	(*Heartbeat)(nil),          // 10: orrery.node.v1.Heartbeat
+	(*GPUHealth)(nil),          // 11: orrery.node.v1.GPUHealth
+	(*Capabilities)(nil),       // 12: orrery.node.v1.Capabilities
+	(*CapabilityEntry)(nil),    // 13: orrery.node.v1.CapabilityEntry
+	(*GPU)(nil),                // 14: orrery.node.v1.GPU
+	(*SandboxObserved)(nil),    // 15: orrery.node.v1.SandboxObserved
+	(*WorkspaceObserved)(nil),  // 16: orrery.node.v1.WorkspaceObserved
+	(*CommandResult)(nil),      // 17: orrery.node.v1.CommandResult
+	(*ExecObserved)(nil),       // 18: orrery.node.v1.ExecObserved
+	(*BuildObserved)(nil),      // 19: orrery.node.v1.BuildObserved
+	(*ControlMessage)(nil),     // 20: orrery.node.v1.ControlMessage
+	(*PublishWorkspace)(nil),   // 21: orrery.node.v1.PublishWorkspace
+	(*BuildSnapshot)(nil),      // 22: orrery.node.v1.BuildSnapshot
+	(*BuildContext)(nil),       // 23: orrery.node.v1.BuildContext
+	(*BuildSecret)(nil),        // 24: orrery.node.v1.BuildSecret
+	(*OpenTunnel)(nil),         // 25: orrery.node.v1.OpenTunnel
+	(*AgentHTTP)(nil),          // 26: orrery.node.v1.AgentHTTP
+	(*SandboxPort)(nil),        // 27: orrery.node.v1.SandboxPort
+	(*TunnelFrame)(nil),        // 28: orrery.node.v1.TunnelFrame
+	(*PtySpec)(nil),            // 29: orrery.node.v1.PtySpec
+	(*ProvisionWorkspace)(nil), // 30: orrery.node.v1.ProvisionWorkspace
+	(*DeleteWorkspace)(nil),    // 31: orrery.node.v1.DeleteWorkspace
+	(*CreateSandbox)(nil),      // 32: orrery.node.v1.CreateSandbox
+	(*ResourceMount)(nil),      // 33: orrery.node.v1.ResourceMount
+	(*Limits)(nil),             // 34: orrery.node.v1.Limits
+	(*WorkspaceMount)(nil),     // 35: orrery.node.v1.WorkspaceMount
+	(*StopSandbox)(nil),        // 36: orrery.node.v1.StopSandbox
+	(*StartExec)(nil),          // 37: orrery.node.v1.StartExec
+	(*CancelExec)(nil),         // 38: orrery.node.v1.CancelExec
+	(*OutputFrame)(nil),        // 39: orrery.node.v1.OutputFrame
+	(*OutputBatch)(nil),        // 40: orrery.node.v1.OutputBatch
+	(*OutputAck)(nil),          // 41: orrery.node.v1.OutputAck
+	(*HelloAck)(nil),           // 42: orrery.node.v1.HelloAck
+	nil,                        // 43: orrery.node.v1.StartExec.EnvEntry
+	nil,                        // 44: orrery.node.v1.StartExec.SecretEnvEntry
 }
 var file_node_v1_node_proto_depIdxs = []int32{
-	2,  // 0: stars.node.v1.ManifestChunk.entries:type_name -> stars.node.v1.ManifestEntry
-	9,  // 1: stars.node.v1.AgentMessage.hello:type_name -> stars.node.v1.Hello
-	10, // 2: stars.node.v1.AgentMessage.heartbeat:type_name -> stars.node.v1.Heartbeat
-	12, // 3: stars.node.v1.AgentMessage.capabilities:type_name -> stars.node.v1.Capabilities
-	15, // 4: stars.node.v1.AgentMessage.sandbox_observed:type_name -> stars.node.v1.SandboxObserved
-	16, // 5: stars.node.v1.AgentMessage.workspace_observed:type_name -> stars.node.v1.WorkspaceObserved
-	17, // 6: stars.node.v1.AgentMessage.command_result:type_name -> stars.node.v1.CommandResult
-	18, // 7: stars.node.v1.AgentMessage.exec_observed:type_name -> stars.node.v1.ExecObserved
-	19, // 8: stars.node.v1.AgentMessage.build_observed:type_name -> stars.node.v1.BuildObserved
-	11, // 9: stars.node.v1.Heartbeat.gpu_health:type_name -> stars.node.v1.GPUHealth
-	13, // 10: stars.node.v1.Capabilities.entries:type_name -> stars.node.v1.CapabilityEntry
-	14, // 11: stars.node.v1.Capabilities.gpus:type_name -> stars.node.v1.GPU
-	0,  // 12: stars.node.v1.CapabilityEntry.value:type_name -> stars.node.v1.CapabilityValue
-	42, // 13: stars.node.v1.ControlMessage.hello_ack:type_name -> stars.node.v1.HelloAck
-	30, // 14: stars.node.v1.ControlMessage.provision_workspace:type_name -> stars.node.v1.ProvisionWorkspace
-	31, // 15: stars.node.v1.ControlMessage.delete_workspace:type_name -> stars.node.v1.DeleteWorkspace
-	32, // 16: stars.node.v1.ControlMessage.create_sandbox:type_name -> stars.node.v1.CreateSandbox
-	36, // 17: stars.node.v1.ControlMessage.stop_sandbox:type_name -> stars.node.v1.StopSandbox
-	37, // 18: stars.node.v1.ControlMessage.start_exec:type_name -> stars.node.v1.StartExec
-	38, // 19: stars.node.v1.ControlMessage.cancel_exec:type_name -> stars.node.v1.CancelExec
-	25, // 20: stars.node.v1.ControlMessage.open_tunnel:type_name -> stars.node.v1.OpenTunnel
-	21, // 21: stars.node.v1.ControlMessage.publish_workspace:type_name -> stars.node.v1.PublishWorkspace
-	22, // 22: stars.node.v1.ControlMessage.build_snapshot:type_name -> stars.node.v1.BuildSnapshot
-	23, // 23: stars.node.v1.BuildSnapshot.contexts:type_name -> stars.node.v1.BuildContext
-	24, // 24: stars.node.v1.BuildSnapshot.secrets:type_name -> stars.node.v1.BuildSecret
-	34, // 25: stars.node.v1.BuildSnapshot.limits:type_name -> stars.node.v1.Limits
-	26, // 26: stars.node.v1.OpenTunnel.agent_http:type_name -> stars.node.v1.AgentHTTP
-	27, // 27: stars.node.v1.OpenTunnel.sandbox_port:type_name -> stars.node.v1.SandboxPort
-	34, // 28: stars.node.v1.CreateSandbox.limits:type_name -> stars.node.v1.Limits
-	35, // 29: stars.node.v1.CreateSandbox.workspace:type_name -> stars.node.v1.WorkspaceMount
-	33, // 30: stars.node.v1.CreateSandbox.resources:type_name -> stars.node.v1.ResourceMount
-	43, // 31: stars.node.v1.StartExec.env:type_name -> stars.node.v1.StartExec.EnvEntry
-	44, // 32: stars.node.v1.StartExec.secret_env:type_name -> stars.node.v1.StartExec.SecretEnvEntry
-	29, // 33: stars.node.v1.StartExec.pty:type_name -> stars.node.v1.PtySpec
-	39, // 34: stars.node.v1.OutputBatch.frames:type_name -> stars.node.v1.OutputFrame
-	6,  // 35: stars.node.v1.Node.Redeem:input_type -> stars.node.v1.RedeemRequest
-	8,  // 36: stars.node.v1.Node.Control:input_type -> stars.node.v1.AgentMessage
-	40, // 37: stars.node.v1.Node.ExecOutput:input_type -> stars.node.v1.OutputBatch
-	28, // 38: stars.node.v1.Node.Tunnel:input_type -> stars.node.v1.TunnelFrame
-	4,  // 39: stars.node.v1.Node.Presign:input_type -> stars.node.v1.PresignRequest
-	1,  // 40: stars.node.v1.Node.SubmitManifest:input_type -> stars.node.v1.ManifestChunk
-	7,  // 41: stars.node.v1.Node.Redeem:output_type -> stars.node.v1.RedeemResponse
-	20, // 42: stars.node.v1.Node.Control:output_type -> stars.node.v1.ControlMessage
-	41, // 43: stars.node.v1.Node.ExecOutput:output_type -> stars.node.v1.OutputAck
-	28, // 44: stars.node.v1.Node.Tunnel:output_type -> stars.node.v1.TunnelFrame
-	5,  // 45: stars.node.v1.Node.Presign:output_type -> stars.node.v1.PresignResponse
-	3,  // 46: stars.node.v1.Node.SubmitManifest:output_type -> stars.node.v1.ManifestAck
+	2,  // 0: orrery.node.v1.ManifestChunk.entries:type_name -> orrery.node.v1.ManifestEntry
+	9,  // 1: orrery.node.v1.AgentMessage.hello:type_name -> orrery.node.v1.Hello
+	10, // 2: orrery.node.v1.AgentMessage.heartbeat:type_name -> orrery.node.v1.Heartbeat
+	12, // 3: orrery.node.v1.AgentMessage.capabilities:type_name -> orrery.node.v1.Capabilities
+	15, // 4: orrery.node.v1.AgentMessage.sandbox_observed:type_name -> orrery.node.v1.SandboxObserved
+	16, // 5: orrery.node.v1.AgentMessage.workspace_observed:type_name -> orrery.node.v1.WorkspaceObserved
+	17, // 6: orrery.node.v1.AgentMessage.command_result:type_name -> orrery.node.v1.CommandResult
+	18, // 7: orrery.node.v1.AgentMessage.exec_observed:type_name -> orrery.node.v1.ExecObserved
+	19, // 8: orrery.node.v1.AgentMessage.build_observed:type_name -> orrery.node.v1.BuildObserved
+	11, // 9: orrery.node.v1.Heartbeat.gpu_health:type_name -> orrery.node.v1.GPUHealth
+	13, // 10: orrery.node.v1.Capabilities.entries:type_name -> orrery.node.v1.CapabilityEntry
+	14, // 11: orrery.node.v1.Capabilities.gpus:type_name -> orrery.node.v1.GPU
+	0,  // 12: orrery.node.v1.CapabilityEntry.value:type_name -> orrery.node.v1.CapabilityValue
+	42, // 13: orrery.node.v1.ControlMessage.hello_ack:type_name -> orrery.node.v1.HelloAck
+	30, // 14: orrery.node.v1.ControlMessage.provision_workspace:type_name -> orrery.node.v1.ProvisionWorkspace
+	31, // 15: orrery.node.v1.ControlMessage.delete_workspace:type_name -> orrery.node.v1.DeleteWorkspace
+	32, // 16: orrery.node.v1.ControlMessage.create_sandbox:type_name -> orrery.node.v1.CreateSandbox
+	36, // 17: orrery.node.v1.ControlMessage.stop_sandbox:type_name -> orrery.node.v1.StopSandbox
+	37, // 18: orrery.node.v1.ControlMessage.start_exec:type_name -> orrery.node.v1.StartExec
+	38, // 19: orrery.node.v1.ControlMessage.cancel_exec:type_name -> orrery.node.v1.CancelExec
+	25, // 20: orrery.node.v1.ControlMessage.open_tunnel:type_name -> orrery.node.v1.OpenTunnel
+	21, // 21: orrery.node.v1.ControlMessage.publish_workspace:type_name -> orrery.node.v1.PublishWorkspace
+	22, // 22: orrery.node.v1.ControlMessage.build_snapshot:type_name -> orrery.node.v1.BuildSnapshot
+	23, // 23: orrery.node.v1.BuildSnapshot.contexts:type_name -> orrery.node.v1.BuildContext
+	24, // 24: orrery.node.v1.BuildSnapshot.secrets:type_name -> orrery.node.v1.BuildSecret
+	34, // 25: orrery.node.v1.BuildSnapshot.limits:type_name -> orrery.node.v1.Limits
+	26, // 26: orrery.node.v1.OpenTunnel.agent_http:type_name -> orrery.node.v1.AgentHTTP
+	27, // 27: orrery.node.v1.OpenTunnel.sandbox_port:type_name -> orrery.node.v1.SandboxPort
+	34, // 28: orrery.node.v1.CreateSandbox.limits:type_name -> orrery.node.v1.Limits
+	35, // 29: orrery.node.v1.CreateSandbox.workspace:type_name -> orrery.node.v1.WorkspaceMount
+	33, // 30: orrery.node.v1.CreateSandbox.resources:type_name -> orrery.node.v1.ResourceMount
+	43, // 31: orrery.node.v1.StartExec.env:type_name -> orrery.node.v1.StartExec.EnvEntry
+	44, // 32: orrery.node.v1.StartExec.secret_env:type_name -> orrery.node.v1.StartExec.SecretEnvEntry
+	29, // 33: orrery.node.v1.StartExec.pty:type_name -> orrery.node.v1.PtySpec
+	39, // 34: orrery.node.v1.OutputBatch.frames:type_name -> orrery.node.v1.OutputFrame
+	6,  // 35: orrery.node.v1.Node.Redeem:input_type -> orrery.node.v1.RedeemRequest
+	8,  // 36: orrery.node.v1.Node.Control:input_type -> orrery.node.v1.AgentMessage
+	40, // 37: orrery.node.v1.Node.ExecOutput:input_type -> orrery.node.v1.OutputBatch
+	28, // 38: orrery.node.v1.Node.Tunnel:input_type -> orrery.node.v1.TunnelFrame
+	4,  // 39: orrery.node.v1.Node.Presign:input_type -> orrery.node.v1.PresignRequest
+	1,  // 40: orrery.node.v1.Node.SubmitManifest:input_type -> orrery.node.v1.ManifestChunk
+	7,  // 41: orrery.node.v1.Node.Redeem:output_type -> orrery.node.v1.RedeemResponse
+	20, // 42: orrery.node.v1.Node.Control:output_type -> orrery.node.v1.ControlMessage
+	41, // 43: orrery.node.v1.Node.ExecOutput:output_type -> orrery.node.v1.OutputAck
+	28, // 44: orrery.node.v1.Node.Tunnel:output_type -> orrery.node.v1.TunnelFrame
+	5,  // 45: orrery.node.v1.Node.Presign:output_type -> orrery.node.v1.PresignResponse
+	3,  // 46: orrery.node.v1.Node.SubmitManifest:output_type -> orrery.node.v1.ManifestAck
 	41, // [41:47] is the sub-list for method output_type
 	35, // [35:41] is the sub-list for method input_type
 	35, // [35:35] is the sub-list for extension type_name

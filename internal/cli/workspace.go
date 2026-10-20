@@ -11,17 +11,17 @@ const publishFollowTimeout = 10 * time.Minute
 
 func runWorkspace(c *client, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stars-sandbox workspace publish|declare-lost|abandon ...")
+		return fmt.Errorf("usage: orrery workspace publish|declare-lost|abandon ...")
 	}
 	switch args[0] {
 	case "publish":
 		if len(args) != 4 {
-			return fmt.Errorf("usage: stars-sandbox workspace publish <id> <path> <name>")
+			return fmt.Errorf("usage: orrery workspace publish <id> <path> <name>")
 		}
 		return publishWorkspace(c, args[1], args[2], args[3])
 	case "declare-lost":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: stars-sandbox workspace declare-lost <id>")
+			return fmt.Errorf("usage: orrery workspace declare-lost <id>")
 		}
 		workspace, err := c.DeclareWorkspaceLost(ctx, args[1])
 		if err != nil {
@@ -30,7 +30,7 @@ func runWorkspace(c *client, args []string, stderr io.Writer) error {
 		return c.print(workspace)
 	case "abandon":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: stars-sandbox workspace abandon <id>")
+			return fmt.Errorf("usage: orrery workspace abandon <id>")
 		}
 		workspace, err := c.AbandonWorkspace(ctx, args[1])
 		if err != nil {

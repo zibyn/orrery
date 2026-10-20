@@ -3,8 +3,8 @@ import { expect, type Page } from '@playwright/test'
 import { isAllowedConsoleUrl } from '../src/lib/request-scope'
 
 export const ADMIN = { username: 'admin', password: 'admin-password-123' }
-export const origin = process.env.STARS_E2E_API_URL ?? 'http://127.0.0.1:18080'
-export const appsDomain = process.env.STARS_E2E_APPS_DOMAIN ?? 'apps.test'
+export const origin = process.env.ORRERY_E2E_API_URL ?? 'http://127.0.0.1:18080'
+export const appsDomain = process.env.ORRERY_E2E_APPS_DOMAIN ?? 'apps.test'
 export const scope = { origin, appsDomain }
 
 // console-parity: collect every HTTP request and WebSocket, then assert each

@@ -4,10 +4,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/zibyn/stars-sandbox/internal/manifest"
-	"github.com/zibyn/stars-sandbox/internal/objectstore"
+	"github.com/zibyn/orrery/internal/manifest"
+	"github.com/zibyn/orrery/internal/objectstore"
 
-	nodev1 "github.com/zibyn/stars-sandbox/gen/node/v1"
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 )
 
 func TestManifestAccumulatorNormalizesChunks(t *testing.T) {

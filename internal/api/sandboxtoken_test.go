@@ -6,10 +6,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/zibyn/stars-sandbox/internal/store"
+	"github.com/zibyn/orrery/internal/store"
 )
 
-// A Sandbox Token is "sst_<sandbox id>_<secret>" and never parses as an API
+// A Sandbox Token is "ors_<sandbox id>_<secret>" and never parses as an API
 // Token (api.md §1).
 func TestSandboxTokenWireForm(t *testing.T) {
 	id := uuid.MustParse("0192f0a0-0000-7000-8000-000000000002")

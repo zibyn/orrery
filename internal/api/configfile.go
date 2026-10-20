@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zibyn/stars-sandbox/internal/keyring"
-	"github.com/zibyn/stars-sandbox/internal/registry"
+	"github.com/zibyn/orrery/internal/keyring"
+	"github.com/zibyn/orrery/internal/registry"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -126,17 +126,17 @@ func defaultFileConfig() *fileConfig {
 	f.Logs.ResourceVersionTTL = "720h"
 	f.Logs.CASGrace = "24h"
 	f.S3.Endpoint = "http://rustfs:9000"
-	f.S3.Bucket = "stars"
+	f.S3.Bucket = "orrery"
 	f.S3.Region = "us-east-1"
-	f.S3.AccessKey = "stars"
+	f.S3.AccessKey = "orrery"
 	return f
 }
 
-// LoadConfig reads STARS_CONFIG_FILE, applies environment scalar overrides and
+// LoadConfig reads ORRERY_CONFIG_FILE, applies environment scalar overrides and
 // returns the deployment configuration (defaults.md). Without the variable it
 // keeps the environment-only path used by tests and CI.
 func LoadConfig(logger *slog.Logger) (Config, error) {
-	path := os.Getenv("STARS_CONFIG_FILE")
+	path := os.Getenv("ORRERY_CONFIG_FILE")
 	if path == "" {
 		return ConfigFromEnv()
 	}
@@ -189,151 +189,151 @@ func (o envOverride) note(key, env string) {
 }
 
 func (o envOverride) apply(f *fileConfig) error {
-	if v, ok := o.get("access.url", "STARS_ACCESS_URL"); ok {
+	if v, ok := o.get("access.url", "ORRERY_ACCESS_URL"); ok {
 		f.Access.URL = v
 	}
-	if v, ok := o.get("access.apps_domain", "STARS_APPS_DOMAIN"); ok {
+	if v, ok := o.get("access.apps_domain", "ORRERY_APPS_DOMAIN"); ok {
 		f.Access.AppsDomain = v
 	}
-	if v, ok := o.get("access.ticket_key", "STARS_PORT_TICKET_KEY"); ok {
+	if v, ok := o.get("access.ticket_key", "ORRERY_PORT_TICKET_KEY"); ok {
 		f.Access.TicketKey = v
 	}
-	if v, ok := o.get("database.url", "STARS_DATABASE_URL"); ok {
+	if v, ok := o.get("database.url", "ORRERY_DATABASE_URL"); ok {
 		f.Database.URL = v
 	}
-	if v, ok := o.get("database.host", "STARS_DATABASE_HOST"); ok {
+	if v, ok := o.get("database.host", "ORRERY_DATABASE_HOST"); ok {
 		f.Database.Host = v
 	}
-	if v, ok := o.get("database.port", "STARS_DATABASE_PORT"); ok {
+	if v, ok := o.get("database.port", "ORRERY_DATABASE_PORT"); ok {
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			return fmt.Errorf("STARS_DATABASE_PORT must be an integer")
+			return fmt.Errorf("ORRERY_DATABASE_PORT must be an integer")
 		}
 		f.Database.Port = &n
 	}
-	if v, ok := o.get("database.user", "STARS_DATABASE_USER"); ok {
+	if v, ok := o.get("database.user", "ORRERY_DATABASE_USER"); ok {
 		f.Database.User = v
 	}
-	if v, ok := o.get("database.password", "STARS_DATABASE_PASSWORD"); ok {
+	if v, ok := o.get("database.password", "ORRERY_DATABASE_PASSWORD"); ok {
 		f.Database.Password = v
 	}
-	if v, ok := o.get("database.name", "STARS_DATABASE_NAME"); ok {
+	if v, ok := o.get("database.name", "ORRERY_DATABASE_NAME"); ok {
 		f.Database.Name = v
 	}
-	if v, ok := o.get("enrollment_packet_ttl", "STARS_ENROLLMENT_PACKET_TTL"); ok {
+	if v, ok := o.get("enrollment_packet_ttl", "ORRERY_ENROLLMENT_PACKET_TTL"); ok {
 		f.EnrollmentPacketTTL = v
 	}
-	if v, ok := o.get("quotas.default_gpu", "STARS_DEFAULT_GPU_QUOTA"); ok {
+	if v, ok := o.get("quotas.default_gpu", "ORRERY_DEFAULT_GPU_QUOTA"); ok {
 		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil {
-			return fmt.Errorf("STARS_DEFAULT_GPU_QUOTA must be an integer")
+			return fmt.Errorf("ORRERY_DEFAULT_GPU_QUOTA must be an integer")
 		}
 		f.Quotas.DefaultGPU = int32(n)
 	}
-	if v, ok := o.get("quotas.default_sandbox", "STARS_DEFAULT_SANDBOX_QUOTA"); ok {
+	if v, ok := o.get("quotas.default_sandbox", "ORRERY_DEFAULT_SANDBOX_QUOTA"); ok {
 		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil {
-			return fmt.Errorf("STARS_DEFAULT_SANDBOX_QUOTA must be an integer")
+			return fmt.Errorf("ORRERY_DEFAULT_SANDBOX_QUOTA must be an integer")
 		}
 		f.Quotas.DefaultSandbox = int32(n)
 	}
-	if v, ok := o.get("lifecycle.pty_idle_seconds", "STARS_PTY_IDLE_SECONDS"); ok {
+	if v, ok := o.get("lifecycle.pty_idle_seconds", "ORRERY_PTY_IDLE_SECONDS"); ok {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return fmt.Errorf("STARS_PTY_IDLE_SECONDS must be an integer")
+			return fmt.Errorf("ORRERY_PTY_IDLE_SECONDS must be an integer")
 		}
 		f.Lifecycle.PtyIdleSeconds = n
 	}
-	if v, ok := o.get("lifecycle.idle_stop_seconds", "STARS_IDLE_STOP_SECONDS"); ok {
+	if v, ok := o.get("lifecycle.idle_stop_seconds", "ORRERY_IDLE_STOP_SECONDS"); ok {
 		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil {
-			return fmt.Errorf("STARS_IDLE_STOP_SECONDS must be an integer")
+			return fmt.Errorf("ORRERY_IDLE_STOP_SECONDS must be an integer")
 		}
 		f.Lifecycle.IdleStopSeconds = int32(n)
 	}
-	if v, ok := o.get("lifecycle.admission_timeout", "STARS_ADMISSION_TIMEOUT"); ok {
+	if v, ok := o.get("lifecycle.admission_timeout", "ORRERY_ADMISSION_TIMEOUT"); ok {
 		f.Lifecycle.AdmissionTimeout = v
 	}
-	if v, ok := o.get("builds.cpu", "STARS_BUILD_CPU"); ok {
+	if v, ok := o.get("builds.cpu", "ORRERY_BUILD_CPU"); ok {
 		n, err := strconv.ParseFloat(v, 64)
 		if err != nil {
-			return fmt.Errorf("STARS_BUILD_CPU must be a number")
+			return fmt.Errorf("ORRERY_BUILD_CPU must be a number")
 		}
 		f.Builds.CPU = n
 	}
-	if v, ok := o.get("builds.memory", "STARS_BUILD_MEMORY"); ok {
+	if v, ok := o.get("builds.memory", "ORRERY_BUILD_MEMORY"); ok {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return fmt.Errorf("STARS_BUILD_MEMORY must be an integer")
+			return fmt.Errorf("ORRERY_BUILD_MEMORY must be an integer")
 		}
 		f.Builds.Memory = n
 	}
-	if v, ok := o.get("builds.timeout", "STARS_BUILD_TIMEOUT"); ok {
+	if v, ok := o.get("builds.timeout", "ORRERY_BUILD_TIMEOUT"); ok {
 		f.Builds.Timeout = v
 	}
-	if v, ok := o.get("logs.exec_cap", "STARS_EXEC_LOG_CAP"); ok {
+	if v, ok := o.get("logs.exec_cap", "ORRERY_EXEC_LOG_CAP"); ok {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return fmt.Errorf("STARS_EXEC_LOG_CAP must be an integer")
+			return fmt.Errorf("ORRERY_EXEC_LOG_CAP must be an integer")
 		}
 		f.Logs.ExecCap = n
 	}
-	if v, ok := o.get("logs.exec_retention", "STARS_EXEC_LOG_RETENTION"); ok {
+	if v, ok := o.get("logs.exec_retention", "ORRERY_EXEC_LOG_RETENTION"); ok {
 		f.Logs.ExecRetention = v
 	}
-	if v, ok := o.get("logs.audit_retention", "STARS_AUDIT_RETENTION"); ok {
+	if v, ok := o.get("logs.audit_retention", "ORRERY_AUDIT_RETENTION"); ok {
 		f.Logs.AuditRetention = v
 	}
-	if v, ok := o.get("logs.resource_version_ttl", "STARS_RESOURCE_VERSION_TTL"); ok {
+	if v, ok := o.get("logs.resource_version_ttl", "ORRERY_RESOURCE_VERSION_TTL"); ok {
 		f.Logs.ResourceVersionTTL = v
 	}
-	if v, ok := o.get("logs.cas_grace", "STARS_CAS_GRACE"); ok {
+	if v, ok := o.get("logs.cas_grace", "ORRERY_CAS_GRACE"); ok {
 		f.Logs.CASGrace = v
 	}
-	if v, ok := o.get("oidc.issuer_url", "STARS_OIDC_ISSUER_URL"); ok {
+	if v, ok := o.get("oidc.issuer_url", "ORRERY_OIDC_ISSUER_URL"); ok {
 		f.OIDC.IssuerURL = v
 	}
-	if v, ok := o.get("oidc.client_id", "STARS_OIDC_CLIENT_ID"); ok {
+	if v, ok := o.get("oidc.client_id", "ORRERY_OIDC_CLIENT_ID"); ok {
 		f.OIDC.ClientID = v
 	}
-	if v, ok := o.get("oidc.client_secret", "STARS_OIDC_CLIENT_SECRET"); ok {
+	if v, ok := o.get("oidc.client_secret", "ORRERY_OIDC_CLIENT_SECRET"); ok {
 		f.OIDC.ClientSecret = v
 	}
-	if v, ok := o.get("oidc.allow_signups", "STARS_OIDC_ALLOW_SIGNUPS"); ok {
+	if v, ok := o.get("oidc.allow_signups", "ORRERY_OIDC_ALLOW_SIGNUPS"); ok {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("STARS_OIDC_ALLOW_SIGNUPS must be true or false")
+			return fmt.Errorf("ORRERY_OIDC_ALLOW_SIGNUPS must be true or false")
 		}
 		f.OIDC.AllowSignups = b
 	}
-	if v, ok := o.get("s3.endpoint", "STARS_S3_ENDPOINT"); ok {
+	if v, ok := o.get("s3.endpoint", "ORRERY_S3_ENDPOINT"); ok {
 		f.S3.Endpoint = v
 	}
-	if v, ok := o.get("s3.public_endpoint", "STARS_S3_PUBLIC_ENDPOINT"); ok {
+	if v, ok := o.get("s3.public_endpoint", "ORRERY_S3_PUBLIC_ENDPOINT"); ok {
 		f.S3.PublicEndpoint = v
 	}
-	if v, ok := o.get("s3.bucket", "STARS_S3_BUCKET"); ok {
+	if v, ok := o.get("s3.bucket", "ORRERY_S3_BUCKET"); ok {
 		f.S3.Bucket = v
 	}
-	if v, ok := o.get("s3.region", "STARS_S3_REGION"); ok {
+	if v, ok := o.get("s3.region", "ORRERY_S3_REGION"); ok {
 		f.S3.Region = v
 	}
-	if v, ok := o.get("s3.access_key", "STARS_S3_ACCESS_KEY"); ok {
+	if v, ok := o.get("s3.access_key", "ORRERY_S3_ACCESS_KEY"); ok {
 		f.S3.AccessKey = v
 	}
-	if v, ok := o.get("s3.secret_key", "STARS_S3_SECRET_KEY"); ok {
+	if v, ok := o.get("s3.secret_key", "ORRERY_S3_SECRET_KEY"); ok {
 		f.S3.SecretKey = v
 	}
-	if v, ok := o.get("registry.addr", "STARS_REGISTRY_ADDR"); ok {
+	if v, ok := o.get("registry.addr", "ORRERY_REGISTRY_ADDR"); ok {
 		f.Registry.Addr = v
 	}
-	if v, ok := o.get("registry.push_addr", "STARS_REGISTRY_PUSH_ADDR"); ok {
+	if v, ok := o.get("registry.push_addr", "ORRERY_REGISTRY_PUSH_ADDR"); ok {
 		f.Registry.PushAddr = v
 	}
-	if v, ok := o.get("registry.username", "STARS_REGISTRY_USERNAME"); ok {
+	if v, ok := o.get("registry.username", "ORRERY_REGISTRY_USERNAME"); ok {
 		f.Registry.Username = v
 	}
-	if v, ok := o.get("registry.password", "STARS_REGISTRY_PASSWORD"); ok {
+	if v, ok := o.get("registry.password", "ORRERY_REGISTRY_PASSWORD"); ok {
 		f.Registry.Password = v
 	}
 	return nil
@@ -342,10 +342,10 @@ func (o envOverride) apply(f *fileConfig) error {
 // toConfig validates the merged file and turns it into a Config.
 func (f *fileConfig) toConfig(logger *slog.Logger) (Config, error) {
 	cfg := Config{
-		Addr:          envOr("STARS_API_ADDR", ":8080"),
-		NodeAddr:      envOr("STARS_NODE_ADDR", ":8081"),
-		NodeTLSCert:   os.Getenv("STARS_NODE_TLS_CERT"),
-		NodeTLSKey:    os.Getenv("STARS_NODE_TLS_KEY"),
+		Addr:          envOr("ORRERY_API_ADDR", ":8080"),
+		NodeAddr:      envOr("ORRERY_NODE_ADDR", ":8081"),
+		NodeTLSCert:   os.Getenv("ORRERY_NODE_TLS_CERT"),
+		NodeTLSKey:    os.Getenv("ORRERY_NODE_TLS_KEY"),
 		AppsDomain:    f.Access.AppsDomain,
 		AccessURL:     f.Access.URL,
 		PortTicketKey: []byte(f.Access.TicketKey),
@@ -353,10 +353,10 @@ func (f *fileConfig) toConfig(logger *slog.Logger) (Config, error) {
 	o := envOverride{log: logger}
 	// These keys have no config.yaml form (defaults.md).
 	for _, key := range [][2]string{
-		{"api_addr", "STARS_API_ADDR"},
-		{"node_addr", "STARS_NODE_ADDR"},
-		{"node_tls_cert", "STARS_NODE_TLS_CERT"},
-		{"node_tls_key", "STARS_NODE_TLS_KEY"},
+		{"api_addr", "ORRERY_API_ADDR"},
+		{"node_addr", "ORRERY_NODE_ADDR"},
+		{"node_tls_cert", "ORRERY_NODE_TLS_CERT"},
+		{"node_tls_key", "ORRERY_NODE_TLS_KEY"},
 	} {
 		o.note(key[0], key[1])
 	}
@@ -394,7 +394,7 @@ func (f *fileConfig) toConfig(logger *slog.Logger) (Config, error) {
 		return Config{}, err
 	}
 	// Test hook only: production uses the 10-minute constant (defaults.md).
-	if cfg.PurgeInterval, err = envDuration("STARS_TEST_PURGE_INTERVAL", purgeInterval); err != nil {
+	if cfg.PurgeInterval, err = envDuration("ORRERY_TEST_PURGE_INTERVAL", purgeInterval); err != nil {
 		return Config{}, err
 	}
 	if err := f.validateScalars(); err != nil {

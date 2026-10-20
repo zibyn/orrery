@@ -18,10 +18,10 @@ import (
 // runtime: local Sandbox whose Execs run as the configured unprivileged user
 // in the Workspace's host directory.
 //
-//	STARS_E2E_GPU_SSH=user@host STARS_E2E_LOCAL_USER=builder make e2e -run LocalRuntime
+//	ORRERY_E2E_GPU_SSH=user@host ORRERY_E2E_LOCAL_USER=builder make e2e -run LocalRuntime
 //
 // The SSH login must reach root (directly or with sudo -n). When the login is
-// root, STARS_E2E_LOCAL_USER defaults to nobody; when it is a user, that user
+// root, ORRERY_E2E_LOCAL_USER defaults to nobody; when it is a user, that user
 // is the default. The scenario does not need a GPU, but it reuses the remote
 // host variable the GPU and Podman scenarios already use.
 func TestLocalRuntime(t *testing.T) {
@@ -88,14 +88,14 @@ func TestLocalRuntime(t *testing.T) {
 	}
 
 	envExec := createExec(t, admin, sb.ID, map[string]any{
-		"argv": []string{"sh", "-c", `printf '%s' "$STARS_WORKSPACE"`},
+		"argv": []string{"sh", "-c", `printf '%s' "$ORRERY_WORKSPACE"`},
 	})
 	stdout, _, _, result = followExec(t, admin, envExec.ID, 30*time.Second)
 	if result.Cause != "exited" || *result.ExitCode != 0 {
-		t.Fatalf("STARS_WORKSPACE result = %+v", result)
+		t.Fatalf("ORRERY_WORKSPACE result = %+v", result)
 	}
 	if got := strings.TrimSpace(string(stdout)); got != workspace {
-		t.Fatalf("STARS_WORKSPACE = %q, want %q", got, workspace)
+		t.Fatalf("ORRERY_WORKSPACE = %q, want %q", got, workspace)
 	}
 
 	// Every User on a Local Node shares the one configured uid (ADR-0009).
@@ -110,8 +110,8 @@ func TestLocalRuntime(t *testing.T) {
 
 	// The cgroup slice is the resource boundary; the placeholder service and
 	// the transient Exec service live in it.
-	slice := "stars-sb-" + sb.ID + ".slice"
-	if out := host.sshRoot(t, "systemctl", "is-active", "stars-sb-"+sb.ID+".service"); strings.TrimSpace(out) != "active" {
+	slice := "orrery-sb-" + sb.ID + ".slice"
+	if out := host.sshRoot(t, "systemctl", "is-active", "orrery-sb-"+sb.ID+".service"); strings.TrimSpace(out) != "active" {
 		t.Fatalf("placeholder unit is %q, want active", strings.TrimSpace(out))
 	}
 	state := strings.TrimSpace(host.sshRoot(t, "systemctl", "show", slice, "-p", "ActiveState"))
@@ -148,9 +148,9 @@ type localHost struct {
 
 func startLocalHost(t *testing.T, name string) *localHost {
 	t.Helper()
-	target := os.Getenv("STARS_E2E_GPU_SSH")
+	target := os.Getenv("ORRERY_E2E_GPU_SSH")
 	if target == "" {
-		t.Skip("STARS_E2E_GPU_SSH is not set; connect a remote host first")
+		t.Skip("ORRERY_E2E_GPU_SSH is not set; connect a remote host first")
 	}
 	suffix := time.Now().UnixNano()
 	h := &localHost{
@@ -161,7 +161,7 @@ func startLocalHost(t *testing.T, name string) *localHost {
 	}
 	h.state = h.dir + "/identity.json"
 	h.sshUser = strings.TrimSpace(h.trySSH(t, "id", "-un"))
-	h.user = os.Getenv("STARS_E2E_LOCAL_USER")
+	h.user = os.Getenv("ORRERY_E2E_LOCAL_USER")
 	if h.user == "" {
 		if h.sshUser == "root" {
 			h.user = "nobody"
@@ -175,10 +175,10 @@ func startLocalHost(t *testing.T, name string) *localHost {
 	h.trySSH(t, "chmod", "755", h.dir)
 
 	h.scp(t, agentPath(t), h.dir+"/agent")
-	h.scp(t, cliPath(t), h.dir+"/stars-sandbox")
+	h.scp(t, cliPath(t), h.dir+"/orrery")
 	h.scp(t, nodeCA(), h.dir+"/ca.crt")
 
-	remotePort := envOr("STARS_E2E_GPU_REMOTE_PORT", "18081")
+	remotePort := envOr("ORRERY_E2E_GPU_REMOTE_PORT", "18081")
 	h.tunnel = exec.Command("ssh", "-N", "-R",
 		remotePort+":127.0.0.1:"+fmt.Sprint(gpuAPIPort), target)
 	if err := h.tunnel.Start(); err != nil {
@@ -249,7 +249,7 @@ func (h *localHost) scp(t *testing.T, src, dst string) {
 
 func tryRemote(t *testing.T, args ...string) {
 	t.Helper()
-	target := os.Getenv("STARS_E2E_GPU_SSH")
+	target := os.Getenv("ORRERY_E2E_GPU_SSH")
 	prefix := []string{}
 	if out, err := exec.Command("ssh", target, "id", "-un").CombinedOutput(); err == nil &&
 		strings.TrimSpace(string(out)) != "root" {
