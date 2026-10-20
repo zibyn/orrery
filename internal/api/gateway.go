@@ -250,7 +250,6 @@ func proxyPort(w http.ResponseWriter, r *http.Request, conn net.Conn) {
 		forward.Header.Del(k)
 	}
 	forward.Header.Del("Expect")
-	forward.Header.Set("Connection", "close")
 	dropTicketParam(forward)
 	relayHTTP(w, conn, forward, "the Sandbox port did not answer")
 }

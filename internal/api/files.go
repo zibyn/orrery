@@ -94,6 +94,13 @@ func proxyFile(w http.ResponseWriter, r *http.Request, conn net.Conn, suffix str
 // it back. The tunnel already carries the Node's authority, so the caller
 // prepares forward without ambient credentials.
 func relayHTTP(w http.ResponseWriter, conn net.Conn, forward *http.Request, unavailable string) {
+	// The tunnel carries one request and the caller closes it after reading
+	// the response. Forwarding the incoming close flag would let the peer
+	// close the tunnel as soon as it answers, racing that read; a fronting
+	// proxy such as nginx's connection_upgrade map sends Connection: close on
+	// every ordinary request.
+	forward.Close = false
+	forward.Header.Del("Connection")
 	type answer struct {
 		resp *http.Response
 		err  error
