@@ -29,7 +29,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、宣告可达的 Node lost、删除 current 版本、删除被引用的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
 | `precondition_failed` | 412 | `If-Match` 不匹配 |
 | `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
-| `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources` |
+| `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `rate_limited` | 429 | 登录失败次数超限；带 `Retry-After` |
 | `internal` | 500 | 平台缺陷 |
@@ -90,23 +90,32 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 ```
 name?, labels?
-runtime?: container|local       # 默认 container；调用方分不出 Docker 和 Podman
+runtime?: container|local       # 默认 container；调用方分不出 runc Node 和 gvisor Node
 workspace?: {id, mode: rw|ro}     # 不写就隐式创建临时 Workspace，rw
 snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 `platform_snapshots` 的默认项，local 没有 Snapshot
 resources?: [{resource, version?, mount?}]   # 创建时解析成具体版本，只读挂载到 /resources/<mount>；mount 是单段名字，默认取 Resource 名
 secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}
 idle_stop?: 秒数，默认 900，0 表示关闭
+egress?: {mode: open|none|allowlist, allow?: [CIDR[:port]]}   # 不写等于 {mode: open}
 ```
 
-每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
+每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
 
 `runtime`（ADR-0009）：
 
-- `container` 只放到 Docker 或 Podman 的 Node 上，`local` 只放到 Local Node 上；重启后仍作为准入约束。
+- `container` 只放到 containerd Node 上（runc 和 gvisor 都算），`local` 只放到 Local Node 上；重启后仍作为准入约束。Isolation Runtime 不能在请求里选；要全部跑在 gVisor 下，就只注册 gvisor Node（ADR-0026）。
 - `local` 带了 `snapshot` 或 `resources` 时返回 `422 unsupported`。
 - Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `ORRERY_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。
 - Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用。GPU 可见性为 `best_effort` 时也接受。
+
+`egress`（ADR-0026）：
+
+- 它是调用方的 Egress Mode，只能在 Egress Rules 允许的范围内再收窄。实际生效的 Egress Policy 按 Egress Rules `allow` → Egress Rules `deny` → Mode 的顺序求出（`runtime.md` §13）；Rules 的 `allow` 对 `none` 和 `allowlist` 也生效。
+- `open`：Rules 之外全部放行。`none`：Rules `allow` 之外全部丢弃。`allowlist`：Rules 之外只放行 `allow` 所列条目。
+- 校验，不合法一律 `400 invalid_request`：带了 `egress` 就必须带 `mode`，取值只能是上面三种；`allowlist` 必须带非空的 `allow`；其他 mode 带了 `allow`（哪怕是空列表）也拒绝；`allow` 的每一项是 IPv4 CIDR（单个地址等于 `/32`），可带 `:port`（1–65535），项数上限见 `defaults.md`。没有「空 `allow` 等于不出网」的写法，不出网用 `none`。
+- 创建后不可改，存在 Sandbox 上，每次 start 原样重新应用。Egress Rules 变了，只影响此后创建或 start 的 Sandbox。
+- `mode` 不是 `open` 时，只放到 `egress_policy` 为 `enforced` 的 Node 上，重启后仍作为准入约束；创建时没有这样的 Node 就返回 `422 unsupported`。`runtime: local` 带这样的 `egress` 同样是 `422 unsupported`。`open` 不约束放置。
 
 **Exec**：`GET /execs/{id}` · `POST /execs/{id}/cancel` · `GET /execs/{id}/output` · `GET /execs/{id}/pty`，见 §4。
 

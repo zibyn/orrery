@@ -147,8 +147,12 @@ The authorized service boundary that connects callers to a Sandbox Data Plane, i
 _Avoid_: Node Agent, Control Plane
 
 **Runtime Provider**:
-An adapter that realizes Sandbox and Exec contracts using Docker, Podman, or a trusted Local Runtime.
+An adapter that realizes Sandbox and Exec contracts using containerd or a trusted Local Runtime.
 _Avoid_: container runtime (when referring to the platform abstraction)
+
+**Isolation Runtime**:
+The OCI runtime a containerd Node runs every Sandbox under: `runc`, sharing the host kernel, or `gvisor`, a user-space kernel. It is a Node's configuration, not a caller's choice.
+_Avoid_: container runtime, runtime class, sandbox kernel
 
 **Local Runtime**:
 A Runtime Provider that executes in the Node's host environment without container namespace isolation; it is usable only where the Node is trusted for that execution.
@@ -195,6 +199,18 @@ _Avoid_: certificate, runner key
 **Port Forward**:
 An owner-or-admin connection from outside to a port a process listens on inside a Sandbox, made through the Gateway without exposing the Sandbox on a network address.
 _Avoid_: preview URL, public link, ingress
+
+**Egress Rules**:
+The operator-written allow and deny entries that every Sandbox's outbound traffic is subject to and that a caller cannot override.
+_Avoid_: baseline, guardrail, Node Egress Rules
+
+**Egress Mode**:
+A caller's creation-time choice of how a Sandbox's outbound traffic is narrowed: open, none, or an allowlist. It can only narrow what Egress Rules permit.
+_Avoid_: egress allowlist (for the whole choice), network policy
+
+**Egress Policy**:
+The outbound traffic a Sandbox is actually allowed, resolved from Egress Rules and its Egress Mode.
+_Avoid_: firewall, Egress Opening
 
 **Secret**:
 Caller-originated credential material that the platform holds for a User and may deliver into the User's Sandboxes. Its value can be written but never read back.

@@ -10,9 +10,10 @@
 | 判定 Unreachable | 30 秒 | 常量 | 心跳间隔的 2 倍（ADR-0014） |
 | Enrollment Packet 有效期 | 1 小时 | 部署 | 对应 GitHub runner 注册令牌的有效期；Coder 和 Daytona 只有长期 key，相当于我们的 Node Token |
 | purge 周期 | 10 分钟 | 常量 | ADR-0014 |
-| 磁盘水位 | 剩余低于 10% | Node | 低于水位就不接新分配，开始按 LRU 淘汰 Resource 缓存、未被本 Node 上任何 Sandbox（含 stopped）引用的 Docker 本地镜像和 BuildKit 缓存（`runtime.md` §11）；对应 kubelet 的 `nodefs.available<10%` |
+| 磁盘水位 | 剩余低于 10% | Node | 低于水位就不接新分配，开始按 LRU 淘汰 Resource 缓存、Agent 的 containerd namespace 里未被本 Node 上任何 Sandbox（含 stopped）引用的镜像和 BuildKit 缓存（`runtime.md` §11）；对应 kubelet 的 `nodefs.available<10%` |
 | 宿主预留 | 1 CPU + 2 GiB | Node | 从总量里扣掉，不参与分配 |
 | 每 GPU 份额 | 可分配量 × 3/4 ÷ 卡数 | Node | CPU 和内存各算一份；剩下的 1/4 给无 GPU 的 Sandbox（ADR-0015） |
+| Sandbox 子网 | `10.213.0.0/24` | Node | `--sandbox-subnet`，containerd Node 的 CNI 地址池（`runtime.md` §13）。多台 Node 必须各用一段、互不重叠，例如都从 `10.213.0.0/16` 里各取一个 `/24`；默认值只适合单 Node |
 
 ## 调度与生命周期
 
@@ -58,6 +59,7 @@
 | Idempotency Key 保留期 | 24 小时 | 常量 | |
 | Gateway 端口票据有效期 | 60 秒 | 常量 | ADR-0017 |
 | 每个 User 的 Secret | 最多 50 个，每个最大 24 KiB | 常量 | ADR-0017 |
+| `egress.allow` 项数 | 最多 64 项 | 常量 | 创建请求里的 allowlist；每一项在 Node 上渲染成 nftables 规则（`api.md` §3） |
 | Git token 刷新提前量 | 10 秒 | 常量 | 即 `oauth2` 的 `Token.Valid()`；Coder 也直接用它 |
 
 ## 身份
@@ -116,6 +118,42 @@ Control Plane 的应用配置只有一个文件：`ORRERY_CONFIG_FILE` 指向的
 | `logs.cas_grace` | `24h` | `ORRERY_CAS_GRACE` | CAS 对象与未完成上传的 GC 宽限 |
 
 带 `_seconds` 的键是整数秒；其余时长使用 Go duration 语法（`1h`、`720h`）。字节数以整数表示。
+
+### `egress`
+
+Egress Rules（ADR-0026）。两个列表，只从文件读取，没有覆盖变量：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `allow` | `[]` | 一定放行的目的地，优先于 `deny`，对任何 Egress Mode 的 Sandbox 都生效 |
+| `deny` | `[]` | 一定丢弃的目的地；Egress Mode 无法越过它 |
+
+每一项是 `CIDR[:port]`：IPv4 CIDR（单个地址等于 `/32`），可带端口 1–65535；带端口时只匹配该端口的 TCP 和 UDP。启动时只校验语法，不要求任何条目，非法项让启动失败。Control Plane 经 `HelloAck` 下发给每个 Node（`node-protocol.md`），只作用于此后创建或 start 的 Sandbox。Local Node 不受 Egress Rules 约束。
+
+> **空的 Egress Rules 等于完全放开。** 不写 `egress`，或两个列表都为空时，Sandbox 能到达 Node 能到达的一切：云 metadata、PostgreSQL、对象存储、registry、Node 所在内网，以及其他 Sandbox。平台不加任何隐含条目，`api`、DNS 能否访问也完全由这里决定。部署时应当从下面的推荐配置开始。
+
+**推荐配置**。`deny` 照抄即可；`allow` 是示例，按部署填写：
+
+```yaml
+egress:
+  allow:
+    # 填 access.url 解析到的地址。Sandbox 要靠它做 Git 认证（ADR-0016），
+    # 它多半落在下面 deny 的私有网段里，不放行 Git 就会失败。
+    # - 10.0.0.5/32:443
+    # 填 Sandbox 的 resolv.conf 里的 nameserver（宿主的上游 resolver，runtime.md §2）。
+    # 它在私有网段里时不放行，Sandbox 就解析不了域名。
+    # - 10.0.0.2/32:53
+  deny:
+    - 169.254.169.254/32   # 云 metadata
+    - 10.213.0.0/16        # Sandbox 子网（与各 Node 的 --sandbox-subnet 一致），Sandbox 之间互不可达
+    - 10.0.0.0/8           # RFC 1918 私有网段：PostgreSQL、对象存储、registry 和 Node 所在内网
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+```
+
+- `deny` 了 `api` 的地址又没有 `allow` 回来，Git 认证会失败，平台不检测（ADR-0026）。
+- Control Plane 或 Node 用公网地址时，把这些地址也加进 `deny`，再按需 `allow` `api`。
+- 改了 Sandbox 子网，同步改这里的条目。
 
 ### `encryption_keys`
 

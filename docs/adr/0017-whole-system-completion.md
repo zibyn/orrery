@@ -1,6 +1,6 @@
 # ADR-0017: The whole system, completed against Coder and Daytona
 
-- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92; MCP and SDK entries amended in place by #107 (ADR-0022); periodic work advisory lock scope amended in place by #128
+- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92; MCP and SDK entries amended in place by #107 (ADR-0022); periodic work advisory lock scope amended in place by #128; port-forward path corrected in place by ADR-0026
 - Date: 2026-10-17
 
 ## Context
@@ -37,7 +37,7 @@ PTY output is not an Execution Log: it lives only in the Node's ring buffer, and
 
 ### Ports
 
-The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port subdomain, through which the Node Agent enters the Sandbox's network namespace and dials `127.0.0.1:PORT`, plus a TCP tunnel in the CLI (`orrery port-forward`). Nothing in a Sandbox is exposed on a network address, and there is no public sharing. SSH and IDE access is not a platform feature; a User runs `sshd` in the Sandbox and tunnels to it.
+The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port subdomain, through which the Exec Supervisor inside the Sandbox dials `127.0.0.1:PORT` and the Node Agent reaches it over a unix socket in the run mount (corrected in place by ADR-0026; the Agent does not enter the netns), plus a TCP tunnel in the CLI (`orrery port-forward`). Nothing in a Sandbox is exposed on a network address, and there is no public sharing. SSH and IDE access is not a platform feature; a User runs `sshd` in the Sandbox and tunnels to it.
 
 ### Users, tokens and audit
 

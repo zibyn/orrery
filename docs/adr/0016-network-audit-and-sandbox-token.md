@@ -1,6 +1,6 @@
 # ADR-0016: Open egress, after-commit audit, and a Sandbox Token
 
-- Status: accepted; Sandbox Token storage amended in place by #72
+- Status: accepted; Sandbox Token storage amended in place by #72; Egress section superseded by ADR-0026
 - Date: 2026-10-17
 
 ## Context
@@ -9,7 +9,7 @@ The recheck against Coder v2.38.0 and Daytona v0.190.0 (`docs/research/recheck-i
 
 ## Decision
 
-**Egress.** The platform does not control or log Sandbox egress. There is no Egress Policy, no Egress Opening, no netns rule set and no subtracted address set. A Sandbox reaches whatever the Node's network reaches. Protecting PostgreSQL, MinIO, the registry and cloud metadata from Sandboxes belongs to the deployment's own network layout and credentials, and the deployment guide says so.
+**Egress.** (Superseded by ADR-0026: the platform now filters Sandbox egress by operator-written Egress Rules and a caller's Egress Mode. The rejection of per-connection egress logging below still stands.) The platform does not control or log Sandbox egress. There is no Egress Policy, no Egress Opening, no netns rule set and no subtracted address set. A Sandbox reaches whatever the Node's network reaches. Protecting PostgreSQL, MinIO, the registry and cloud metadata from Sandboxes belongs to the deployment's own network layout and credentials, and the deployment guide says so.
 
 **Audit.** An Audit Record is inserted after the transaction that made the change commits. A failed insert is logged and never fails the request. The table stays in PostgreSQL. It records control-plane mutations, Node enroll and revoke, Secret changes, deletions and Git token issues; it does not record Gateway or per-request authorizations. Retention is a deployment-configured period; nothing pins an Audit Record to a live object.
 
@@ -20,11 +20,11 @@ The recheck against Coder v2.38.0 and Daytona v0.190.0 (`docs/research/recheck-i
 - ADR-0011 is superseded; the Capability Channel, its socket mount and its `capability_channel` capability are gone.
 - The Sandbox must reach `api` over the network; a deployment that hides `api` from Sandboxes loses Git authentication.
 - A crash between commit and audit insert loses that Audit Record.
-- Any code in a Sandbox can reach anything the Node can reach, unless the deployment network prevents it.
+- Any code in a Sandbox can reach anything the Node can reach, unless the deployment network prevents it. (Superseded by ADR-0026: true now only under empty Egress Rules and on Local Nodes.)
 
 ## Rejected alternatives
 
-- A fixed Node-level deny list for PostgreSQL, MinIO, the registry and metadata: still platform-owned network rules, and the deployment is better placed to isolate its own services.
+- A fixed Node-level deny list for PostgreSQL, MinIO, the registry and metadata: still platform-owned network rules, and the deployment is better placed to isolate its own services. (ADR-0026 keeps the platform from fixing any list; the operator writes the Egress Rules.)
 - Logging each Sandbox's outbound connections: a new mechanism with no consumer yet.
 - Stdout-only audit: who deleted what must be queryable in the platform, as in Coder.
 - Keeping the unix-socket channel: more moving parts than one narrowly scoped token, for a property ADR-0013 already gave up.

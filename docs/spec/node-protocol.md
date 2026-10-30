@@ -24,7 +24,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 `AgentMessage`（oneof）：
 - `Hello{node_id, agent_version, proto_major, proto_minor}`
 - `Heartbeat{runtime_health, disk_free, gpu_health[]}`
-- `Capabilities{runtime_provider, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime_provider` 是这台 Node 唯一的 Runtime Provider（`docker`、`podman`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount` 和 `snapshot_build`，Local Runtime 的 `resource_mount` 报 `unsupported`，`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
+- `Capabilities{runtime_provider, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime_provider` 是这台 Node 唯一的 Runtime Provider（`containerd`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount`、`snapshot_build`、`kernel_isolation` 和 `egress_policy`；`kernel_isolation` 在 gvisor Node 上为 `enforced`，runc 和 Local 上为 `unsupported`；`egress_policy` 由注册时的出网自检决定，Local 上为 `unsupported`（`runtime.md` §13，ADR-0026）；Local Runtime 的 `resource_mount` 报 `unsupported`，`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
 - `SandboxObserved{sandbox_id, generation, phase: fetching_resources|running|gone|create_failed, cause?}`；`fetching_resources` 让 Sandbox 挂上同名 condition，`create_failed` 的 cause 可以是 `resource_fetch_failed`（`runtime.md` §11）
 - `WorkspaceObserved{workspace_id, phase, cause?}`
 - `ExecObserved{exec_id, started_at}`（结果不走这里，见 ExecOutput）
@@ -32,9 +32,9 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 - `CommandResult{command_id, error?}`
 
 `ControlMessage`（oneof）：
-- `HelloAck{accepted, registry_credential}`
+- `HelloAck{accepted, registry_credential, egress_rules{allow[], deny[]}}`；`egress_rules` 是部署配置里的 Egress Rules，原样下发，条目格式 `CIDR[:port]`（`defaults.md`）。部署配置没有热加载，所以 Rules 只在 Control Plane 重启后变化，而那时每个 Agent 都会重连、重新收到 `HelloAck`。Agent 只把它放在内存里，用于此后的每个 Create（`runtime.md` §13）
 - `ProvisionWorkspace` · `DeleteWorkspace`
-- `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, mount}]}`；对象经 `Presign` 拉取
+- `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, mount}], egress{mode: open|none|allowlist, allow[]}}`；对象经 `Presign` 拉取；`egress` 是 Sandbox 存下的 Egress Mode，每次（重新）下发都带同一份，Agent 拿它和当前的 Egress Rules 在 Create 时算出 Egress Policy。Mode 不是 `open` 时 Control Plane 只会把它下发给 `egress_policy` 为 `enforced` 的 Node；Agent 收到时自己的 `egress_policy` 不是 `enforced`，就以 `create_failed`、cause `runtime_create_failed` 上报，不降级
 - `StopSandbox{sandbox_id, generation}`
 - `StartExec{exec_id, sandbox_id, generation, argv, env, secret_env, cwd, timeout, log_cap, stdin?, pty?}`
 - `CancelExec{exec_id}`
@@ -84,7 +84,7 @@ Agent 推送 `OutputBatch{exec_id, frames[{seq, stream, data}]}`。Control Plane
 Gateway 需要访问某个 Node 时，Control Plane 先在 `Control` 上下发 `OpenTunnel`，Agent 再用同一个 `tunnel_id` 发起一条 `Tunnel` 流作为回拨。之后的 `TunnelFrame{tunnel_id?, data}` 都只承载原始字节。
 
 - `agent_http`：隧道另一端是 Agent 的内部 HTTP 接口。文件 API 和 PTY WebSocket 由 Gateway 原样反向代理过去。这个接口不对外，只能通过隧道访问。
-- `sandbox_port`：Agent 进入 Sandbox 的网络命名空间，拨 `127.0.0.1:PORT`，用于端口转发。
+- `sandbox_port`：Sandbox 里的 Supervisor 经运行目录上的 unix socket 转到 `127.0.0.1:PORT`，Agent 连这个 socket，不进入 Sandbox 的网络命名空间（`runtime.md` §14，ADR-0026）。用于端口转发。
 
 这样文件、PTY 和端口共用一种机制，不必在 Protobuf 里各自定义消息（ADR-0018）。
 
