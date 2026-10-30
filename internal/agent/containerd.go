@@ -16,6 +16,7 @@ import (
 	"time"
 
 	eventtypes "github.com/containerd/containerd/api/events"
+	runtimeoptions "github.com/containerd/containerd/api/types/runtimeoptions/v1"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
@@ -44,10 +45,15 @@ type containerdDriver struct {
 	r      *Runtime
 	client *containerd.Client
 	subnet string
+	// runscConfig is the runsc options TOML on a gvisor Node; empty under runc.
+	runscConfig string
 }
 
+// gvisor reports whether this Node runs Sandboxes under runsc.
+func (d *containerdDriver) gvisor() bool { return d.runscConfig != "" }
+
 // newContainerdRuntime is the explicit constructor for --runtime containerd.
-func newContainerdRuntime(socket, subnet, dataRoot, nodeID string) (*Runtime, error) {
+func newContainerdRuntime(socket, subnet, isolation, dataRoot, nodeID string) (*Runtime, error) {
 	client, err := containerd.New(socket, containerd.WithDefaultNamespace(containerdNamespace))
 	if err != nil {
 		return nil, fmt.Errorf("connect to containerd: %w", err)
@@ -58,7 +64,17 @@ func newContainerdRuntime(socket, subnet, dataRoot, nodeID string) (*Runtime, er
 		return nil, fmt.Errorf("configure CDI: %w", err)
 	}
 	rt := newRuntime(runtimeConfig{provider: ProviderContainerd, socket: socket}, dataRoot, nodeID)
-	rt.driver = &containerdDriver{r: rt, client: client, subnet: subnet}
+	driver := &containerdDriver{r: rt, client: client, subnet: subnet}
+	if isolation == IsolationGvisor {
+		// Sockets the Supervisor creates (PTY ctl.sock, forwards) must be
+		// visible on the host (runtime.md §9).
+		driver.runscConfig = filepath.Join(dataRoot, "runsc.toml")
+		if err := os.WriteFile(driver.runscConfig, []byte("[runsc_config]\n  host-uds = \"create\"\n"), 0o644); err != nil {
+			client.Close() //nolint:errcheck // failed constructor
+			return nil, fmt.Errorf("write runsc options: %w", err)
+		}
+	}
+	rt.driver = driver
 	return rt, nil
 }
 
@@ -119,11 +135,17 @@ func limitOpts(cpu float64, memory int64) []oci.SpecOpts {
 
 // start creates the container and starts its task.
 func (d *containerdDriver) start(ctx context.Context, name string, img containerd.Image, labels map[string]string, opts []oci.SpecOpts) (containerd.Container, error) {
-	c, err := d.client.NewContainer(ctx, name,
+	containerOpts := []containerd.NewContainerOpts{
 		containerd.WithImage(img),
 		containerd.WithNewSnapshot(name, img),
 		containerd.WithContainerLabels(labels),
-		containerd.WithNewSpec(append([]oci.SpecOpts{oci.WithImageConfig(img)}, opts...)...))
+		containerd.WithNewSpec(append([]oci.SpecOpts{oci.WithImageConfig(img)}, opts...)...),
+	}
+	if d.gvisor() {
+		containerOpts = append(containerOpts, containerd.WithRuntime("io.containerd.runsc.v1",
+			&runtimeoptions.Options{TypeUrl: "io.containerd.runsc.v1.options", ConfigPath: d.runscConfig}))
+	}
+	c, err := d.client.NewContainer(ctx, name, containerOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create container: %w", err)
 	}
@@ -154,6 +176,10 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	workspaceID, err := uuid.Parse(cmd.workspaceID)
 	if err != nil {
 		return "runtime_create_failed", err
+	}
+	// runsc would turn on nvproxy for NVIDIA devices instead of failing (runtime.md §9).
+	if d.gvisor() && len(cmd.gpuUUIDs) > 0 {
+		return "runtime_create_failed", errors.New("this gvisor Node does not attach GPUs")
 	}
 	// shortcut: every Sandbox is Mode open until CreateSandbox carries egress (#165).
 	policy, err := d.r.egressPolicy(egressMode{name: egressOpen})
@@ -376,7 +402,8 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 	if err != nil {
 		return nodeproto.CapabilityReport{}, fmt.Errorf("probe image: %w", err)
 	}
-	dir, err := os.MkdirTemp("", "orrery-probe-*")
+	// In the data root, which a gvisor Node keeps off tmpfs (runtime.md §9).
+	dir, err := os.MkdirTemp(d.r.dataRoot, "probe-")
 	if err != nil {
 		return nodeproto.CapabilityReport{}, err
 	}
@@ -397,8 +424,9 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 	// The probe asks CDI for every card in the host inventory; a broken CDI
 	// setup must not hide the other capabilities, so it falls back to none.
 	uuids := gpuUUIDs(enumerateGPUs(ctx))
+	// A gvisor Node never attaches cards, so gpu_device_visibility stays unsupported.
 	attempts := [][]string{nil}
-	if len(uuids) > 0 {
+	if len(uuids) > 0 && !d.gvisor() {
 		attempts = [][]string{uuids, nil}
 	}
 	var result supervisor.Result
@@ -419,9 +447,13 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 	if egressEnforced {
 		egress = nodeproto.ValueEnforced
 	}
-	// kernel_isolation is unsupported under runc (ADR-0026).
+	// kernel_isolation is enforced only under gvisor (ADR-0026).
+	isolation := nodeproto.ValueUnsupported
+	if d.gvisor() {
+		isolation = nodeproto.ValueEnforced
+	}
 	report.Entries = append(report.Entries,
-		nodeproto.CapabilityEntry{Name: nodeproto.CapKernelIsolation, Value: nodeproto.ValueUnsupported},
+		nodeproto.CapabilityEntry{Name: nodeproto.CapKernelIsolation, Value: isolation},
 		nodeproto.CapabilityEntry{Name: nodeproto.CapEgressPolicy, Value: egress})
 	return report, nil
 }

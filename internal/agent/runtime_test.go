@@ -61,6 +61,29 @@ func TestResolveRuntime(t *testing.T) {
 	}
 }
 
+// #168: --isolation is a containerd Node's choice, runc by default, and is
+// rejected on every other Provider.
+func TestResolveIsolation(t *testing.T) {
+	for _, tt := range []struct {
+		provider, isolation, want string
+		ok                        bool
+	}{
+		{"containerd", "", "runc", true},
+		{"containerd", "runc", "runc", true},
+		{"containerd", "gvisor", "gvisor", true},
+		{"containerd", "kata", "", false},
+		{"local", "", "", true},
+		{"docker", "", "", true},
+		{"local", "gvisor", "", false},
+		{"docker", "runc", "", false},
+	} {
+		got, err := resolveIsolation(tt.provider, tt.isolation)
+		if (err == nil) != tt.ok || got != tt.want {
+			t.Errorf("resolveIsolation(%q, %q) = %q, %v; want %q, ok %v", tt.provider, tt.isolation, got, err, tt.want, tt.ok)
+		}
+	}
+}
+
 func TestLimitsMatch(t *testing.T) {
 	// NanoCpus 0.5 CPU is a 50000 us quota over the fixed 100000 us period.
 	want := supervisor.Result{

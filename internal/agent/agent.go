@@ -153,6 +153,9 @@ type RunOptions struct {
 	// pool for --runtime containerd (runtime.md §9, §13).
 	Containerd    string
 	SandboxSubnet string
+	// Isolation is the containerd Node's Isolation Runtime, runc or gvisor
+	// (runtime.md §9); empty elsewhere.
+	Isolation string
 	// Runtime is the Node's one Runtime Provider (ADR-0014): docker, podman,
 	// containerd or local.
 	Runtime string
@@ -187,6 +190,31 @@ func resolveRuntime(name string) (string, error) {
 	}
 }
 
+// Isolation Runtimes a containerd Node runs every Sandbox under (ADR-0026).
+const (
+	IsolationRunc   = "runc"
+	IsolationGvisor = "gvisor"
+)
+
+// resolveIsolation is the Node's --isolation: runc unless gvisor is named,
+// and only on a containerd Node.
+func resolveIsolation(provider, isolation string) (string, error) {
+	if provider != ProviderContainerd {
+		if isolation != "" {
+			return "", fmt.Errorf("--isolation applies only to --runtime containerd, not %s", provider)
+		}
+		return "", nil
+	}
+	switch isolation {
+	case "", IsolationRunc:
+		return IsolationRunc, nil
+	case IsolationGvisor:
+		return IsolationGvisor, nil
+	default:
+		return "", fmt.Errorf("unknown isolation %q: want runc or gvisor", isolation)
+	}
+}
+
 // Run keeps one Control stream alive, probing capabilities once per
 // connection. NOT_FOUND/UNAUTHENTICATED clears local identity; anything else
 // keeps it and backs off (ADR-0010's asymmetric rule).
@@ -196,6 +224,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 	opts.Runtime = provider
+	if opts.Isolation, err = resolveIsolation(provider, opts.Isolation); err != nil {
+		return err
+	}
 	if provider == ProviderLocal {
 		// Local Runtime uses the system manager and systemd-run, so the Agent
 		// must be root; commands never run as root (runtime.md §10).
@@ -239,6 +270,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	if err := PrepareDataRoot(opts.DataRoot); err != nil {
 		return err
+	}
+	// runsc cannot execute the Supervisor from a tmpfs bind mount (runtime.md §9).
+	if opts.Isolation == IsolationGvisor && onTmpfs(filepath.Join(opts.DataRoot, "bin")) {
+		return fmt.Errorf("--isolation gvisor needs a --data-root off tmpfs: %s is on tmpfs", opts.DataRoot)
 	}
 	version := buildinfo.Version()
 
@@ -313,7 +348,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	}
 	if opts.Runtime == ProviderContainerd {
 		var err error
-		rt, err = newContainerdRuntime(opts.Containerd, opts.SandboxSubnet, opts.DataRoot, id.NodeID)
+		rt, err = newContainerdRuntime(opts.Containerd, opts.SandboxSubnet, opts.Isolation, opts.DataRoot, id.NodeID)
 		if err != nil {
 			return false, err
 		}
@@ -573,4 +608,10 @@ func diskUsage(path string) (free, total uint64) {
 		return 0, 0
 	}
 	return stat.Bavail * uint64(stat.Bsize), stat.Blocks * uint64(stat.Bsize)
+}
+
+func onTmpfs(path string) bool {
+	const tmpfsMagic = 0x01021994 // TMPFS_MAGIC, statfs(2)
+	var stat syscall.Statfs_t
+	return syscall.Statfs(path, &stat) == nil && stat.Type == tmpfsMagic
 }
