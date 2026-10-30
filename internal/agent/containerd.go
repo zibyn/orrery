@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -150,6 +152,11 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if len(cmd.gpuUUIDs) > 0 {
 		return "runtime_create_failed", errors.New("this containerd Node does not attach GPUs")
 	}
+	// shortcut: every Sandbox is Mode open until CreateSandbox carries egress (#165).
+	policy, err := d.r.egressPolicy(egressMode{name: egressOpen})
+	if err != nil {
+		return "runtime_create_failed", err
+	}
 	img, err := d.image(ctx, cmd.imageDigest)
 	if err != nil {
 		return "image_pull_failed", err
@@ -173,8 +180,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err != nil {
 		return cause, err
 	}
-	netns, err := d.setupNetwork(ctx, id)
-	if err != nil {
+	if _, err := d.setupNetwork(ctx, id, sandboxPath(d.r.dataRoot, id), policy); err != nil {
 		d.teardown(context.WithoutCancel(ctx), id) //nolint:errcheck // best effort
 		return "runtime_create_failed", err
 	}
@@ -196,7 +202,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 		oci.WithProcessCwd(workspaceMount),
 		oci.WithHostname(id.String()),
 		oci.WithMounts(mounts),
-		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: netns}),
+		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: netnsPath(id)}),
 	}, limitOpts(cmd.cpu, cmd.memory)...)
 	c, err := d.start(ctx, name, img, map[string]string{
 		"orrery.sandbox_id": id.String(),
@@ -245,7 +251,7 @@ func (d *containerdDriver) teardown(ctx context.Context, id uuid.UUID) error {
 	if err := d.removeContainer(ctx, containerName(id)); err != nil {
 		return err
 	}
-	return d.teardownNetwork(ctx, id)
+	return d.teardownNetwork(ctx, id, sandboxPath(d.r.dataRoot, id))
 }
 
 func (d *containerdDriver) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
@@ -377,7 +383,16 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 		return nodeproto.CapabilityReport{}, err
 	}
 	const cpu = 0.5
-	name := "orrery-probe-" + uuid.NewString()
+	id := uuid.New()
+	name := "orrery-probe-" + id.String()
+	// The egress self-check starts at Mode none, without the operator's Rules
+	// (runtime.md §13).
+	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: egressNone})
+	network, err := d.setupNetwork(ctx, id, dir, none)
+	defer d.teardownNetwork(context.WithoutCancel(ctx), id, dir) //nolint:errcheck // disposable
+	if err != nil {
+		return nodeproto.CapabilityReport{}, fmt.Errorf("probe network: %w", err)
+	}
 	opts := append([]oci.SpecOpts{
 		oci.WithProcessArgs(probeSupervisor, "init"),
 		oci.WithProcessCwd(probeWorkspace),
@@ -385,10 +400,11 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 			bindMount(workspace, probeWorkspace, "rw"),
 			bindMount(binDir, binaryDir, "ro"),
 		}),
+		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: netnsPath(id)}),
 	}, limitOpts(cpu, probeMemory)...)
 	// Labelled managed but owned by no Node, so a probe a crash left behind is
-	// removed by the next adopt.
-	c, err := d.start(ctx, name, img, map[string]string{"orrery.managed": "true"}, opts)
+	// removed with its network by the next adopt.
+	c, err := d.start(ctx, name, img, map[string]string{"orrery.managed": "true", "orrery.sandbox_id": id.String()}, opts)
 	defer d.removeContainer(context.WithoutCancel(ctx), name) //nolint:errcheck // disposable
 	if err != nil {
 		return nodeproto.CapabilityReport{}, err
@@ -399,51 +415,101 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 		return nodeproto.CapabilityReport{}, err
 	}
 	report := capabilities(result, limitsEnforced, false, ProviderContainerd)
-	// shortcut: egress_policy waits for the nftables self-check (#164) and
+	egress := nodeproto.ValueUnsupported
+	if d.egressEnforced(ctx, c, id, network.HostVeth) {
+		egress = nodeproto.ValueEnforced
+	}
 	// kernel_isolation is unsupported under runc (ADR-0026).
 	report.Entries = append(report.Entries,
 		nodeproto.CapabilityEntry{Name: nodeproto.CapKernelIsolation, Value: nodeproto.ValueUnsupported},
-		nodeproto.CapabilityEntry{Name: nodeproto.CapEgressPolicy, Value: nodeproto.ValueUnsupported})
+		nodeproto.CapabilityEntry{Name: nodeproto.CapEgressPolicy, Value: egress})
 	return report, nil
+}
+
+// egressEnforced is the egress_policy self-check (runtime.md §13): under
+// Mode none the probe cannot reach a port the Agent listens on at the bridge
+// gateway, and under an allowlist of just that port it can.
+func (d *containerdDriver) egressEnforced(ctx context.Context, c containerd.Container, id uuid.UUID, veth string) bool {
+	subnet, err := netip.ParsePrefix(d.subnet)
+	if err != nil {
+		return false
+	}
+	// host-local's default gateway, which the bridge plugin puts on the bridge.
+	listener, err := net.Listen("tcp", netip.AddrPortFrom(subnet.Masked().Addr().Next(), 0).String())
+	if err != nil {
+		slog.Warn("egress self-check: listen on the bridge gateway", "error", err)
+		return false
+	}
+	defer listener.Close() //nolint:errcheck // probe lifetime
+	target := listener.Addr().String()
+	if code, _, _, err := d.execProbe(ctx, c, "egress-none", probeSupervisor, "dial", target); err != nil || code == 0 {
+		slog.Warn("egress self-check: Mode none reached the gateway", "code", code, "error", err)
+		return false
+	}
+	addrPort := netip.MustParseAddrPort(target)
+	allowlist, err := resolveEgressPolicy(nil, nil, egressMode{name: egressAllowlist,
+		allow: []string{fmt.Sprintf("%s/32:%d", addrPort.Addr(), addrPort.Port())}})
+	if err == nil {
+		err = applyEgress(ctx, id, veth, allowlist)
+	}
+	if err != nil {
+		slog.Warn("egress self-check: apply the allowlist", "error", err)
+		return false
+	}
+	if code, _, stderr, err := d.execProbe(ctx, c, "egress-allowlist", probeSupervisor, "dial", target); err != nil || code != 0 {
+		slog.Warn("egress self-check: the allowlist did not reach the gateway", "code", code, "error", err, "stderr", stderr)
+		return false
+	}
+	return true
 }
 
 // execOutput runs one synchronous exec and decodes its JSON stdout.
 func (d *containerdDriver) execOutput(ctx context.Context, c containerd.Container, args ...string) (supervisor.Result, error) {
-	spec, err := c.Spec(ctx)
+	code, stdout, stderr, err := d.execProbe(ctx, c, "probe", args...)
+	if err == nil && code != 0 {
+		err = fmt.Errorf("probe exited %d: %s", code, stderr)
+	}
 	if err != nil {
 		return supervisor.Result{}, err
 	}
+	var result supervisor.Result
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return supervisor.Result{}, fmt.Errorf("decode probe output: %w", err)
+	}
+	return result, nil
+}
+
+// execProbe runs one synchronous exec and returns its exit code and output.
+func (d *containerdDriver) execProbe(ctx context.Context, c containerd.Container, execID string, args ...string) (int, []byte, string, error) {
+	spec, err := c.Spec(ctx)
+	if err != nil {
+		return 0, nil, "", err
+	}
 	task, err := c.Task(ctx, nil)
 	if err != nil {
-		return supervisor.Result{}, err
+		return 0, nil, "", err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	process := *spec.Process
 	process.Args = args
 	var stdout, stderr bytes.Buffer
-	p, err := task.Exec(ctx, "probe", &process, cio.NewCreator(cio.WithStreams(nil, &stdout, &stderr)))
+	p, err := task.Exec(ctx, execID, &process, cio.NewCreator(cio.WithStreams(nil, &stdout, &stderr)))
 	if err != nil {
-		return supervisor.Result{}, fmt.Errorf("create probe exec: %w", err)
+		return 0, nil, "", fmt.Errorf("create probe exec: %w", err)
 	}
 	defer p.Delete(context.WithoutCancel(ctx)) //nolint:errcheck // best effort
 	statusC, err := p.Wait(ctx)
 	if err != nil {
-		return supervisor.Result{}, err
+		return 0, nil, "", err
 	}
 	if err := p.Start(ctx); err != nil {
-		return supervisor.Result{}, fmt.Errorf("start probe exec: %w", err)
+		return 0, nil, "", fmt.Errorf("start probe exec: %w", err)
 	}
 	status := <-statusC
 	p.IO().Wait()
-	if code, _, err := status.Result(); err != nil || code != 0 {
-		return supervisor.Result{}, fmt.Errorf("probe exited %d (%v): %s", code, err, strings.TrimSpace(stderr.String()))
-	}
-	var result supervisor.Result
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return supervisor.Result{}, fmt.Errorf("decode probe output: %w", err)
-	}
-	return result, nil
+	code, _, err := status.Result()
+	return int(code), stdout.Bytes(), strings.TrimSpace(stderr.String()), err
 }
 
 func (d *containerdDriver) healthy(ctx context.Context) bool {
@@ -472,7 +538,7 @@ func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)
 			if err := d.removeContainer(ctx, c.ID()); err != nil {
 				slog.Warn("remove foreign Runtime", "container_id", c.ID(), "error", err)
 			} else if parseErr == nil {
-				if err := d.teardownNetwork(ctx, id); err != nil {
+				if err := d.teardownNetwork(ctx, id, sandboxPath(d.r.dataRoot, id)); err != nil {
 					slog.Warn("remove foreign Runtime network", "container_id", c.ID(), "error", err)
 				}
 			}

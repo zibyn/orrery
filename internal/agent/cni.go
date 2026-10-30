@@ -106,36 +106,43 @@ func parseCNIResult(raw []byte, bridge string) (sandboxNetwork, error) {
 	return network, nil
 }
 
-// setupNetwork builds the Sandbox's netns on the bridge and writes the files
-// mounted over /etc (runtime.md §2, §13). It returns the netns path.
-func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID) (string, error) {
+// setupNetwork builds the netns at netnsPath(id) on the bridge, applies the
+// Egress Policy to its veth, and writes network.json and the files mounted
+// over /etc into dir (runtime.md §2, §13).
+func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID, dir string, policy []egressRule) (sandboxNetwork, error) {
 	if _, err := runLocalCommand(ctx, "ip", "netns", "add", netnsName(id)); err != nil {
-		return "", err
+		return sandboxNetwork{}, err
 	}
 	if _, err := cniExec(ctx, "loopback", "ADD", loopbackConf, id, "lo"); err != nil {
-		return "", err
+		return sandboxNetwork{}, err
 	}
 	out, err := cniExec(ctx, "bridge", "ADD", d.bridgeConf(), id, "eth0")
 	if err != nil {
-		return "", err
+		return sandboxNetwork{}, err
 	}
 	network, err := parseCNIResult(out, sandboxBridge)
 	if err != nil {
-		return "", err
+		return sandboxNetwork{}, err
 	}
-	dir := sandboxPath(d.r.dataRoot, id)
 	raw, _ := json.Marshal(network)
 	if err := os.WriteFile(filepath.Join(dir, "network.json"), raw, 0o644); err != nil {
-		return "", err
+		return sandboxNetwork{}, err
+	}
+	if err := applyEgress(ctx, id, network.HostVeth, policy); err != nil {
+		return sandboxNetwork{}, err
 	}
 	if err := writeSandboxEtc(filepath.Join(dir, "etc"), id.String(), network.Address); err != nil {
-		return "", err
+		return sandboxNetwork{}, err
 	}
-	return netnsPath(id), nil
+	return network, nil
 }
 
-// teardownNetwork is CNI DEL and netns removal; every step is idempotent.
-func (d *containerdDriver) teardownNetwork(ctx context.Context, id uuid.UUID) error {
+// teardownNetwork removes the egress rules, CNI DEL, the netns and dir's
+// network.json; every step is idempotent.
+func (d *containerdDriver) teardownNetwork(ctx context.Context, id uuid.UUID, dir string) error {
+	if err := removeEgress(ctx, id); err != nil {
+		return err
+	}
 	// The bridge plugin's DEL tolerates a missing netns and still releases
 	// the address.
 	if _, err := cniExec(ctx, "bridge", "DEL", d.bridgeConf(), id, "eth0"); err != nil {
@@ -146,7 +153,7 @@ func (d *containerdDriver) teardownNetwork(ctx context.Context, id uuid.UUID) er
 			return err
 		}
 	}
-	if err := os.Remove(filepath.Join(sandboxPath(d.r.dataRoot, id), "network.json")); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(filepath.Join(dir, "network.json")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil

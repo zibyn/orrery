@@ -84,6 +84,11 @@ type Runtime struct {
 	registryMu sync.Mutex
 	registry   *registry.Credential
 
+	// Egress Rules from the last HelloAck, applied at each Create.
+	egressMu    sync.Mutex
+	egressAllow []string
+	egressDeny  []string
+
 	mu      sync.Mutex
 	managed map[string]int64 // sandbox id -> generation known to run
 }

@@ -362,6 +362,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		return false, errors.New("the Control Plane rejected Hello")
 	}
 	rt.setRegistryCredential(ack.RegistryCredential)
+	rt.setEgressRules(ack.GetEgressRules().GetAllow(), ack.GetEgressRules().GetDeny())
 	slog.Info("control stream connected", "node_id", id.NodeID)
 
 	// One goroutine owns Send; the receive loop and command goroutines only

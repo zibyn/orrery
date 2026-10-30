@@ -255,6 +255,8 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 			{Name: nodeproto.CapDiskCapacityQuota, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapArbitraryMounts, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueUnsupported},
+			// No netns, so Egress Rules do not apply (ADR-0026).
+			{Name: nodeproto.CapEgressPolicy, Value: nodeproto.ValueUnsupported},
 		},
 	}
 }
