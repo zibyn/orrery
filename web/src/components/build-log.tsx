@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleCheck, Hourglass, LoaderCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
@@ -23,20 +23,19 @@ export type BuildLogProps = {
 
 // The read-only xterm log shared by the version page: live while the build
 // runs, then the stored Output pages once it is terminal (api.md §3, §8).
-export function BuildLog({ execId, mode: versionMode }: BuildLogProps) {
+export function BuildLog({ execId, mode }: BuildLogProps) {
+  const queryClient = useQueryClient()
   const exec = useQuery({
     queryKey: ['exec', execId],
     queryFn: () => api<Exec>('GET', `/execs/${execId}`),
-    enabled: versionMode === 'follow',
     refetchInterval: (query) => buildExecPollInterval(query.state.data?.state),
   })
-  const view = buildLogView(versionMode, exec.data?.state)
-  const mode = view === 'stored' ? 'stored' : 'follow'
+  const view = buildLogView(mode, exec.data?.state, exec.isError)
   const streaming = view === 'follow' || view === 'stored'
   const [terminal, setTerminal] = useState<Terminal | null>(null)
   const [result, setResult] = useState<ExecResultFrame | null>(null)
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(mode === 'stored')
+  const [loading, setLoading] = useState(view === 'stored')
 
   useEffect(() => {
     if (!terminal || !streaming) return
@@ -45,7 +44,7 @@ export function BuildLog({ execId, mode: versionMode }: BuildLogProps) {
     setError('')
     setLoading(true)
 
-    if (mode === 'follow') {
+    if (view === 'follow') {
       return followExecOutput(
         execId,
         {
@@ -80,11 +79,8 @@ export function BuildLog({ execId, mode: versionMode }: BuildLogProps) {
             after = frameEnd(frame)
           }
         }
-        const exec = await api<Exec>('GET', `/execs/${execId}`)
-        if (cancelled) return
-        if (exec.result) {
-          setResult({ ...exec.result, type: 'result', log_truncated: exec.log_truncated })
-        }
+        // The cached Exec may predate the finish; refresh it for the result line.
+        await queryClient.refetchQueries({ queryKey: ['exec', execId] })
       } catch (err) {
         if (!cancelled) setError(messageOf(err))
       } finally {
@@ -94,19 +90,26 @@ export function BuildLog({ execId, mode: versionMode }: BuildLogProps) {
     return () => {
       cancelled = true
     }
-  }, [terminal, execId, mode, streaming])
+  }, [terminal, execId, view, streaming, queryClient])
+
+  const finished = view === 'stored' && !loading ? exec.data : undefined
+  const shownResult: ExecResultFrame | null =
+    result ??
+    (finished?.result
+      ? { ...finished.result, type: 'result', log_truncated: finished.log_truncated }
+      : null)
 
   return (
     <div className="flex flex-col gap-2">
       <p className="flex items-center gap-1.5 text-xs" data-testid="build-log-result">
-        {result ? (
+        {shownResult ? (
           <CircleCheck className="size-3.5 text-success" />
         ) : loading || view === 'loading' ? (
           <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" />
         ) : null}
-        <span className={result ? 'text-foreground' : 'text-muted-foreground'}>
-          {result
-            ? m.build_log_result({ result: formatExecResult(result) })
+        <span className={shownResult ? 'text-foreground' : 'text-muted-foreground'}>
+          {shownResult
+            ? m.build_log_result({ result: formatExecResult(shownResult) })
             : loading || view === 'loading'
               ? m.build_log_loading()
               : m.build_log_title()}

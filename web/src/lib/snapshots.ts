@@ -29,9 +29,11 @@ export function buildLogMode(version: SnapshotVersion): 'follow' | 'stored' | 'n
 export function buildLogView(
   mode: 'follow' | 'stored',
   execState: ExecState | undefined,
+  execFailed = false,
 ): 'loading' | 'queued' | 'follow' | 'stored' {
   if (mode === 'stored' || execState === 'finished') return 'stored'
-  if (execState === undefined) return 'loading'
+  // An unreadable Exec state falls back to the follow stream, which reports its own errors.
+  if (execState === undefined) return execFailed ? 'follow' : 'loading'
   return execState === 'pending' ? 'queued' : 'follow'
 }
 

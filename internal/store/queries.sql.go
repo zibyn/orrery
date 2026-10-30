@@ -64,8 +64,7 @@ type AppendExecChunkParams struct {
 	Frames   json.RawMessage
 }
 
-// A chunk at or past stored_seq never had its advance committed (written
-// before #157 made the two atomic); the resent batch replaces it.
+// ON CONFLICT DO UPDATE replaces orphan chunks a pre-#157 server left unadvanced at stored_seq.
 func (q *Queries) AppendExecChunk(ctx context.Context, arg AppendExecChunkParams) error {
 	_, err := q.db.Exec(ctx, appendExecChunk,
 		arg.ExecID,

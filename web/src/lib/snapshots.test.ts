@@ -111,6 +111,10 @@ describe('buildLogView', () => {
     expect(buildLogView('follow', undefined)).toBe('loading')
   })
 
+  it('opens the follow stream when the Exec state cannot be read', () => {
+    expect(buildLogView('follow', undefined, true)).toBe('follow')
+  })
+
   it('reads the stored log of a terminal version without the Exec state', () => {
     expect(buildLogView('stored', undefined)).toBe('stored')
   })

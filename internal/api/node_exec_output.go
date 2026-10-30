@@ -47,6 +47,7 @@ func (n *nodeService) ExecOutput(stream nodev1.Node_ExecOutputServer) error {
 		return err
 	}
 
+	acked := row.Exec.StoredSeq
 	for {
 		batch, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -70,9 +71,10 @@ func (n *nodeService) ExecOutput(stream nodev1.Node_ExecOutputServer) error {
 				return status.Errorf(codes.InvalidArgument, "unknown output stream %q", f.Stream)
 			}
 		}
-		stored, err := n.storeExecBatch(ctx, execID, data)
-		if err != nil {
-			return err
+		if len(data) > 0 { // an exit-only or empty batch has nothing to store
+			if acked, err = n.storeExecBatch(ctx, execID, data); err != nil {
+				return err
+			}
 		}
 		if exit != nil {
 			cause := ExecCause(exit.Cause)
@@ -83,6 +85,7 @@ func (n *nodeService) ExecOutput(stream nodev1.Node_ExecOutputServer) error {
 				n.s.log.Error("finish Exec", "exec_id", execID, "error", err)
 				return status.Error(codes.Internal, "store result")
 			}
+			// Safe outside the batch transaction: GREATEST and OR never move stored_seq or log_truncated back.
 			if err := n.s.q.AdvanceExecStoredSeq(ctx, store.AdvanceExecStoredSeqParams{
 				ID: execID, StoredSeq: exit.Seq, // log_truncated was set with the frames
 			}); err != nil {
@@ -92,7 +95,7 @@ func (n *nodeService) ExecOutput(stream nodev1.Node_ExecOutputServer) error {
 			n.s.reconcile.notify()
 			return stream.Send(&nodev1.OutputAck{ExecId: execID.String(), StoredSeq: exit.Seq})
 		}
-		if err := stream.Send(&nodev1.OutputAck{ExecId: execID.String(), StoredSeq: stored}); err != nil {
+		if err := stream.Send(&nodev1.OutputAck{ExecId: execID.String(), StoredSeq: acked}); err != nil {
 			return err
 		}
 	}

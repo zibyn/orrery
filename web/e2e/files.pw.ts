@@ -7,6 +7,7 @@ import { appsDomain, assertConsoleScope, origin, signIn, watchRequests } from '.
 
 // Sandboxes created by the current test; afterEach deletes them even when the
 // test fails, so later tests (the 4 CPU snapshot build) start on an idle Node.
+// Module-level state is safe only because this file runs serially (one worker).
 const createdSandboxes: string[] = []
 
 test.afterEach(async ({ page }) => {

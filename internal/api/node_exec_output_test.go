@@ -52,11 +52,11 @@ func testExecDB(t *testing.T) (*nodeService, uuid.UUID) {
 }
 
 // frames builds n consecutive stdout frames starting at seq from, with data
-// "line-<i>".
-func frames(from int64, first, n int) []*nodev1.OutputFrame {
+// "line-<label>" for label = start, start+1, ...
+func frames(from int64, start, n int) []*nodev1.OutputFrame {
 	out := make([]*nodev1.OutputFrame, 0, n)
 	seq := from
-	for i := first; i < first+n; i++ {
+	for i := start; i < start+n; i++ {
 		data := []byte(fmt.Sprintf("line-%d", i))
 		out = append(out, &nodev1.OutputFrame{Seq: seq, Stream: "stdout", Data: data})
 		seq += supervisor.HeaderSize + int64(len(data))
@@ -105,7 +105,10 @@ func TestExecOutputResendOverUnadvancedChunk(t *testing.T) {
 	for _, f := range orphan {
 		lf = append(lf, logFrameFromProto(f.Seq, f.Stream, f.Data))
 	}
-	raw, _ := json.Marshal(lf)
+	raw, err := json.Marshal(lf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	last := all[8].Seq
 	if err := n.s.q.AppendExecChunk(ctx, store.AppendExecChunkParams{
 		ExecID: execID, FirstSeq: 0, LastSeq: last, Frames: raw,
