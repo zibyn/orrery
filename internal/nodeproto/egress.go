@@ -14,6 +14,13 @@ type EgressEntry struct {
 	Port   uint16
 }
 
+// Egress Modes (ADR-0026), the same strings on the API and the Node protocol.
+const (
+	EgressOpen      = "open"
+	EgressNone      = "none"
+	EgressAllowlist = "allowlist"
+)
+
 // ParseEgressEntry parses an IPv4 CIDR, or a single address meaning /32, with
 // an optional port 1-65535.
 func ParseEgressEntry(raw string) (EgressEntry, error) {

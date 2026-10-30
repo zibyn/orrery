@@ -16,18 +16,13 @@ import (
 	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
-// Egress Modes (ADR-0026).
-const (
-	egressOpen      = "open"
-	egressNone      = "none"
-	egressAllowlist = "allowlist"
-)
-
 // egressTable is the Agent's own bridge-family table; sandboxVeths maps each
 // Sandbox's host-side veth to its chain (runtime.md §13).
 const (
-	egressTable  = "bridge orrery"
-	sandboxVeths = "sandboxes"
+	egressFamily    = "bridge"
+	egressTableName = "orrery"
+	egressTable     = egressFamily + " " + egressTableName
+	sandboxVeths    = "sandboxes"
 )
 
 // egressMode is a Sandbox's Egress Mode: allow is set only for allowlist.
@@ -66,11 +61,11 @@ func resolveEgressPolicy(allow, deny []string, mode egressMode) ([]egressRule, e
 		return nil, err
 	}
 	switch mode.name {
-	case egressOpen:
+	case nodeproto.EgressOpen:
 		policy = append(policy, egressRule{dest: anywhere, accept: true})
-	case egressNone:
+	case nodeproto.EgressNone:
 		policy = append(policy, egressRule{dest: anywhere})
-	case egressAllowlist:
+	case nodeproto.EgressAllowlist:
 		if len(mode.allow) == 0 {
 			return nil, errors.New("egress mode allowlist needs a non-empty allow")
 		}
@@ -96,7 +91,7 @@ func (r *Runtime) setEgressRules(allow, deny []string) {
 // means open.
 func egressModeOf(m *nodev1.EgressMode) egressMode {
 	if m.GetMode() == "" {
-		return egressMode{name: egressOpen}
+		return egressMode{name: nodeproto.EgressOpen}
 	}
 	return egressMode{name: m.GetMode(), allow: m.GetAllow()}
 }
@@ -121,7 +116,7 @@ func (r *Runtime) egressRefused(mode egressMode) error {
 	r.egressMu.Lock()
 	enforced := r.egressEnforced
 	r.egressMu.Unlock()
-	if mode.name != egressOpen && !enforced {
+	if mode.name != nodeproto.EgressOpen && !enforced {
 		return fmt.Errorf("egress mode %s needs egress_policy enforced on this Node", mode.name)
 	}
 	return nil
@@ -173,7 +168,7 @@ add rule %s ether type != ip drop
 // too.
 func removeEgress(ctx context.Context, id uuid.UUID) error {
 	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, "nft", "-j", "list", "map", "bridge", "orrery", sandboxVeths)
+	cmd := exec.CommandContext(ctx, "nft", "-j", "list", "map", egressFamily, egressTableName, sandboxVeths)
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		return nil // no table, so no chain either

@@ -3,6 +3,8 @@ package agent
 import (
 	"net/netip"
 	"testing"
+
+	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
 // verdict walks the resolved policy the way the per-Sandbox chain does: the
@@ -39,7 +41,7 @@ func TestResolveEgressPolicy(t *testing.T) {
 	}{
 		{
 			name: "no rules and open reaches everything",
-			mode: egressMode{name: egressOpen},
+			mode: egressMode{name: nodeproto.EgressOpen},
 			probes: []probe{
 				{"169.254.169.254", "tcp", 80, true},
 				{"10.213.0.7", "icmp", 0, true},
@@ -48,7 +50,7 @@ func TestResolveEgressPolicy(t *testing.T) {
 		},
 		{
 			name: "deny drops whole ranges for every protocol",
-			deny: recommendedDeny, mode: egressMode{name: egressOpen},
+			deny: recommendedDeny, mode: egressMode{name: nodeproto.EgressOpen},
 			probes: []probe{
 				{"169.254.169.254", "tcp", 80, false},
 				{"10.213.0.7", "tcp", 28001, false},
@@ -61,7 +63,7 @@ func TestResolveEgressPolicy(t *testing.T) {
 		{
 			name:  "allow overrides an overlapping deny, port by port",
 			allow: []string{"10.0.0.5/32:443", "10.0.0.2:53"},
-			deny:  recommendedDeny, mode: egressMode{name: egressOpen},
+			deny:  recommendedDeny, mode: egressMode{name: nodeproto.EgressOpen},
 			probes: []probe{
 				{"10.0.0.5", "tcp", 443, true},
 				{"10.0.0.5", "udp", 443, true},
@@ -74,7 +76,7 @@ func TestResolveEgressPolicy(t *testing.T) {
 		{
 			name:  "allow without port overrides deny for every port",
 			allow: []string{"10.1.0.0/16"}, deny: []string{"10.0.0.0/8"},
-			mode: egressMode{name: egressOpen},
+			mode: egressMode{name: nodeproto.EgressOpen},
 			probes: []probe{
 				{"10.1.2.3", "tcp", 1, true},
 				{"10.1.2.3", "icmp", 0, true},
@@ -83,7 +85,7 @@ func TestResolveEgressPolicy(t *testing.T) {
 		},
 		{
 			name: "a ported deny leaves other ports of the address open",
-			deny: []string{"8.8.8.8/32:53"}, mode: egressMode{name: egressOpen},
+			deny: []string{"8.8.8.8/32:53"}, mode: egressMode{name: nodeproto.EgressOpen},
 			probes: []probe{
 				{"8.8.8.8", "udp", 53, false},
 				{"8.8.8.8", "tcp", 53, false},
@@ -94,7 +96,7 @@ func TestResolveEgressPolicy(t *testing.T) {
 		{
 			name:  "none drops everything Rules allow does not name",
 			allow: []string{"10.0.0.5/32:443"}, deny: recommendedDeny,
-			mode: egressMode{name: egressNone},
+			mode: egressMode{name: nodeproto.EgressNone},
 			probes: []probe{
 				{"10.0.0.5", "tcp", 443, true},
 				{"8.8.8.8", "tcp", 443, false},
@@ -104,7 +106,7 @@ func TestResolveEgressPolicy(t *testing.T) {
 		{
 			name:  "allowlist narrows within Rules: deny still wins over the list",
 			allow: []string{"10.0.0.5/32:443"}, deny: recommendedDeny,
-			mode: egressMode{name: egressAllowlist, allow: []string{"1.1.1.0/24:443", "192.168.1.10/32"}},
+			mode: egressMode{name: nodeproto.EgressAllowlist, allow: []string{"1.1.1.0/24:443", "192.168.1.10/32"}},
 			probes: []probe{
 				{"1.1.1.1", "tcp", 443, true},
 				{"1.1.1.1", "tcp", 80, false},
@@ -115,7 +117,7 @@ func TestResolveEgressPolicy(t *testing.T) {
 		},
 		{
 			name: "allowlist without Rules",
-			mode: egressMode{name: egressAllowlist, allow: []string{"10.213.0.1/32:28000"}},
+			mode: egressMode{name: nodeproto.EgressAllowlist, allow: []string{"10.213.0.1/32:28000"}},
 			probes: []probe{
 				{"10.213.0.1", "tcp", 28000, true},
 				{"10.213.0.1", "tcp", 28001, false},
@@ -143,9 +145,9 @@ func TestResolveEgressPolicyRejectsBadInput(t *testing.T) {
 		allow, deny []string
 		mode        egressMode
 	}{
-		"bad rule":            {deny: []string{"10.0.0.0/8:x"}, mode: egressMode{name: egressOpen}},
-		"bad allowlist entry": {mode: egressMode{name: egressAllowlist, allow: []string{"nope"}}},
-		"empty allowlist":     {mode: egressMode{name: egressAllowlist}},
+		"bad rule":            {deny: []string{"10.0.0.0/8:x"}, mode: egressMode{name: nodeproto.EgressOpen}},
+		"bad allowlist entry": {mode: egressMode{name: nodeproto.EgressAllowlist, allow: []string{"nope"}}},
+		"empty allowlist":     {mode: egressMode{name: nodeproto.EgressAllowlist}},
 		"unknown mode":        {mode: egressMode{name: "closed"}},
 	} {
 		if _, err := resolveEgressPolicy(tt.allow, tt.deny, tt.mode); err == nil {

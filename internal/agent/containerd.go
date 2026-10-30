@@ -452,7 +452,7 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	name := "orrery-probe-" + id.String()
 	// The egress self-check starts at Mode none, without the operator's Rules
 	// (runtime.md §13).
-	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: egressNone})
+	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressNone})
 	network, err := d.setupNetwork(ctx, id, dir, none)
 	defer d.teardownNetwork(context.WithoutCancel(ctx), id, dir) //nolint:errcheck // disposable
 	if err != nil {
@@ -504,7 +504,7 @@ func (d *containerdDriver) egressEnforced(ctx context.Context, c containerd.Cont
 		return false
 	}
 	addrPort := netip.MustParseAddrPort(target)
-	allowlist, err := resolveEgressPolicy(nil, nil, egressMode{name: egressAllowlist,
+	allowlist, err := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressAllowlist,
 		allow: []string{fmt.Sprintf("%s/32:%d", addrPort.Addr(), addrPort.Port())}})
 	if err == nil {
 		err = applyEgress(ctx, id, veth, allowlist)

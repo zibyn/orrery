@@ -51,19 +51,19 @@ const maxEgressAllow = 64
 // is open. A Local Sandbox cannot narrow egress at all (ADR-0026).
 func sandboxEgressMode(req createSandboxRequest, runtime string) (mode string, allow []string, code, detail string) {
 	if req.Egress == nil {
-		return "open", nil, "", ""
+		return nodeproto.EgressOpen, nil, "", ""
 	}
 	if req.Egress.Mode == nil {
 		return "", nil, "invalid_request", "egress.mode is required"
 	}
 	mode, allow = *req.Egress.Mode, req.Egress.Allow
 	switch mode {
-	case "open", "none":
+	case nodeproto.EgressOpen, nodeproto.EgressNone:
 		// A present allow, even an empty one, is ambiguous with these modes.
 		if allow != nil {
 			return "", nil, "invalid_request", "egress.allow is only valid with mode allowlist"
 		}
-	case "allowlist":
+	case nodeproto.EgressAllowlist:
 		if len(allow) == 0 {
 			return "", nil, "invalid_request", "egress mode allowlist needs a non-empty allow; use mode none for no egress"
 		}
@@ -78,7 +78,7 @@ func sandboxEgressMode(req createSandboxRequest, runtime string) (mode string, a
 	default:
 		return "", nil, "invalid_request", "egress.mode must be open, none or allowlist"
 	}
-	if mode != "open" && runtime == "local" {
+	if mode != nodeproto.EgressOpen && runtime == "local" {
 		return "", nil, "unsupported", "runtime: local cannot narrow egress"
 	}
 	return mode, allow, "", ""
@@ -121,7 +121,7 @@ func sandboxRuntimeValue(runtime string) string {
 // in-memory test row) is open.
 func sandboxEgressValue(mode string) string {
 	if mode == "" {
-		return "open"
+		return nodeproto.EgressOpen
 	}
 	return mode
 }
@@ -130,7 +130,7 @@ func sandboxEgressValue(mode string) string {
 // Mode: anything but open needs egress_policy enforced (api.md §3).
 func egressPlaceable(mode string) func(store.Node) bool {
 	return func(node store.Node) bool {
-		return sandboxEgressValue(mode) == "open" ||
+		return sandboxEgressValue(mode) == nodeproto.EgressOpen ||
 			nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapEgressPolicy)
 	}
 }
@@ -227,7 +227,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		writeProblem(w, egressCode, egressDetail)
 		return
 	}
-	if egressMode != "open" {
+	if egressMode != nodeproto.EgressOpen {
 		nodes, err := s.q.ListAllNodes(ctx)
 		if err != nil {
 			s.internal(w, "list Nodes", err)
