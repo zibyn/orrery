@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +78,7 @@ func TestMultiNodePlacement(t *testing.T) {
 	secondState, secondRoot := enrollAgent(t, admin, secondName)
 
 	// Only the second (younger) Node is connected when the Workspace is placed.
-	startAgentWith(t, secondState, secondRoot, "--runtime", "docker")
+	startAgentWith(t, secondState, secondRoot)
 	waitForNodeReady(t, admin, secondName)
 	second := findNode(t, admin, secondName)
 
@@ -91,7 +89,7 @@ func TestMultiNodePlacement(t *testing.T) {
 
 	// The older Node joins now. Without the Workspace locality filter the
 	// Scheduler would prefer it; the pin must keep the Sandbox on the second.
-	startAgentWith(t, firstState, firstRoot, "--runtime", "docker")
+	startAgentWith(t, firstState, firstRoot)
 	waitForNodeReady(t, admin, firstName)
 	first := findNode(t, admin, firstName)
 
@@ -126,8 +124,8 @@ func TestMultiNodePlacement(t *testing.T) {
 
 // TestUnhealthyRuntime is #93's "unhealthy-runtime" scenario: a Node whose
 // Runtime self-check and heartbeat report unhealthy receives no new placement.
-// The shared Docker daemon cannot be stopped for one Agent, so the unhealthy
-// Agent is given an unreachable socket.
+// The shared Runtime cannot be stopped for one Agent, so the unhealthy Agent
+// is given an unreachable --docker or --containerd socket.
 func TestUnhealthyRuntime(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
@@ -135,11 +133,10 @@ func TestUnhealthyRuntime(t *testing.T) {
 	healthyName := fmt.Sprintf("e2e-healthy-node-%d", suffix)
 	unhealthyName := fmt.Sprintf("e2e-unhealthy-node-%d", suffix)
 
-	healthy := startAgentNode(t, admin, healthyName, "--runtime", "docker")
+	healthy := startAgentNode(t, admin, healthyName)
 
 	state, dataRoot := enrollAgent(t, admin, unhealthyName)
-	startAgentWith(t, state, dataRoot, "--runtime", "docker",
-		"--docker", filepath.Join(t.TempDir(), "unreachable.sock"))
+	startAgentWith(t, state, dataRoot, "--"+e2eRuntime(), filepath.Join(t.TempDir(), "unreachable.sock"))
 	unhealthy := waitForNodeHealth(t, admin, unhealthyName, "unavailable", "unhealthy")
 	if unhealthy.ID == healthy.ID {
 		t.Fatalf("the unhealthy Agent reused Node %s", healthy.ID)
@@ -234,12 +231,15 @@ func rawHello(t *testing.T, client nodev1.NodeClient, nodeID, token string, majo
 
 func sandboxContainerLabel(t *testing.T, sandboxID, key string) string {
 	t.Helper()
-	out, err := exec.Command("docker", "inspect", "-f",
-		fmt.Sprintf(`{{index .Config.Labels %q}}`, key), "orrery-"+sandboxID).CombinedOutput()
+	// Docker's .Config and ctr's container info both carry a Labels object.
+	out, err := sandboxCommand([]string{"inspect", "-f", "{{json .Config}}", "orrery-" + sandboxID},
+		"containers", "info", "orrery-"+sandboxID).Output()
 	if err != nil {
-		t.Fatalf("docker inspect label %s: %v\n%s", key, err, out)
+		t.Fatalf("inspect label %s: %v\n%s", key, err, out)
 	}
-	return strings.TrimSpace(string(out))
+	var info struct{ Labels map[string]string }
+	mustJSON(t, out, &info)
+	return info.Labels[key]
 }
 
 // TestRetireNode is #94's "retire-node" scenario (#39, ADR-0014). There is no
@@ -256,13 +256,13 @@ func TestRetireNode(t *testing.T) {
 
 	// The retiring Node is enrolled and started first, so placement prefers it.
 	oldState, oldRoot := enrollAgent(t, admin, oldName)
-	startAgentWith(t, oldState, oldRoot, "--runtime", "docker")
+	startAgentWith(t, oldState, oldRoot)
 	t.Cleanup(func() { makeTreeRemovable(oldRoot) })
 	waitForNodeReady(t, admin, oldName)
 	old := findNode(t, admin, oldName)
 
 	newState, newRoot := enrollAgent(t, admin, newName)
-	startAgentWith(t, newState, newRoot, "--runtime", "docker")
+	startAgentWith(t, newState, newRoot)
 	// The restoration pins a read-only Resource cache; make it removable.
 	t.Cleanup(func() { makeTreeRemovable(newRoot) })
 	waitForNodeReady(t, admin, newName)
@@ -415,7 +415,7 @@ func TestRetireNode(t *testing.T) {
 	// The connected Agent sees UNAUTHENTICATED and clears its identity.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		if _, err := os.Stat(oldState); os.IsNotExist(err) {
+		if !pathExists(oldState) {
 			break
 		}
 		if time.Now().After(deadline) {

@@ -110,8 +110,9 @@ func TestEnrollNode(t *testing.T) {
 			if got := current.Capabilities["runtime_provider"]; got != e2eRuntime() {
 				t.Fatalf("runtime_provider = %v, want %s", got, e2eRuntime())
 			}
-			if len(current.GPUs) != 0 {
-				t.Fatalf("CPU-only Node reports GPUs: %v", current.GPUs)
+			// The Node reports the host's cards: none on a CPU-only host.
+			if want := hostGPUCount(); len(current.GPUs) != want {
+				t.Fatalf("Node reports %d GPUs, the host has %d: %v", len(current.GPUs), want, current.GPUs)
 			}
 			break
 		}

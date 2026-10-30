@@ -5,7 +5,6 @@ package e2e
 import (
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +27,7 @@ func TestSandboxTokenScope(t *testing.T) {
 
 	sandboxID := createReadySandbox(t, admin, fmt.Sprintf("token-%d", suffix), 256<<20)
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", "orrery-"+sandboxID).Run()
+		removeSandboxRuntime(sandboxID)
 	})
 
 	run := func(argv ...string) (string, string) {
@@ -118,12 +117,12 @@ func TestSandboxTokenScope(t *testing.T) {
 	if home != "" {
 		t.Fatalf("git credential files exist: %s", home)
 	}
-	out, err := exec.Command("docker", "inspect", "orrery-"+sandboxID).CombinedOutput()
+	out, err := inspectSandboxRuntime(sandboxID)
 	if err != nil {
-		t.Fatalf("docker inspect: %v\n%s", err, out)
+		t.Fatalf("inspect the Sandbox container: %v\n%s", err, out)
 	}
 	if strings.Contains(string(out), token) {
-		t.Fatalf("docker inspect exposes the Sandbox Token:\n%s", out)
+		t.Fatalf("the container record exposes the Sandbox Token:\n%s", out)
 	}
 
 	// Deleting the Sandbox revokes the token at once, before teardown finishes.

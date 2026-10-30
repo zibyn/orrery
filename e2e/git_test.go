@@ -390,7 +390,7 @@ func newGitFixture(t *testing.T, admin string, link bool) *gitFixture {
 	waitForNodeReady(t, admin, nodeName)
 	sandboxID := createReadySandbox(t, userToken, fmt.Sprintf("git-cred-%d", suffix), 256<<20)
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", "orrery-"+sandboxID).Run()
+		removeSandboxRuntime(sandboxID)
 	})
 
 	stdout, stderr, code := execInSandbox(t, admin, sandboxID, "sh", "-c", `printf %s "$ORRERY_SANDBOX_TOKEN"`)
@@ -549,10 +549,10 @@ func TestGitLinkClonePush(t *testing.T) {
 	if strings.Contains(configs, token) {
 		t.Fatalf("git config holds the Git token:\n%s", configs)
 	}
-	if out, err := exec.Command("docker", "inspect", "orrery-"+fixture.sandboxID).CombinedOutput(); err != nil {
-		t.Fatalf("docker inspect: %v\n%s", err, out)
+	if out, err := inspectSandboxRuntime(fixture.sandboxID); err != nil {
+		t.Fatalf("inspect the Sandbox container: %v\n%s", err, out)
 	} else if strings.Contains(string(out), token) {
-		t.Fatalf("docker inspect exposes the Git token:\n%s", out)
+		t.Fatalf("the container record exposes the Git token:\n%s", out)
 	}
 
 	// Every issue is audited with the host, provider and Sandbox, never the
