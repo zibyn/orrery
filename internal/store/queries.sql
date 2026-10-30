@@ -741,10 +741,16 @@ SET started_at = COALESCE(started_at, $2),
     END
 WHERE id = $1;
 
+-- name: LockExecStoredSeq :one
+SELECT stored_seq FROM execs WHERE id = $1 FOR UPDATE;
+
+-- A chunk at or past stored_seq never had its advance committed (written
+-- before #157 made the two atomic); the resent batch replaces it.
 -- name: AppendExecChunk :exec
 INSERT INTO exec_log_chunks (exec_id, first_seq, last_seq, frames)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (exec_id, first_seq) DO NOTHING;
+ON CONFLICT (exec_id, first_seq) DO UPDATE
+SET last_seq = EXCLUDED.last_seq, frames = EXCLUDED.frames;
 
 -- name: AdvanceExecStoredSeq :exec
 UPDATE execs

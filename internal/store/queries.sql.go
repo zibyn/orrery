@@ -53,7 +53,8 @@ func (q *Queries) AdvanceExecStoredSeq(ctx context.Context, arg AdvanceExecStore
 const appendExecChunk = `-- name: AppendExecChunk :exec
 INSERT INTO exec_log_chunks (exec_id, first_seq, last_seq, frames)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (exec_id, first_seq) DO NOTHING
+ON CONFLICT (exec_id, first_seq) DO UPDATE
+SET last_seq = EXCLUDED.last_seq, frames = EXCLUDED.frames
 `
 
 type AppendExecChunkParams struct {
@@ -63,6 +64,8 @@ type AppendExecChunkParams struct {
 	Frames   json.RawMessage
 }
 
+// A chunk at or past stored_seq never had its advance committed (written
+// before #157 made the two atomic); the resent batch replaces it.
 func (q *Queries) AppendExecChunk(ctx context.Context, arg AppendExecChunkParams) error {
 	_, err := q.db.Exec(ctx, appendExecChunk,
 		arg.ExecID,
@@ -5079,6 +5082,17 @@ func (q *Queries) ListWorkspaces(ctx context.Context, arg ListWorkspacesParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockExecStoredSeq = `-- name: LockExecStoredSeq :one
+SELECT stored_seq FROM execs WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockExecStoredSeq(ctx context.Context, id uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, lockExecStoredSeq, id)
+	var stored_seq int64
+	err := row.Scan(&stored_seq)
+	return stored_seq, err
 }
 
 const lockResource = `-- name: LockResource :one
