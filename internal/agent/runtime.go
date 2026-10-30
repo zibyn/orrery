@@ -212,18 +212,26 @@ func sandboxRunPath(root string, id uuid.UUID) string {
 
 func containerName(id uuid.UUID) string { return "orrery-" + id.String() }
 
+// Runtime container label keys (runtime.md §8).
+const (
+	labelSandboxID  = "orrery.sandbox_id"
+	labelGeneration = "orrery.generation"
+	labelManaged    = "orrery.managed"
+	labelNode       = "orrery.node"
+)
+
 // containerOwnedBy reports whether a container belongs to this Node. A
 // container carrying orrery.managed without this Node's label was left by a
 // previous identity (or another Node on the same daemon) and must not be
 // adopted (runtime.md §8).
 func containerOwnedBy(labels map[string]string, nodeID string) bool {
-	return labels["orrery.managed"] == "true" && nodeID != "" && labels["orrery.node"] == nodeID
+	return labels[labelManaged] == "true" && nodeID != "" && labels[labelNode] == nodeID
 }
 
 // createAdopts reports whether a Create may take over the running Runtime it
 // finds under its name: this Node owns it, at the requested generation.
 func createAdopts(labels map[string]string, nodeID string, generation int64) bool {
-	return containerOwnedBy(labels, nodeID) && labels["orrery.generation"] == strconv.FormatInt(generation, 10)
+	return containerOwnedBy(labels, nodeID) && labels[labelGeneration] == strconv.FormatInt(generation, 10)
 }
 
 func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {

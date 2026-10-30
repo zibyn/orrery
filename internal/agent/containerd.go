@@ -234,10 +234,10 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	// Last: CDI adds env, hooks and mounts that earlier options would reset.
 	opts = append(opts, cdispec.WithCDIDevices(cdiDeviceNames(cmd.gpuUUIDs)...))
 	c, err := d.start(ctx, name, img, map[string]string{
-		"orrery.sandbox_id": id.String(),
-		"orrery.generation": strconv.FormatInt(cmd.generation, 10),
-		"orrery.managed":    "true",
-		"orrery.node":       d.r.nodeID,
+		labelSandboxID:  id.String(),
+		labelGeneration: strconv.FormatInt(cmd.generation, 10),
+		labelManaged:    "true",
+		labelNode:       d.r.nodeID,
 	}, opts)
 	if err == nil && !hostLimitsMatch(ctx, c, cmd.cpu, cmd.memory) {
 		err = errors.New("host cgroup readback does not match the request")
@@ -470,7 +470,7 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	opts = append(opts, cdispec.WithCDIDevices(cdiDeviceNames(gpus)...))
 	// Labelled managed but owned by no Node, so a probe a crash left behind is
 	// removed with its network by the next adopt.
-	c, err := d.start(ctx, name, img, map[string]string{"orrery.managed": "true", "orrery.sandbox_id": id.String()}, opts)
+	c, err := d.start(ctx, name, img, map[string]string{labelManaged: "true", labelSandboxID: id.String()}, opts)
 	defer d.removeContainer(context.WithoutCancel(ctx), name) //nolint:errcheck // disposable
 	if err != nil {
 		return supervisor.Result{}, false, false, err
@@ -577,7 +577,7 @@ func (d *containerdDriver) healthy(ctx context.Context) bool {
 // adopt takes over this Node's running Sandboxes and removes every other
 // managed container in the namespace with its network (runtime.md §8).
 func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)) {
-	containers, err := d.client.Containers(ctx, `labels."orrery.managed"==true`)
+	containers, err := d.client.Containers(ctx, `labels."`+labelManaged+`"==true`)
 	if err != nil {
 		return
 	}
@@ -586,12 +586,12 @@ func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)
 		if err != nil {
 			continue
 		}
-		id, parseErr := uuid.Parse(labels["orrery.sandbox_id"])
+		id, parseErr := uuid.Parse(labels[labelSandboxID])
 		if !containerOwnedBy(labels, d.r.nodeID) {
 			// The Workspace directory stays untouched: declaring it lost may be
 			// wrong, and the data may have no other copy.
 			slog.Info("removing a Runtime left by another Node",
-				"container_id", c.ID(), "node", labels["orrery.node"])
+				"container_id", c.ID(), "node", labels[labelNode])
 			if err := d.removeContainer(ctx, c.ID()); err != nil {
 				slog.Warn("remove foreign Runtime", "container_id", c.ID(), "error", err)
 			} else if parseErr == nil {
@@ -601,7 +601,7 @@ func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)
 			}
 			continue
 		}
-		gen, err := strconv.ParseInt(labels["orrery.generation"], 10, 64)
+		gen, err := strconv.ParseInt(labels[labelGeneration], 10, 64)
 		if err != nil || parseErr != nil {
 			continue
 		}
@@ -677,11 +677,11 @@ func (d *containerdDriver) watchEvents(ctx context.Context, report func(string, 
 				if err != nil || !containerOwnedBy(labels, d.r.nodeID) {
 					continue
 				}
-				gen, err := strconv.ParseInt(labels["orrery.generation"], 10, 64)
+				gen, err := strconv.ParseInt(labels[labelGeneration], 10, 64)
 				if err != nil {
 					continue
 				}
-				id := labels["orrery.sandbox_id"]
+				id := labels[labelSandboxID]
 				if gen, tracked := d.r.takeIf(id, gen); tracked {
 					report(id, gen)
 				}
