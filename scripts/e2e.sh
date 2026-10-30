@@ -458,7 +458,9 @@ run_console_e2e() {
   node_name="e2e-console-$(date +%s)"
   .e2e/orrery-agent enroll --server "$NODE_URL" --ca "$PWD/.e2e/tls/server.crt" \
     --packet "$packet" --name "$node_name" --state "$state"
-  local run_args=(run --ca "$PWD/.e2e/tls/server.crt" --state "$state" --data-root "$data_root")
+  # The build ceiling is 4 CPU (defaults.md) and CI runners have exactly four,
+  # so the default 1-CPU host reserve would leave every build unsatisfiable.
+  local run_args=(run --ca "$PWD/.e2e/tls/server.crt" --state "$state" --data-root "$data_root" --reserve-cpu 0)
   [ -n "$DOCKER_SOCKET" ] && run_args+=(--docker "$DOCKER_SOCKET")
   .e2e/orrery-agent "${run_args[@]}" >"$log" 2>&1 &
   CONSOLE_AGENT_PID=$!
