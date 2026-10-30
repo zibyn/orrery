@@ -12,21 +12,21 @@ import (
 	"time"
 )
 
-// TestGvisorParity is #160's gVisor parity scenario (#168): a containerd Node under --isolation gvisor reports
+// TestGvisorParity is #160's gVisor parity scenario (#168): a containerd Node under --isolation runsc reports
 // kernel_isolation enforced and GPU unsupported, and exec-log-stream,
 // agent-restart-survives and an Egress Rules scenario pass on it. It needs a
 // containerd host with runsc and its shim on PATH; the e2e harness runs every
 // Agent there over SSH:
 //
-//	ORRERY_E2E_ISOLATION=gvisor make e2e -run GvisorParity
+//	ORRERY_E2E_ISOLATION=runsc make e2e -run GvisorParity
 func TestGvisorParity(t *testing.T) {
-	if os.Getenv("ORRERY_E2E_ISOLATION") != "gvisor" {
-		t.Skip("needs a gvisor containerd Node (ORRERY_E2E_ISOLATION=gvisor)")
+	if os.Getenv("ORRERY_E2E_ISOLATION") != "runsc" {
+		t.Skip("needs a runsc containerd Node (ORRERY_E2E_ISOLATION=runsc)")
 	}
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
 	suffix := time.Now().UnixNano()
-	nodeName := fmt.Sprintf("e2e-gvisor-%d", suffix)
+	nodeName := fmt.Sprintf("e2e-runsc-%d", suffix)
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	agent := startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
@@ -48,7 +48,7 @@ func TestGvisorParity(t *testing.T) {
 	}
 
 	t.Run("tmpfs-data-root-refused", func(t *testing.T) {
-		root := fmt.Sprintf("/dev/shm/orrery-e2e-gvisor-%d", suffix)
+		root := fmt.Sprintf("/dev/shm/orrery-e2e-runsc-%d", suffix)
 		t.Cleanup(func() { _, _ = nodeShell("rm -rf " + root) })
 		out, err := runAgentCommand(t, "--ca", nodeCA(), "--state", state, "--data-root", root).CombinedOutput()
 		if err == nil || !strings.Contains(string(out), "tmpfs") {
@@ -57,7 +57,7 @@ func TestGvisorParity(t *testing.T) {
 	})
 
 	t.Run("runs-under-gvisor", func(t *testing.T) {
-		id := createReadySandbox(t, admin, fmt.Sprintf("gvisor-kernel-%d", suffix), 128<<20)
+		id := createReadySandbox(t, admin, fmt.Sprintf("runsc-kernel-%d", suffix), 128<<20)
 		t.Cleanup(func() { deleteSandbox(t, admin, id) })
 		e := createExec(t, admin, id, map[string]any{"argv": []string{"dmesg"}})
 		assertExitedWith(t, waitExecFinished(t, admin, e.ID, 30*time.Second), "exited")
@@ -67,7 +67,7 @@ func TestGvisorParity(t *testing.T) {
 	})
 
 	t.Run("exec-log-stream", func(t *testing.T) {
-		id := createReadySandbox(t, admin, fmt.Sprintf("gvisor-exec-%d", suffix), 128<<20)
+		id := createReadySandbox(t, admin, fmt.Sprintf("runsc-exec-%d", suffix), 128<<20)
 		t.Cleanup(func() { deleteSandbox(t, admin, id) })
 		e := createExec(t, admin, id, map[string]any{
 			"argv": []string{"sh", "-c", "printf 'hello '; printf 'oops' >&2; printf '\\377'; exit 7"},
@@ -85,7 +85,7 @@ func TestGvisorParity(t *testing.T) {
 	})
 
 	t.Run("agent-restart-survives", func(t *testing.T) {
-		id := createReadySandbox(t, admin, fmt.Sprintf("gvisor-restart-%d", suffix), 128<<20)
+		id := createReadySandbox(t, admin, fmt.Sprintf("runsc-restart-%d", suffix), 128<<20)
 		t.Cleanup(func() { deleteSandbox(t, admin, id) })
 		const count = 60
 		e := createExec(t, admin, id, numberedLines(count))
@@ -111,8 +111,8 @@ func TestGvisorParity(t *testing.T) {
 		}
 		setEgressRules(t, []string{"10.213.0.0/16:28001"}, recommendedDeny)
 		waitForNodeReady(t, admin, nodeName)
-		a := createReadySandbox(t, admin, fmt.Sprintf("gvisor-egress-a-%d", suffix), 64<<20)
-		b := createReadySandbox(t, admin, fmt.Sprintf("gvisor-egress-b-%d", suffix), 64<<20)
+		a := createReadySandbox(t, admin, fmt.Sprintf("runsc-egress-a-%d", suffix), 64<<20)
+		b := createReadySandbox(t, admin, fmt.Sprintf("runsc-egress-b-%d", suffix), 64<<20)
 		t.Cleanup(func() {
 			for _, id := range []string{a, b} {
 				_, _ = call(t, http.MethodDelete, "/api/v1/sandboxes/"+id, admin, nil)

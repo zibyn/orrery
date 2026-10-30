@@ -114,10 +114,11 @@ func TestResolveIsolation(t *testing.T) {
 	}{
 		{"containerd", "", "runc", true},
 		{"containerd", "runc", "runc", true},
-		{"containerd", "gvisor", "gvisor", true},
+		{"containerd", "runsc", "runsc", true},
+		{"containerd", "gvisor", "", false}, // #176: never released, no alias
 		{"containerd", "kata", "", false},
 		{"local", "", "", true},
-		{"local", "gvisor", "", false},
+		{"local", "runsc", "", false},
 	} {
 		got, err := resolveIsolation(tt.provider, tt.isolation)
 		if (err == nil) != tt.ok || got != tt.want {

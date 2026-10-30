@@ -33,8 +33,8 @@ func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.Cap
 }
 
 // capabilities is the containerd Node's Runtime report from its probe.
-// kernel_isolation is enforced only under gvisor (ADR-0026).
-func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, egressEnforced, gvisor bool) nodeproto.CapabilityReport {
+// kernel_isolation is enforced only under runsc (ADR-0026).
+func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, egressEnforced, runsc bool) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
 			return nodeproto.ValueEnforced
@@ -64,7 +64,7 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, egressEnforce
 			// unsupported, which keeps the Scheduler from placing a Sandbox
 			// with Resources there.
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
-			{Name: nodeproto.CapKernelIsolation, Value: value(gvisor)},
+			{Name: nodeproto.CapKernelIsolation, Value: value(runsc)},
 			{Name: nodeproto.CapEgressPolicy, Value: value(egressEnforced)},
 			// snapshot_build is added by the Agent from the BuildKit endpoint
 			// self-check, independent of the Runtime (runtime.md §12).

@@ -374,7 +374,7 @@ func psqlCount(t *testing.T, query string) string {
 
 // assertLimit reads a limit file from the Sandbox's cgroup on the Node host,
 // at the container spec's cgroupsPath: the one readback that holds for runc
-// and gvisor, whose guest sees only the Sentry's emulated cgroupfs
+// and runsc, whose guest sees only the Sentry's emulated cgroupfs
 // (runtime.md §9).
 func assertLimit(t *testing.T, id, file, want string) {
 	t.Helper()

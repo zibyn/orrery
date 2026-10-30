@@ -37,7 +37,7 @@ const (
 	// host build API. It is optional: Local Runtime reports it unsupported and
 	// the Scheduler filters build rows to Nodes that enforce it (ADR-0021).
 	CapSnapshotBuild = "snapshot_build"
-	// CapKernelIsolation is enforced only by a gvisor containerd Node
+	// CapKernelIsolation is enforced only by a runsc containerd Node
 	// (ADR-0026).
 	CapKernelIsolation = "kernel_isolation"
 	// CapEgressPolicy is enforced only after the registration egress

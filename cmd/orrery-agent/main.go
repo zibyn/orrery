@@ -59,7 +59,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   orrery-agent enroll --server HOST:PORT --packet ore_... [--ca FILE] [--name NAME] [--state FILE]
-  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|gvisor] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
+  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|runsc] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
   orrery-agent supervisor init
   orrery-agent supervisor probe [WORKSPACE]
   orrery-agent supervisor run EXEC_ID
@@ -93,7 +93,7 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.Runtime, "runtime", agent.ProviderContainerd, "Runtime Provider: containerd or local")
 	fs.StringVar(&opts.Docker, "docker", "", "removed: Docker Nodes run on containerd now (--runtime containerd, --containerd SOCKET)")
 	fs.StringVar(&opts.Containerd, "containerd", agent.DefaultContainerdSock, "containerd socket (--runtime containerd)")
-	fs.StringVar(&opts.Isolation, "isolation", "", "Isolation Runtime: runc (default) or gvisor (--runtime containerd)")
+	fs.StringVar(&opts.Isolation, "isolation", "", "Isolation Runtime: runc (default) or runsc (--runtime containerd)")
 	fs.StringVar(&opts.SandboxSubnet, "sandbox-subnet", agent.DefaultSandboxSubnet, "this Node's Sandbox subnet, not overlapping other Nodes' (--runtime containerd)")
 	fs.StringVar(&opts.LocalUser, "local-user", "", "unprivileged user every Local Runtime Exec runs as (required with --runtime local)")
 	fs.StringVar(&opts.Buildkit, "buildkit", "", "BuildKit endpoint, a standalone buildkitd (none by default: snapshot builds are unsupported without it)")

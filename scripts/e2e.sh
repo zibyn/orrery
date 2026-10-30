@@ -113,7 +113,7 @@ export ORRERY_APPS_DOMAIN="${ORRERY_APPS_DOMAIN:-apps.test}"
 # start as the test process's user), with containerd's socket at its default
 # path, the CNI plugins in /opt/cni/bin, ctr on PATH and, for snapshot builds,
 # a standalone buildkitd named by ORRERY_E2E_BUILDKIT. ORRERY_E2E_ISOLATION=
-# gvisor runs every Agent under runsc.
+# runsc runs every Agent under runsc.
 # GPU scenarios are skipped unless a GPU host is reachable over SSH:
 #   ORRERY_E2E_GPU_SSH=user@gpu-host ./scripts/e2e.sh -run GPU
 # The test deploys the Agent there and tunnels back to this machine's node

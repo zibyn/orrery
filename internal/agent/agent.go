@@ -154,7 +154,7 @@ type RunOptions struct {
 	// pool for --runtime containerd (runtime.md §9, §13).
 	Containerd    string
 	SandboxSubnet string
-	// Isolation is the containerd Node's Isolation Runtime, runc or gvisor
+	// Isolation is the containerd Node's Isolation Runtime, runc or runsc
 	// (runtime.md §9); empty elsewhere.
 	Isolation string
 	// Runtime is the Node's one Runtime Provider (ADR-0014, ADR-0026):
@@ -197,11 +197,11 @@ var errDockerFlag = errors.New("--docker is no longer supported: Docker Nodes we
 
 // Isolation Runtimes a containerd Node runs every Sandbox under (ADR-0026).
 const (
-	IsolationRunc   = "runc"
-	IsolationGvisor = "gvisor"
+	IsolationRunc  = "runc"
+	IsolationRunsc = "runsc"
 )
 
-// resolveIsolation is the Node's --isolation: runc unless gvisor is named,
+// resolveIsolation is the Node's --isolation: runc unless runsc is named,
 // and only on a containerd Node.
 func resolveIsolation(provider, isolation string) (string, error) {
 	if provider != ProviderContainerd {
@@ -213,10 +213,10 @@ func resolveIsolation(provider, isolation string) (string, error) {
 	switch isolation {
 	case "", IsolationRunc:
 		return IsolationRunc, nil
-	case IsolationGvisor:
-		return IsolationGvisor, nil
+	case IsolationRunsc:
+		return IsolationRunsc, nil
 	default:
-		return "", fmt.Errorf("unknown isolation %q: want runc or gvisor", isolation)
+		return "", fmt.Errorf("unknown isolation %q: want runc or runsc", isolation)
 	}
 }
 
@@ -277,8 +277,8 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 	// runsc cannot execute the Supervisor from a tmpfs bind mount (runtime.md §9).
-	if opts.Isolation == IsolationGvisor && onTmpfs(filepath.Join(opts.DataRoot, "bin")) {
-		return fmt.Errorf("--isolation gvisor needs a --data-root off tmpfs: %s is on tmpfs", opts.DataRoot)
+	if opts.Isolation == IsolationRunsc && onTmpfs(filepath.Join(opts.DataRoot, "bin")) {
+		return fmt.Errorf("--isolation runsc needs a --data-root off tmpfs: %s is on tmpfs", opts.DataRoot)
 	}
 	version := buildinfo.Version()
 

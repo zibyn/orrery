@@ -138,7 +138,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 - 用公共 CA 证书时去掉 `--ca` 和两个 `--trust-registry`。
 - 对象存储也要信任，因为 blob 下载会从 registry 307 到它。
 - `--trust-registry` 可重复；Agent 用宿主的系统信任库拉镜像，脚本把 CA 装进去（`update-ca-certificates` 或 `update-ca-trust`），Agent 重启后生效。buildkitd 有自己的 registry 配置，见下文。
-- `--runtime containerd|local` 之后可用 `--` 追加 `orrery-agent run` 的其它参数，例如 `-- --buildkit unix:///run/buildkit/buildkitd.sock`、`-- --isolation gvisor`、`-- --sandbox-subnet 10.213.1.0/24` 或 `-- --local-user sandbox`。
+- `--runtime containerd|local` 之后可用 `--` 追加 `orrery-agent run` 的其它参数，例如 `-- --buildkit unix:///run/buildkit/buildkitd.sock`、`-- --isolation runsc`、`-- --sandbox-subnet 10.213.1.0/24` 或 `-- --local-user sandbox`。
 - 不带 `--buildkit` 的 Node 不做 Snapshot 构建（`snapshot_build` 为 `unsupported`）。
 
 ### containerd Node 的准备
@@ -148,7 +148,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 - **containerd 2.x**，rootful，socket 默认 `/run/containerd/containerd.sock`（`-- --containerd SOCKET` 可改）。Agent 只用自己的 namespace `orrery`，不改 containerd 配置，可以和同一台宿主上的 Docker 共用一个 containerd。
 - **CNI 插件**装在 `/opt/cni/bin`（至少 `bridge`、`host-local`、`loopback`），以及 `nft` 和 `ip`。每个 Sandbox 一个 netns，挂在 Agent 自建的网桥 `orrery0` 上，地址取自 `--sandbox-subnet`（默认 `10.213.0.0/24`）。多台 Node 的子网不能重叠，Egress Rules 靠它们区分 Sandbox。宿主防火墙要放行 `orrery0` 的转发：例如 Docker 把 FORWARD 默认策略设成 drop，Sandbox 就出不了网。
 - **buildkitd**（做 Snapshot 构建时）：独立、rootful，以 `--buildkit` 传给 Agent，例如 `buildkitd --addr unix:///run/buildkit/buildkitd.sock --oci-worker=true --containerd-worker=false`，并作为 systemd 服务常驻。私有 CA 时在它的 `buildkitd.toml` 里给 registry 和对象存储两个主机都配上 CA：`[registry."cp.example.com:9443"] ca = ["/etc/orrery-agent/ca.crt"]`。
-- **gVisor**（可选，`-- --isolation gvisor`）：`runsc` 和 `containerd-shim-runsc-v1` 放在 containerd 的 PATH 上；data root 不能在 tmpfs 上。gvisor Node 不挂 GPU。
+- **gVisor**（可选，`-- --isolation runsc`）：`runsc` 和 `containerd-shim-runsc-v1` 放在 containerd 的 PATH 上；data root 不能在 tmpfs 上。runsc Node 不挂 GPU。
 - **GPU**（可选）：NVIDIA Container Toolkit 生成的 CDI spec（`nvidia-ctk cdi generate`），只在 runc Node 上生效。
 
 Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules 为空时 Sandbox 的出站完全放开，包括云 metadata 地址和 Control Plane 所在的内网**；`defaults.md` 有一份推荐的 Rules。Local Runtime 不受 Egress Rules 约束。

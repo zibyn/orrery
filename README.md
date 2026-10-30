@@ -1,6 +1,6 @@
 # Orrery
 
-面向 agent 的远程开发与 GPU 执行平台。Control Plane 统一管理身份、Workspace、Sandbox、Exec 和资源；Node Agent 在受信任的主机上通过 containerd（runc 或 gVisor）或 Local Runtime 实际执行命令。
+面向 agent 的远程开发与 GPU 执行平台。Control Plane 统一管理身份、Workspace、Sandbox、Exec 和资源；Node Agent 在受信任的主机上通过 containerd（runc 或 gVisor 的 runsc）或 Local Runtime 实际执行命令。
 
 - **Workspace**：可变工作目录，永久绑定一个 Node，可以是持久的，也可以随 Sandbox 一起删除（临时 Workspace）。
 - **Sandbox**：短期隔离执行实例，挂载一个 Workspace 和若干只读 Resource，按 CPU、内存、GPU 分配。
