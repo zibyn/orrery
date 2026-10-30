@@ -168,8 +168,9 @@ func agentCommand(t *testing.T, args ...string) *exec.Cmd {
 }
 
 // runAgentCommand includes the Docker socket when the caller's DOCKER_HOST
-// points at a unix socket, ORRERY_E2E_RUNTIME's Provider unless the test names
-// one, and a writable data root because the Agent runs as the test user, not
+// points at a unix socket, ORRERY_E2E_RUNTIME's Provider (with
+// ORRERY_E2E_ISOLATION's Isolation Runtime) unless the test names one, and a
+// writable data root because the Agent runs as the test user, not
 // root.
 func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
@@ -197,6 +198,9 @@ func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 	}
 	if runtime := e2eRuntime(); runtime != "docker" && !hasRuntime {
 		args = append(args, "--runtime", runtime)
+		if isolation := os.Getenv("ORRERY_E2E_ISOLATION"); isolation != "" && runtime == "containerd" {
+			args = append(args, "--isolation", isolation)
+		}
 	}
 	// A containerd Node builds only against a standalone buildkitd (#167).
 	if buildkit := os.Getenv("ORRERY_E2E_BUILDKIT"); buildkit != "" && !hasBuildkit {
