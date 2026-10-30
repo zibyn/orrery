@@ -639,7 +639,7 @@ func schemas() map[string]any {
 					"type":        "string",
 					"enum":        []string{"container", "local"},
 					"default":     "container",
-					"description": "container places on Docker or Podman; local places on a Local Runtime Node and accepts no Snapshot or Resources.",
+					"description": "container places on a containerd Node; local places on a Local Runtime Node and accepts no Snapshot or Resources.",
 				},
 				"workspace": map[string]any{
 					"type":        "object",

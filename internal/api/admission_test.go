@@ -224,7 +224,7 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 		Hardware: mustHardware(t, nodeHardware{
 			CPUCores: 8, MemoryBytes: 32 * gib,
 		}),
-		Capabilities: json.RawMessage(`{"runtime_provider":"docker","entries":[{"name":"gpu_device_visibility","value":"enforced"}]}`),
+		Capabilities: json.RawMessage(`{"runtime_provider":"containerd","entries":[{"name":"gpu_device_visibility","value":"enforced"}]}`),
 	}
 	gpus := map[uuid.UUID][]store.Gpu{gpuNode.ID: {
 		{Uuid: "GPU-a", NodeID: gpuNode.ID, Model: "H100"},
@@ -248,7 +248,7 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 
 	// Without the CDI capability the cards exist but cannot be attached.
 	noCDI := gpuNode
-	noCDI.Capabilities = json.RawMessage(`{"runtime_provider":"docker","entries":[{"name":"gpu_device_visibility","value":"unsupported"}]}`)
+	noCDI.Capabilities = json.RawMessage(`{"runtime_provider":"containerd","entries":[{"name":"gpu_device_visibility","value":"unsupported"}]}`)
 	if !admissionExhausted([]store.Node{noCDI}, gpus, request, nil) {
 		t.Fatal("a Node without CDI must be exhausted for GPU requests")
 	}
@@ -398,7 +398,7 @@ func capabilitySnapshot(t *testing.T, provider string, values map[string]string)
 // api.md §3 / ADR-0009: a container request only goes to a container Node, a
 // local request only to a Local Node. Build rows are filtered elsewhere.
 func TestRuntimeMatching(t *testing.T) {
-	container := capabilitySnapshot(t, "docker", nil)
+	docker := capabilitySnapshot(t, "docker", nil)
 	podman := capabilitySnapshot(t, "podman", nil)
 	containerd := capabilitySnapshot(t, "containerd", nil)
 	local := capabilitySnapshot(t, "local", nil)
@@ -407,10 +407,11 @@ func TestRuntimeMatching(t *testing.T) {
 		runtime string
 		want    bool
 	}{
-		{container, "", true},
-		{container, "container", true},
-		{container, "local", false},
-		{podman, "container", true},
+		// The removed Providers (ADR-0026) take nothing.
+		{docker, "", false},
+		{docker, "container", false},
+		{docker, "local", false},
+		{podman, "container", false},
 		{containerd, "container", true},
 		{containerd, "", true},
 		{containerd, "local", false},
@@ -464,8 +465,8 @@ func TestAdmissionExhaustedRuntime(t *testing.T) {
 		}
 		return capabilitySnapshot(t, provider, values)
 	}
-	dockerNode := store.Node{
-		ID: uuid.New(), Hardware: hw, Capabilities: caps("docker"),
+	containerNode := store.Node{
+		ID: uuid.New(), Hardware: hw, Capabilities: caps("containerd"),
 		ReservedCpu: 1, ReservedMemory: 2 * gib,
 	}
 	localNode := store.Node{
@@ -475,16 +476,16 @@ func TestAdmissionExhaustedRuntime(t *testing.T) {
 	localSB := store.Sandbox{Cpu: 1, Memory: gib, Runtime: "local"}
 	containerSB := store.Sandbox{Cpu: 1, Memory: gib, Runtime: "container"}
 
-	if !admissionExhausted([]store.Node{dockerNode}, nil, localSB, nil) {
-		t.Fatal("a local Sandbox among Docker Nodes is not provably unsatisfiable")
+	if !admissionExhausted([]store.Node{containerNode}, nil, localSB, nil) {
+		t.Fatal("a local Sandbox among containerd Nodes is not provably unsatisfiable")
 	}
-	if admissionExhausted([]store.Node{dockerNode, localNode}, nil, localSB, nil) {
+	if admissionExhausted([]store.Node{containerNode, localNode}, nil, localSB, nil) {
 		t.Fatal("a local Sandbox with a Local Node is not exhausted")
 	}
 	if !admissionExhausted([]store.Node{localNode}, nil, containerSB, nil) {
 		t.Fatal("a container Sandbox among Local Nodes is not provably unsatisfiable")
 	}
-	if admissionExhausted([]store.Node{dockerNode, localNode}, nil, containerSB, nil) {
+	if admissionExhausted([]store.Node{containerNode, localNode}, nil, containerSB, nil) {
 		t.Fatal("a container Sandbox with a Docker Node is not exhausted")
 	}
 }

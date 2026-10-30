@@ -133,7 +133,7 @@ func CapabilityValue(raw json.RawMessage, name string) string {
 	return storedValues(raw)[name]
 }
 
-// RuntimeProvider is the Node's one Runtime Provider (docker, podman or
+// RuntimeProvider is the Node's one Runtime Provider (containerd or
 // local), or "" when the Node has not reported Capabilities.
 func RuntimeProvider(raw json.RawMessage) string {
 	var report CapabilityReport
