@@ -124,7 +124,11 @@ func TestPortForward(t *testing.T) {
 	}
 	cliForward(t, otherAdmin, sandboxID, "hello-app")
 
-	// The Sandbox itself publishes nothing on the host.
+	// The Sandbox itself publishes nothing on the host. containerd has no
+	// published ports at all: the Sandbox's netns is only on the bridge.
+	if e2eRuntime() == "containerd" {
+		return
+	}
 	out, err := exec.Command("docker", "inspect", "--format", "{{json .HostConfig.PortBindings}}",
 		"orrery-"+sandboxID).Output()
 	if err != nil {

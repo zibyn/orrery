@@ -349,14 +349,9 @@ func psqlCount(t *testing.T, query string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func containerRunning(id string) bool {
-	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", "orrery-"+id).CombinedOutput()
-	return err == nil && strings.TrimSpace(string(out)) == "true"
-}
-
 func assertLimit(t *testing.T, id, path, want string) {
 	t.Helper()
-	out, err := exec.Command("docker", "exec", "orrery-"+id, "cat", path).CombinedOutput()
+	out, err := catInSandbox(id, path)
 	if err != nil {
 		t.Fatalf("read %s: %v\n%s", path, err, out)
 	}

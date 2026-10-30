@@ -107,6 +107,9 @@ func TestEnrollNode(t *testing.T) {
 			if current.Capabilities == nil {
 				t.Fatal("ready Node has no Capabilities")
 			}
+			if got := current.Capabilities["runtime_provider"]; got != e2eRuntime() {
+				t.Fatalf("runtime_provider = %v, want %s", got, e2eRuntime())
+			}
 			if len(current.GPUs) != 0 {
 				t.Fatalf("CPU-only Node reports GPUs: %v", current.GPUs)
 			}
@@ -164,13 +167,15 @@ func agentCommand(t *testing.T, args ...string) *exec.Cmd {
 }
 
 // runAgentCommand includes the Docker socket when the caller's DOCKER_HOST
-// points at a unix socket, and a writable data root because the Agent runs as
-// the test user, not root.
+// points at a unix socket, ORRERY_E2E_RUNTIME's Provider unless the test names
+// one, and a writable data root because the Agent runs as the test user, not
+// root.
 func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
 	args = append([]string{"run"}, args...)
 	hasDocker := false
 	hasRoot := false
+	hasRuntime := false
 	for _, arg := range args {
 		if arg == "--docker" {
 			hasDocker = true
@@ -178,9 +183,15 @@ func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 		if arg == "--data-root" {
 			hasRoot = true
 		}
+		if arg == "--runtime" {
+			hasRuntime = true
+		}
 	}
 	if socket := os.Getenv("ORRERY_E2E_DOCKER_SOCKET"); socket != "" && !hasDocker {
 		args = append(args, "--docker", socket)
+	}
+	if runtime := e2eRuntime(); runtime != "docker" && !hasRuntime {
+		args = append(args, "--runtime", runtime)
 	}
 	if !hasRoot {
 		args = append(args, "--data-root", t.TempDir())
