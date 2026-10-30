@@ -2729,6 +2729,27 @@ func (q *Queries) GetSnapshotByName(ctx context.Context, arg GetSnapshotByNamePa
 	return i, err
 }
 
+const getSnapshotIncludingDeleted = `-- name: GetSnapshotIncludingDeleted :one
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots WHERE id = $1
+`
+
+// GetSnapshotIncludingDeleted serves a build or import still running under a
+// tombstoned Snapshot: the version finishes, only the pointer stays put.
+func (q *Queries) GetSnapshotIncludingDeleted(ctx context.Context, id uuid.UUID) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, getSnapshotIncludingDeleted, id)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.IdempotencyKey,
+	)
+	return i, err
+}
+
 const getSnapshotVersion = `-- name: GetSnapshotVersion :one
 SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2
 `

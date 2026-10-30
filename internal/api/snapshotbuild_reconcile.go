@@ -135,7 +135,7 @@ func (r *reconciler) buildCommand(ctx context.Context, row store.ListBuildRunsRo
 	for _, id := range ids {
 		secrets = append(secrets, &nodev1.BuildSecret{Id: id, Value: secretEnv[id]})
 	}
-	snapshot, err := r.s.q.GetSnapshot(ctx, version.SnapshotID)
+	snapshot, err := r.s.q.GetSnapshotIncludingDeleted(ctx, version.SnapshotID)
 	if err != nil {
 		return nil, err
 	}

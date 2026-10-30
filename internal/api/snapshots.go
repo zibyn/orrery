@@ -420,9 +420,10 @@ func (s *Server) runImport(versionID, snapshotID uuid.UUID, repo string, source 
 		s.log.Error("mark Snapshot import ready", "version", versionID, "error", err)
 		return
 	}
+	// A tombstoned Snapshot keeps its pointer; the version still ends ready.
 	if _, err := q.SetSnapshotCurrentVersion(context.Background(), store.SetSnapshotCurrentVersionParams{
 		ID: ready.SnapshotID, VersionID: &versionID,
-	}); err != nil {
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.log.Error("move Snapshot current pointer", "snapshot", ready.SnapshotID, "error", err)
 		return
 	}

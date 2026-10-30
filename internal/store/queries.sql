@@ -1099,6 +1099,11 @@ RETURNING *;
 -- name: GetSnapshot :one
 SELECT * FROM snapshots WHERE id = $1 AND deleted_at IS NULL;
 
+-- GetSnapshotIncludingDeleted serves a build or import still running under a
+-- tombstoned Snapshot: the version finishes, only the pointer stays put.
+-- name: GetSnapshotIncludingDeleted :one
+SELECT * FROM snapshots WHERE id = $1;
+
 -- name: GetSnapshotByIdempotencyKey :one
 SELECT * FROM snapshots
 WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
