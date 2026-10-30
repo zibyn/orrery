@@ -176,6 +176,7 @@ func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 	hasDocker := false
 	hasRoot := false
 	hasRuntime := false
+	hasBuildkit := false
 	for _, arg := range args {
 		if arg == "--docker" {
 			hasDocker = true
@@ -186,12 +187,19 @@ func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 		if arg == "--runtime" {
 			hasRuntime = true
 		}
+		if strings.HasPrefix(arg, "--buildkit") {
+			hasBuildkit = true
+		}
 	}
 	if socket := os.Getenv("ORRERY_E2E_DOCKER_SOCKET"); socket != "" && !hasDocker {
 		args = append(args, "--docker", socket)
 	}
 	if runtime := e2eRuntime(); runtime != "docker" && !hasRuntime {
 		args = append(args, "--runtime", runtime)
+	}
+	// A containerd Node builds only against a standalone buildkitd (#167).
+	if buildkit := os.Getenv("ORRERY_E2E_BUILDKIT"); buildkit != "" && !hasBuildkit {
+		args = append(args, "--buildkit", buildkit)
 	}
 	if !hasRoot {
 		args = append(args, "--data-root", t.TempDir())

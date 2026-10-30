@@ -57,3 +57,10 @@ func catInSandbox(id, path string) ([]byte, error) {
 		"task", "exec", "--exec-id", fmt.Sprintf("e2e-cat-%d", time.Now().UnixNano()),
 		"orrery-"+id, "cat", path).CombinedOutput()
 }
+
+// nodeShell runs a script on the Node host: locally with sh, or through
+// ORRERY_E2E_NODE_SHELL, an `sh -c` stand-in such as one over SSH. Data-root
+// paths, cgroups and the BuildKit endpoint live on that host.
+func nodeShell(script string) ([]byte, error) {
+	return exec.Command(envOr("ORRERY_E2E_NODE_SHELL", "sh"), "-c", script).CombinedOutput()
+}
