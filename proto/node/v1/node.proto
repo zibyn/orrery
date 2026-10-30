@@ -377,4 +377,13 @@ message HelloAck {
   // Docker config.json auth document for the platform registry (ADR-0014);
   // empty when the deployment has no registry.
   string registry_credential = 2;
+  // The deployment's Egress Rules, passed through as written (defaults.md
+  // "egress"); the Agent applies them at every later Create (runtime.md §13).
+  EgressRules egress_rules = 3;
+}
+
+// EgressRules entries are `CIDR[:port]`.
+message EgressRules {
+  repeated string allow = 1;
+  repeated string deny = 2;
 }

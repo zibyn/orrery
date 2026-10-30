@@ -53,6 +53,7 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 			Accepted: true,
 			// The deployment credential for the platform registry (ADR-0014).
 			RegistryCredential: n.s.cfg.RegistryCredential,
+			EgressRules:        &nodev1.EgressRules{Allow: n.s.cfg.EgressAllow, Deny: n.s.cfg.EgressDeny},
 		},
 	}}); err != nil {
 		return err

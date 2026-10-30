@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/zibyn/orrery/internal/keyring"
+	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/registry"
 	"go.yaml.in/yaml/v3"
 )
@@ -82,6 +83,10 @@ type fileConfig struct {
 		Password string `yaml:"password"`
 	} `yaml:"registry"`
 	PlatformSnapshots []platformSnapshotFile `yaml:"platform_snapshots"`
+	Egress            struct {
+		Allow []string `yaml:"allow"`
+		Deny  []string `yaml:"deny"`
+	} `yaml:"egress"`
 }
 
 type encryptionKeyFile struct {
@@ -418,6 +423,15 @@ func (f *fileConfig) toConfig(logger *slog.Logger) (Config, error) {
 	if err := f.platformSnapshots(&cfg); err != nil {
 		return Config{}, err
 	}
+	// Egress Rules: syntax only, no required entries (defaults.md "egress").
+	for key, entries := range map[string][]string{"egress.allow": f.Egress.Allow, "egress.deny": f.Egress.Deny} {
+		for n, raw := range entries {
+			if _, err := nodeproto.ParseEgressEntry(raw); err != nil {
+				return Config{}, fmt.Errorf("%s[%d]: %w", key, n, err)
+			}
+		}
+	}
+	cfg.EgressAllow, cfg.EgressDeny = f.Egress.Allow, f.Egress.Deny
 	return cfg, nil
 }
 

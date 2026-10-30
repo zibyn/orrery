@@ -215,6 +215,31 @@ platform_snapshots:
 	}
 }
 
+func TestLoadConfigYAMLEgressRules(t *testing.T) {
+	writeConfigYAML(t, `
+database: {host: postgres, user: orrery, password: secret, name: orrery}
+s3: {secret_key: s3-secret}
+egress:
+  allow: ["10.0.0.5/32:443", "10.0.0.2:53"]
+  deny: [169.254.169.254/32, 10.0.0.0/8]
+`)
+	cfg, err := LoadConfig(discardLogger())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	// Passed through as written (node-protocol.md HelloAck).
+	if strings.Join(cfg.EgressAllow, ",") != "10.0.0.5/32:443,10.0.0.2:53" ||
+		strings.Join(cfg.EgressDeny, ",") != "169.254.169.254/32,10.0.0.0/8" {
+		t.Fatalf("egress = %v, %v", cfg.EgressAllow, cfg.EgressDeny)
+	}
+
+	// No entries are required.
+	writeConfigYAML(t, "database: {host: postgres, user: orrery, password: secret, name: orrery}\ns3: {secret_key: s}\negress: {}\n")
+	if cfg, err := LoadConfig(discardLogger()); err != nil || len(cfg.EgressAllow)+len(cfg.EgressDeny) != 0 {
+		t.Fatalf("empty egress: %v, %+v %+v", err, cfg.EgressAllow, cfg.EgressDeny)
+	}
+}
+
 func TestLoadConfigYAMLRejectsBadLists(t *testing.T) {
 	base := "database: {host: h, user: u, password: p, name: n}\ns3: {secret_key: s}\n"
 	for name, body := range map[string]string{
@@ -250,6 +275,10 @@ platform_snapshots:
 platform_snapshots:
   - {name: default, ref: alpine:3.22}
 `,
+		"egress deny without prefix": "egress: {deny: [example.com]}\n",
+		"egress allow bad port":      "egress: {allow: [\"10.0.0.5/32:0\"]}\n",
+		"egress IPv6 entry":          "egress: {deny: [\"fd00::/8\"]}\n",
+		"egress unknown key":         "egress: {block: [10.0.0.0/8]}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			writeConfigYAML(t, base+body)

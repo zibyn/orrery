@@ -3039,8 +3039,11 @@ type HelloAck struct {
 	// Docker config.json auth document for the platform registry (ADR-0014);
 	// empty when the deployment has no registry.
 	RegistryCredential string `protobuf:"bytes,2,opt,name=registry_credential,json=registryCredential,proto3" json:"registry_credential,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// The deployment's Egress Rules, passed through as written (defaults.md
+	// "egress"); the Agent applies them at every later Create (runtime.md §13).
+	EgressRules   *EgressRules `protobuf:"bytes,3,opt,name=egress_rules,json=egressRules,proto3" json:"egress_rules,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HelloAck) Reset() {
@@ -3085,6 +3088,66 @@ func (x *HelloAck) GetRegistryCredential() string {
 		return x.RegistryCredential
 	}
 	return ""
+}
+
+func (x *HelloAck) GetEgressRules() *EgressRules {
+	if x != nil {
+		return x.EgressRules
+	}
+	return nil
+}
+
+// EgressRules entries are `CIDR[:port]`.
+type EgressRules struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Allow         []string               `protobuf:"bytes,1,rep,name=allow,proto3" json:"allow,omitempty"`
+	Deny          []string               `protobuf:"bytes,2,rep,name=deny,proto3" json:"deny,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EgressRules) Reset() {
+	*x = EgressRules{}
+	mi := &file_node_v1_node_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EgressRules) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EgressRules) ProtoMessage() {}
+
+func (x *EgressRules) ProtoReflect() protoreflect.Message {
+	mi := &file_node_v1_node_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EgressRules.ProtoReflect.Descriptor instead.
+func (*EgressRules) Descriptor() ([]byte, []int) {
+	return file_node_v1_node_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *EgressRules) GetAllow() []string {
+	if x != nil {
+		return x.Allow
+	}
+	return nil
+}
+
+func (x *EgressRules) GetDeny() []string {
+	if x != nil {
+		return x.Deny
+	}
+	return nil
 }
 
 var File_node_v1_node_proto protoreflect.FileDescriptor
@@ -3356,10 +3419,14 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\tOutputAck\x12\x17\n" +
 	"\aexec_id\x18\x01 \x01(\tR\x06execId\x12\x1d\n" +
 	"\n" +
-	"stored_seq\x18\x02 \x01(\x03R\tstoredSeq\"W\n" +
+	"stored_seq\x18\x02 \x01(\x03R\tstoredSeq\"\x97\x01\n" +
 	"\bHelloAck\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12/\n" +
-	"\x13registry_credential\x18\x02 \x01(\tR\x12registryCredential*\x96\x01\n" +
+	"\x13registry_credential\x18\x02 \x01(\tR\x12registryCredential\x12>\n" +
+	"\fegress_rules\x18\x03 \x01(\v2\x1b.orrery.node.v1.EgressRulesR\vegressRules\"7\n" +
+	"\vEgressRules\x12\x14\n" +
+	"\x05allow\x18\x01 \x03(\tR\x05allow\x12\x12\n" +
+	"\x04deny\x18\x02 \x03(\tR\x04deny*\x96\x01\n" +
 	"\x0fCapabilityValue\x12 \n" +
 	"\x1cCAPABILITY_VALUE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19CAPABILITY_VALUE_ENFORCED\x10\x01\x12 \n" +
@@ -3387,7 +3454,7 @@ func file_node_v1_node_proto_rawDescGZIP() []byte {
 }
 
 var file_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
+var file_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
 var file_node_v1_node_proto_goTypes = []any{
 	(CapabilityValue)(0),       // 0: orrery.node.v1.CapabilityValue
 	(*ManifestChunk)(nil),      // 1: orrery.node.v1.ManifestChunk
@@ -3432,8 +3499,9 @@ var file_node_v1_node_proto_goTypes = []any{
 	(*OutputBatch)(nil),        // 40: orrery.node.v1.OutputBatch
 	(*OutputAck)(nil),          // 41: orrery.node.v1.OutputAck
 	(*HelloAck)(nil),           // 42: orrery.node.v1.HelloAck
-	nil,                        // 43: orrery.node.v1.StartExec.EnvEntry
-	nil,                        // 44: orrery.node.v1.StartExec.SecretEnvEntry
+	(*EgressRules)(nil),        // 43: orrery.node.v1.EgressRules
+	nil,                        // 44: orrery.node.v1.StartExec.EnvEntry
+	nil,                        // 45: orrery.node.v1.StartExec.SecretEnvEntry
 }
 var file_node_v1_node_proto_depIdxs = []int32{
 	2,  // 0: orrery.node.v1.ManifestChunk.entries:type_name -> orrery.node.v1.ManifestEntry
@@ -3467,27 +3535,28 @@ var file_node_v1_node_proto_depIdxs = []int32{
 	34, // 28: orrery.node.v1.CreateSandbox.limits:type_name -> orrery.node.v1.Limits
 	35, // 29: orrery.node.v1.CreateSandbox.workspace:type_name -> orrery.node.v1.WorkspaceMount
 	33, // 30: orrery.node.v1.CreateSandbox.resources:type_name -> orrery.node.v1.ResourceMount
-	43, // 31: orrery.node.v1.StartExec.env:type_name -> orrery.node.v1.StartExec.EnvEntry
-	44, // 32: orrery.node.v1.StartExec.secret_env:type_name -> orrery.node.v1.StartExec.SecretEnvEntry
+	44, // 31: orrery.node.v1.StartExec.env:type_name -> orrery.node.v1.StartExec.EnvEntry
+	45, // 32: orrery.node.v1.StartExec.secret_env:type_name -> orrery.node.v1.StartExec.SecretEnvEntry
 	29, // 33: orrery.node.v1.StartExec.pty:type_name -> orrery.node.v1.PtySpec
 	39, // 34: orrery.node.v1.OutputBatch.frames:type_name -> orrery.node.v1.OutputFrame
-	6,  // 35: orrery.node.v1.Node.Redeem:input_type -> orrery.node.v1.RedeemRequest
-	8,  // 36: orrery.node.v1.Node.Control:input_type -> orrery.node.v1.AgentMessage
-	40, // 37: orrery.node.v1.Node.ExecOutput:input_type -> orrery.node.v1.OutputBatch
-	28, // 38: orrery.node.v1.Node.Tunnel:input_type -> orrery.node.v1.TunnelFrame
-	4,  // 39: orrery.node.v1.Node.Presign:input_type -> orrery.node.v1.PresignRequest
-	1,  // 40: orrery.node.v1.Node.SubmitManifest:input_type -> orrery.node.v1.ManifestChunk
-	7,  // 41: orrery.node.v1.Node.Redeem:output_type -> orrery.node.v1.RedeemResponse
-	20, // 42: orrery.node.v1.Node.Control:output_type -> orrery.node.v1.ControlMessage
-	41, // 43: orrery.node.v1.Node.ExecOutput:output_type -> orrery.node.v1.OutputAck
-	28, // 44: orrery.node.v1.Node.Tunnel:output_type -> orrery.node.v1.TunnelFrame
-	5,  // 45: orrery.node.v1.Node.Presign:output_type -> orrery.node.v1.PresignResponse
-	3,  // 46: orrery.node.v1.Node.SubmitManifest:output_type -> orrery.node.v1.ManifestAck
-	41, // [41:47] is the sub-list for method output_type
-	35, // [35:41] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	43, // 35: orrery.node.v1.HelloAck.egress_rules:type_name -> orrery.node.v1.EgressRules
+	6,  // 36: orrery.node.v1.Node.Redeem:input_type -> orrery.node.v1.RedeemRequest
+	8,  // 37: orrery.node.v1.Node.Control:input_type -> orrery.node.v1.AgentMessage
+	40, // 38: orrery.node.v1.Node.ExecOutput:input_type -> orrery.node.v1.OutputBatch
+	28, // 39: orrery.node.v1.Node.Tunnel:input_type -> orrery.node.v1.TunnelFrame
+	4,  // 40: orrery.node.v1.Node.Presign:input_type -> orrery.node.v1.PresignRequest
+	1,  // 41: orrery.node.v1.Node.SubmitManifest:input_type -> orrery.node.v1.ManifestChunk
+	7,  // 42: orrery.node.v1.Node.Redeem:output_type -> orrery.node.v1.RedeemResponse
+	20, // 43: orrery.node.v1.Node.Control:output_type -> orrery.node.v1.ControlMessage
+	41, // 44: orrery.node.v1.Node.ExecOutput:output_type -> orrery.node.v1.OutputAck
+	28, // 45: orrery.node.v1.Node.Tunnel:output_type -> orrery.node.v1.TunnelFrame
+	5,  // 46: orrery.node.v1.Node.Presign:output_type -> orrery.node.v1.PresignResponse
+	3,  // 47: orrery.node.v1.Node.SubmitManifest:output_type -> orrery.node.v1.ManifestAck
+	42, // [42:48] is the sub-list for method output_type
+	36, // [36:42] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_node_v1_node_proto_init() }
@@ -3529,7 +3598,7 @@ func file_node_v1_node_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_node_v1_node_proto_rawDesc), len(file_node_v1_node_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   44,
+			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
