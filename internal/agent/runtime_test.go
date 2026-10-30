@@ -2,13 +2,13 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
-	"github.com/zibyn/orrery/internal/supervisor"
 )
 
 // runtime.md §8: an Agent adopts only containers carrying its own
@@ -45,19 +45,34 @@ func TestContainerOwnedBy(t *testing.T) {
 	}
 }
 
-// #93/#96/#97: the --runtime flag is the single source of truth. docker is the
-// default, podman and local are explicit, and anything else fails loudly.
+// #93/#96/#97, #170: the --runtime flag is the single source of truth.
+// containerd is the default, local is explicit, the removed docker and podman
+// fail at startup pointing at containerd, and anything else fails loudly.
 func TestResolveRuntime(t *testing.T) {
-	if got, err := resolveRuntime(""); err != nil || got != "docker" {
-		t.Fatalf("resolveRuntime(\"\") = %q, %v; want docker", got, err)
+	if got, err := resolveRuntime(""); err != nil || got != "containerd" {
+		t.Fatalf("resolveRuntime(\"\") = %q, %v; want containerd", got, err)
 	}
-	for _, name := range []string{"docker", "podman", "local"} {
+	for _, name := range []string{"containerd", "local"} {
 		if got, err := resolveRuntime(name); err != nil || got != name {
 			t.Fatalf("resolveRuntime(%s) = %q, %v; want %s", name, got, err, name)
 		}
 	}
+	for _, name := range []string{"docker", "podman"} {
+		_, err := resolveRuntime(name)
+		if err == nil || !strings.Contains(err.Error(), "--runtime containerd") {
+			t.Fatalf("resolveRuntime(%s) = %v; want an error pointing at --runtime containerd", name, err)
+		}
+	}
 	if _, err := resolveRuntime("bogus"); err == nil {
 		t.Fatal("resolveRuntime(bogus) accepted an unknown provider")
+	}
+}
+
+// #170: a stale --docker socket fails Run before anything else happens.
+func TestRunRejectsDockerFlag(t *testing.T) {
+	err := Run(context.Background(), RunOptions{Docker: "/var/run/docker.sock"})
+	if err == nil || !strings.Contains(err.Error(), "--containerd") {
+		t.Fatalf("Run(--docker) = %v; want an error pointing at --containerd", err)
 	}
 }
 
@@ -73,73 +88,12 @@ func TestResolveIsolation(t *testing.T) {
 		{"containerd", "gvisor", "gvisor", true},
 		{"containerd", "kata", "", false},
 		{"local", "", "", true},
-		{"docker", "", "", true},
 		{"local", "gvisor", "", false},
-		{"docker", "runc", "", false},
 	} {
 		got, err := resolveIsolation(tt.provider, tt.isolation)
 		if (err == nil) != tt.ok || got != tt.want {
 			t.Errorf("resolveIsolation(%q, %q) = %q, %v; want %q, ok %v", tt.provider, tt.isolation, got, err, tt.want, tt.ok)
 		}
-	}
-}
-
-func TestLimitsMatch(t *testing.T) {
-	// NanoCpus 0.5 CPU is a 50000 us quota over the fixed 100000 us period.
-	want := supervisor.Result{
-		CPUMax:            "50000 100000",
-		MemoryMax:         "134217728",
-		PidsMax:           "2048",
-		WorkspaceWritable: true,
-	}
-	if !limitsMatch(want, 500_000_000, 134217728, 0, "rw") {
-		t.Fatal("matching readback was rejected")
-	}
-	// A daemon that ignored a limit must fail creation instead of running
-	// unbounded (runtime.md §9). A container that sees more or fewer cards
-	// than requested fails it too: whole-card isolation is the readback.
-	for name, tt := range map[string]struct {
-		mutate func(*supervisor.Result)
-		gpus   int
-	}{
-		"cpu":       {mutate: func(r *supervisor.Result) { r.CPUMax = "max 100000" }},
-		"memory":    {mutate: func(r *supervisor.Result) { r.MemoryMax = "max" }},
-		"pids":      {mutate: func(r *supervisor.Result) { r.PidsMax = "max" }},
-		"workspace": {mutate: func(r *supervisor.Result) { r.WorkspaceWritable = false }},
-		"gpus": {
-			mutate: func(r *supervisor.Result) { r.NvidiaDevices = nil },
-			gpus:   1,
-		},
-		"extra gpus": {
-			mutate: func(r *supervisor.Result) { r.NvidiaDevices = []string{"/dev/nvidia0", "/dev/nvidia1"} },
-			gpus:   1,
-		},
-		"unrequested gpus": {
-			mutate: func(r *supervisor.Result) { r.NvidiaDevices = []string{"/dev/nvidia0"} },
-		},
-	} {
-		got := want
-		tt.mutate(&got)
-		if limitsMatch(got, 500_000_000, 134217728, tt.gpus, "rw") {
-			t.Errorf("%s mismatch was accepted", name)
-		}
-	}
-	// One numbered device per requested card is enough; control nodes do not
-	// count.
-	withGPU := want
-	withGPU.NvidiaDevices = []string{"/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm"}
-	if !limitsMatch(withGPU, 500_000_000, 134217728, 1, "rw") {
-		t.Fatal("a readback with the requested card was rejected")
-	}
-	// A read-only Attachment must read back as not writable, and a writable
-	// mount must not satisfy a read-only request.
-	readOnly := want
-	readOnly.WorkspaceWritable = false
-	if !limitsMatch(readOnly, 500_000_000, 134217728, 0, "ro") {
-		t.Fatal("a read-only Workspace readback was rejected")
-	}
-	if limitsMatch(readOnly, 500_000_000, 134217728, 0, "rw") {
-		t.Fatal("a read-only Workspace was accepted for rw")
 	}
 }
 

@@ -12,8 +12,6 @@ import (
 // Runtime Provider names reported in Capabilities (node-protocol.md). One Node
 // has exactly one Provider, chosen by Agent configuration (ADR-0014).
 const (
-	ProviderDocker     = "docker"
-	ProviderPodman     = "podman"
 	ProviderContainerd = "containerd"
 	ProviderLocal      = "local"
 )
@@ -34,46 +32,6 @@ type runtimeDriver interface {
 	scan(ctx context.Context, report func(sandboxID string, generation int64))
 	watchEvents(ctx context.Context, report func(sandboxID string, generation int64))
 	runtimeAlive(ctx context.Context, sandboxID uuid.UUID) (alive, known bool)
-}
-
-// containerDriver is the Docker/Podman half: the Engine API adapter already
-// implemented on Runtime (runtime.md §9).
-type containerDriver struct{ r *Runtime }
-
-func (d containerDriver) createSandbox(ctx context.Context, cmd *createSandboxSpec) (string, error) {
-	return d.r.createContainerSandbox(ctx, cmd)
-}
-
-func (d containerDriver) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
-	return d.r.stopContainerSandbox(ctx, sandboxID)
-}
-
-func (d containerDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
-	return d.r.startContainerExec(ctx, cmd)
-}
-
-func (d containerDriver) probe(ctx context.Context) (nodeproto.CapabilityReport, error) {
-	return dockerProbe(ctx, d.r.config())
-}
-
-func (d containerDriver) healthy(ctx context.Context) bool {
-	return dockerHealthy(ctx, d.r.socket)
-}
-
-func (d containerDriver) adopt(ctx context.Context, report func(string, int64)) {
-	d.r.adoptContainers(ctx, report)
-}
-
-func (d containerDriver) scan(ctx context.Context, report func(string, int64)) {
-	d.r.scanContainers(ctx, report)
-}
-
-func (d containerDriver) watchEvents(ctx context.Context, report func(string, int64)) {
-	d.r.watchContainerEvents(ctx, report)
-}
-
-func (d containerDriver) runtimeAlive(ctx context.Context, sandboxID uuid.UUID) (bool, bool) {
-	return d.r.containerAlive(ctx, sandboxID)
 }
 
 // The Runtime methods below are the Control command surface. Each one is

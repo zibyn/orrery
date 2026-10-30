@@ -3,11 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -126,8 +122,8 @@ func loadNodePins(dataRoot string) (trees, images map[string]bool) {
 	return trees, images
 }
 
-// imageDigestKey reduces a reference or image id to the digest the Docker API
-// reports in RepoDigests.
+// imageDigestKey reduces a reference or image id to the digest an image record
+// is pinned by (RepoDigests).
 func imageDigestKey(ref string) string {
 	if i := strings.LastIndex(ref, "@"); i >= 0 {
 		return ref[i+1:]
@@ -136,8 +132,8 @@ func imageDigestKey(ref string) string {
 }
 
 // imageUsagePath is the Node's persisted last-used clock for local images.
-// Docker's Created timestamp is an image's build time, not its use time, so
-// LRU eviction needs a touch record of its own (runtime.md §11).
+// An image record's creation time is not its use time, so LRU eviction needs
+// a touch record of its own (runtime.md §11).
 func imageUsagePath(dataRoot string) string {
 	return filepath.Join(dataRoot, "cache", "image-usage.json")
 }
@@ -279,7 +275,7 @@ func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 
 // evictionCandidates lists what may be reclaimed. Images are restricted to the
 // platform registry this Node is credentialed for (ADR-0021: Nodes pull only
-// from it), so a shared Docker daemon's unrelated images are not the Node's to
+// from it), so unrelated images in the namespace are not the Node's to
 // evict.
 func (r *Runtime) evictionCandidates(ctx context.Context, treePins, imagePins map[string]bool) []evictionCandidate {
 	cache := newResourceCache(r.dataRoot)
@@ -427,48 +423,14 @@ type imageStore interface {
 	removeImage(ctx context.Context, id string) error
 }
 
-// cachedImage is what eviction needs of a local image: the Docker
-// GET /images/json subset, or a containerd image record (ID is then its name,
-// the key the record is removed by).
+// cachedImage is what eviction needs of a local image, mapped from a
+// containerd image record (ID is its name, the key the record is removed by).
 type cachedImage struct {
 	ID          string   `json:"Id"`
 	RepoTags    []string `json:"RepoTags"`
 	RepoDigests []string `json:"RepoDigests"`
 	Created     int64    `json:"Created"`
 	Size        int64    `json:"Size"`
-}
-
-func (d *dockerClient) listImages(ctx context.Context) ([]cachedImage, error) {
-	var images []cachedImage
-	if err := d.do(ctx, http.MethodGet, d.api("/images/json"), nil, &images); err != nil {
-		return nil, err
-	}
-	return images, nil
-}
-
-func (d *dockerClient) removeImage(ctx context.Context, id string) error {
-	resp, err := d.request(ctx, http.MethodDelete,
-		d.api("/images/"+url.PathEscape(id))+"?force=true&noprune=false", nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("remove image: %s", resp.Status)
-}
-
-func (d containerDriver) listImages(ctx context.Context) ([]cachedImage, error) {
-	if err := d.r.d.negotiate(ctx); err != nil {
-		return nil, err
-	}
-	return d.r.d.listImages(ctx)
-}
-
-func (d containerDriver) removeImage(ctx context.Context, id string) error {
-	return d.r.d.removeImage(ctx, id)
 }
 
 func (d *containerdDriver) listImages(ctx context.Context) ([]cachedImage, error) {
@@ -505,32 +467,11 @@ func (d *containerdDriver) removeImage(ctx context.Context, name string) error {
 }
 
 // pruneBuildCache prunes the unused records of the Node's BuildKit endpoint.
-// A Docker Node without --buildkit prunes dockerd's built-in BuildKit through
-// the Engine API.
 func (r *Runtime) pruneBuildCache(ctx context.Context) error {
-	if r.buildkit == "" && r.provider == ProviderDocker {
-		if err := r.d.negotiate(ctx); err != nil {
-			return err
-		}
-		_, err := r.d.pruneBuildCache(ctx)
-		return err
-	}
 	c, err := r.buildkitClient(ctx)
 	if err != nil {
 		return err
 	}
 	defer c.Close() //nolint:errcheck // one-shot client
 	return c.Prune(ctx, nil)
-}
-
-// pruneBuildCache runs `docker builder prune` through the Engine API and
-// returns the reclaimed bytes.
-func (d *dockerClient) pruneBuildCache(ctx context.Context) (int64, error) {
-	var out struct {
-		SpaceReclaimed int64 `json:"SpaceReclaimed"`
-	}
-	if err := d.do(ctx, http.MethodPost, d.api("/build/prune?all=false"), nil, &out); err != nil {
-		return 0, err
-	}
-	return out.SpaceReclaimed, nil
 }

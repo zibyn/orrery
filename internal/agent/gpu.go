@@ -78,16 +78,6 @@ func gpuUUIDs(gpus []gpuInfo) []string {
 	return ids
 }
 
-// cdiDeviceRequest is the HostConfig entry that attaches whole cards
-// (runtime.md §9). The `nvidia` driver is not portable; CDI is the one
-// expression Docker and Podman share. It is nil when no cards are requested.
-func cdiDeviceRequest(uuids []string) []map[string]any {
-	if len(uuids) == 0 {
-		return nil
-	}
-	return []map[string]any{{"Driver": "cdi", "DeviceIDs": cdiDeviceNames(uuids)}}
-}
-
 // cdiDeviceNames is the fully qualified CDI name of each whole card.
 func cdiDeviceNames(uuids []string) []string {
 	ids := make([]string, len(uuids))

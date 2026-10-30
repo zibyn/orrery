@@ -63,7 +63,7 @@ func newContainerdRuntime(socket, subnet, isolation, dataRoot, nodeID string) (*
 	if err := cdi.Configure(cdi.WithAutoRefresh(false)); err != nil {
 		return nil, fmt.Errorf("configure CDI: %w", err)
 	}
-	rt := newRuntime(runtimeConfig{provider: ProviderContainerd, socket: socket}, dataRoot, nodeID)
+	rt := newRuntime(ProviderContainerd, dataRoot, nodeID)
 	driver := &containerdDriver{r: rt, client: client, subnet: subnet}
 	if isolation == IsolationGvisor {
 		// Sockets the Supervisor creates (PTY ctl.sock, forwards) must be
@@ -115,8 +115,8 @@ func bindMount(source, destination, mode string) specs.Mount {
 
 // limitOpts sets the three hard limits with the same CPU rounding as every
 // other Provider (ADR-0009), in a private cgroup namespace whose cgroupfs is
-// mounted read-only as Docker does: the Supervisor reads memory.events there
-// for oom_killed (runtime.md §4).
+// mounted read-only: the Supervisor reads memory.events there for oom_killed
+// (runtime.md §4).
 func limitOpts(cpu float64, memory int64) []oci.SpecOpts {
 	return []oci.SpecOpts{
 		oci.WithCPUCFS(localQuota(cpu), 100000),

@@ -130,32 +130,13 @@ func (r *Runtime) dialSandboxPort(ctx context.Context, sandboxID uuid.UUID, port
 	if conn, err := dialSocket(socket); err == nil {
 		return conn, nil
 	}
-	if d, ok := r.driver.(*containerdDriver); ok {
-		if err := d.startForward(ctx, sandboxID, supervisorBin, "forward", strconv.Itoa(port),
-			runMount+"/ports/"+filepath.Base(socket)); err != nil {
-			return nil, err
-		}
-		return dialUnix(ctx, socket, 5*time.Second)
+	d, ok := r.driver.(*containerdDriver)
+	if !ok {
+		return nil, fmt.Errorf("runtime %s has no port forwarder", r.provider)
 	}
-	if err := r.d.negotiate(ctx); err != nil {
+	if err := d.startForward(ctx, sandboxID, supervisorBin, "forward", strconv.Itoa(port),
+		runMount+"/ports/"+filepath.Base(socket)); err != nil {
 		return nil, err
-	}
-	create := map[string]any{
-		"AttachStdout": false,
-		"AttachStderr": false,
-		"Tty":          false,
-		"Cmd": []string{supervisorBin, "forward", strconv.Itoa(port),
-			runMount + "/ports/" + filepath.Base(socket)},
-	}
-	var created struct {
-		ID string `json:"Id"`
-	}
-	if err := r.d.do(ctx, "POST", r.d.api("/containers/"+containerName(sandboxID)+"/exec"), create, &created); err != nil {
-		return nil, fmt.Errorf("create forward exec: %w", err)
-	}
-	if err := r.d.do(ctx, "POST", r.d.api("/exec/"+created.ID+"/start"),
-		map[string]any{"Detach": true, "Tty": false}, nil); err != nil {
-		return nil, fmt.Errorf("start forward exec: %w", err)
 	}
 	return dialUnix(ctx, socket, 5*time.Second)
 }

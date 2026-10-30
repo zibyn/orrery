@@ -32,9 +32,8 @@ import (
 )
 
 // Snapshot builds run through BuildKit's Go client against a BuildKit endpoint
-// (ADR-0021, runtime.md §12). With no --buildkit address the endpoint is
-// dockerd's built-in BuildKit, reached through the Docker socket's /grpc h2c
-// upgrade. Named contexts are session LocalMounts, base is a named
+// (ADR-0021, runtime.md §12): the standalone buildkitd named by --buildkit.
+// Named contexts are session LocalMounts, base is a named
 // docker-image context, Secrets come from the session's secrets provider, and
 // push credentials from its auth provider. Output is written to the build
 // Exec's record and delivered by the normal ExecOutput machinery.
@@ -596,11 +595,9 @@ func writeBuildMarker(path string, marker buildMarker) error {
 
 // buildCgroup creates a CPU- and memory-limited slice and returns the value
 // for the frontend's cgroup-parent attribute. A root Agent uses the system
-// manager; an unprivileged Agent uses its user manager and the cgroupfs path,
-// because the Docker daemon (root) cannot see the user manager's unit. The
-// bare slice name is only for dockerd's systemd cgroup driver: a standalone
-// buildkitd joins cgroup-parent to the cgroupfs root, so it gets the path
-// too. An empty parent means the Node cannot bound a single build;
+// manager; an unprivileged Agent uses its user manager. Either way the value
+// is the slice's cgroupfs path, because buildkitd joins cgroup-parent to the
+// cgroupfs root. An empty parent means the Node cannot bound a single build;
 // the deployment must bound builds Node-wide (runtime.md §12). The e2e
 // snapshot-build scenario asserts that a RUN process lands in
 // orrery-build-<version_id>.slice when the slice can be created; when it cannot
@@ -620,9 +617,6 @@ func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64
 			return "", func() {}
 		}
 		stop := func() { _ = runSystemctl(context.Background(), "stop", slice) }
-		if r.buildkit == "" {
-			return slice, stop
-		}
 		parent := systemSliceParent(slice)
 		if _, err := os.Stat(filepath.Join("/sys/fs/cgroup", parent)); err != nil {
 			slog.Warn("build slice has no cgroup; builds fall back to the Node-wide limit", "path", parent, "error", err)

@@ -79,7 +79,7 @@ func TestStartExecReplaysFinishedRecord(t *testing.T) {
 			return stream, nil
 		},
 	}
-	if err := r.startContainerExec(context.Background(), &nodev1.StartExec{
+	if err := (&containerdDriver{r: r}).startExec(context.Background(), &nodev1.StartExec{
 		SandboxId: sandboxID.String(), ExecId: execID.String(),
 	}); err != nil {
 		t.Fatalf("startExec replay: %v", err)

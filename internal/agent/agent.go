@@ -33,7 +33,6 @@ const (
 	// HeartbeatInterval is a constant in defaults.md.
 	HeartbeatInterval = 15 * time.Second
 	DefaultStatePath  = "/var/lib/orrery-agent/identity.json"
-	DefaultDockerSock = "/var/run/docker.sock"
 	// DefaultContainerdSock and DefaultSandboxSubnet are the containerd
 	// Provider's defaults (runtime.md §9, defaults.md).
 	DefaultContainerdSock = "/run/containerd/containerd.sock"
@@ -148,6 +147,8 @@ type RunOptions struct {
 	CAPath string
 	Server string // overrides the address stored at enroll time
 	State  string
+	// Docker is the removed --docker flag. Any value fails Run, so a stale
+	// Docker configuration stops at startup (ADR-0026).
 	Docker string
 	// Containerd is the containerd socket and SandboxSubnet the CNI address
 	// pool for --runtime containerd (runtime.md §9, §13).
@@ -156,7 +157,7 @@ type RunOptions struct {
 	// Isolation is the containerd Node's Isolation Runtime, runc or gvisor
 	// (runtime.md §9); empty elsewhere.
 	Isolation string
-	// Runtime is the Node's one Runtime Provider (ADR-0014): docker, podman,
+	// Runtime is the Node's one Runtime Provider (ADR-0014, ADR-0026):
 	// containerd or local.
 	Runtime string
 	// LocalUser is the unprivileged user every Local Runtime Exec runs as
@@ -164,8 +165,8 @@ type RunOptions struct {
 	LocalUser string
 	// localUser is the resolved LocalUser, filled by Run.
 	localUser *localUser
-	// Buildkit is the BuildKit endpoint. Empty on a Docker Node means the Docker daemon's
-	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
+	// Buildkit is the standalone buildkitd endpoint. Empty means none, and
+	// snapshot_build is unsupported (runtime.md §12).
 	Buildkit      string
 	DataRoot      string
 	ReserveCPU    float64
@@ -174,21 +175,25 @@ type RunOptions struct {
 }
 
 // resolveRuntime picks the one Runtime Provider this Node runs (ADR-0014).
-// Unimplemented providers fail loudly rather than silently running Docker.
+// The removed Docker and Podman Providers fail loudly with the way forward
+// (ADR-0026) instead of half-working on a stale configuration.
 func resolveRuntime(name string) (string, error) {
 	switch name {
-	case "", ProviderDocker:
-		return ProviderDocker, nil
-	case ProviderPodman:
-		return ProviderPodman, nil
-	case ProviderContainerd:
+	case "", ProviderContainerd:
 		return ProviderContainerd, nil
+	case "docker", "podman":
+		return "", fmt.Errorf("--runtime %s is no longer supported: Docker and Podman Nodes were replaced by containerd. "+
+			"Install containerd, buildkitd and the CNI plugins, then run with --runtime containerd (see docs/deploy.md)", name)
 	case ProviderLocal:
 		return ProviderLocal, nil
 	default:
 		return "", fmt.Errorf("unknown runtime %q", name)
 	}
 }
+
+// errDockerFlag is Run's answer to the removed --docker socket flag.
+var errDockerFlag = errors.New("--docker is no longer supported: Docker Nodes were replaced by containerd. " +
+	"Remove --docker and pass --containerd SOCKET with --runtime containerd (see docs/deploy.md)")
 
 // Isolation Runtimes a containerd Node runs every Sandbox under (ADR-0026).
 const (
@@ -219,6 +224,9 @@ func resolveIsolation(provider, isolation string) (string, error) {
 // connection. NOT_FOUND/UNAUTHENTICATED clears local identity; anything else
 // keeps it and backs off (ADR-0010's asymmetric rule).
 func Run(ctx context.Context, opts RunOptions) error {
+	if opts.Docker != "" {
+		return errDockerFlag
+	}
 	provider, err := resolveRuntime(opts.Runtime)
 	if err != nil {
 		return err
@@ -249,9 +257,6 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	if server == "" {
 		return errors.New("no node address: pass --server or re-enroll")
-	}
-	if opts.Docker == "" {
-		opts.Docker = DefaultDockerSock
 	}
 	if opts.DataRoot == "" {
 		opts.DataRoot = DefaultDataRoot
@@ -335,17 +340,8 @@ func isIncompatible(err error) bool {
 }
 
 func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
-	// The --runtime flag is the single source of truth: an explicit Provider
-	// wins over any path heuristic, so a Docker Node pointing at an unusual
-	// socket never silently becomes Podman.
-	rt := NewRuntime(opts.Docker, opts.DataRoot, id.NodeID)
-	if opts.Runtime == ProviderPodman {
-		var err error
-		rt, err = newPodmanRuntime(opts.Docker, opts.DataRoot, id.NodeID)
-		if err != nil {
-			return false, err
-		}
-	}
+	// The --runtime flag is the single source of truth (resolveRuntime).
+	var rt *Runtime
 	if opts.Runtime == ProviderContainerd {
 		var err error
 		rt, err = newContainerdRuntime(opts.Containerd, opts.SandboxSubnet, opts.Isolation, opts.DataRoot, id.NodeID)
@@ -449,7 +445,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	report = withSnapshotBuild(report, buildOK)
 	rt.setEgressEnforced(report)
 	// The inventory is a hardware fact; placement still requires the CDI
-	// capability above, so an old Docker's GPUs are visible but not usable.
+	// capability above, so a Node without working CDI shows GPUs it cannot attach.
 	gpus := enumerateGPUs(streamCtx)
 	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
 		Capabilities: capabilitiesMessage(report, gpus),

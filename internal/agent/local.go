@@ -308,7 +308,7 @@ type localDriver struct {
 // the same Runtime; only the driver differs, and owner maps the Workspace and
 // record directories to the unprivileged user.
 func newLocalRuntime(dataRoot, nodeID string, as localUser, binDir string) *Runtime {
-	rt := newRuntime(runtimeConfig{provider: ProviderLocal}, dataRoot, nodeID)
+	rt := newRuntime(ProviderLocal, dataRoot, nodeID)
 	rt.owner = &rootlessOwner{uid: as.uid, gid: as.gid}
 	rt.driver = &localDriver{
 		r: rt, user: as, binDir: binDir,
@@ -316,6 +316,22 @@ func newLocalRuntime(dataRoot, nodeID string, as localUser, binDir string) *Runt
 		supervisor: filepath.Join(dataRoot, "bin", "supervisor"),
 	}
 	return rt
+}
+
+// rootlessOwner is the host uid/gid a Local Runtime's commands run as. A
+// negative gid leaves the group untouched.
+type rootlessOwner struct {
+	uid int
+	gid int
+}
+
+// own hands path to the Local Runtime user so its commands can write it. The
+// Agent runs as root, so the chown is allowed; a nil owner is a no-op.
+func (o *rootlessOwner) own(path string) error {
+	if o == nil {
+		return nil
+	}
+	return os.Chown(path, o.uid, o.gid)
 }
 
 // localCommand runs one host command and reports its exit code. An error means
