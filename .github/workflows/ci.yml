@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 jobs:
-  # `check` is the required PR gate and always runs. The Docker e2e suite only
+  # `check` is the required PR gate and always runs. The e2e suite only
   # runs when the server, agent, CLI, protocol, deployment or the tests
   # themselves change; a web/docs-only PR skips it (#146).
   changes:
@@ -96,30 +96,25 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install httpx
-      # Dockerd's built-in BuildKit gained the image exporter in Docker 29;
-      # the runner image ships 28. This is the version the e2e runs against.
+      # The runner is the e2e containerd Node (#170): CNI plugins, containerd
+      # 2.x and a standalone buildkitd, whose address lands in
+      # ORRERY_E2E_BUILDKIT. It runs before the second Docker daemon starts.
+      - run: ./scripts/ci-e2e-node.sh
+      # The Compose stack builds on Docker 29 (containerd image store), whose
+      # default builder can export the gha cache of deploy/compose.ci.yaml.
+      # The action's daemon listens on its own socket, set in DOCKER_HOST.
       - uses: docker/setup-docker-action@v5
         with:
           version: v29.9.1
-          # The action's daemon listens on its own socket; the e2e Agent takes
-          # it from DOCKER_HOST (scripts/e2e.sh).
           set-host: true
-      # The unprivileged e2e Agent bounds each build with a slice of its
-      # systemd user manager (runtime.md §12); the runner has none until
-      # lingering starts it.
-      - run: |
-          sudo loginctl enable-linger "$USER"
-          until [ -S "/run/user/$(id -u)/bus" ]; do sleep 1; done
-      # GPU, Podman and remote-host scenarios skip themselves without
-      # ORRERY_E2E_GPU_SSH.
-      - run: ./scripts/e2e.sh -timeout 80m
+      # The containerd Agents need root, and they run as the test process's
+      # user, so the whole script runs under sudo with the job's environment.
+      # GPU and remote-host scenarios skip themselves without ORRERY_E2E_GPU_SSH.
+      - run: sudo -E env "PATH=$PATH" ./scripts/e2e.sh -timeout 80m
         env:
           # CI-only BuildKit cache; local e2e runs keep the plain build
           # (deploy/compose.ci.yaml).
           ORRERY_E2E_COMPOSE_OVERRIDE: ${{ github.workspace }}/deploy/compose.ci.yaml
-          # The suite defaults to containerd (#169), which needs a root Agent,
-          # CNI plugins and a standalone buildkitd; CI stays on Docker for now.
-          ORRERY_E2E_RUNTIME: docker
 
   # Playwright is slow and not a merge gate; it runs nightly or on demand.
   e2e-console:
@@ -139,7 +134,9 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
-      - run: make e2e-console
+      # The console's Node Agent is a root containerd Agent, as in `e2e`.
+      - run: ./scripts/ci-e2e-node.sh
+      - run: sudo -E env "PATH=$PATH" make e2e-console
 
   image:
     if: github.event_name == 'push'
