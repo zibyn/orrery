@@ -195,7 +195,9 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	}
 	name := containerName(id)
 	if c, err := d.client.LoadContainer(ctx, name); err == nil {
-		if running, _ := taskRunning(ctx, c); running {
+		labels, err := c.Labels(ctx)
+		if running, _ := taskRunning(ctx, c); running && err == nil &&
+			createAdopts(labels, d.r.nodeID, cmd.generation) && hostLimitsMatch(ctx, c, cmd.cpu, cmd.memory) {
 			d.r.track(id, cmd.generation)
 			return "", nil // adopted after an Agent restart or a lost reply
 		}

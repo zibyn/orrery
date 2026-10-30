@@ -45,6 +45,35 @@ func TestContainerOwnedBy(t *testing.T) {
 	}
 }
 
+// runtime.md §8: a Create that finds a running Runtime under its name adopts
+// it only when this Node owns it at the requested generation; anything else
+// is torn down and created afresh.
+func TestCreateAdopts(t *testing.T) {
+	const mine = "11111111-1111-1111-1111-111111111111"
+	owned := func(gen string) map[string]string {
+		return map[string]string{"orrery.managed": "true", "orrery.node": mine, "orrery.generation": gen}
+	}
+	for name, tt := range map[string]struct {
+		labels map[string]string
+		want   bool
+	}{
+		"this Node, same generation":  {labels: owned("3"), want: true},
+		"this Node, older generation": {labels: owned("2"), want: false},
+		"no generation label":         {labels: map[string]string{"orrery.managed": "true", "orrery.node": mine}, want: false},
+		"another Node": {
+			labels: map[string]string{"orrery.managed": "true", "orrery.node": "22222222-2222-2222-2222-222222222222", "orrery.generation": "3"},
+			want:   false,
+		},
+		"no Node label": {labels: map[string]string{"orrery.managed": "true", "orrery.generation": "3"}, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := createAdopts(tt.labels, mine, 3); got != tt.want {
+				t.Fatalf("createAdopts(%v) = %v, want %v", tt.labels, got, tt.want)
+			}
+		})
+	}
+}
+
 // #93/#96/#97, #170: the --runtime flag is the single source of truth.
 // containerd is the default, local is explicit, the removed docker and podman
 // fail at startup pointing at containerd, and anything else fails loudly.

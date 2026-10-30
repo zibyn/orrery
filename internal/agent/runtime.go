@@ -202,6 +202,12 @@ func containerOwnedBy(labels map[string]string, nodeID string) bool {
 	return labels["orrery.managed"] == "true" && nodeID != "" && labels["orrery.node"] == nodeID
 }
 
+// createAdopts reports whether a Create may take over the running Runtime it
+// finds under its name: this Node owns it, at the requested generation.
+func createAdopts(labels map[string]string, nodeID string, generation int64) bool {
+	return containerOwnedBy(labels, nodeID) && labels["orrery.generation"] == strconv.FormatInt(generation, 10)
+}
+
 func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {
 	path := workspacePath(r.dataRoot, workspaceID)
 	if err := os.MkdirAll(path, 0o777); err != nil {
