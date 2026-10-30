@@ -290,6 +290,48 @@ func TestSnapshotVersionDeletePurge(t *testing.T) {
 	}
 }
 
+// TestSnapshotDeletePurgesSharedManifest (#152): two versions of a deleted
+// Snapshot that share a digest must not keep each other's manifest alive once
+// both rows are gone.
+func TestSnapshotDeletePurgesSharedManifest(t *testing.T) {
+	admin := adminToken(t)
+	addr := os.Getenv("ORRERY_E2E_REGISTRY_ADDR")
+	credential := os.Getenv("ORRERY_E2E_REGISTRY_CREDENTIAL")
+	if addr == "" || credential == "" {
+		t.Fatal("the registry environment is not set; run ./scripts/e2e.sh")
+	}
+	suffix := time.Now().UnixNano()
+	secretName := fmt.Sprintf("e2e-shared-purge-auth-%d", suffix)
+	if status, data := call(t, http.MethodPut, "/api/v1/secrets/"+secretName, admin,
+		map[string]string{"value": credential}); status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("create auth Secret: %d %s", status, data)
+	}
+	_, sourceRef := pushUniqueImage(t, addr, credential, suffix)
+	snapshot := createTestSnapshot(t, admin, fmt.Sprintf("e2e-shared-purge-%d", suffix))
+	first := importIntoSnapshot(t, admin, snapshot.ID, sourceRef, secretName)
+	first = waitForSnapshotVersion(t, admin, snapshot.ID, first.ID, "ready", 2*time.Minute)
+	second := importIntoSnapshot(t, admin, snapshot.ID, sourceRef, secretName)
+	second = waitForSnapshotVersion(t, admin, snapshot.ID, second.ID, "ready", 2*time.Minute)
+	if *first.Digest != *second.Digest {
+		t.Fatalf("digests = %s, %s; want equal", *first.Digest, *second.Digest)
+	}
+	repo := "snapshots/" + snapshot.ID
+	if got := registryManifestStatus(t, addr, repo, *first.Digest); got != http.StatusOK {
+		t.Fatalf("manifest before delete = %d, want 200", got)
+	}
+
+	if status, data := call(t, http.MethodDelete, "/api/v1/snapshots/"+snapshot.ID, admin, nil); status != http.StatusAccepted {
+		t.Fatalf("delete Snapshot: %d %s", status, data)
+	}
+	deadline := time.Now().Add(time.Minute)
+	for registryManifestStatus(t, addr, repo, *first.Digest) != http.StatusNotFound {
+		if time.Now().After(deadline) {
+			t.Fatalf("shared manifest %s@%s was never purged", repo, *first.Digest)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
 // pushUniqueImage builds an alpine image carrying a marker, pushes it to the
 // platform registry, and returns the Docker config dir and its digest ref.
 func pushUniqueImage(t *testing.T, addr, credential string, suffix int64) (string, string) {

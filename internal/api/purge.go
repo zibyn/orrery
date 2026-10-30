@@ -469,45 +469,13 @@ func (s *Server) purgeSnapshotTombstone(ctx context.Context, snap store.Snapshot
 	if err != nil {
 		return fmt.Errorf("list Snapshot versions for cleanup: %w", err)
 	}
-	// A version a Sandbox still references keeps both its row and its
-	// manifest (schema.md: the reference retains it). An unreferenced version
-	// always loses its row; the manifest is shared content, so an identical
-	// digest another version names keeps the object.
-	var deletable, manifests []store.SnapshotVersion
 	for _, version := range versions {
 		if !snapshotVersionCleanable(version.State) {
 			continue
 		}
-		removable, manifest, err := s.snapshotVersionGarbage(ctx, repo, version)
-		if err != nil {
+		if err := s.purgeSnapshotVersion(ctx, repo, version); err != nil {
 			return err
 		}
-		if !removable {
-			continue
-		}
-		if manifest {
-			manifests = append(manifests, version)
-		}
-		deletable = append(deletable, version)
-	}
-	err = deleteObjectsThenRows(ctx, manifests, s.deleteSnapshotManifest(repo),
-		func(ctx context.Context) error {
-			return s.purgeTx(ctx, func(q *store.Queries) error {
-				if err := q.ClearSnapshotCurrent(ctx, snap.ID); err != nil {
-					return fmt.Errorf("clear Snapshot current: %w", err)
-				}
-				for _, version := range deletable {
-					if err := q.DeleteSnapshotVersion(ctx, store.DeleteSnapshotVersionParams{
-						ID: version.ID, SnapshotID: snap.ID,
-					}); err != nil {
-						return fmt.Errorf("delete Snapshot version: %w", err)
-					}
-				}
-				return nil
-			})
-		})
-	if err != nil {
-		return err
 	}
 	remaining, err := s.q.CountSnapshotVersions(ctx, snap.ID)
 	if err != nil {
@@ -574,31 +542,43 @@ func (s *Server) purgeSnapshotVersionTombstones(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("get Snapshot of deleted version: %w", err)
 		}
-		repo := registry.Repo(snap.ID, platformName(snap))
-		removable, manifest, err := s.snapshotVersionGarbage(ctx, repo, version)
-		if err != nil {
-			return err
-		}
-		if !removable {
-			continue
-		}
-		var manifests []store.SnapshotVersion
-		if manifest {
-			manifests = append(manifests, version)
-		}
-		err = deleteObjectsThenRows(ctx, manifests, s.deleteSnapshotManifest(repo),
-			func(ctx context.Context) error {
-				return s.purgeTx(ctx, func(q *store.Queries) error {
-					return q.DeleteSnapshotVersion(ctx, store.DeleteSnapshotVersionParams{
-						ID: version.ID, SnapshotID: version.SnapshotID,
-					})
-				})
-			})
-		if err != nil {
+		if err := s.purgeSnapshotVersion(ctx, registry.Repo(snap.ID, platformName(snap)), version); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// purgeSnapshotVersion removes one version unless a Sandbox references it
+// (schema.md: the reference retains it): the manifest first, when no other
+// live version names the digest, then the row. Rows go one at a time, so the
+// last of several versions sharing a digest sees no other and takes the
+// manifest with it (#152).
+func (s *Server) purgeSnapshotVersion(ctx context.Context, repo string, version store.SnapshotVersion) error {
+	removable, manifest, err := s.snapshotVersionGarbage(ctx, repo, version)
+	if err != nil || !removable {
+		return err
+	}
+	var manifests []store.SnapshotVersion
+	if manifest {
+		manifests = append(manifests, version)
+	}
+	return deleteObjectsThenRows(ctx, manifests, s.deleteSnapshotManifest(repo),
+		func(ctx context.Context) error {
+			return s.purgeTx(ctx, func(q *store.Queries) error {
+				// The current pointer restricts the delete; this only clears it
+				// on a deleted Snapshot, never a live one.
+				if err := q.ClearSnapshotCurrent(ctx, version.SnapshotID); err != nil {
+					return fmt.Errorf("clear Snapshot current: %w", err)
+				}
+				if err := q.DeleteSnapshotVersion(ctx, store.DeleteSnapshotVersionParams{
+					ID: version.ID, SnapshotID: version.SnapshotID,
+				}); err != nil {
+					return fmt.Errorf("delete Snapshot version: %w", err)
+				}
+				return nil
+			})
+		})
 }
 
 // logWarn reports a sweep error unless the process is shutting down.
