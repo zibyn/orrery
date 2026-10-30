@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -127,9 +128,9 @@ func TestSandboxLifecycle(t *testing.T) {
 
 	// Container limits are the request, read back from the cgroup (runtime.md
 	// §9: cpu.max is quota/period in microseconds).
-	assertLimit(t, created.ID, "/sys/fs/cgroup/cpu.max", "50000 100000")
-	assertLimit(t, created.ID, "/sys/fs/cgroup/memory.max", fmt.Sprint(128<<20))
-	assertLimit(t, created.ID, "/sys/fs/cgroup/pids.max", "2048")
+	assertLimit(t, created.ID, "cpu.max", "50000 100000")
+	assertLimit(t, created.ID, "memory.max", fmt.Sprint(128<<20))
+	assertLimit(t, created.ID, "pids.max", "2048")
 
 	// stop → stopped
 	status, data = call(t, http.MethodPost, "/api/v1/sandboxes/"+created.ID+"/stop", admin, nil)
@@ -169,7 +170,7 @@ func TestSandboxLifecycle(t *testing.T) {
 	if restarted.State != "ready" {
 		t.Fatalf("Sandbox did not return to ready: %+v", restarted)
 	}
-	assertLimit(t, created.ID, "/sys/fs/cgroup/cpu.max", "50000 100000")
+	assertLimit(t, created.ID, "cpu.max", "50000 100000")
 
 	// delete → deleted; the implicit Workspace and its directory go with it.
 	status, data = call(t, http.MethodDelete, "/api/v1/sandboxes/"+created.ID, admin, nil)
@@ -371,9 +372,28 @@ func psqlCount(t *testing.T, query string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func assertLimit(t *testing.T, id, path, want string) {
+// assertLimit reads a limit file from the Sandbox's cgroup on the Node host,
+// at the container spec's cgroupsPath: the one readback that holds for runc
+// and gvisor, whose guest sees only the Sentry's emulated cgroupfs
+// (runtime.md §9).
+func assertLimit(t *testing.T, id, file, want string) {
 	t.Helper()
-	out, err := catInSandbox(id, path)
+	info, err := inspectSandboxRuntime(id)
+	if err != nil {
+		t.Fatalf("container info: %v\n%s", err, info)
+	}
+	var c struct {
+		Spec struct {
+			Linux struct {
+				CgroupsPath string `json:"cgroupsPath"`
+			} `json:"linux"`
+		}
+	}
+	if err := json.Unmarshal(info, &c); err != nil || c.Spec.Linux.CgroupsPath == "" {
+		t.Fatalf("container info has no cgroupsPath (%v):\n%s", err, info)
+	}
+	path := filepath.Join("/sys/fs/cgroup", c.Spec.Linux.CgroupsPath, file)
+	out, err := nodeShell("cat " + shellQuote(path))
 	if err != nil {
 		t.Fatalf("read %s: %v\n%s", path, err, out)
 	}

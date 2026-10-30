@@ -3,10 +3,8 @@
 package e2e
 
 import (
-	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 )
 
 // inspectSandboxRuntime is the Runtime's own record of a Sandbox's container:
@@ -47,11 +45,6 @@ func hostGPUCount() int {
 		return 0
 	}
 	return strings.Count(string(out), "GPU-")
-}
-
-func catInSandbox(id, path string) ([]byte, error) {
-	return sandboxCommand("task", "exec", "--exec-id", fmt.Sprintf("e2e-cat-%d", time.Now().UnixNano()),
-		"orrery-"+id, "cat", path).CombinedOutput()
 }
 
 // nodeShell runs a script on the Node host: locally with sh, or through
