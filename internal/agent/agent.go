@@ -31,12 +31,16 @@ import (
 
 const (
 	// HeartbeatInterval is a constant in defaults.md.
-	HeartbeatInterval   = 15 * time.Second
-	DefaultStatePath    = "/var/lib/orrery-agent/identity.json"
-	DefaultDockerSock   = "/var/run/docker.sock"
-	DefaultDataRoot     = "/var/lib/orrery"
-	DefaultReserveCPU   = 1.0
-	DefaultReserveBytes = 2 << 30 // 2 GiB
+	HeartbeatInterval = 15 * time.Second
+	DefaultStatePath  = "/var/lib/orrery-agent/identity.json"
+	DefaultDockerSock = "/var/run/docker.sock"
+	// DefaultContainerdSock and DefaultSandboxSubnet are the containerd
+	// Provider's defaults (runtime.md §9, defaults.md).
+	DefaultContainerdSock = "/run/containerd/containerd.sock"
+	DefaultSandboxSubnet  = "10.213.0.0/24"
+	DefaultDataRoot       = "/var/lib/orrery"
+	DefaultReserveCPU     = 1.0
+	DefaultReserveBytes   = 2 << 30 // 2 GiB
 	// DefaultDiskWatermark is the fraction of the disk that must stay free
 	// (defaults.md, Node configuration).
 	DefaultDiskWatermark = 0.10
@@ -145,8 +149,12 @@ type RunOptions struct {
 	Server string // overrides the address stored at enroll time
 	State  string
 	Docker string
-	// Runtime is the Node's one Runtime Provider (ADR-0014): docker, podman
-	// or local.
+	// Containerd is the containerd socket and SandboxSubnet the CNI address
+	// pool for --runtime containerd (runtime.md §9, §13).
+	Containerd    string
+	SandboxSubnet string
+	// Runtime is the Node's one Runtime Provider (ADR-0014): docker, podman,
+	// containerd or local.
 	Runtime string
 	// LocalUser is the unprivileged user every Local Runtime Exec runs as
 	// (runtime.md §10). Required for --runtime local.
@@ -170,6 +178,8 @@ func resolveRuntime(name string) (string, error) {
 		return ProviderDocker, nil
 	case ProviderPodman:
 		return ProviderPodman, nil
+	case ProviderContainerd:
+		return ProviderContainerd, nil
 	case ProviderLocal:
 		return ProviderLocal, nil
 	default:
@@ -214,6 +224,12 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	if opts.DataRoot == "" {
 		opts.DataRoot = DefaultDataRoot
+	}
+	if opts.Containerd == "" {
+		opts.Containerd = DefaultContainerdSock
+	}
+	if opts.SandboxSubnet == "" {
+		opts.SandboxSubnet = DefaultSandboxSubnet
 	}
 	if opts.ReserveMemory == 0 {
 		opts.ReserveMemory = DefaultReserveBytes
@@ -294,6 +310,14 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		if err != nil {
 			return false, err
 		}
+	}
+	if opts.Runtime == ProviderContainerd {
+		var err error
+		rt, err = newContainerdRuntime(opts.Containerd, opts.SandboxSubnet, opts.DataRoot, id.NodeID)
+		if err != nil {
+			return false, err
+		}
+		defer rt.driver.(*containerdDriver).close()
 	}
 	if opts.Runtime == ProviderLocal {
 		if opts.localUser == nil {

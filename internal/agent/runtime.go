@@ -253,53 +253,10 @@ func (r *Runtime) createContainerSandbox(ctx context.Context, cmd *createSandbox
 	if err := r.d.ensureImageRef(ctx, cmd.imageDigest, r.registryAuthHeader(cmd.imageDigest)); err != nil {
 		return "image_pull_failed", err
 	}
-	workspace := workspacePath(r.dataRoot, workspaceID)
-	if err := os.MkdirAll(workspace, 0o777); err != nil {
+	workspace, runDir, mode, err := r.prepareSandboxHost(id, workspaceID, cmd)
+	if err != nil {
 		return "runtime_create_failed", err
 	}
-	if err := os.Chmod(workspace, 0o777); err != nil {
-		return "runtime_create_failed", err
-	}
-	// Rootless Podman maps container root to the invoking user, so the host
-	// directory must belong to that user (runtime.md §9).
-	if err := r.owner.own(workspace); err != nil {
-		return "runtime_create_failed", err
-	}
-	// The image's default USER writes here; rootful and rootless map that uid
-	// differently, so the Agent cannot chown it correctly without knowing the
-	// image. ponytail: world-writable, per-uid chown when USERs become common.
-	runDir := sandboxRunPath(r.dataRoot, id)
-	if err := os.MkdirAll(runDir, 0o777); err != nil {
-		return "runtime_create_failed", err
-	}
-	if err := os.Chmod(runDir, 0o777); err != nil {
-		return "runtime_create_failed", err
-	}
-	if err := r.owner.own(runDir); err != nil {
-		return "runtime_create_failed", err
-	}
-	mode := cmd.workspaceMode
-	if mode != "rw" && mode != "ro" {
-		mode = "rw"
-	}
-	// Recorded before adoption so the file API survives an Agent restart.
-	if err := r.writeWorkspaceRefFile(id, workspaceRef{ID: workspaceID.String(), Mode: mode}); err != nil {
-		return "runtime_create_failed", err
-	}
-	// The pin record is written before the trees are fetched: eviction must
-	// never mistake a tree being assembled for this Sandbox for garbage. It
-	// survives StopSandbox (a stopped Sandbox still references these) and is
-	// only dropped when the Sandbox is known to be gone; see sandboxPins.
-	pins := sandboxPins{ImageDigest: cmd.imageDigest}
-	for _, resource := range cmd.resources {
-		pins.Resources = append(pins.Resources, resource.address)
-	}
-	if err := writeSandboxPins(sandboxPath(r.dataRoot, id), pins); err != nil {
-		return "runtime_create_failed", err
-	}
-	// Any create or adopt counts as a use of the image for LRU eviction
-	// (runtime.md §11).
-	touchImageUsage(r.dataRoot, cmd.imageDigest)
 	name := containerName(id)
 
 	if running, exists, _, err := r.d.inspectContainer(ctx, name); err == nil && exists {
@@ -373,6 +330,60 @@ func (r *Runtime) createContainerSandbox(ctx context.Context, cmd *createSandbox
 	}
 	r.track(id, cmd.generation)
 	return "", nil
+}
+
+// prepareSandboxHost lays out the host side every container Provider mounts:
+// the Workspace, the record directory, the file API's Workspace record and
+// the eviction pins (runtime.md §2, §11). It returns the effective mode.
+func (r *Runtime) prepareSandboxHost(id, workspaceID uuid.UUID, cmd *createSandboxSpec) (workspace, runDir, mode string, err error) {
+	workspace = workspacePath(r.dataRoot, workspaceID)
+	if err := os.MkdirAll(workspace, 0o777); err != nil {
+		return "", "", "", err
+	}
+	if err := os.Chmod(workspace, 0o777); err != nil {
+		return "", "", "", err
+	}
+	// Rootless Podman maps container root to the invoking user, so the host
+	// directory must belong to that user (runtime.md §9).
+	if err := r.owner.own(workspace); err != nil {
+		return "", "", "", err
+	}
+	// The image's default USER writes here; rootful and rootless map that uid
+	// differently, so the Agent cannot chown it correctly without knowing the
+	// image. ponytail: world-writable, per-uid chown when USERs become common.
+	runDir = sandboxRunPath(r.dataRoot, id)
+	if err := os.MkdirAll(runDir, 0o777); err != nil {
+		return "", "", "", err
+	}
+	if err := os.Chmod(runDir, 0o777); err != nil {
+		return "", "", "", err
+	}
+	if err := r.owner.own(runDir); err != nil {
+		return "", "", "", err
+	}
+	mode = cmd.workspaceMode
+	if mode != "rw" && mode != "ro" {
+		mode = "rw"
+	}
+	// Recorded before adoption so the file API survives an Agent restart.
+	if err := r.writeWorkspaceRefFile(id, workspaceRef{ID: workspaceID.String(), Mode: mode}); err != nil {
+		return "", "", "", err
+	}
+	// The pin record is written before the trees are fetched: eviction must
+	// never mistake a tree being assembled for this Sandbox for garbage. It
+	// survives StopSandbox (a stopped Sandbox still references these) and is
+	// only dropped when the Sandbox is known to be gone; see sandboxPins.
+	pins := sandboxPins{ImageDigest: cmd.imageDigest}
+	for _, resource := range cmd.resources {
+		pins.Resources = append(pins.Resources, resource.address)
+	}
+	if err := writeSandboxPins(sandboxPath(r.dataRoot, id), pins); err != nil {
+		return "", "", "", err
+	}
+	// Any create or adopt counts as a use of the image for LRU eviction
+	// (runtime.md §11).
+	touchImageUsage(r.dataRoot, cmd.imageDigest)
+	return workspace, runDir, mode, nil
 }
 
 func limitsMatch(r supervisor.Result, nanoCPUs, memory int64, gpus int, workspaceMode string) bool {

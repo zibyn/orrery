@@ -8,7 +8,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.3
 	github.com/aws/smithy-go v1.28.5
+	github.com/containerd/containerd/api v1.12.0
+	github.com/containerd/containerd/v2 v2.4.1
+	github.com/containerd/errdefs v1.0.0
+	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/coreos/go-oidc/v3 v3.16.0
+	github.com/distribution/reference v0.6.0
 	github.com/docker/cli v29.8.2+incompatible
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/go-containerregistry v0.21.7
@@ -17,6 +22,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/moby/buildkit v0.34.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/tonistiigi/fsutil v0.0.0-20260819142231-83cac42c1c52
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.57.0
@@ -46,17 +52,14 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/console v1.0.5 // indirect
-	github.com/containerd/containerd/api v1.12.0 // indirect
-	github.com/containerd/containerd/v2 v2.4.1 // indirect
 	github.com/containerd/continuity v0.5.0 // indirect
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
+	github.com/containerd/fifo v1.1.0 // indirect
 	github.com/containerd/log v0.2.0 // indirect
 	github.com/containerd/log/otel v0.1.0 // indirect
 	github.com/containerd/platforms v1.0.0-rc.5 // indirect
+	github.com/containerd/plugin v1.1.0 // indirect
 	github.com/containerd/ttrpc v1.2.10 // indirect
-	github.com/containerd/typeurl/v2 v2.3.0 // indirect
-	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker-credential-helpers v0.9.9 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.5 // indirect
@@ -75,7 +78,10 @@ require (
 	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
+	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/signal v0.7.1 // indirect
+	github.com/moby/sys/user v0.4.1 // indirect
+	github.com/moby/sys/userns v0.2.1 // indirect
 	github.com/morikuni/aec v1.1.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect

@@ -1,0 +1,199 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/google/uuid"
+)
+
+const (
+	// shortcut: the standard CNI plugin directory; make it a flag when a
+	// Node installs plugins elsewhere.
+	cniBinDir     = "/opt/cni/bin"
+	sandboxBridge = "orrery0"
+)
+
+func netnsName(id uuid.UUID) string { return "orrery-" + id.String() }
+func netnsPath(id uuid.UUID) string { return "/run/netns/" + netnsName(id) }
+
+// sandboxNetwork is what the Agent records in the Sandbox directory for Stop
+// and reconciliation (runtime.md §13).
+type sandboxNetwork struct {
+	HostVeth string `json:"host_veth"`
+	Address  string `json:"address"`
+}
+
+func (d *containerdDriver) bridgeConf() []byte {
+	conf, _ := json.Marshal(map[string]any{
+		"cniVersion": "1.0.0",
+		"name":       "orrery",
+		"type":       "bridge",
+		"bridge":     sandboxBridge,
+		"isGateway":  true,
+		"ipMasq":     true,
+		// The Agent's own nftables table, not iptables rules in tables the
+		// host's other software owns (ADR-0026).
+		"ipMasqBackend": "nftables",
+		"ipam": map[string]any{
+			"type":   "host-local",
+			"ranges": [][]map[string]string{{{"subnet": d.subnet}}},
+			"routes": []map[string]string{{"dst": "0.0.0.0/0"}},
+		},
+	})
+	return conf
+}
+
+var loopbackConf = []byte(`{"cniVersion":"1.0.0","name":"orrery-lo","type":"loopback"}`)
+
+// cniExec calls one CNI plugin directly (CNI spec, "Execution protocol").
+func cniExec(ctx context.Context, plugin, command string, conf []byte, id uuid.UUID, ifname string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, filepath.Join(cniBinDir, plugin))
+	cmd.Env = append(os.Environ(),
+		"CNI_COMMAND="+command,
+		"CNI_CONTAINERID="+id.String(),
+		"CNI_NETNS="+netnsPath(id),
+		"CNI_IFNAME="+ifname,
+		"CNI_PATH="+cniBinDir)
+	cmd.Stdin = bytes.NewReader(conf)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("CNI %s %s: %w: %s%s", plugin, command, err, out, stderr.String())
+	}
+	return out, nil
+}
+
+// parseCNIResult picks the host-side veth and the Sandbox address out of a
+// bridge plugin result: the veth is the interface outside any netns that is
+// not the bridge itself.
+func parseCNIResult(raw []byte, bridge string) (sandboxNetwork, error) {
+	var result struct {
+		Interfaces []struct {
+			Name    string `json:"name"`
+			Sandbox string `json:"sandbox"`
+		} `json:"interfaces"`
+		IPs []struct {
+			Address string `json:"address"`
+		} `json:"ips"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return sandboxNetwork{}, fmt.Errorf("decode CNI result: %w", err)
+	}
+	var network sandboxNetwork
+	for _, iface := range result.Interfaces {
+		if iface.Sandbox == "" && iface.Name != bridge {
+			network.HostVeth = iface.Name
+		}
+	}
+	if len(result.IPs) > 0 {
+		if prefix, err := netip.ParsePrefix(result.IPs[0].Address); err == nil {
+			network.Address = prefix.Addr().String()
+		}
+	}
+	if network.HostVeth == "" || network.Address == "" {
+		return sandboxNetwork{}, fmt.Errorf("CNI result has no host veth or address: %s", raw)
+	}
+	return network, nil
+}
+
+// setupNetwork builds the Sandbox's netns on the bridge and writes the files
+// mounted over /etc (runtime.md §2, §13). It returns the netns path.
+func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID) (string, error) {
+	if _, err := runLocalCommand(ctx, "ip", "netns", "add", netnsName(id)); err != nil {
+		return "", err
+	}
+	if _, err := cniExec(ctx, "loopback", "ADD", loopbackConf, id, "lo"); err != nil {
+		return "", err
+	}
+	out, err := cniExec(ctx, "bridge", "ADD", d.bridgeConf(), id, "eth0")
+	if err != nil {
+		return "", err
+	}
+	network, err := parseCNIResult(out, sandboxBridge)
+	if err != nil {
+		return "", err
+	}
+	dir := sandboxPath(d.r.dataRoot, id)
+	raw, _ := json.Marshal(network)
+	if err := os.WriteFile(filepath.Join(dir, "network.json"), raw, 0o644); err != nil {
+		return "", err
+	}
+	if err := writeSandboxEtc(filepath.Join(dir, "etc"), id.String(), network.Address); err != nil {
+		return "", err
+	}
+	return netnsPath(id), nil
+}
+
+// teardownNetwork is CNI DEL and netns removal; every step is idempotent.
+func (d *containerdDriver) teardownNetwork(ctx context.Context, id uuid.UUID) error {
+	// The bridge plugin's DEL tolerates a missing netns and still releases
+	// the address.
+	if _, err := cniExec(ctx, "bridge", "DEL", d.bridgeConf(), id, "eth0"); err != nil {
+		return err
+	}
+	if _, err := os.Stat(netnsPath(id)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := runLocalCommand(ctx, "ip", "netns", "delete", netnsName(id)); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(filepath.Join(sandboxPath(d.r.dataRoot, id), "network.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// hostResolvConf is the host's upstream resolver list: systemd-resolved's
+// upstream file when present, else /etc/resolv.conf (runtime.md §2).
+func hostResolvConf() string {
+	for _, path := range []string{"/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"} {
+		if raw, err := os.ReadFile(path); err == nil {
+			return string(raw)
+		}
+	}
+	return ""
+}
+
+// sandboxResolvConf drops loopback nameservers: the Sandbox's loopback is not
+// the host's.
+func sandboxResolvConf(host string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(strings.TrimSuffix(host, "\n"), "\n") {
+		if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "nameserver" {
+			if addr, err := netip.ParseAddr(fields[1]); err == nil && addr.IsLoopback() {
+				continue
+			}
+		}
+		if line == "" && out.Len() == 0 {
+			continue
+		}
+		out.WriteString(line + "\n")
+	}
+	return out.String()
+}
+
+func writeSandboxEtc(dir, hostname, address string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	files := map[string]string{
+		"resolv.conf": sandboxResolvConf(hostResolvConf()),
+		"hosts":       "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n" + address + "\t" + hostname + "\n",
+		"hostname":    hostname + "\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}

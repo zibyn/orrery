@@ -12,9 +12,10 @@ import (
 // Runtime Provider names reported in Capabilities (node-protocol.md). One Node
 // has exactly one Provider, chosen by Agent configuration (ADR-0014).
 const (
-	ProviderDocker = "docker"
-	ProviderPodman = "podman"
-	ProviderLocal  = "local"
+	ProviderDocker     = "docker"
+	ProviderPodman     = "podman"
+	ProviderContainerd = "containerd"
+	ProviderLocal      = "local"
 )
 
 // runtimeDriver is the part of the Runtime Provider contract that genuinely

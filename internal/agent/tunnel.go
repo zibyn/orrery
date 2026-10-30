@@ -114,6 +114,13 @@ func (r *Runtime) dialSandboxPort(ctx context.Context, sandboxID uuid.UUID, port
 	if conn, err := dialSocket(socket); err == nil {
 		return conn, nil
 	}
+	if d, ok := r.driver.(*containerdDriver); ok {
+		if err := d.startForward(ctx, sandboxID, supervisorBin, "forward", strconv.Itoa(port),
+			runMount+"/ports/"+filepath.Base(socket)); err != nil {
+			return nil, err
+		}
+		return dialUnix(ctx, socket, 5*time.Second)
+	}
 	if err := r.d.negotiate(ctx); err != nil {
 		return nil, err
 	}

@@ -59,7 +59,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   orrery-agent enroll --server HOST:PORT --packet ore_... [--ca FILE] [--name NAME] [--state FILE]
-  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime docker|podman|local] [--local-user USER] [--docker SOCKET] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
+  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime docker|podman|containerd|local] [--local-user USER] [--docker SOCKET] [--containerd SOCKET] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
   orrery-agent supervisor init
   orrery-agent supervisor probe [WORKSPACE]
   orrery-agent supervisor run EXEC_ID
@@ -89,8 +89,10 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.CAPath, "ca", "", "PEM file with the Control Plane CA")
 	fs.StringVar(&opts.Server, "server", "", "override the enrolled node address")
 	fs.StringVar(&opts.State, "state", agent.DefaultStatePath, "identity file")
-	fs.StringVar(&opts.Runtime, "runtime", "docker", "Runtime Provider: docker, podman or local")
+	fs.StringVar(&opts.Runtime, "runtime", "docker", "Runtime Provider: docker, podman, containerd or local")
 	fs.StringVar(&opts.Docker, "docker", agent.DefaultDockerSock, "Docker Engine socket")
+	fs.StringVar(&opts.Containerd, "containerd", agent.DefaultContainerdSock, "containerd socket (--runtime containerd)")
+	fs.StringVar(&opts.SandboxSubnet, "sandbox-subnet", agent.DefaultSandboxSubnet, "this Node's Sandbox subnet, not overlapping other Nodes' (--runtime containerd)")
 	fs.StringVar(&opts.LocalUser, "local-user", "", "unprivileged user every Local Runtime Exec runs as (required with --runtime local)")
 	fs.StringVar(&opts.Buildkit, "buildkit", "", "BuildKit endpoint (default: dockerd's built-in BuildKit via the Docker socket)")
 	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "Workspace and Supervisor data directory")
