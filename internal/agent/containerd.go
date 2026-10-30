@@ -440,20 +440,7 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 	if err != nil {
 		return nodeproto.CapabilityReport{}, err
 	}
-	report := capabilities(result, limitsEnforced, gpuVisible, ProviderContainerd)
-	egress := nodeproto.ValueUnsupported
-	if egressEnforced {
-		egress = nodeproto.ValueEnforced
-	}
-	// kernel_isolation is enforced only under gvisor (ADR-0026).
-	isolation := nodeproto.ValueUnsupported
-	if d.gvisor() {
-		isolation = nodeproto.ValueEnforced
-	}
-	report.Entries = append(report.Entries,
-		nodeproto.CapabilityEntry{Name: nodeproto.CapKernelIsolation, Value: isolation},
-		nodeproto.CapabilityEntry{Name: nodeproto.CapEgressPolicy, Value: egress})
-	return report, nil
+	return capabilities(result, limitsEnforced, gpuVisible, egressEnforced, d.gvisor()), nil
 }
 
 // probeOnce runs one probe container with the given cards attached, in dir

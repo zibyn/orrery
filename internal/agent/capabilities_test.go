@@ -19,7 +19,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 		MountNamespace:    "mnt:[different]",
 		NvidiaDevices:     []string{"/dev/nvidia0", "/dev/nvidiactl"},
 		WorkspaceWritable: true,
-	}, true, true, ProviderContainerd)
+	}, true, true, true, true)
 	values := map[string]string{}
 	for _, entry := range caps.Entries {
 		values[entry.Name] = entry.Value
@@ -27,6 +27,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 	for _, name := range []string{
 		"process_mount_namespace", "cpu_memory_pid_limits", "workspace_rw_mount",
 		"exec_supervisor", "gpu_device_visibility", "resource_mount",
+		"kernel_isolation", "egress_policy",
 	} {
 		if values[name] != nodeproto.ValueEnforced {
 			t.Errorf("%s = %q, want enforced", name, values[name])
@@ -38,7 +39,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 
 	// A daemon that refused the limits must not claim them, and a probe that
 	// could not see the requested cards must not claim GPU visibility.
-	weak := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false, ProviderContainerd)
+	weak := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false, false, false)
 	for _, entry := range weak.Entries {
 		if entry.Name == "exec_supervisor" {
 			continue // the probe ran, so the Supervisor works
@@ -53,7 +54,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 }
 
 func TestSnapshotBuildCapabilityIsIndependent(t *testing.T) {
-	report := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false, ProviderContainerd)
+	report := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false, false, false)
 	enforced := withSnapshotBuild(report, true)
 	values := map[string]string{}
 	for _, entry := range enforced.Entries {

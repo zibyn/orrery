@@ -1,9 +1,6 @@
 package agent
 
 import (
-	"io"
-	"os"
-
 	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/supervisor"
 )
@@ -35,7 +32,9 @@ func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.Cap
 	return report
 }
 
-func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool, provider string) nodeproto.CapabilityReport {
+// capabilities is the containerd Node's Runtime report from its probe.
+// kernel_isolation is enforced only under gvisor (ADR-0026).
+func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, egressEnforced, gvisor bool) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
 			return nodeproto.ValueEnforced
@@ -46,7 +45,7 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool, provider
 	isolated := r.PIDNamespace != "" && r.PIDNamespace != pidNS &&
 		r.MountNamespace != "" && r.MountNamespace != mntNS
 	return nodeproto.CapabilityReport{
-		RuntimeProvider: provider,
+		RuntimeProvider: ProviderContainerd,
 		Entries: []nodeproto.CapabilityEntry{
 			{Name: nodeproto.CapProcessMountNamespace, Value: value(isolated)},
 			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(limitsEnforced)},
@@ -65,25 +64,10 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible bool, provider
 			// unsupported, which keeps the Scheduler from placing a Sandbox
 			// with Resources there.
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
+			{Name: nodeproto.CapKernelIsolation, Value: value(gvisor)},
+			{Name: nodeproto.CapEgressPolicy, Value: value(egressEnforced)},
 			// snapshot_build is added by the Agent from the BuildKit endpoint
 			// self-check, independent of the Runtime (runtime.md §12).
 		},
 	}
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close() //nolint:errcheck // read-only
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close() //nolint:errcheck // report the copy error instead
-		return err
-	}
-	return out.Close()
 }
