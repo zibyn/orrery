@@ -54,7 +54,7 @@ func (n *nodeService) recordBuildObserved(ctx context.Context, nodeID uuid.UUID,
 		n.finishBuildObserved(ctx, version, sb, nil, "build_failed")
 		return
 	}
-	snapshot, err := n.s.q.GetSnapshot(ctx, version.SnapshotID)
+	snapshot, err := n.s.q.GetSnapshotIncludingDeleted(ctx, version.SnapshotID)
 	if err != nil {
 		n.s.log.Warn("record BuildObserved Snapshot", "version_id", versionID, "error", err)
 		return
@@ -125,9 +125,10 @@ func (n *nodeService) finishBuildObserved(ctx context.Context, version store.Sna
 			}
 			return
 		}
+		// A tombstoned Snapshot keeps its pointer; the version still ends ready.
 		if _, err := q.SetSnapshotCurrentVersion(ctx, store.SetSnapshotCurrentVersionParams{
 			ID: version.SnapshotID, VersionID: &version.ID,
-		}); err != nil {
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			n.s.log.Warn("move Snapshot current pointer", "version_id", version.ID, "error", err)
 			return
 		}
@@ -175,7 +176,7 @@ func (n *nodeService) finishBuildObserved(ctx context.Context, version store.Sna
 // snapshotOwner resolves the User a Snapshot belongs to, for audit records
 // written from an Agent observation (which carries no principal).
 func snapshotOwner(ctx context.Context, q *store.Queries, snapshotID uuid.UUID) *uuid.UUID {
-	snap, err := q.GetSnapshot(ctx, snapshotID)
+	snap, err := q.GetSnapshotIncludingDeleted(ctx, snapshotID)
 	if err != nil || snap.OwnerID == nil {
 		return nil
 	}

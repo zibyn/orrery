@@ -192,6 +192,60 @@ func TestSnapshotBuildRun(t *testing.T) {
 	}
 }
 
+// TestSnapshotBuildSurvivesSnapshotDelete: deleting a Snapshot only writes a
+// tombstone (api.md §3), so a build still running under it must finish and
+// release its Exec instead of rolling back when the current pointer cannot
+// move.
+func TestSnapshotBuildSurvivesSnapshotDelete(t *testing.T) {
+	admin := adminToken(t)
+	platformName := os.Getenv("ORRERY_E2E_PLATFORM_SNAPSHOT")
+	if platformName == "" {
+		t.Fatal("ORRERY_E2E_PLATFORM_SNAPSHOT is not set; run ./scripts/e2e.sh")
+	}
+	suffix := time.Now().UnixNano()
+	nodeName := fmt.Sprintf("e2e-build-delete-node-%d", suffix)
+	state, dataRoot := enrollAgent(t, admin, nodeName)
+	startAgentWith(t, state, dataRoot, "--reserve-cpu", "0")
+	waitForNodeReady(t, admin, nodeName)
+	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
+
+	snapshot := createTestSnapshot(t, admin, fmt.Sprintf("e2e-build-delete-%d", suffix))
+	version := startBuild(t, admin, snapshot.ID, map[string]any{
+		"dockerfile": fmt.Sprintf("FROM base\nRUN echo %d > /probe && sleep 10\n", suffix),
+		"base":       platformName,
+	})
+	if version.BuildExecID == nil {
+		t.Fatalf("build version = %+v, want build_exec_id", version)
+	}
+	if _, _, _, ok := waitForBuildCgroup(t, version.ID, 2*time.Minute); !ok {
+		t.Fatalf("build RUN for %s never started", version.ID)
+	}
+
+	if status, data := call(t, http.MethodDelete, "/api/v1/snapshots/"+snapshot.ID, admin, nil); status != http.StatusAccepted {
+		t.Fatalf("delete Snapshot: %d %s", status, data)
+	}
+
+	// A failed build also ends its Exec "exited", and the tombstoned version is
+	// 404, so the outcome is read from the audit trail.
+	stdout, stderr, _, result := followExec(t, admin, *version.BuildExecID, 3*time.Minute)
+	if result.Type != "result" {
+		t.Fatalf("build Exec result after Snapshot delete = %+v; log: %s%s", result, stdout, stderr)
+	}
+	cli := newCLIRunner(t, admin)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var built auditList
+		mustJSON(t, cli.run(t, "", "audit", "list", "--action", "snapshot.version.build", "--target", snapshot.ID), &built)
+		if len(built.Items) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no snapshot.version.build record for %s after Snapshot delete; log: %s%s", snapshot.ID, stdout, stderr)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 // startBuild posts a build request and returns the created version.
 func startBuild(t *testing.T, admin, snapshotID string, build map[string]any) snapshotVersionView {
 	t.Helper()

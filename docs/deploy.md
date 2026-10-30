@@ -161,6 +161,22 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 
+`registry/config.yml` 同样只在首次安装时生成，升级不覆盖。purge 要删掉已删除 Snapshot 和 SnapshotVersion 的 registry manifest，需要 registry 允许删除（#151）。较早安装的部署缺这一项，purge 会一直收到 `UNSUPPORTED` 并重试，manifest 不会被清理。在 `storage:` 下、与 `s3:` 同级补上，然后重启 registry：
+
+```yaml
+storage:
+  s3:
+    ...
+  delete:
+    enabled: true
+```
+
+```sh
+cd /etc/orrery && docker compose restart registry
+```
+
+只删 manifest，不回收 blob；blob GC 仍是运维流程（ADR-0014）。
+
 排障：Control Plane 通过公开地址推送 registry（`registry.push_addr` 默认等于 `registry.addr`）。如果容器解析不到公开地址或 NAT 不回环，Platform Snapshot 导入会失败。没有用 `--public-bind` 时（nginx 监听所有接口），可以在 `/etc/orrery/compose.override.yaml` 里给 `server` 加：
 
 ```yaml

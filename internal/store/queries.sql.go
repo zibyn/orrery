@@ -214,7 +214,7 @@ func (q *Queries) CancelSandboxExecs(ctx context.Context, sandboxID uuid.UUID) (
 const cancelSnapshotVersion = `-- name: CancelSnapshotVersion :one
 UPDATE snapshot_versions SET state = 'cancelled'
 WHERE id = $1 AND state = 'building'
-RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at
 `
 
 func (q *Queries) CancelSnapshotVersion(ctx context.Context, id uuid.UUID) (SnapshotVersion, error) {
@@ -233,6 +233,7 @@ func (q *Queries) CancelSnapshotVersion(ctx context.Context, id uuid.UUID) (Snap
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.BuildRequest,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -417,7 +418,7 @@ func (q *Queries) CountSecrets(ctx context.Context, ownerID uuid.UUID) (int64, e
 
 const countSnapshotVersionDigestReferences = `-- name: CountSnapshotVersionDigestReferences :one
 SELECT count(*)::bigint FROM snapshot_versions
-WHERE snapshot_id = $1 AND digest = $2 AND id <> $3
+WHERE snapshot_id = $1 AND digest = $2 AND id <> $3 AND deleted_at IS NULL
 `
 
 type CountSnapshotVersionDigestReferencesParams struct {
@@ -1170,7 +1171,7 @@ INSERT INTO snapshot_versions (
     $8, $9, $10,
     $11
 )
-RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at
 `
 
 type CreateSnapshotVersionParams struct {
@@ -1215,6 +1216,7 @@ func (q *Queries) CreateSnapshotVersion(ctx context.Context, arg CreateSnapshotV
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.BuildRequest,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -2729,8 +2731,29 @@ func (q *Queries) GetSnapshotByName(ctx context.Context, arg GetSnapshotByNamePa
 	return i, err
 }
 
+const getSnapshotIncludingDeleted = `-- name: GetSnapshotIncludingDeleted :one
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots WHERE id = $1
+`
+
+// GetSnapshotIncludingDeleted serves a build or import still running under a
+// tombstoned Snapshot: the version finishes, only the pointer stays put.
+func (q *Queries) GetSnapshotIncludingDeleted(ctx context.Context, id uuid.UUID) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, getSnapshotIncludingDeleted, id)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.IdempotencyKey,
+	)
+	return i, err
+}
+
 const getSnapshotVersion = `-- name: GetSnapshotVersion :one
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2 AND deleted_at IS NULL
 `
 
 type GetSnapshotVersionParams struct {
@@ -2754,12 +2777,13 @@ func (q *Queries) GetSnapshotVersion(ctx context.Context, arg GetSnapshotVersion
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.BuildRequest,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getSnapshotVersionByID = `-- name: GetSnapshotVersionByID :one
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions WHERE id = $1
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at FROM snapshot_versions WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetSnapshotVersionByID(ctx context.Context, id uuid.UUID) (SnapshotVersion, error) {
@@ -2778,13 +2802,14 @@ func (q *Queries) GetSnapshotVersionByID(ctx context.Context, id uuid.UUID) (Sna
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.BuildRequest,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getSnapshotVersionByIdempotencyKey = `-- name: GetSnapshotVersionByIdempotencyKey :one
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
-WHERE snapshot_id = $1 AND idempotency_key = $2
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at FROM snapshot_versions
+WHERE snapshot_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL
 `
 
 type GetSnapshotVersionByIdempotencyKeyParams struct {
@@ -2808,6 +2833,7 @@ func (q *Queries) GetSnapshotVersionByIdempotencyKey(ctx context.Context, arg Ge
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.BuildRequest,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -3383,7 +3409,7 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 }
 
 const listBuildRuns = `-- name: ListBuildRuns :many
-SELECT v.id, v.snapshot_id, v.digest, v.state, v.cause, v.source, v.build_sandbox_id, v.build_exec_id, v.provenance, v.idempotency_key, v.created_at, v.build_request, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind, s.runtime,
+SELECT v.id, v.snapshot_id, v.digest, v.state, v.cause, v.source, v.build_sandbox_id, v.build_exec_id, v.provenance, v.idempotency_key, v.created_at, v.build_request, v.deleted_at, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind, s.runtime,
        e.id AS exec_id, e.accepted_at AS exec_accepted_at,
        e.started_at AS exec_started_at, e.deadline_at AS exec_deadline_at,
        e.cancel_requested_at AS exec_cancel_requested_at,
@@ -3437,6 +3463,7 @@ func (q *Queries) ListBuildRuns(ctx context.Context) ([]ListBuildRunsRow, error)
 			&i.SnapshotVersion.IdempotencyKey,
 			&i.SnapshotVersion.CreatedAt,
 			&i.SnapshotVersion.BuildRequest,
+			&i.SnapshotVersion.DeletedAt,
 			&i.Sandbox.ID,
 			&i.Sandbox.OwnerID,
 			&i.Sandbox.Name,
@@ -3510,6 +3537,49 @@ func (q *Queries) ListDeletedResources(ctx context.Context, limit int32) ([]Reso
 			&i.IdempotencyKey,
 			&i.DeletedAt,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeletedSnapshotVersions = `-- name: ListDeletedSnapshotVersions :many
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at FROM snapshot_versions
+WHERE deleted_at IS NOT NULL AND state <> 'building'
+ORDER BY deleted_at
+LIMIT $1
+`
+
+// A building version still belongs to its build or import; the sweep takes
+// it once terminal.
+func (q *Queries) ListDeletedSnapshotVersions(ctx context.Context, limit int32) ([]SnapshotVersion, error) {
+	rows, err := q.db.Query(ctx, listDeletedSnapshotVersions, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SnapshotVersion{}
+	for rows.Next() {
+		var i SnapshotVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.SnapshotID,
+			&i.Digest,
+			&i.State,
+			&i.Cause,
+			&i.Source,
+			&i.BuildSandboxID,
+			&i.BuildExecID,
+			&i.Provenance,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+			&i.BuildRequest,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -4629,8 +4699,8 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Sec
 }
 
 const listSnapshotVersions = `-- name: ListSnapshotVersions :many
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
-WHERE snapshot_id = $1
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at FROM snapshot_versions
+WHERE snapshot_id = $1 AND deleted_at IS NULL
   AND ($2::uuid IS NULL OR id > $2)
 ORDER BY id
 LIMIT $3
@@ -4664,6 +4734,7 @@ func (q *Queries) ListSnapshotVersions(ctx context.Context, arg ListSnapshotVers
 			&i.IdempotencyKey,
 			&i.CreatedAt,
 			&i.BuildRequest,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -4676,7 +4747,7 @@ func (q *Queries) ListSnapshotVersions(ctx context.Context, arg ListSnapshotVers
 }
 
 const listSnapshotVersionsForCleanup = `-- name: ListSnapshotVersionsForCleanup :many
-SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request FROM snapshot_versions
+SELECT id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at FROM snapshot_versions
 WHERE snapshot_id = $1
   AND state <> 'building'
 ORDER BY id
@@ -4713,6 +4784,7 @@ func (q *Queries) ListSnapshotVersionsForCleanup(ctx context.Context, arg ListSn
 			&i.IdempotencyKey,
 			&i.CreatedAt,
 			&i.BuildRequest,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -5274,7 +5346,7 @@ func (q *Queries) MarkSandboxStopped(ctx context.Context, arg MarkSandboxStopped
 const markSnapshotVersionFailed = `-- name: MarkSnapshotVersionFailed :one
 UPDATE snapshot_versions SET state = 'failed', cause = $1
 WHERE id = $2 AND state = 'building'
-RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at
 `
 
 type MarkSnapshotVersionFailedParams struct {
@@ -5298,6 +5370,7 @@ func (q *Queries) MarkSnapshotVersionFailed(ctx context.Context, arg MarkSnapsho
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.BuildRequest,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -5306,7 +5379,7 @@ const markSnapshotVersionReady = `-- name: MarkSnapshotVersionReady :one
 UPDATE snapshot_versions
 SET state = 'ready', digest = $1, provenance = $2
 WHERE id = $3 AND state = 'building'
-RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at
 `
 
 type MarkSnapshotVersionReadyParams struct {
@@ -5331,6 +5404,7 @@ func (q *Queries) MarkSnapshotVersionReady(ctx context.Context, arg MarkSnapshot
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.BuildRequest,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -6286,6 +6360,38 @@ func (q *Queries) TombstoneNode(ctx context.Context, id uuid.UUID) (int64, error
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const tombstoneSnapshotVersion = `-- name: TombstoneSnapshotVersion :one
+UPDATE snapshot_versions SET deleted_at = now()
+WHERE id = $1 AND snapshot_id = $2 AND deleted_at IS NULL
+RETURNING id, snapshot_id, digest, state, cause, source, build_sandbox_id, build_exec_id, provenance, idempotency_key, created_at, build_request, deleted_at
+`
+
+type TombstoneSnapshotVersionParams struct {
+	ID         uuid.UUID
+	SnapshotID uuid.UUID
+}
+
+func (q *Queries) TombstoneSnapshotVersion(ctx context.Context, arg TombstoneSnapshotVersionParams) (SnapshotVersion, error) {
+	row := q.db.QueryRow(ctx, tombstoneSnapshotVersion, arg.ID, arg.SnapshotID)
+	var i SnapshotVersion
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Digest,
+		&i.State,
+		&i.Cause,
+		&i.Source,
+		&i.BuildSandboxID,
+		&i.BuildExecID,
+		&i.Provenance,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.BuildRequest,
+		&i.DeletedAt,
+	)
+	return i, err
 }
 
 const touchPendingSandbox = `-- name: TouchPendingSandbox :execrows

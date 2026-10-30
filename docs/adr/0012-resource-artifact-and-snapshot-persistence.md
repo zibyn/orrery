@@ -1,6 +1,6 @@
 # ADR-0012: Resource, Artifact, and Snapshot persistence
 
-- Status: accepted; Artifact, Snapshot base, retention and object store amended by ADR-0017; content addressing, upload, Workspace publish, Snapshot pointer and import, deletion and the checksum consequence amended in place by #82 (ADR-0021); build mechanism amended in place by #92
+- Status: accepted; Artifact, Snapshot base, retention and object store amended by ADR-0017; content addressing, upload, Workspace publish, Snapshot pointer and import, deletion and the checksum consequence amended in place by #82 (ADR-0021); build mechanism amended in place by #92; SnapshotVersion deletion amended in place by #151
 - Date: 2026-10-17
 
 ## Context
@@ -23,7 +23,7 @@
 
 **Retention.** A current version never expires. A non-current ResourceVersion that nothing references expires after a deployment-configured TTL. A SnapshotVersion is deleted only explicitly; a stopped Sandbox counts as a reference. There is no keep-last-N and no idle deactivation.
 
-**Deletion and GC.** Deleting a Resource or a Snapshot (the latter added in place by #82) writes a tombstone; a current version cannot be deleted directly; active references block physical cleanup. PostgreSQL metadata and references are authoritative. CAS objects and unpublished uploads are removed only after database visibility checks, a configurable grace period, and an idempotent, retryable sweep. A published version whose blob temporarily cannot be read becomes unavailable and is repaired, not deleted.
+**Deletion and GC.** Deleting a Resource, a Snapshot or a SnapshotVersion (the Snapshot added in place by #82, the SnapshotVersion by #151) writes a tombstone; a tombstoned SnapshotVersion's registry manifest is removed by the same retryable sweep before its row; a current version cannot be deleted directly; active references block physical cleanup. PostgreSQL metadata and references are authoritative. CAS objects and unpublished uploads are removed only after database visibility checks, a configurable grace period, and an idempotent, retryable sweep. A published version whose blob temporarily cannot be read becomes unavailable and is repaired, not deleted.
 
 **Quota.** No storage quota; retention TTL and capacity monitoring bound growth.
 

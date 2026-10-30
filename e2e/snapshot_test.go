@@ -102,29 +102,7 @@ func TestSnapshotImportPrivateSource(t *testing.T) {
 		t.Fatal("ORRERY_E2E_REGISTRY_ADDR and ORRERY_E2E_REGISTRY_CREDENTIAL are not set; run ./scripts/e2e.sh")
 	}
 	suffix := time.Now().UnixNano()
-	dockerConfig := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dockerConfig, "config.json"), []byte(credential), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	buildDir := t.TempDir()
-	dockerfile := fmt.Sprintf("FROM alpine:3.22\nRUN echo %d > /e2e-private-marker\n", suffix)
-	if err := os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sourceRef := fmt.Sprintf("%s/snapshots/e2e-private-%d:test", addr, suffix)
-	dockerCLI(t, dockerConfig, "build", "-t", sourceRef, buildDir)
-	dockerCLI(t, dockerConfig, "push", sourceRef)
-	digests := dockerCLI(t, dockerConfig, "image", "inspect", sourceRef,
-		"--format", "{{range .RepoDigests}}{{println .}}{{end}}")
-	var digestRef string
-	for _, line := range strings.Split(digests, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), addr+"/") && strings.Contains(line, "@sha256:") {
-			digestRef = strings.TrimSpace(line)
-		}
-	}
-	if digestRef == "" {
-		t.Fatalf("pushed image has no registry digest: %q", digests)
-	}
+	dockerConfig, digestRef := pushUniqueImage(t, addr, credential, suffix)
 
 	secretName := fmt.Sprintf("e2e-import-auth-%d", suffix)
 	if status, data := call(t, http.MethodPut, "/api/v1/secrets/"+secretName, admin,
@@ -233,6 +211,130 @@ func TestSnapshotDeleteGuard(t *testing.T) {
 		t.Fatalf("versions of a tombstoned Snapshot are still visible (status %d)", status)
 	}
 	deleteSandbox(t, admin, created.ID)
+}
+
+// TestSnapshotVersionDeletePurge (#151): deleting a SnapshotVersion writes a
+// tombstone that hides it, and purge then removes its registry manifest unless
+// another version of the same Snapshot shares the digest.
+func TestSnapshotVersionDeletePurge(t *testing.T) {
+	admin := adminToken(t)
+	addr := os.Getenv("ORRERY_E2E_REGISTRY_ADDR")
+	credential := os.Getenv("ORRERY_E2E_REGISTRY_CREDENTIAL")
+	platformName := os.Getenv("ORRERY_E2E_PLATFORM_SNAPSHOT")
+	if addr == "" || credential == "" || platformName == "" {
+		t.Fatal("the registry and platform Snapshot environment is not set; run ./scripts/e2e.sh")
+	}
+	suffix := time.Now().UnixNano()
+	snapshot := createTestSnapshot(t, admin, fmt.Sprintf("e2e-version-purge-%d", suffix))
+
+	secretName := fmt.Sprintf("e2e-version-purge-auth-%d", suffix)
+	if status, data := call(t, http.MethodPut, "/api/v1/secrets/"+secretName, admin,
+		map[string]string{"value": credential}); status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("create auth Secret: %d %s", status, data)
+	}
+	platform := findSnapshot(t, admin, platformName)
+	if platform.CurrentVersionID == nil {
+		t.Fatalf("platform Snapshot %q has no current version", platformName)
+	}
+	platformVersion := getSnapshotVersion(t, admin, platform.ID, *platform.CurrentVersionID)
+	platformRef := fmt.Sprintf("%s/platform/%s@%s", addr, platformName, *platformVersion.Digest)
+	_, uniqueRef := pushUniqueImage(t, addr, credential, suffix)
+
+	first := importIntoSnapshot(t, admin, snapshot.ID, uniqueRef, secretName)
+	first = waitForSnapshotVersion(t, admin, snapshot.ID, first.ID, "ready", 2*time.Minute)
+	second := importIntoSnapshot(t, admin, snapshot.ID, platformRef, secretName)
+	second = waitForSnapshotVersion(t, admin, snapshot.ID, second.ID, "ready", 2*time.Minute)
+	third := importIntoSnapshot(t, admin, snapshot.ID, platformRef, secretName)
+	third = waitForSnapshotVersion(t, admin, snapshot.ID, third.ID, "ready", 2*time.Minute)
+	if *first.Digest == *second.Digest || *second.Digest != *third.Digest {
+		t.Fatalf("digests = %s, %s, %s; want the first distinct and the last two equal",
+			*first.Digest, *second.Digest, *third.Digest)
+	}
+	repo := "snapshots/" + snapshot.ID
+	if got := registryManifestStatus(t, addr, repo, *first.Digest); got != http.StatusOK {
+		t.Fatalf("manifest of the first version before delete = %d, want 200", got)
+	}
+
+	for _, v := range []snapshotVersionView{first, second} {
+		if status, data := call(t, http.MethodDelete,
+			"/api/v1/snapshots/"+snapshot.ID+"/versions/"+v.ID, admin, nil); status != http.StatusAccepted {
+			t.Fatalf("delete SnapshotVersion %s = %d %s, want 202", v.ID, status, data)
+		}
+		if status, _ := call(t, http.MethodGet,
+			"/api/v1/snapshots/"+snapshot.ID+"/versions/"+v.ID, admin, nil); status != http.StatusNotFound {
+			t.Fatalf("tombstoned SnapshotVersion %s is still visible (status %d)", v.ID, status)
+		}
+	}
+	status, data := call(t, http.MethodGet, "/api/v1/snapshots/"+snapshot.ID+"/versions", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list SnapshotVersions: %d %s", status, data)
+	}
+	var page struct {
+		Items []snapshotVersionView `json:"items"`
+	}
+	mustJSON(t, data, &page)
+	if len(page.Items) != 1 || page.Items[0].ID != third.ID {
+		t.Fatalf("listed versions = %+v, want only %s", page.Items, third.ID)
+	}
+
+	deadline := time.Now().Add(time.Minute)
+	for registryManifestStatus(t, addr, repo, *first.Digest) != http.StatusNotFound {
+		if time.Now().After(deadline) {
+			t.Fatalf("manifest %s@%s was never purged", repo, *first.Digest)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	// The third version still uses the second's digest.
+	if got := registryManifestStatus(t, addr, repo, *second.Digest); got != http.StatusOK {
+		t.Fatalf("manifest shared with the current version = %d, want 200", got)
+	}
+}
+
+// pushUniqueImage builds an alpine image carrying a marker, pushes it to the
+// platform registry, and returns the Docker config dir and its digest ref.
+func pushUniqueImage(t *testing.T, addr, credential string, suffix int64) (string, string) {
+	t.Helper()
+	dockerConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dockerConfig, "config.json"), []byte(credential), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	buildDir := t.TempDir()
+	dockerfile := fmt.Sprintf("FROM alpine:3.22\nRUN echo %d > /e2e-private-marker\n", suffix)
+	if err := os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourceRef := fmt.Sprintf("%s/snapshots/e2e-private-%d:test", addr, suffix)
+	dockerCLI(t, dockerConfig, "build", "-t", sourceRef, buildDir)
+	dockerCLI(t, dockerConfig, "push", sourceRef)
+	digests := dockerCLI(t, dockerConfig, "image", "inspect", sourceRef,
+		"--format", "{{range .RepoDigests}}{{println .}}{{end}}")
+	for _, line := range strings.Split(digests, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), addr+"/") && strings.Contains(line, "@sha256:") {
+			return dockerConfig, strings.TrimSpace(line)
+		}
+	}
+	t.Fatalf("pushed image has no registry digest: %q", digests)
+	return "", ""
+}
+
+// registryManifestStatus HEADs a manifest in the platform registry.
+func registryManifestStatus(t *testing.T, host, repo, digest string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodHead, "http://"+host+"/v2/"+repo+"/manifests/"+digest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, "+
+		"application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json")
+	if auth := registryAuthHeader(host); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD manifest %s@%s: %v", repo, digest, err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
 }
 
 func createTestSnapshot(t *testing.T, token, name string) snapshotView {

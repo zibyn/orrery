@@ -258,6 +258,7 @@ type SnapshotVersion struct {
 	IdempotencyKey *string
 	CreatedAt      pgtype.Timestamptz
 	BuildRequest   json.RawMessage
+	DeletedAt      pgtype.Timestamptz
 }
 
 type Upload struct {

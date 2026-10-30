@@ -1099,6 +1099,11 @@ RETURNING *;
 -- name: GetSnapshot :one
 SELECT * FROM snapshots WHERE id = $1 AND deleted_at IS NULL;
 
+-- GetSnapshotIncludingDeleted serves a build or import still running under a
+-- tombstoned Snapshot: the version finishes, only the pointer stays put.
+-- name: GetSnapshotIncludingDeleted :one
+SELECT * FROM snapshots WHERE id = $1;
+
 -- name: GetSnapshotByIdempotencyKey :one
 SELECT * FROM snapshots
 WHERE owner_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
@@ -1142,15 +1147,15 @@ INSERT INTO snapshot_versions (
 RETURNING *;
 
 -- name: GetSnapshotVersion :one
-SELECT * FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2;
+SELECT * FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2 AND deleted_at IS NULL;
 
 -- name: GetSnapshotVersionByIdempotencyKey :one
 SELECT * FROM snapshot_versions
-WHERE snapshot_id = $1 AND idempotency_key = $2;
+WHERE snapshot_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
 
 -- name: ListSnapshotVersions :many
 SELECT * FROM snapshot_versions
-WHERE snapshot_id = sqlc.arg('snapshot_id')
+WHERE snapshot_id = sqlc.arg('snapshot_id') AND deleted_at IS NULL
   AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
 ORDER BY id
 LIMIT sqlc.arg('limit');
@@ -1171,6 +1176,11 @@ UPDATE snapshot_versions SET state = 'cancelled'
 WHERE id = sqlc.arg('id') AND state = 'building'
 RETURNING *;
 
+-- name: TombstoneSnapshotVersion :one
+UPDATE snapshot_versions SET deleted_at = now()
+WHERE id = $1 AND snapshot_id = $2 AND deleted_at IS NULL
+RETURNING *;
+
 -- name: DeleteSnapshotVersion :exec
 DELETE FROM snapshot_versions WHERE id = $1 AND snapshot_id = $2;
 
@@ -1188,7 +1198,7 @@ WHERE kind = 'user' AND state <> 'deleted'
   AND right(snapshot_digest, length(sqlc.arg('ref')::text)) = sqlc.arg('ref')::text;
 
 -- name: GetSnapshotVersionByID :one
-SELECT * FROM snapshot_versions WHERE id = $1;
+SELECT * FROM snapshot_versions WHERE id = $1 AND deleted_at IS NULL;
 
 -- ListBuildRuns is the build sweep's queue: every build version still tied to
 -- a live build sandbox or Exec, terminal versions included, so cleanup is
@@ -1341,7 +1351,15 @@ WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3;
 -- a manifest another version of the same Snapshot still uses.
 -- name: CountSnapshotVersionDigestReferences :one
 SELECT count(*)::bigint FROM snapshot_versions
-WHERE snapshot_id = $1 AND digest = $2 AND id <> $3;
+WHERE snapshot_id = $1 AND digest = $2 AND id <> $3 AND deleted_at IS NULL;
+
+-- A building version still belongs to its build or import; the sweep takes
+-- it once terminal.
+-- name: ListDeletedSnapshotVersions :many
+SELECT * FROM snapshot_versions
+WHERE deleted_at IS NOT NULL AND state <> 'building'
+ORDER BY deleted_at
+LIMIT $1;
 
 -- A deleted Sandbox no longer retains versions, but its sandbox_resources
 -- rows outlive it (the row is kept for API idempotency). The sweep releases

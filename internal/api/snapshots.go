@@ -420,9 +420,10 @@ func (s *Server) runImport(versionID, snapshotID uuid.UUID, repo string, source 
 		s.log.Error("mark Snapshot import ready", "version", versionID, "error", err)
 		return
 	}
+	// A tombstoned Snapshot keeps its pointer; the version still ends ready.
 	if _, err := q.SetSnapshotCurrentVersion(context.Background(), store.SetSnapshotCurrentVersionParams{
 		ID: ready.SnapshotID, VersionID: &versionID,
-	}); err != nil {
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.log.Error("move Snapshot current pointer", "snapshot", ready.SnapshotID, "error", err)
 		return
 	}
@@ -525,9 +526,15 @@ func (s *Server) handleDeleteSnapshotVersion(w http.ResponseWriter, r *http.Requ
 	if cancel, ok := s.takeSnapshotCancel(version.ID); ok {
 		cancel()
 	}
-	if err := s.q.DeleteSnapshotVersion(r.Context(), store.DeleteSnapshotVersionParams{
+	// purge removes the registry manifest, then the row (api.md §3, #151).
+	version, err := s.q.TombstoneSnapshotVersion(r.Context(), store.TombstoneSnapshotVersionParams{
 		ID: version.ID, SnapshotID: snap.ID,
-	}); err != nil {
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "not_found", "no such SnapshotVersion")
+		return
+	}
+	if err != nil {
 		s.internal(w, "delete SnapshotVersion", err)
 		return
 	}

@@ -161,12 +161,13 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 |---|---|
 | `POST /snapshots` · `GET /snapshots` · `GET /snapshots/{id}` · `DELETE /snapshots/{id}` | |
 | `POST /snapshots/{id}/versions` | `{import: {ref, auth_secret?}}` 或 `{build: {dockerfile, base?, contexts?, secrets?}}`，见下；接受 `Idempotency-Key` |
-| `GET /snapshots/{id}/versions` · `GET /snapshots/{id}/versions/{v}` · `DELETE /snapshots/{id}/versions/{v}` | current 版本或有 Sandbox（含 stopped）引用时删除返回 `409` |
+| `GET /snapshots/{id}/versions` · `GET /snapshots/{id}/versions/{v}` · `DELETE /snapshots/{id}/versions/{v}` | current 版本或有 Sandbox（含 stopped）引用时删除返回 `409`；否则写墓碑，见下 |
 | `PUT /snapshots/{id}/current` | `{version}`，用于回滚；版本变成 `ready` 时指针自动移过去 |
 | `POST /snapshots/{id}/versions/{v}/cancel` | 取消构建或导入 |
 
 - **状态**：`building → ready | failed | cancelled`，导入和构建共用。
 - **删除 Snapshot**：写墓碑；被引用的版本保留到最后一个引用消失，然后删掉 registry 里的 manifest。名字只在未删除的 Snapshot 间唯一。
+- **删除 SnapshotVersion**：写墓碑，返回 `202`，此后它不出现在 API 里。purge 删掉 registry 里的 manifest，再删这一行；同一 Snapshot 的其他版本仍用同一 digest 时保留 manifest。删除 manifest 失败时下一轮重试。
 - **平台 Snapshot**：来自部署配置的 `platform_snapshots`（`defaults.md`），出现在每个 User 的 `GET /snapshots` 里；对它增删改返回 `403`。
 - **import**：`ref` 必须是 `ref@sha256:…`，`auth_secret` 是调用方一个 Secret 的名字，值为 docker `config.json`。Control Plane 用 go-containerregistry 把整个 index 流式复制到平台 registry，保留原 digest。Node 只从平台 registry 拉镜像（ADR-0021）。
 - **build**：
