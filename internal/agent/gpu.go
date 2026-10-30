@@ -85,11 +85,16 @@ func cdiDeviceRequest(uuids []string) []map[string]any {
 	if len(uuids) == 0 {
 		return nil
 	}
+	return []map[string]any{{"Driver": "cdi", "DeviceIDs": cdiDeviceNames(uuids)}}
+}
+
+// cdiDeviceNames is the fully qualified CDI name of each whole card.
+func cdiDeviceNames(uuids []string) []string {
 	ids := make([]string, len(uuids))
 	for i, uuid := range uuids {
 		ids[i] = "nvidia.com/gpu=" + uuid
 	}
-	return []map[string]any{{"Driver": "cdi", "DeviceIDs": ids}}
+	return ids
 }
 
 // numberedDeviceCount counts /dev/nvidiaN entries: the per-card character
