@@ -117,6 +117,9 @@ jobs:
           # CI-only BuildKit cache; local e2e runs keep the plain build
           # (deploy/compose.ci.yaml).
           ORRERY_E2E_COMPOSE_OVERRIDE: ${{ github.workspace }}/deploy/compose.ci.yaml
+          # The suite defaults to containerd (#169), which needs a root Agent,
+          # CNI plugins and a standalone buildkitd; CI stays on Docker for now.
+          ORRERY_E2E_RUNTIME: docker
 
   # Playwright is slow and not a merge gate; it runs nightly or on demand.
   e2e-console:

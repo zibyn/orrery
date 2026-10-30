@@ -109,6 +109,9 @@ export ORRERY_TEST_PURGE_INTERVAL="${ORRERY_TEST_PURGE_INTERVAL:-1s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
 export ORRERY_APPS_DOMAIN="${ORRERY_APPS_DOMAIN:-apps.test}"
+# The Agents run --runtime containerd unless ORRERY_E2E_RUNTIME=docker (#169):
+# that needs a root Agent, the CNI plugins in /opt/cni/bin and, for snapshot
+# builds, a standalone buildkitd named by ORRERY_E2E_BUILDKIT.
 # GPU scenarios are skipped unless a GPU host is reachable over SSH:
 #   ORRERY_E2E_GPU_SSH=user@gpu-host ./scripts/e2e.sh -run GPU
 # The test deploys the Agent there and tunnels back to this machine's node
