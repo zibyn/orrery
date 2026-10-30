@@ -37,6 +37,11 @@ func TestEgressRules(t *testing.T) {
 
 	a := createReadySandbox(t, admin, fmt.Sprintf("egress-a-%d", suffix), 64<<20)
 	b := createReadySandbox(t, admin, fmt.Sprintf("egress-b-%d", suffix), 64<<20)
+	t.Cleanup(func() { // the later scenarios share the admin's Sandbox quota
+		for _, id := range []string{a, b} {
+			_, _ = call(t, http.MethodDelete, "/api/v1/sandboxes/"+id, admin, nil)
+		}
+	})
 	listen(t, admin, a)
 	listen(t, admin, b)
 	// No Rules: the e2e deployment is fully open.
