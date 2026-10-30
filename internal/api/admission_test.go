@@ -395,11 +395,12 @@ func capabilitySnapshot(t *testing.T, provider string, values map[string]string)
 	return raw
 }
 
-// api.md §3 / ADR-0009: a container request only goes to Docker or Podman, a
+// api.md §3 / ADR-0009: a container request only goes to a container Node, a
 // local request only to a Local Node. Build rows are filtered elsewhere.
 func TestRuntimeMatching(t *testing.T) {
 	container := capabilitySnapshot(t, "docker", nil)
 	podman := capabilitySnapshot(t, "podman", nil)
+	containerd := capabilitySnapshot(t, "containerd", nil)
 	local := capabilitySnapshot(t, "local", nil)
 	for _, tt := range []struct {
 		caps    json.RawMessage
@@ -410,6 +411,9 @@ func TestRuntimeMatching(t *testing.T) {
 		{container, "container", true},
 		{container, "local", false},
 		{podman, "container", true},
+		{containerd, "container", true},
+		{containerd, "", true},
+		{containerd, "local", false},
 		{local, "container", false},
 		{local, "local", true},
 		{podman, "local", false},

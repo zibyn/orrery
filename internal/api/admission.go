@@ -103,14 +103,14 @@ func takeGPUs(free []store.Gpu, count int32, model *string) ([]string, bool) {
 }
 
 // runtimeMatches reports whether a Node's Provider can run a Sandbox's
-// requested Runtime (api.md §3, ADR-0009). A container request goes to Docker
-// or Podman; a local request only to a Local Node.
+// requested Runtime (api.md §3, ADR-0009). A container request goes to
+// containerd, Docker or Podman; a local request only to a Local Node.
 func runtimeMatches(capabilities json.RawMessage, runtime string) bool {
 	provider := nodeproto.RuntimeProvider(capabilities)
 	if runtime == "local" {
 		return provider == "local"
 	}
-	return provider == "docker" || provider == "podman"
+	return provider == "containerd" || provider == "docker" || provider == "podman"
 }
 
 // gpuVisibilityAccepted applies ADR-0009's one exception: a local request
