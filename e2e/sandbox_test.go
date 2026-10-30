@@ -185,6 +185,29 @@ func TestSandboxLifecycle(t *testing.T) {
 	}
 }
 
+// TestLimitsReadbackMismatch is ADR-0009's readback: the kernel keeps
+// memory.max in whole pages, so a limit one byte past a page reads back
+// differently and the creation fails instead of running with another limit.
+func TestLimitsReadbackMismatch(t *testing.T) {
+	admin := adminToken(t)
+	raiseSandboxQuota(t, admin, 10)
+	suffix := time.Now().UnixNano()
+	nodeName := fmt.Sprintf("e2e-readback-node-%d", suffix)
+	state, dataRoot := enrollAgent(t, admin, nodeName)
+	startAgent(t, state, dataRoot)
+	waitForNodeReady(t, admin, nodeName)
+
+	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
+		"name": fmt.Sprintf("readback-%d", suffix), "cpu": 0.5, "memory": 128<<20 + 1, "idle_stop": 0,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create Sandbox: %d %s", status, data)
+	}
+	var sb sandboxView
+	mustJSON(t, data, &sb)
+	waitForFailed(t, admin, sb.ID, "runtime_create_failed")
+}
+
 func raiseSandboxQuota(t *testing.T, admin string, sandboxes int) {
 	t.Helper()
 	// Raise, never lower: tests share one admin User and deletions are
