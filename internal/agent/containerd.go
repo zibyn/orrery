@@ -18,6 +18,7 @@ import (
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/defaults"
+	cdispec "github.com/containerd/containerd/v2/pkg/cdi"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
@@ -25,6 +26,7 @@ import (
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"tags.cncf.io/container-device-interface/pkg/cdi"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/nodeproto"
@@ -47,6 +49,11 @@ func newContainerdRuntime(socket, subnet, dataRoot, nodeID string) (*Runtime, er
 	client, err := containerd.New(socket, containerd.WithDefaultNamespace(containerdNamespace))
 	if err != nil {
 		return nil, fmt.Errorf("connect to containerd: %w", err)
+	}
+	// The CDI registry is refreshed on each injection, as ctr does, instead
+	// of watching the spec directories (runtime.md §9).
+	if err := cdi.Configure(cdi.WithAutoRefresh(false)); err != nil {
+		return nil, fmt.Errorf("configure CDI: %w", err)
 	}
 	rt := newRuntime(runtimeConfig{provider: ProviderContainerd, socket: socket}, dataRoot, nodeID)
 	rt.driver = &containerdDriver{r: rt, client: client, subnet: subnet}
@@ -146,10 +153,6 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err != nil {
 		return "runtime_create_failed", err
 	}
-	// shortcut: GPU is reported unsupported until CDI lands (#166).
-	if len(cmd.gpuUUIDs) > 0 {
-		return "runtime_create_failed", errors.New("this containerd Node does not attach GPUs")
-	}
 	img, err := d.image(ctx, cmd.imageDigest)
 	if err != nil {
 		return "image_pull_failed", err
@@ -198,6 +201,8 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 		oci.WithMounts(mounts),
 		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: netns}),
 	}, limitOpts(cmd.cpu, cmd.memory)...)
+	// Last: CDI adds env, hooks and mounts that earlier options would reset.
+	opts = append(opts, cdispec.WithCDIDevices(cdiDeviceNames(cmd.gpuUUIDs)...))
 	c, err := d.start(ctx, name, img, map[string]string{
 		"orrery.sandbox_id": id.String(),
 		"orrery.generation": strconv.FormatInt(cmd.generation, 10),
@@ -206,6 +211,13 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	}, opts)
 	if err == nil && !hostLimitsMatch(ctx, c, cmd.cpu, cmd.memory) {
 		err = errors.New("host cgroup readback does not match the request")
+	}
+	if err == nil {
+		var result supervisor.Result
+		if result, err = d.execOutput(ctx, c, supervisorBin, "probe", workspaceMount); err == nil &&
+			numberedDeviceCount(result.NvidiaDevices) != len(cmd.gpuUUIDs) {
+			err = fmt.Errorf("the Sandbox sees GPU devices %v, want %d cards", result.NvidiaDevices, len(cmd.gpuUUIDs))
+		}
 	}
 	if err != nil {
 		d.teardown(context.WithoutCancel(ctx), id) //nolint:errcheck // best effort
@@ -376,6 +388,37 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 	if err := copyFile(self, filepath.Join(binDir, "supervisor")); err != nil {
 		return nodeproto.CapabilityReport{}, err
 	}
+	// The probe asks CDI for every card in the host inventory; a broken CDI
+	// setup must not hide the other capabilities, so it falls back to none.
+	uuids := gpuUUIDs(enumerateGPUs(ctx))
+	attempts := [][]string{nil}
+	if len(uuids) > 0 {
+		attempts = [][]string{uuids, nil}
+	}
+	var result supervisor.Result
+	var limitsEnforced, gpuVisible bool
+	for _, attempt := range attempts {
+		result, limitsEnforced, err = d.probeOnce(ctx, img, workspace, binDir, attempt)
+		if err == nil {
+			gpuVisible = len(attempt) > 0 && numberedDeviceCount(result.NvidiaDevices) == len(uuids)
+			break
+		}
+		slog.Warn("probe container failed", "gpus", len(attempt), "error", err)
+	}
+	if err != nil {
+		return nodeproto.CapabilityReport{}, err
+	}
+	report := capabilities(result, limitsEnforced, gpuVisible, ProviderContainerd)
+	// shortcut: egress_policy waits for the nftables self-check (#164) and
+	// kernel_isolation is unsupported under runc (ADR-0026).
+	report.Entries = append(report.Entries,
+		nodeproto.CapabilityEntry{Name: nodeproto.CapKernelIsolation, Value: nodeproto.ValueUnsupported},
+		nodeproto.CapabilityEntry{Name: nodeproto.CapEgressPolicy, Value: nodeproto.ValueUnsupported})
+	return report, nil
+}
+
+// probeOnce runs one probe container with the given cards attached.
+func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, workspace, binDir string, gpus []string) (supervisor.Result, bool, error) {
 	const cpu = 0.5
 	name := "orrery-probe-" + uuid.NewString()
 	opts := append([]oci.SpecOpts{
@@ -386,25 +429,17 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 			bindMount(binDir, binaryDir, "ro"),
 		}),
 	}, limitOpts(cpu, probeMemory)...)
+	opts = append(opts, cdispec.WithCDIDevices(cdiDeviceNames(gpus)...))
 	// Labelled managed but owned by no Node, so a probe a crash left behind is
 	// removed by the next adopt.
 	c, err := d.start(ctx, name, img, map[string]string{"orrery.managed": "true"}, opts)
 	defer d.removeContainer(context.WithoutCancel(ctx), name) //nolint:errcheck // disposable
 	if err != nil {
-		return nodeproto.CapabilityReport{}, err
+		return supervisor.Result{}, false, err
 	}
 	limitsEnforced := hostLimitsMatch(ctx, c, cpu, probeMemory)
 	result, err := d.execOutput(ctx, c, probeSupervisor, "probe", probeWorkspace)
-	if err != nil {
-		return nodeproto.CapabilityReport{}, err
-	}
-	report := capabilities(result, limitsEnforced, false, ProviderContainerd)
-	// shortcut: egress_policy waits for the nftables self-check (#164) and
-	// kernel_isolation is unsupported under runc (ADR-0026).
-	report.Entries = append(report.Entries,
-		nodeproto.CapabilityEntry{Name: nodeproto.CapKernelIsolation, Value: nodeproto.ValueUnsupported},
-		nodeproto.CapabilityEntry{Name: nodeproto.CapEgressPolicy, Value: nodeproto.ValueUnsupported})
-	return report, nil
+	return result, limitsEnforced, err
 }
 
 // execOutput runs one synchronous exec and decodes its JSON stdout.
