@@ -9,7 +9,7 @@
 脚本只检查、不安装：
 
 - Control Plane 主机：root、Docker 与 compose 插件、`openssl`、`curl`、`flock`（util-linux）。
-- Node：root、systemd、`curl`、`tar`、`sha256sum`、`flock`，以及所选 Runtime（`docker` 或 `podman`；`local` 不需要）。
+- Node：root、systemd、`curl`、`tar`、`sha256sum`、`flock`；`--runtime containerd`（默认）另需 rootful containerd 2.x（`ctr`）、`/opt/cni/bin` 下的 CNI 插件、`nft` 和 `ip`，见下文“containerd Node 的准备”；`local` 不需要这些。
 - 能访问 `github.com`、`raw.githubusercontent.com` 和 `ghcr.io`。
 - 两个域名解析到 Control Plane 主机：公开入口（如 `cp.example.com`）和对象存储（默认 `s3.cp.example.com`）。对象存储需要独立域名，因为 presigned URL 的 SigV4 签的是 `Host` 和完整路径，不能挂在子路径下。
 
@@ -71,7 +71,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 
 首次安装在 `/etc/orrery/` 生成 `config/`、`tls/`、`ca/`、`registry/`、`nginx/orrery.conf` 和 `.env`，此后不再重新生成。
 
-- **`--tls self-signed`（默认）**：生成 CA 和一张证书，SAN 同时覆盖公开入口和对象存储域名。Node 安装时带 `--ca`，并用 `--trust-registry` 把 CA 放进 Docker/Podman 的 `certs.d`；Control Plane 和 registry 也信任它。证书有效期十年，没有自动轮换。
+- **`--tls self-signed`（默认）**：生成 CA 和一张证书，SAN 同时覆盖公开入口和对象存储域名。Node 安装时带 `--ca`，并用 `--trust-registry` 把 CA 放进 Node 的系统信任库；Control Plane 和 registry 也信任它。证书有效期十年，没有自动轮换。
 - **`--tls cert`**：用 `--tls-cert FILE --tls-key FILE` 提供证书；私有 CA 再加 `--ca FILE`。同一张证书必须覆盖两个域名，脚本会检查并警告。
 
 两种模式下 nginx 都是 TLS 终点；registry 在回环上是明文，Node 看到的 registry 是 HTTPS。
@@ -129,7 +129,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
   --ca ca.crt \
   --trust-registry cp.example.com:9443 \
   --trust-registry s3.cp.example.com:9443 \
-  --runtime docker
+  --runtime containerd -- --buildkit unix:///run/buildkit/buildkitd.sock
 ```
 
 版本同样可省略（默认最新 release）；要自动跟进加 `--auto-update`，固定版本则从 tag 取脚本并加 `--version vX.Y.Z`。
@@ -137,8 +137,32 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 - 端口是 443 时去掉 `--server` 和 `--trust-registry` 里的端口。
 - 用公共 CA 证书时去掉 `--ca` 和两个 `--trust-registry`。
 - 对象存储也要信任，因为 blob 下载会从 registry 307 到它。
-- `--trust-registry` 可重复；脚本把 CA 写进 `/etc/docker/certs.d/<host:port>/ca.crt` 和 `/etc/containers/certs.d/`，不需要重启守护进程。
-- `--runtime podman|local` 之后可用 `--` 追加 `orrery-agent run` 的其它参数，例如 `-- --local-user sandbox` 或 `-- --buildkit unix:///run/buildkit/buildkitd.sock`。
+- `--trust-registry` 可重复；Agent 用宿主的系统信任库拉镜像，脚本把 CA 装进去（`update-ca-certificates` 或 `update-ca-trust`），Agent 重启后生效。buildkitd 有自己的 registry 配置，见下文。
+- `--runtime containerd|local` 之后可用 `--` 追加 `orrery-agent run` 的其它参数，例如 `-- --buildkit unix:///run/buildkit/buildkitd.sock`、`-- --isolation gvisor`、`-- --sandbox-subnet 10.213.1.0/24` 或 `-- --local-user sandbox`。
+- 不带 `--buildkit` 的 Node 不做 Snapshot 构建（`snapshot_build` 为 `unsupported`）。
+
+### containerd Node 的准备
+
+脚本只检查、不安装。`--runtime containerd` 的 Node 需要：
+
+- **containerd 2.x**，rootful，socket 默认 `/run/containerd/containerd.sock`（`-- --containerd SOCKET` 可改）。Agent 只用自己的 namespace `orrery`，不改 containerd 配置，可以和同一台宿主上的 Docker 共用一个 containerd。
+- **CNI 插件**装在 `/opt/cni/bin`（至少 `bridge`、`host-local`、`loopback`），以及 `nft` 和 `ip`。每个 Sandbox 一个 netns，挂在 Agent 自建的网桥 `orrery0` 上，地址取自 `--sandbox-subnet`（默认 `10.213.0.0/24`）。多台 Node 的子网不能重叠，Egress Rules 靠它们区分 Sandbox。宿主防火墙要放行 `orrery0` 的转发：例如 Docker 把 FORWARD 默认策略设成 drop，Sandbox 就出不了网。
+- **buildkitd**（做 Snapshot 构建时）：独立、rootful，以 `--buildkit` 传给 Agent，例如 `buildkitd --addr unix:///run/buildkit/buildkitd.sock --oci-worker=true --containerd-worker=false`，并作为 systemd 服务常驻。私有 CA 时在它的 `buildkitd.toml` 里给 registry 和对象存储两个主机都配上 CA：`[registry."cp.example.com:9443"] ca = ["/etc/orrery-agent/ca.crt"]`。
+- **gVisor**（可选，`-- --isolation gvisor`）：`runsc` 和 `containerd-shim-runsc-v1` 放在 containerd 的 PATH 上；data root 不能在 tmpfs 上。gvisor Node 不挂 GPU。
+- **GPU**（可选）：NVIDIA Container Toolkit 生成的 CDI spec（`nvidia-ctk cdi generate`），只在 runc Node 上生效。
+
+Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules 为空时 Sandbox 的出站完全放开，包括云 metadata 地址和 Control Plane 所在的内网**；`defaults.md` 有一份推荐的 Rules。Local Runtime 不受 Egress Rules 约束。
+
+### 从 Docker 或 Podman Node 迁移
+
+Docker 和 Podman Runtime Provider 已删除（ADR-0026），不能双栈并行。升级后的 Agent 遇到 `--runtime docker`、`--runtime podman` 或 `--docker` 会在启动时报错退出，`install.sh` 也会拒绝保留这样的 unit。按 Node 逐台迁移，Control Plane 先升级：
+
+1. **排空**：`orrery node pause <node_id>`，再停掉这台 Node 上仍在运行的 Sandbox（或等它们空闲停止），直到这台 Node 上没有运行中的 Sandbox（paused 且没有运行中的 Sandbox 即 drained，ADR-0014）。Paused Node 不再接收新的 Workspace 和构建，已绑定的 Workspace 留在宿主上。
+2. **安装 containerd、buildkitd 和 CNI 插件**，见上一节。Docker 可以留着，也可以在确认无用后卸载；旧 Agent 留下的 `orrery-*` 容器和镜像可以用 `docker` 清掉，containerd Agent 不会去碰 `moby` namespace。
+3. **升级 Agent**：用 `--runtime containerd` 重跑 Node 安装命令（带上需要的 `-- --buildkit ...` 等参数），脚本会重写 systemd unit。不要传 `--packet`，也不要删 `/var/lib/orrery-agent/identity.json` 和 data root（默认 `/var/lib/orrery`）：Workspace 还在 data root 里。
+4. **重新注册**：Agent 以原来的 identity 重连，重新跑自检，Capabilities 里的 `runtime_provider` 变成 `containerd`。确认 Node 是 `ready` 后 `orrery node resume <node_id>`。
+
+已停止的 Sandbox 下次 start 时由 `Create` 在 containerd 上重建 Runtime（没有单独的 Start 操作），Workspace 原样挂回。没有迁移的 Docker 或 Podman Node 不再接收容器 Sandbox。Rootless Podman Node 需要改成 rootful containerd 重装。
 
 脚本校验 `SHA256SUMS` 后把 Agent 和 CLI 装到 `/opt/orrery/bin/`，首次运行用 Packet 注册（identity 在 `/var/lib/orrery-agent/`），再以 systemd 服务 `orrery-agent` 运行。服务使用 `KillMode=process`，重启 Agent 不会停掉 Exec。
 
@@ -157,7 +181,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
   sed -i 's/^ORRERY_VERSION=.*/ORRERY_VERSION=<旧版本>/' .env && docker compose up -d
   ```
 
-- Node：下载、校验、替换二进制后 `systemctl restart`；不带 `--runtime` 或 `--` 参数时保留现有 systemd unit。允许装旧版本，Control Plane 会把它标为 `outdated`。回滚前同样先停掉 `orrery-update.service`。
+- Node：下载、校验、替换二进制后 `systemctl restart`；不带 `--runtime` 或 `--` 参数时保留现有 systemd unit（Docker 或 Podman 的 unit 除外，见“从 Docker 或 Podman Node 迁移”）。允许装旧版本，Control Plane 会把它标为 `outdated`。回滚前同样先停掉 `orrery-update.service`。
 
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 
