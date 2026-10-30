@@ -155,8 +155,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err != nil {
 		return "runtime_create_failed", err
 	}
-	// shortcut: every Sandbox is Mode open until CreateSandbox carries egress (#165).
-	policy, err := d.r.egressPolicy(egressMode{name: egressOpen})
+	policy, err := d.r.egressPolicy(cmd.egress)
 	if err != nil {
 		return "runtime_create_failed", err
 	}

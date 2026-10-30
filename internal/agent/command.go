@@ -91,6 +91,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				workspaceMode: cmd.Workspace.GetMode(),
 				gpuUUIDs:      cmd.GpuUuids,
 				resources:     resourceMounts(cmd.Resources),
+				egress:        egressModeOf(cmd.Egress),
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)
