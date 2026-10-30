@@ -151,7 +151,7 @@ An adapter that realizes Sandbox and Exec contracts using containerd or a truste
 _Avoid_: container runtime (when referring to the platform abstraction)
 
 **Isolation Runtime**:
-The OCI runtime a containerd Node runs every Sandbox under: `runc`, sharing the host kernel, or `gvisor`, a user-space kernel. It is a Node's configuration, not a caller's choice.
+The OCI runtime a containerd Node runs every Sandbox under: `runc`, sharing the host kernel, or `runsc` (gVisor's OCI runtime), a user-space kernel. It is a Node's configuration, not a caller's choice.
 _Avoid_: container runtime, runtime class, sandbox kernel
 
 **Local Runtime**:

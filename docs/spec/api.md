@@ -90,7 +90,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 ```
 name?, labels?
-runtime?: container|local       # 默认 container；调用方分不出 runc Node 和 gvisor Node
+runtime?: container|local       # 默认 container；调用方分不出 runc Node 和 runsc Node
 workspace?: {id, mode: rw|ro}     # 不写就隐式创建临时 Workspace，rw
 snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 `platform_snapshots` 的默认项，local 没有 Snapshot
 resources?: [{resource, version?, mount?}]   # 创建时解析成具体版本，只读挂载到 /resources/<mount>；mount 是单段名字，默认取 Resource 名
@@ -104,7 +104,7 @@ egress?: {mode: open|none|allowlist, allow?: [CIDR[:port]]}   # 不写等于 {mo
 
 `runtime`（ADR-0009）：
 
-- `container` 只放到 containerd Node 上（runc 和 gvisor 都算），`local` 只放到 Local Node 上；重启后仍作为准入约束。Isolation Runtime 不能在请求里选；要全部跑在 gVisor 下，就只注册 gvisor Node（ADR-0026）。
+- `container` 只放到 containerd Node 上（runc 和 runsc 都算），`local` 只放到 Local Node 上；重启后仍作为准入约束。Isolation Runtime 不能在请求里选；要全部跑在 gVisor 下，就只注册 runsc Node（ADR-0026）。
 - `local` 带了 `snapshot` 或 `resources` 时返回 `422 unsupported`。
 - Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `ORRERY_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。
 - Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用。GPU 可见性为 `best_effort` 时也接受。

@@ -1,11 +1,11 @@
 # ADR-0009: Freeze the Runtime Provider contract
 
-- Status: accepted; mounts amended by ADR-0019; request `runtime`, Local Runtime and the Local GPU exception amended in place by #92; Provider list, capability table and egress amended in place by ADR-0026
+- Status: accepted; mounts amended by ADR-0019; request `runtime`, Local Runtime and the Local GPU exception amended in place by #92; Provider list, capability table and egress amended in place by ADR-0026; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31)
 - Date: 2026-10-17
 
 ## Context
 
-The platform supports containerd, under the `runc` or `gvisor` Isolation Runtime, and a trusted Local Runtime (amended in place by ADR-0026: Docker and Podman are removed). They do not provide the same isolation or resource guarantees. The contract must remain small without allowing a backend to silently ignore a requested security or resource property.
+The platform supports containerd, under the `runc` or `runsc` Isolation Runtime, and a trusted Local Runtime (amended in place by ADR-0026: Docker and Podman are removed). They do not provide the same isolation or resource guarantees. The contract must remain small without allowing a backend to silently ignore a requested security or resource property.
 
 ## Decision
 
@@ -23,7 +23,7 @@ The platform supports containerd, under the `runc` or `gvisor` Isolation Runtime
 
 On containerd, the common request surface is one platform-managed, read-write Workspace at `/workspace`. No arbitrary host mounts, host network, privileged mode, or caller-selected uid/gid are exposed; the platform mounts are the Workspace, read-only Resources, and under `/.orrery` the read-only Exec Supervisor binary and the Sandbox's read-write Exec record directory (ADR-0019). containerd accepts immutable platform image digests. Local Runtime uses the Node host environment and returns `unsupported` when a concrete image digest is requested.
 
-A Sandbox request selects `runtime: container | local`, defaulting to `container`; a caller cannot tell a runc Node from a gvisor Node. A `container` request is placed only on containerd Nodes, a `local` request only on Local Nodes, and the choice stays an admission constraint on restart. A `local` request has no Snapshot, so the default platform Snapshot does not apply to it; one that names a `snapshot` or `resources` is rejected `unsupported`.
+A Sandbox request selects `runtime: container | local`, defaulting to `container`; a caller cannot tell a runc Node from a runsc Node. A `container` request is placed only on containerd Nodes, a `local` request only on Local Nodes, and the choice stays an admission constraint on restart. A `local` request has no Snapshot, so the default platform Snapshot does not apply to it; one that names a `snapshot` or `resources` is rejected `unsupported`.
 
 On Local Runtime there is no `/workspace` and no `/.orrery`: the cwd is the Workspace's host path, also given as `ORRERY_WORKSPACE`, and the Exec record lives in the Node's data directory. Every User's commands run as the one unprivileged uid of the Node configuration, so Users on a Local Node are not isolated from each other (files, signals and loopback ports are shared). Local Runtime is for trusted insiders only, as with Coder's external workspaces. The upgrade path is one host uid per User, Workspace directories at `0700` and systemd hardening, with this contract unchanged.
 
@@ -39,7 +39,7 @@ A required capability must be `enforced`; otherwise creation fails. The one exce
 
 The initial posture is:
 
-| Capability | containerd runc | containerd gvisor | Local Runtime |
+| Capability | containerd runc | containerd runsc | Local Runtime |
 |---|---|---|---|
 | process/mount namespace | enforced | enforced | unsupported |
 | `kernel_isolation` | unsupported | enforced | unsupported |
