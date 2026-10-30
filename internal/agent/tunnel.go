@@ -91,8 +91,24 @@ func (r *Runtime) dialTunnel(ctx context.Context, tunnelID string) (*tunnel.Conn
 		cancel()
 		return nil, nil, err
 	}
-	return tunnel.NewConn(tunnelID, stream), cancel, nil
+	conn := tunnel.NewConn(tunnelID, stream)
+	// Cancelling resets the stream. Until the Control Plane ends the RPC it may
+	// not have claimed the tunnel yet, or read its last bytes: an app that
+	// answers and hangs up at once otherwise loses the whole tunnel (#172).
+	release := func() {
+		conn.Close() //nolint:errcheck // half-closes our side
+		select {
+		case <-conn.Ended():
+		case <-time.After(tunnelDrainTimeout):
+		}
+		cancel()
+	}
+	return conn, release, nil
 }
+
+// tunnelDrainTimeout bounds the wait for the Control Plane to end a Tunnel
+// after the Agent's side is done; it matches the Control Plane's dial wait.
+const tunnelDrainTimeout = 10 * time.Second
 
 // dialSandboxPort starts a forwarder inside the Sandbox and connects to it.
 // An already running forwarder for the same port is reused. Local Runtime has

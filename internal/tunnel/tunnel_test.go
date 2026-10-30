@@ -67,6 +67,25 @@ func TestConnCarriesBytesInBothDirections(t *testing.T) {
 	}
 }
 
+// The Agent cancels a Tunnel only after the Control Plane ends it (#172), so
+// Ended must wait for the peer, not for the local Close.
+func TestEndedWaitsForThePeerAfterClose(t *testing.T) {
+	stream := newFakeStream()
+	conn := NewConn("t9", stream)
+	conn.Close() //nolint:errcheck // local half done
+	select {
+	case <-conn.Ended():
+		t.Fatal("Ended before the peer ended the stream")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(stream.in) // the peer ends the RPC
+	select {
+	case <-conn.Ended():
+	case <-time.After(time.Second):
+		t.Fatal("Ended did not close after the peer ended the stream")
+	}
+}
+
 func TestReadDeadlineWakesABlockedRead(t *testing.T) {
 	stream := newFakeStream()
 	conn := NewConn("t3", stream)
