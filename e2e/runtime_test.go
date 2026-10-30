@@ -9,9 +9,16 @@ import (
 	"time"
 )
 
-// e2eRuntime is the --runtime the shared scenarios' Agents run with: docker
-// unless ORRERY_E2E_RUNTIME names another container Provider (#163).
-func e2eRuntime() string { return envOr("ORRERY_E2E_RUNTIME", "docker") }
+// e2eRuntime is the --runtime the shared scenarios' Agents run with:
+// containerd unless ORRERY_E2E_RUNTIME names another container Provider (#169).
+func e2eRuntime() string { return envOr("ORRERY_E2E_RUNTIME", "containerd") }
+
+// inspectSandboxRuntime is the Runtime's own record of a Sandbox's container:
+// docker inspect, or ctr's container info (labels and OCI spec).
+func inspectSandboxRuntime(id string) ([]byte, error) {
+	return sandboxCommand([]string{"inspect", "orrery-" + id},
+		"containers", "info", "orrery-"+id).CombinedOutput()
+}
 
 // sandboxCommand runs a container CLI against a Sandbox's Runtime: docker, or
 // ctr in the Agent's containerd namespace. ORRERY_E2E_CTR may name a ctr
@@ -52,8 +59,25 @@ func containerRunning(id string) bool {
 	return false
 }
 
+// hostGPUCount is the number of whole cards nvidia-smi lists on the Node host;
+// a host without nvidia-smi has none.
+func hostGPUCount() int {
+	out, err := nodeShell("nvidia-smi --query-gpu=uuid --format=csv,noheader")
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(out), "GPU-")
+}
+
 func catInSandbox(id, path string) ([]byte, error) {
 	return sandboxCommand([]string{"exec", "orrery-" + id, "cat", path},
 		"task", "exec", "--exec-id", fmt.Sprintf("e2e-cat-%d", time.Now().UnixNano()),
 		"orrery-"+id, "cat", path).CombinedOutput()
+}
+
+// nodeShell runs a script on the Node host: locally with sh, or through
+// ORRERY_E2E_NODE_SHELL, an `sh -c` stand-in such as one over SSH. Data-root
+// paths, cgroups and the BuildKit endpoint live on that host.
+func nodeShell(script string) ([]byte, error) {
+	return exec.Command(envOr("ORRERY_E2E_NODE_SHELL", "sh"), "-c", script).CombinedOutput()
 }

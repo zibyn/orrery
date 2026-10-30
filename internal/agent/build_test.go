@@ -82,6 +82,16 @@ func TestBuildRecordFrames(t *testing.T) {
 	}
 }
 
+// TestSystemSliceParent: a standalone buildkitd takes cgroup-parent as a
+// cgroupfs path, so a root Agent names the system manager's nested slice.
+func TestSystemSliceParent(t *testing.T) {
+	got := systemSliceParent("orrery-build-01a1-70b1.slice")
+	want := "orrery.slice/orrery-build.slice/orrery-build-01a1.slice/orrery-build-01a1-70b1.slice"
+	if got != want {
+		t.Fatalf("systemSliceParent = %q, want %q", got, want)
+	}
+}
+
 func TestUserSliceParent(t *testing.T) {
 	got := userSliceParent(1000, "orrery-build-abc.slice")
 	want := "user.slice/user-1000.slice/user@1000.service/orrery.slice/orrery-build.slice/orrery-build-abc.slice"

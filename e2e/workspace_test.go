@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -173,8 +172,8 @@ func TestIdleStopRestart(t *testing.T) {
 	if kept.State != "ready" || kept.SandboxID != nil {
 		t.Fatalf("persistent Workspace after Sandbox delete = %+v", kept)
 	}
-	if _, err := os.Stat(filepath.Join(dataRoot, "workspaces", ws.ID)); err != nil {
-		t.Fatalf("persistent Workspace directory: %v", err)
+	if !pathExists(filepath.Join(dataRoot, "workspaces", ws.ID)) {
+		t.Fatal("persistent Workspace directory is gone")
 	}
 }
 

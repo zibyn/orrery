@@ -596,9 +596,11 @@ func writeBuildMarker(path string, marker buildMarker) error {
 
 // buildCgroup creates a CPU- and memory-limited slice and returns the value
 // for the frontend's cgroup-parent attribute. A root Agent uses the system
-// manager and the slice name; an unprivileged Agent uses its user manager and
-// the cgroupfs path, because the Docker daemon (root) cannot see the user
-// manager's unit. An empty parent means the Node cannot bound a single build;
+// manager; an unprivileged Agent uses its user manager and the cgroupfs path,
+// because the Docker daemon (root) cannot see the user manager's unit. The
+// bare slice name is only for dockerd's systemd cgroup driver: a standalone
+// buildkitd joins cgroup-parent to the cgroupfs root, so it gets the path
+// too. An empty parent means the Node cannot bound a single build;
 // the deployment must bound builds Node-wide (runtime.md §12). The e2e
 // snapshot-build scenario asserts that a RUN process lands in
 // orrery-build-<version_id>.slice when the slice can be created; when it cannot
@@ -617,7 +619,17 @@ func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64
 			slog.Warn("build slice unavailable; builds fall back to the Node-wide limit", "slice", slice, "error", err)
 			return "", func() {}
 		}
-		return slice, func() { _ = runSystemctl(context.Background(), "stop", slice) }
+		stop := func() { _ = runSystemctl(context.Background(), "stop", slice) }
+		if r.buildkit == "" {
+			return slice, stop
+		}
+		parent := systemSliceParent(slice)
+		if _, err := os.Stat(filepath.Join("/sys/fs/cgroup", parent)); err != nil {
+			slog.Warn("build slice has no cgroup; builds fall back to the Node-wide limit", "path", parent, "error", err)
+			stop()
+			return "", func() {}
+		}
+		return parent, stop
 	}
 	if err := runSystemctl(ctx, "--user", "set-property", "--runtime", slice, quota, memoryMax); err != nil {
 		slog.Warn("build slice unavailable; builds fall back to the Node-wide limit", "slice", slice, "error", err)
@@ -631,10 +643,15 @@ func (r *Runtime) buildCgroup(ctx context.Context, versionID string, cpu float64
 	return parent, func() { _ = runSystemctl(context.Background(), "--user", "stop", slice) }
 }
 
-// userSliceParent mirrors systemd's slice hierarchy. systemd treats every '-'
+// userSliceParent is the user manager's cgroupfs path of a slice.
+func userSliceParent(uid int, slice string) string {
+	return fmt.Sprintf("user.slice/user-%d.slice/user@%d.service/%s", uid, uid, systemSliceParent(slice))
+}
+
+// systemSliceParent mirrors systemd's slice hierarchy. systemd treats every '-'
 // in a slice name as a hierarchy separator, so orrery-build-<uuid>.slice lives
 // under orrery-build-<prefix>.slice for each prefix of its name.
-func userSliceParent(uid int, slice string) string {
+func systemSliceParent(slice string) string {
 	base := strings.TrimSuffix(slice, ".slice")
 	parts := strings.Split(base, "-")
 	dirs := make([]string, 0, len(parts))
@@ -647,7 +664,7 @@ func userSliceParent(uid int, slice string) string {
 		}
 		dirs = append(dirs, prefix+".slice")
 	}
-	return fmt.Sprintf("user.slice/user-%d.slice/user@%d.service/%s", uid, uid, strings.Join(dirs, "/"))
+	return strings.Join(dirs, "/")
 }
 
 func runSystemctl(ctx context.Context, args ...string) error {

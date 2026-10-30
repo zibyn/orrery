@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -83,22 +84,14 @@ func TestCacheEviction(t *testing.T) {
 	c := createResourceSandboxVersion(t, admin, fmt.Sprintf("evict-deleted-%d", suffix), name, v3.ID)
 	waitForSandboxState(t, admin, c.ID, "ready", 120*time.Second)
 	deleteSandbox(t, admin, c.ID)
-	if err := os.Remove(filepath.Join(dataRoot, "sandboxes", c.ID, "pinned.json")); err != nil {
-		t.Fatalf("drop the deleted Sandbox's pin record: %v", err)
+	if out, err := nodeShell("rm " + shellQuote(filepath.Join(dataRoot, "sandboxes", c.ID, "pinned.json"))); err != nil {
+		t.Fatalf("drop the deleted Sandbox's pin record: %v\n%s", err, out)
 	}
 
 	// A local image from the platform registry that no Sandbox references, and
 	// BuildKit cache from building it. Both are the Node's to reclaim.
 	cacheBefore := buildCacheIDs(t)
-	buildDir := t.TempDir()
-	dockerfile := fmt.Sprintf("FROM alpine:3.22\nRUN echo evict-%d > /cache.txt\n", suffix)
-	writeTestFile(t, filepath.Join(buildDir, "Dockerfile"), dockerfile, 0o644)
-	tag := fmt.Sprintf("127.0.0.1:15000/e2e-evict:%d", suffix)
-	if out, err := exec.Command("docker", "build", "--network=none", "-t", tag, buildDir).CombinedOutput(); err != nil {
-		t.Fatalf("build eviction image: %v\n%s", err, out)
-	}
-	unreferencedImage := dockerInspect(t, tag, "{{.Id}}")
-	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
+	unreferencedImage := buildUnreferencedImage(t, suffix)
 	newCache := map[string]bool{}
 	for id := range buildCacheIDs(t) {
 		if !cacheBefore[id] {
@@ -109,7 +102,7 @@ func TestCacheEviction(t *testing.T) {
 		t.Fatal("the build added no BuildKit cache entries")
 	}
 	// The running Sandbox's image is pinned and must survive.
-	pinnedImage := dockerInspect(t, "orrery-"+a.ID, "{{.Image}}")
+	pinnedImage := sandboxImage(t, a.ID)
 
 	// Restart with a watermark no disk can satisfy: eviction keeps running and
 	// the free-space check cannot stop it mid-pass. Pins live in the data root,
@@ -154,16 +147,20 @@ func TestCacheEviction(t *testing.T) {
 		t.Fatal("an object still linked by two trees was reclaimed")
 	}
 	// Images: the Node's unreferenced platform image is gone, the Sandbox
-	// image stays, and a host-owned (Docker Hub) image is not the Node's to
-	// evict.
+	// image stays, and a host-owned (Docker Hub) image, the probe image on a
+	// containerd Node, is not the Node's to evict.
 	if imageExists(unreferencedImage) {
 		t.Fatal("unreferenced local image survived eviction")
 	}
 	if !imageExists(pinnedImage) {
 		t.Fatal("an image pinned by a running or stopped Sandbox was evicted")
 	}
-	if out, err := exec.Command("docker", "image", "inspect", "alpine:3.22").CombinedOutput(); err != nil {
-		t.Fatalf("a host-owned image was evicted: %v\n%s", err, out)
+	hostImage := "alpine:3.22"
+	if e2eRuntime() == "containerd" {
+		hostImage = "docker.io/library/alpine:3.22"
+	}
+	if !imageExists(hostImage) {
+		t.Fatalf("a host-owned image %s was evicted", hostImage)
 	}
 
 	// The suite shares one User quota; a Sandbox this test leaves behind would
@@ -195,13 +192,75 @@ func createResourceSandboxVersion(t *testing.T, admin, name, resource, version s
 	return sb
 }
 
+// pathExists looks on the Node host, where the Agent's data root is.
 func pathExists(path string) bool {
-	_, err := os.Stat(path)
+	_, err := nodeShell("test -e " + shellQuote(path))
 	return err == nil
 }
 
+// buildUnreferencedImage builds an image named in the platform registry into
+// the Node's local image store, through the Node's BuildKit so the build also
+// leaves BuildKit cache. It returns the key imageExists takes.
+func buildUnreferencedImage(t *testing.T, suffix int64) string {
+	t.Helper()
+	tag := fmt.Sprintf("127.0.0.1:15000/e2e-evict:%d", suffix)
+	if e2eRuntime() != "containerd" {
+		buildDir := t.TempDir()
+		dockerfile := fmt.Sprintf("FROM alpine:3.22\nRUN echo evict-%d > /cache.txt\n", suffix)
+		writeTestFile(t, filepath.Join(buildDir, "Dockerfile"), dockerfile, 0o644)
+		if out, err := exec.Command("docker", "build", "--network=none", "-t", tag, buildDir).CombinedOutput(); err != nil {
+			t.Fatalf("build eviction image: %v\n%s", err, out)
+		}
+		t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
+		return dockerInspect(t, tag, "{{.Id}}")
+	}
+	// The Agent's containerd namespace gets the image by import: buildkitd
+	// has no containerd image store of its own here.
+	script := fmt.Sprintf(`set -e
+d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+echo evict-%d > "$d/f"; printf 'FROM scratch\nCOPY f /f\n' > "$d/Dockerfile"
+buildctl --addr %s build --frontend dockerfile.v0 --local context="$d" --local dockerfile="$d" \
+  --output type=oci,name=%s,dest="$d/image.tar"
+ctr -n orrery images import "$d/image.tar"`, suffix, shellQuote(e2eBuildkit(t)), shellQuote(tag))
+	if out, err := nodeShell(script); err != nil {
+		t.Fatalf("build eviction image: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = sandboxCommand(nil, "images", "rm", tag).Run() })
+	return tag
+}
+
+func e2eBuildkit(t *testing.T) string {
+	t.Helper()
+	addr := os.Getenv("ORRERY_E2E_BUILDKIT")
+	if addr == "" {
+		t.Fatal("ORRERY_E2E_BUILDKIT is not set; a containerd Node builds only against a standalone buildkitd")
+	}
+	return addr
+}
+
+// imageExists takes a Docker image id, or a containerd image name.
 func imageExists(id string) bool {
-	return exec.Command("docker", "image", "inspect", id).Run() == nil
+	if e2eRuntime() != "containerd" {
+		return exec.Command("docker", "image", "inspect", id).Run() == nil
+	}
+	out, err := sandboxCommand(nil, "images", "ls", "-q").Output()
+	return err == nil && slices.Contains(strings.Fields(string(out)), id)
+}
+
+// sandboxImage is the image key of a Sandbox's Runtime, as imageExists takes.
+func sandboxImage(t *testing.T, id string) string {
+	t.Helper()
+	if e2eRuntime() != "containerd" {
+		return dockerInspect(t, "orrery-"+id, "{{.Image}}")
+	}
+	out, err := sandboxCommand(nil, "containers", "info", "orrery-"+id).Output()
+	var info struct {
+		Image string `json:"Image"`
+	}
+	if err != nil || json.Unmarshal(out, &info) != nil || info.Image == "" {
+		t.Fatalf("ctr containers info orrery-%s: %v\n%s", id, err, out)
+	}
+	return info.Image
 }
 
 func dockerInspect(t *testing.T, ref, format string) string {
@@ -218,10 +277,24 @@ func digestHex(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// buildCacheIDs is the set of BuildKit cache record ids. The Engine API's
-// prune is all-or-nothing, so the test compares sets to isolate its entries.
+// buildCacheIDs is the set of BuildKit cache record ids. The prune is
+// all-or-nothing, so the test compares sets to isolate its entries.
 func buildCacheIDs(t *testing.T) map[string]bool {
 	t.Helper()
+	if e2eRuntime() == "containerd" {
+		out, err := nodeShell("buildctl --addr " + shellQuote(e2eBuildkit(t)) + " du --format '{{json .}}'")
+		var records []struct {
+			ID string `json:"id"`
+		}
+		if err != nil || json.Unmarshal(out, &records) != nil {
+			t.Fatalf("buildctl du: %v\n%s", err, out)
+		}
+		ids := map[string]bool{}
+		for _, record := range records {
+			ids[record.ID] = true
+		}
+		return ids
+	}
 	out, err := exec.Command("docker", "buildx", "du", "--format", "{{json .}}").Output()
 	if err != nil {
 		t.Fatalf("docker buildx du: %v", err)

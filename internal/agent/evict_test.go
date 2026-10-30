@@ -3,11 +3,42 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/containerd/containerd/v2/core/images"
 	"github.com/google/uuid"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+// TestContainerdImageEviction: a containerd image record is removed by name
+// and pinned by its target digest, whatever the name says (runtime.md §11).
+func TestContainerdImageEviction(t *testing.T) {
+	target := digest.Digest("sha256:" + strings.Repeat("a", 64))
+	created := time.Unix(1234, 0)
+	for _, name := range []string{
+		"127.0.0.1:15000/snapshots/x@" + target.String(),
+		"127.0.0.1:15000/e2e-evict:1",
+	} {
+		image := containerdCachedImage(images.Image{
+			Name: name, CreatedAt: created, Target: ocispec.Descriptor{Digest: target},
+		})
+		if image.ID != name {
+			t.Errorf("%s: removal key = %q", name, image.ID)
+		}
+		if !imagePinned(map[string]bool{target.String(): true}, image) {
+			t.Errorf("%s: not pinned by its target digest", name)
+		}
+		if imagePinned(map[string]bool{"sha256:other": true}, image) {
+			t.Errorf("%s: pinned by an unrelated digest", name)
+		}
+		if got := imageLastUsed(nil, image); !got.Equal(created) {
+			t.Errorf("%s: untouched clock = %v, want CreatedAt", name, got)
+		}
+	}
+}
 
 // TestEvictionLRUOrder checks the three cache classes share one oldest-first
 // order: the least recently used candidate goes first, regardless of class.
@@ -58,12 +89,12 @@ func TestSandboxPinsSurviveStop(t *testing.T) {
 // another image's newer Created time and an untouched image.
 func TestImageEvictionUsesLastUsed(t *testing.T) {
 	root := t.TempDir()
-	used := dockerImage{
+	used := cachedImage{
 		ID:          "sha256:used",
 		RepoDigests: []string{"registry.example/snapshots/x@sha256:used"},
 		Created:     1000,
 	}
-	untouched := dockerImage{ID: "sha256:untouched", Created: 2000}
+	untouched := cachedImage{ID: "sha256:untouched", Created: 2000}
 
 	touchImageUsage(root, "registry.example/snapshots/x@sha256:used")
 	usage := loadImageUsage(root)
@@ -83,10 +114,10 @@ func TestImageEvictionUsesLastUsed(t *testing.T) {
 func TestImagePinnedByDigest(t *testing.T) {
 	split := "sha256:" + "0123456789"
 	pins := map[string]bool{split: true}
-	if !imagePinned(pins, dockerImage{ID: split, RepoDigests: []string{"a/b@" + split}}) {
+	if !imagePinned(pins, cachedImage{ID: split, RepoDigests: []string{"a/b@" + split}}) {
 		t.Fatal("an image matching a pinned digest is not pinned")
 	}
-	if imagePinned(pins, dockerImage{ID: "sha256:other", RepoDigests: []string{"a/b@sha256:other"}}) {
+	if imagePinned(pins, cachedImage{ID: "sha256:other", RepoDigests: []string{"a/b@sha256:other"}}) {
 		t.Fatal("an unrelated image is pinned")
 	}
 }

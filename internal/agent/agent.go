@@ -161,7 +161,7 @@ type RunOptions struct {
 	LocalUser string
 	// localUser is the resolved LocalUser, filled by Run.
 	localUser *localUser
-	// Buildkit is the BuildKit endpoint. Empty means the Docker daemon's
+	// Buildkit is the BuildKit endpoint. Empty on a Docker Node means the Docker daemon's
 	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
 	Buildkit      string
 	DataRoot      string

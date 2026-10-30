@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -276,17 +275,21 @@ func waitForSnapshotTerminal(t *testing.T, admin, snapshotID, versionID string, 
 	}
 }
 
-// waitForBuildCgroup reports a non-empty cgroup.procs under the build's slice.
-// The Docker daemon may nest it under the system root or, for an unprivileged
-// Agent, under the user manager's hierarchy.
+// waitForBuildCgroup reports a non-empty cgroup.procs under the build's slice
+// on the Node host. The BuildKit daemon may nest it under the system root or,
+// for an unprivileged Agent, under the user manager's hierarchy.
 func waitForBuildCgroup(t *testing.T, versionID string, timeout time.Duration) (path, cpuMax, memoryMax string, ok bool) {
 	t.Helper()
-	name := "orrery-build-" + versionID + ".slice"
+	script := `root=$(find /sys/fs/cgroup -type d -name ` + shellQuote("orrery-build-"+versionID+".slice") + ` -print -quit 2>/dev/null)
+[ -n "$root" ] || exit 1
+procs=$(find "$root" -name cgroup.procs -exec grep -q . {} \; -print -quit)
+[ -n "$procs" ] || exit 1
+echo "$procs"; cat "$root/cpu.max" "$root/memory.max"`
 	deadline := time.Now().Add(timeout)
 	for {
-		if root := findBuildSliceRoot(name); root != "" {
-			if path, live := findBuildCgroupProcess(root); live {
-				return path, readCgroupFile(root, "cpu.max"), readCgroupFile(root, "memory.max"), true
+		if out, err := nodeShell(script); err == nil {
+			if lines := strings.Split(strings.TrimSpace(string(out)), "\n"); len(lines) == 3 {
+				return lines[0], lines[1], lines[2], true
 			}
 		}
 		if time.Now().After(deadline) {
@@ -294,47 +297,6 @@ func waitForBuildCgroup(t *testing.T, versionID string, timeout time.Duration) (
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-}
-
-func findBuildCgroupProcess(root string) (string, bool) {
-	var hit string
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() != "cgroup.procs" {
-			return nil
-		}
-		raw, err := os.ReadFile(path)
-		if err == nil && strings.TrimSpace(string(raw)) != "" {
-			hit = path
-			return fs.SkipAll
-		}
-		return nil
-	})
-	return hit, hit != ""
-}
-
-// findBuildSliceRoot locates the unit's cgroup root. An unprivileged Agent
-// uses the user manager, whose slice hierarchy nests at every '-'.
-func findBuildSliceRoot(name string) string {
-	var root string
-	_ = filepath.WalkDir("/sys/fs/cgroup", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() && d.Name() == name {
-			root = path
-			return fs.SkipAll
-		}
-		return nil
-	})
-	return root
-}
-
-func readCgroupFile(dir, name string) string {
-	raw, err := os.ReadFile(filepath.Join(dir, name))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(raw))
 }
 
 // registryImageConfig fetches the built image's config blob (including its
@@ -433,4 +395,21 @@ func registryGet(t *testing.T, host, path, auth, accept string) string {
 		t.Fatalf("GET %s: %s: %s", path, resp.Status, body)
 	}
 	return string(body)
+}
+
+// TestSnapshotBuildNeedsBuildkit: a containerd Node has no built-in BuildKit,
+// so without --buildkit it reports snapshot_build unsupported (runtime.md §12,
+// ADR-0026).
+func TestSnapshotBuildNeedsBuildkit(t *testing.T) {
+	if e2eRuntime() != "containerd" {
+		t.Skip("a Docker Node falls back to dockerd's built-in BuildKit")
+	}
+	admin := adminToken(t)
+	nodeName := fmt.Sprintf("e2e-no-buildkit-node-%d", time.Now().UnixNano())
+	state, dataRoot := enrollAgent(t, admin, nodeName)
+	startAgentWith(t, state, dataRoot, "--buildkit=")
+	waitForNodeReady(t, admin, nodeName)
+	if got := capabilityValues(findNode(t, admin, nodeName))["snapshot_build"]; got != "unsupported" {
+		t.Fatalf("snapshot_build = %q, want unsupported without --buildkit", got)
+	}
 }

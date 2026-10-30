@@ -5,7 +5,6 @@ package e2e
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +22,7 @@ func TestNodeUnreachableLost(t *testing.T) {
 	nodeName := fmt.Sprintf("e2e-lost-node-%d", suffix)
 
 	state, dataRoot := enrollAgent(t, admin, nodeName)
-	agent := startAgentWith(t, state, dataRoot, "--runtime", "docker")
+	agent := startAgentWith(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
 	node := findNode(t, admin, nodeName)
 
@@ -95,7 +94,7 @@ func TestNodeUnreachableLost(t *testing.T) {
 
 	// The revoked identity is rejected and the Agent clears it.
 	restarted := runAgentCommand(t, "--ca", nodeCA(), "--state", state,
-		"--data-root", dataRoot, "--runtime", "docker")
+		"--data-root", dataRoot)
 	out, err := restarted.CombinedOutput()
 	if err == nil {
 		t.Fatalf("the declared-lost Agent reconnected with its old identity:\n%s", out)
@@ -103,7 +102,7 @@ func TestNodeUnreachableLost(t *testing.T) {
 	if !strings.Contains(string(out), "identity rejected") {
 		t.Fatalf("Agent exit does not report a rejected identity:\n%s", out)
 	}
-	if _, statErr := os.Stat(state); !os.IsNotExist(statErr) {
-		t.Fatalf("the rejected identity was not cleared (stat err = %v)", statErr)
+	if pathExists(state) {
+		t.Fatal("the rejected identity was not cleared")
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -179,8 +178,8 @@ func TestSandboxLifecycle(t *testing.T) {
 	}
 	workspaceID := waitForSandboxDeleted(t, created.ID, 60*time.Second)
 	if workspaceID != "" {
-		if _, err := os.Stat(filepath.Join(dataRoot, "workspaces", workspaceID)); !os.IsNotExist(err) {
-			t.Fatalf("Workspace directory still exists (stat err = %v)", err)
+		if pathExists(filepath.Join(dataRoot, "workspaces", workspaceID)) {
+			t.Fatal("Workspace directory still exists")
 		}
 	}
 }
