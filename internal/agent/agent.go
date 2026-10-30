@@ -348,7 +348,6 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		if err != nil {
 			return false, err
 		}
-		defer rt.driver.(*containerdDriver).close()
 	}
 	if opts.Runtime == ProviderLocal {
 		if opts.localUser == nil {
@@ -356,6 +355,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		}
 		rt = newLocalRuntime(opts.DataRoot, id.NodeID, *opts.localUser, agentBinDir())
 	}
+	defer rt.driver.close()
 	rt.buildkit = opts.Buildkit
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {

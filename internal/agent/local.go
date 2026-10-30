@@ -734,6 +734,12 @@ func (d *localDriver) scan(ctx context.Context, report func(string, int64)) {
 // scan is the liveness path.
 func (d *localDriver) watchEvents(context.Context, func(string, int64)) {}
 
+func (d *localDriver) startForward(context.Context, uuid.UUID, ...string) error {
+	return errors.New("runtime local has no port forwarder")
+}
+
+func (d *localDriver) close() {}
+
 func (d *localDriver) runtimeAlive(ctx context.Context, sandboxID uuid.UUID) (bool, bool) {
 	active, known, _ := localUnitState(ctx, localPlaceholderService(sandboxID))
 	return active, known

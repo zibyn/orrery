@@ -32,6 +32,10 @@ type runtimeDriver interface {
 	scan(ctx context.Context, report func(sandboxID string, generation int64))
 	watchEvents(ctx context.Context, report func(sandboxID string, generation int64))
 	runtimeAlive(ctx context.Context, sandboxID uuid.UUID) (alive, known bool)
+	// startForward runs `supervisor forward` in the Sandbox for a Tunnel
+	// (runtime.md §14).
+	startForward(ctx context.Context, sandboxID uuid.UUID, args ...string) error
+	close()
 }
 
 // The Runtime methods below are the Control command surface. Each one is

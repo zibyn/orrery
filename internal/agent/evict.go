@@ -262,8 +262,11 @@ func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 				slog.Warn("evict Resource version tree", "path", candidate.key, "error", err)
 			}
 		case evictImage:
-			if err := r.driver.(imageStore).removeImage(ctx, candidate.key); err != nil {
-				slog.Debug("evict local image", "id", candidate.key, "error", err)
+			// Only an imageStore lists image candidates (evictionCandidates).
+			if store, ok := r.driver.(imageStore); ok {
+				if err := store.removeImage(ctx, candidate.key); err != nil {
+					slog.Debug("evict local image", "id", candidate.key, "error", err)
+				}
 			}
 		case evictBuildCache:
 			if err := r.pruneBuildCache(ctx); err != nil {

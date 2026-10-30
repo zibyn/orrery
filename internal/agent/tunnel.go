@@ -130,11 +130,7 @@ func (r *Runtime) dialSandboxPort(ctx context.Context, sandboxID uuid.UUID, port
 	if conn, err := dialSocket(socket); err == nil {
 		return conn, nil
 	}
-	d, ok := r.driver.(*containerdDriver)
-	if !ok {
-		return nil, fmt.Errorf("runtime %s has no port forwarder", r.provider)
-	}
-	if err := d.startForward(ctx, sandboxID, supervisorBin, "forward", strconv.Itoa(port),
+	if err := r.driver.startForward(ctx, sandboxID, supervisorBin, "forward", strconv.Itoa(port),
 		runMount+"/ports/"+filepath.Base(socket)); err != nil {
 		return nil, err
 	}

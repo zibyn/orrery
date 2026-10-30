@@ -387,7 +387,6 @@ func (d *containerdDriver) startExec(ctx context.Context, cmd *nodev1.StartExec)
 		execEnv(cmd.Env, imagePath, binaryDir), cmd.Cwd)
 }
 
-// startForward runs `supervisor forward` for a Tunnel (runtime.md §14).
 func (d *containerdDriver) startForward(ctx context.Context, sandboxID uuid.UUID, args ...string) error {
 	_, err := d.execDetached(ctx, sandboxID, "forward-"+uuid.NewString(), args...)
 	return err
