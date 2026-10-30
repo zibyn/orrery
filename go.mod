@@ -33,6 +33,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260825221802-da73d73af1c5
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
+	tags.cncf.io/container-device-interface v1.1.1
 )
 
 require (
@@ -62,6 +63,7 @@ require (
 	github.com/containerd/ttrpc v1.2.10 // indirect
 	github.com/docker/docker-credential-helpers v0.9.9 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.5 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -111,4 +113,5 @@ require (
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260825221802-da73d73af1c5 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
+	tags.cncf.io/container-device-interface/specs-go v1.1.1 // indirect
 )
