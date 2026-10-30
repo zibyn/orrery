@@ -428,6 +428,22 @@ func setUserSandboxQuota(t *testing.T, admin, userID string, sandboxes int) {
 	}
 }
 
+// installGit adds git to an Alpine Sandbox from the package mirror. The Git
+// scenarios also reach Gitea and the Control Plane from inside the Sandbox, so
+// they skip on a Node whose Sandboxes have no such route, which the harness
+// declares with ORRERY_E2E_SANDBOX_NO_EGRESS (the shared containerd host).
+func installGit(t *testing.T, admin, sandboxID string) {
+	t.Helper()
+	if noSandboxEgress() {
+		t.Skip("ORRERY_E2E_SANDBOX_NO_EGRESS: this Node's Sandboxes reach neither the Alpine mirror nor Gitea")
+	}
+	if out, errOut, code := execInSandbox(t, admin, sandboxID, "apk", "add", "--no-cache", "git"); code != 0 {
+		t.Fatalf("install git: exit %d\n%s%s", code, out, errOut)
+	}
+}
+
+func noSandboxEgress() bool { return os.Getenv("ORRERY_E2E_SANDBOX_NO_EGRESS") != "" }
+
 // execInSandbox runs one Exec and returns its streams and exit code.
 func execInSandbox(t *testing.T, admin, sandboxID string, argv ...string) (string, string, int) {
 	t.Helper()
@@ -517,10 +533,7 @@ func TestGitLinkClonePush(t *testing.T) {
 	createGiteaRepo(t, gitGiteaUser(), repo)
 	cloneURL := giteaBase() + "/" + gitGiteaUser() + "/" + repo + ".git"
 
-	if out, errOut, code := execInSandbox(t, admin, fixture.sandboxID,
-		"sh", "-c", "apk add --no-cache git >/dev/null 2>&1 || true"); code != 0 {
-		t.Fatalf("install git: %s %s", out, errOut)
-	}
+	installGit(t, admin, fixture.sandboxID)
 	clone := fmt.Sprintf(
 		"export GIT_TERMINAL_PROMPT=0; git clone %s /workspace/repo && "+
 			"cd /workspace/repo && echo e2e > pushed.txt && "+
@@ -596,10 +609,7 @@ func TestGitUnlinked(t *testing.T) {
 	createGiteaRepo(t, gitGiteaUser(), repo)
 	cloneURL := giteaBase() + "/" + gitGiteaUser() + "/" + repo + ".git"
 
-	if _, errOut, code := execInSandbox(t, admin, fixture.sandboxID,
-		"sh", "-c", "apk add --no-cache git >/dev/null 2>&1 || true"); code != 0 {
-		t.Fatalf("install git: %s", errOut)
-	}
+	installGit(t, admin, fixture.sandboxID)
 	stdout, stderr, code := execInSandbox(t, admin, fixture.sandboxID, "sh", "-c",
 		fmt.Sprintf("GIT_TERMINAL_PROMPT=0 git clone %s /workspace/repo", cloneURL))
 	if code == 0 {

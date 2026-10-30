@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,28 +134,27 @@ func TestResourceUploadMount(t *testing.T) {
 	sum := sha256.Sum256(nested)
 	digest := hex.EncodeToString(sum[:])
 	cacheObject := filepath.Join(dataRoot, "cache", "objects", digest)
-	entries, err := os.ReadDir(cacheObject)
+	// The cache lives on the Node host (nodeShell).
+	entries, err := nodeShell("ls -A " + shellQuote(cacheObject))
 	if err != nil {
-		t.Fatalf("read cache object directory %s: %v", cacheObject, err)
+		t.Fatalf("read cache object directory %s: %v\n%s", cacheObject, err, entries)
 	}
-	if len(entries) != 1 || entries[0].Name() != "data" {
-		t.Fatalf("cache object directory entries = %v, want one plain object", entries)
+	if got := strings.TrimSpace(string(entries)); got != "data" {
+		t.Fatalf("cache object directory entries = %q, want one plain object", got)
 	}
 	firstCopy := filepath.Join(dataRoot, "cache", "versions", *v1.Address, "nested", "data.bin")
 	secondCopy := filepath.Join(dataRoot, "cache", "versions", *v2.Address, "nested", "data.bin")
-	firstInfo, err := os.Stat(firstCopy)
-	if err != nil {
-		t.Fatalf("stat %s: %v", firstCopy, err)
+	// One "<device>:<inode> <mode>" line per copy.
+	out, err := nodeShell("stat -c '%d:%i %a' " + shellQuote(firstCopy) + " " + shellQuote(secondCopy))
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if err != nil || len(lines) != 2 {
+		t.Fatalf("stat the cached copies: %v\n%s", err, out)
 	}
-	secondInfo, err := os.Stat(secondCopy)
-	if err != nil {
-		t.Fatalf("stat %s: %v", secondCopy, err)
+	if strings.Fields(lines[0])[0] != strings.Fields(lines[1])[0] {
+		t.Fatalf("the file shared by both versions is not hard-linked: %q", lines)
 	}
-	if !os.SameFile(firstInfo, secondInfo) {
-		t.Fatal("the file shared by both versions is not hard-linked")
-	}
-	if mode := firstInfo.Mode().Perm(); mode != 0o444 {
-		t.Fatalf("cached file mode = %o, want 444", mode)
+	if mode := strings.Fields(lines[0])[1]; mode != "444" {
+		t.Fatalf("cached file mode = %s, want 444", mode)
 	}
 }
 
