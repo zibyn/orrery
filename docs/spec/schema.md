@@ -38,7 +38,7 @@ PostgreSQL 是权威状态。本文列出表、关键列和约束；迁移 SQL �
 | `cas_objects` | `owner_id`, `sha256`, `size`, `created_at` | PK (`owner_id`, `sha256`)，对应对象 `cas/<owner_id>/sha256/<hex>`（ADR-0021）；版本标为 `unavailable` 时删掉缺失对象的行，下一次上传就会重新签发 PUT |
 | `uploads` | `id`, `resource_id`, `address`, `manifest`, `expires_at` | 同一 Resource 下未过期、`address` 相同的会话被复用，即续传 |
 | `snapshots` | `id`, `owner_id`, `name`, `current_version_id`, `deleted_at` | `owner_id` 为空即平台 Snapshot；(`owner_id`, `name`) 在未删除行上部分唯一，`NULLS NOT DISTINCT`；版本变成 `ready` 时移动 current 指针 |
-| `snapshot_versions` | `id`, `snapshot_id`, `digest`, `state`, `cause`, `source`, `build_sandbox_id`, `build_exec_id`, `provenance`, `idempotency_key` | `state` 取 `building`/`ready`/`failed`/`cancelled`；`source` 取 `import`/`build`；`build_sandbox_id` 指向 `kind=build` 的 Sandbox 行；被 Sandbox（含 stopped）引用或是 current 时不能删除；Snapshot 删除后，被引用的版本保留到最后一个引用消失，再删 registry 里的 manifest |
+| `snapshot_versions` | `id`, `snapshot_id`, `digest`, `state`, `cause`, `source`, `build_sandbox_id`, `build_exec_id`, `provenance`, `idempotency_key`, `deleted_at` | `state` 取 `building`/`ready`/`failed`/`cancelled`；`source` 取 `import`/`build`；`build_sandbox_id` 指向 `kind=build` 的 Sandbox 行；被 Sandbox（含 stopped）引用或是 current 时不能删除；显式删除只写 `deleted_at`，由 purge 删 registry 里的 manifest 后再删行；Snapshot 删除后，被引用的版本保留到最后一个引用消失，再删 registry 里的 manifest |
 | `audit_records` | `id` bigserial, `at`, `actor_user_id`, `actor_token_id`, `action`, `target_type`, `target_id`, `correlation_id`, `detail` | 在提交后插入（ADR-0016） |
 
 **Secret 快照**。Sandbox 每次 start 时，按名字把 Secret 的密文拷进 `sandboxes.secret_env_ct`。每个 Exec 的 `StartExec` 都由 Control Plane 解密后下发，这样一来：
