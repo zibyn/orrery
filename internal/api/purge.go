@@ -150,6 +150,7 @@ func (s *Server) purgeGC(ctx context.Context, now time.Time) {
 		{"ResourceVersions", func(ctx context.Context) error { return s.purgeResourceVersions(ctx, now) }},
 		{"CAS objects", func(ctx context.Context) error { return s.purgeCASObjects(ctx, now) }},
 		{"Resource tombstones", s.purgeResourceTombstones},
+		{"SnapshotVersion tombstones", s.purgeSnapshotVersionTombstones},
 		{"Snapshot tombstones", s.purgeSnapshotTombstones},
 	}
 	for _, step := range steps {
@@ -477,36 +478,19 @@ func (s *Server) purgeSnapshotTombstone(ctx context.Context, snap store.Snapshot
 		if !snapshotVersionCleanable(version.State) {
 			continue
 		}
-		if version.Digest != nil {
-			ref := repo + "@" + *version.Digest
-			count, err := s.q.CountSandboxSnapshotReferences(ctx, ref)
-			if err != nil {
-				return fmt.Errorf("count Snapshot references: %w", err)
-			}
-			if count > 0 {
-				continue
-			}
-			shared, err := s.q.CountSnapshotVersionDigestReferences(ctx,
-				store.CountSnapshotVersionDigestReferencesParams{
-					SnapshotID: snap.ID, Digest: version.Digest, ID: version.ID,
-				})
-			if err != nil {
-				return fmt.Errorf("count Snapshot digest references: %w", err)
-			}
-			if shared == 0 {
-				manifests = append(manifests, version)
-			}
+		removable, manifest, err := s.snapshotVersionGarbage(ctx, repo, version)
+		if err != nil {
+			return err
+		}
+		if !removable {
+			continue
+		}
+		if manifest {
+			manifests = append(manifests, version)
 		}
 		deletable = append(deletable, version)
 	}
-	err = deleteObjectsThenRows(ctx, manifests,
-		func(ctx context.Context, version store.SnapshotVersion) error {
-			if err := registry.DeleteManifest(ctx, registry.Ref(s.cfg.RegistryPushAddr, repo, *version.Digest),
-				s.cfg.RegistryCredentialDoc); err != nil {
-				return fmt.Errorf("delete Snapshot manifest: %w", err)
-			}
-			return nil
-		},
+	err = deleteObjectsThenRows(ctx, manifests, s.deleteSnapshotManifest(repo),
 		func(ctx context.Context) error {
 			return s.purgeTx(ctx, func(q *store.Queries) error {
 				if err := q.ClearSnapshotCurrent(ctx, snap.ID); err != nil {
@@ -538,6 +522,83 @@ func (s *Server) purgeSnapshotTombstone(ctx context.Context, snap store.Snapshot
 		}
 		return nil
 	})
+}
+
+// snapshotVersionGarbage reports whether an unreferenced version may lose its
+// row, and whether its manifest goes too: the manifest is shared content, so
+// an identical digest another live version names keeps the object.
+func (s *Server) snapshotVersionGarbage(ctx context.Context, repo string, version store.SnapshotVersion) (removable, manifest bool, err error) {
+	if version.Digest == nil {
+		return true, false, nil
+	}
+	count, err := s.q.CountSandboxSnapshotReferences(ctx, repo+"@"+*version.Digest)
+	if err != nil {
+		return false, false, fmt.Errorf("count Snapshot references: %w", err)
+	}
+	if count > 0 {
+		return false, false, nil
+	}
+	shared, err := s.q.CountSnapshotVersionDigestReferences(ctx,
+		store.CountSnapshotVersionDigestReferencesParams{
+			SnapshotID: version.SnapshotID, Digest: version.Digest, ID: version.ID,
+		})
+	if err != nil {
+		return false, false, fmt.Errorf("count Snapshot digest references: %w", err)
+	}
+	return true, shared == 0, nil
+}
+
+func (s *Server) deleteSnapshotManifest(repo string) func(context.Context, store.SnapshotVersion) error {
+	return func(ctx context.Context, version store.SnapshotVersion) error {
+		if err := registry.DeleteManifest(ctx, registry.Ref(s.cfg.RegistryPushAddr, repo, *version.Digest),
+			s.cfg.RegistryCredentialDoc); err != nil {
+			return fmt.Errorf("delete Snapshot manifest: %w", err)
+		}
+		return nil
+	}
+}
+
+// purgeSnapshotVersionTombstones removes explicitly deleted versions (#151):
+// the registry manifest first, then the row. A version a Sandbox references
+// waits, as under a deleted Snapshot.
+func (s *Server) purgeSnapshotVersionTombstones(ctx context.Context) error {
+	if s.cfg.RegistryPushAddr == "" {
+		return nil
+	}
+	versions, err := s.q.ListDeletedSnapshotVersions(ctx, gcBatch)
+	if err != nil {
+		return fmt.Errorf("list deleted Snapshot versions: %w", err)
+	}
+	for _, version := range versions {
+		snap, err := s.q.GetSnapshotIncludingDeleted(ctx, version.SnapshotID)
+		if err != nil {
+			return fmt.Errorf("get Snapshot of deleted version: %w", err)
+		}
+		repo := registry.Repo(snap.ID, platformName(snap))
+		removable, manifest, err := s.snapshotVersionGarbage(ctx, repo, version)
+		if err != nil {
+			return err
+		}
+		if !removable {
+			continue
+		}
+		var manifests []store.SnapshotVersion
+		if manifest {
+			manifests = append(manifests, version)
+		}
+		err = deleteObjectsThenRows(ctx, manifests, s.deleteSnapshotManifest(repo),
+			func(ctx context.Context) error {
+				return s.purgeTx(ctx, func(q *store.Queries) error {
+					return q.DeleteSnapshotVersion(ctx, store.DeleteSnapshotVersionParams{
+						ID: version.ID, SnapshotID: version.SnapshotID,
+					})
+				})
+			})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // logWarn reports a sweep error unless the process is shutting down.

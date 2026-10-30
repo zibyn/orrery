@@ -15,6 +15,9 @@ storage:
     rootdirectory: /registry
     forcepathstyle: true
     secure: false
+  # purge deletes the manifests of deleted SnapshotVersions (#151).
+  delete:
+    enabled: true
   # redirects stay enabled: Nodes fetch blobs from the store directly.
 http:
   addr: :15000

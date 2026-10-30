@@ -526,9 +526,15 @@ func (s *Server) handleDeleteSnapshotVersion(w http.ResponseWriter, r *http.Requ
 	if cancel, ok := s.takeSnapshotCancel(version.ID); ok {
 		cancel()
 	}
-	if err := s.q.DeleteSnapshotVersion(r.Context(), store.DeleteSnapshotVersionParams{
+	// purge removes the registry manifest, then the row (api.md §3, #151).
+	version, err := s.q.TombstoneSnapshotVersion(r.Context(), store.TombstoneSnapshotVersionParams{
 		ID: version.ID, SnapshotID: snap.ID,
-	}); err != nil {
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "not_found", "no such SnapshotVersion")
+		return
+	}
+	if err != nil {
 		s.internal(w, "delete SnapshotVersion", err)
 		return
 	}

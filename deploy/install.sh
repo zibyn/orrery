@@ -352,6 +352,9 @@ storage:
     rootdirectory: /registry
     forcepathstyle: true
     secure: true
+  # purge deletes the manifests of deleted SnapshotVersions (#151).
+  delete:
+    enabled: true
 http:
   # Plain HTTP on loopback; nginx is the public TLS entry (ADR-0023).
   addr: 127.0.0.1:15000
