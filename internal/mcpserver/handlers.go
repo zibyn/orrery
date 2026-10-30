@@ -38,6 +38,7 @@ type sandboxCreateInput struct {
 	Memory    *int64                   `json:"memory"`
 	GPU       *client.SandboxGPU       `json:"gpu"`
 	IdleStop  *int32                   `json:"idle_stop"`
+	Egress    *client.SandboxEgress    `json:"egress"`
 }
 
 func (in *sandboxCreateInput) validate() error {
@@ -63,6 +64,7 @@ func (s *server) sandboxCreate(ctx context.Context, _ *sdk.CallToolRequest, in s
 		Memory:    in.Memory,
 		GPU:       in.GPU,
 		IdleStop:  in.IdleStop,
+		Egress:    in.Egress,
 	}, "")
 	if err != nil {
 		return fail(err)

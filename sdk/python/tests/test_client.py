@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from orrery import Orrery, OrreryError  # noqa: E402
+from orrery import Egress, Orrery, OrreryError  # noqa: E402
 
 
 def client(handler) -> Orrery:
@@ -43,6 +44,28 @@ class SandboxTest(unittest.TestCase):
         sandbox = client(handler).wait_for_sandbox("sb-1", "ready", timeout=10)
         self.assertEqual(sandbox.state, "ready")
         self.assertEqual(waited, ["ready", "ready", "ready"])
+
+
+    def test_egress_is_sent_and_decoded(self) -> None:
+        sent = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(json.loads(request.content))
+            return httpx.Response(201, json={
+                "id": "sb-1", "state": "pending",
+                "egress": {"mode": "allowlist", "allow": ["10.0.0.5/32:443"]},
+            })
+
+        sandbox = client(handler).create_sandbox(
+            cpu=1, memory=1 << 30, egress={"mode": "allowlist", "allow": ["10.0.0.5/32:443"]})
+        self.assertEqual(sent[0]["egress"], {"mode": "allowlist", "allow": ["10.0.0.5/32:443"]})
+        self.assertEqual(sandbox.egress, Egress(mode="allowlist", allow=["10.0.0.5/32:443"]))
+
+    def test_egress_defaults_to_open(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"id": "sb-1", "state": "ready", "egress": {"mode": "open"}})
+
+        self.assertEqual(client(handler).get_sandbox("sb-1").egress, Egress(mode="open"))
 
 
 class ExecOutputTest(unittest.TestCase):

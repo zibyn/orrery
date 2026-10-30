@@ -321,6 +321,13 @@ type SandboxGPU struct {
 	Model *string `json:"model,omitempty"`
 }
 
+// SandboxEgress is a Sandbox's Egress Mode: open (the default), none, or
+// allowlist with a non-empty Allow of CIDR[:port] entries.
+type SandboxEgress struct {
+	Mode  string   `json:"mode"`
+	Allow []string `json:"allow,omitempty"`
+}
+
 // CreateSandboxRequest is the body of POST /sandboxes.
 type CreateSandboxRequest struct {
 	Name      *string           `json:"name,omitempty"`
@@ -334,6 +341,7 @@ type CreateSandboxRequest struct {
 	Memory    *int64            `json:"memory,omitempty"`
 	GPU       *SandboxGPU       `json:"gpu,omitempty"`
 	IdleStop  *int32            `json:"idle_stop,omitempty"`
+	Egress    *SandboxEgress    `json:"egress,omitempty"`
 }
 
 // Sandbox is one running or pending Sandbox.
@@ -342,6 +350,7 @@ type Sandbox struct {
 	Name          string            `json:"name"`
 	Labels        map[string]string `json:"labels"`
 	Runtime       string            `json:"runtime"`
+	Egress        SandboxEgress     `json:"egress"`
 	State         string            `json:"state"`
 	Cause         *string           `json:"cause"`
 	NodeID        *string           `json:"node_id"`
