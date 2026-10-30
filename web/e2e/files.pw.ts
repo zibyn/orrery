@@ -5,6 +5,26 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { appsDomain, assertConsoleScope, origin, signIn, watchRequests } from './harness'
 
+// Sandboxes created by the current test; afterEach deletes them even when the
+// test fails, so later tests (the 4 CPU snapshot build) start on an idle Node.
+const createdSandboxes: string[] = []
+
+test.afterEach(async ({ page }) => {
+  for (const id of createdSandboxes.splice(0)) {
+    const url = `${origin}/api/v1/sandboxes/${id}`
+    await page.context().request.delete(url)
+    await expect
+      .poll(
+        async () => {
+          const res = await page.context().request.get(url)
+          return res.ok() ? ((await res.json()) as { state: string }).state : 'deleted'
+        },
+        { timeout: 120_000 },
+      )
+      .toBe('deleted')
+  }
+})
+
 // scripts/e2e.sh enrolls a Node Agent before running Playwright, so a Sandbox
 // created here reaches ready without any extra setup.
 async function createReadySandbox(page: Page, name: string): Promise<string> {
@@ -14,6 +34,7 @@ async function createReadySandbox(page: Page, name: string): Promise<string> {
   await page.getByRole('button', { name: 'Create Sandbox' }).click()
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/)
   const sandboxId = page.url().split('/').pop()!
+  createdSandboxes.push(sandboxId)
   await expect(page.getByTestId('sandbox-state')).toHaveText('ready', { timeout: 240_000 })
   return sandboxId
 }
