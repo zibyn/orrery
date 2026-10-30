@@ -1,4 +1,5 @@
-import { CircleCheck, LoaderCircle } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { CircleCheck, Hourglass, LoaderCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
 
@@ -11,6 +12,8 @@ import {
   frameText,
 } from '@/lib/exec-stream'
 import { messageOf } from '@/lib/labels'
+import { buildExecPollInterval, buildLogView } from '@/lib/snapshots'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export type BuildLogProps = {
@@ -21,19 +24,27 @@ export type BuildLogProps = {
 // The read-only xterm log shared by the version page: live while the build
 // runs, then the stored Output pages once it is terminal (api.md §3, §8).
 export function BuildLog({ execId, mode }: BuildLogProps) {
+  const queryClient = useQueryClient()
+  const exec = useQuery({
+    queryKey: ['exec', execId],
+    queryFn: () => api<Exec>('GET', `/execs/${execId}`),
+    refetchInterval: (query) => buildExecPollInterval(query.state.data?.state),
+  })
+  const view = buildLogView(mode, exec.data?.state, exec.isError)
+  const streaming = view === 'follow' || view === 'stored'
   const [terminal, setTerminal] = useState<Terminal | null>(null)
   const [result, setResult] = useState<ExecResultFrame | null>(null)
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(mode === 'stored')
+  const [loading, setLoading] = useState(view === 'stored')
 
   useEffect(() => {
-    if (!terminal) return
+    if (!terminal || !streaming) return
     terminal.reset()
     setResult(null)
     setError('')
     setLoading(true)
 
-    if (mode === 'follow') {
+    if (view === 'follow') {
       return followExecOutput(
         execId,
         {
@@ -68,11 +79,8 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
             after = frameEnd(frame)
           }
         }
-        const exec = await api<Exec>('GET', `/execs/${execId}`)
-        if (cancelled) return
-        if (exec.result) {
-          setResult({ ...exec.result, type: 'result', log_truncated: exec.log_truncated })
-        }
+        // The cached Exec may predate the finish; refresh it for the result line.
+        await queryClient.refetchQueries({ queryKey: ['exec', execId] })
       } catch (err) {
         if (!cancelled) setError(messageOf(err))
       } finally {
@@ -82,28 +90,47 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
     return () => {
       cancelled = true
     }
-  }, [terminal, execId, mode])
+  }, [terminal, execId, view, streaming, queryClient])
+
+  const finished = view === 'stored' && !loading ? exec.data : undefined
+  const shownResult: ExecResultFrame | null =
+    result ??
+    (finished?.result
+      ? { ...finished.result, type: 'result', log_truncated: finished.log_truncated }
+      : null)
 
   return (
     <div className="flex flex-col gap-2">
       <p className="flex items-center gap-1.5 text-xs" data-testid="build-log-result">
-        {result ? (
+        {shownResult ? (
           <CircleCheck className="size-3.5 text-success" />
-        ) : loading ? (
+        ) : loading || view === 'loading' ? (
           <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" />
         ) : null}
-        <span className={result ? 'text-foreground' : 'text-muted-foreground'}>
-          {result
-            ? m.build_log_result({ result: formatExecResult(result) })
-            : loading
+        <span className={shownResult ? 'text-foreground' : 'text-muted-foreground'}>
+          {shownResult
+            ? m.build_log_result({ result: formatExecResult(shownResult) })
+            : loading || view === 'loading'
               ? m.build_log_loading()
               : m.build_log_title()}
         </span>
       </p>
+      {view === 'queued' && (
+        <p className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="build-log-queued">
+          <Hourglass className="size-4" />
+          {m.build_log_queued()}
+        </p>
+      )}
+      {exec.error && <p className="text-sm whitespace-pre-line text-destructive">{messageOf(exec.error)}</p>}
       {error && (
         <p className="text-sm whitespace-pre-line text-destructive">{error}</p>
       )}
-      <TerminalView readOnly onReady={setTerminal} className="h-[28rem]" />
+      {/* Hidden, not unmounted, so the follow stream reuses the same terminal. */}
+      <TerminalView
+        readOnly
+        onReady={setTerminal}
+        className={cn('h-[28rem]', view === 'queued' && 'hidden')}
+      />
     </div>
   )
 }

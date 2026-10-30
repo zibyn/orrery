@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import { type Snapshot, type SnapshotVersion, type SnapshotVersionState } from '@/api'
 import {
+  buildExecPollInterval,
   buildLogMode,
+  buildLogView,
   isSnapshotVersionTerminal,
   snapshotOwnerLabel,
   snapshotVersionsPollInterval,
@@ -84,6 +86,37 @@ describe('buildLogMode', () => {
 
   it('has no log without a build_exec_id', () => {
     expect(buildLogMode(version({ source: 'import' }))).toBe('none')
+  })
+})
+
+describe('buildLogView', () => {
+  it('shows the queue notice while the build Exec is pending, then follows once it runs', () => {
+    expect(buildLogView('follow', 'pending')).toBe('queued')
+    expect(buildExecPollInterval('pending')).toBe(5000)
+    expect(buildLogView('follow', 'running')).toBe('follow')
+    expect(buildExecPollInterval('running')).toBe(false)
+  })
+
+  it('reads the stored log when the build Exec finishes straight from pending', () => {
+    expect(buildLogView('follow', 'pending')).toBe('queued')
+    expect(buildLogView('follow', 'finished')).toBe('stored')
+    expect(buildExecPollInterval('finished')).toBe(false)
+  })
+
+  it('keeps following while the build Exec cancels', () => {
+    expect(buildLogView('follow', 'canceling')).toBe('follow')
+  })
+
+  it('waits for the Exec state before opening the follow stream', () => {
+    expect(buildLogView('follow', undefined)).toBe('loading')
+  })
+
+  it('opens the follow stream when the Exec state cannot be read', () => {
+    expect(buildLogView('follow', undefined, true)).toBe('follow')
+  })
+
+  it('reads the stored log of a terminal version without the Exec state', () => {
+    expect(buildLogView('stored', undefined)).toBe('stored')
   })
 })
 

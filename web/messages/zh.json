@@ -339,6 +339,7 @@
   "build_log_failed": "构建日志流失败。",
   "build_log_result": "已完成：{result}",
   "build_log_loading": "正在加载构建日志…",
+  "build_log_queued": "排队等待资源，构建开始后显示日志。",
   "build_log_title": "构建日志",
   "files_title": "文件",
   "files_upload_aria": "上传文件",

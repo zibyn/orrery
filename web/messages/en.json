@@ -339,6 +339,7 @@
   "build_log_failed": "The build log stream failed.",
   "build_log_result": "Finished: {result}",
   "build_log_loading": "Loading build log…",
+  "build_log_queued": "Queued, waiting for resources. The log starts when the build runs.",
   "build_log_title": "Build log",
   "files_title": "Files",
   "files_upload_aria": "Upload file",
