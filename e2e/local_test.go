@@ -41,6 +41,10 @@ func TestLocalRuntime(t *testing.T) {
 	if values["resource_mount"] != "unsupported" {
 		t.Errorf("resource_mount = %q, want unsupported", values["resource_mount"])
 	}
+	// No netns, so Egress Rules do not apply (ADR-0026).
+	if values["egress_policy"] != "unsupported" {
+		t.Errorf("egress_policy = %q, want unsupported", values["egress_policy"])
+	}
 	for _, name := range []string{"cpu_memory_pid_limits", "workspace_rw_mount", "exec_supervisor"} {
 		if values[name] != "enforced" {
 			t.Errorf("%s = %q, want enforced (capabilities %v)", name, values[name], node.Capabilities)
