@@ -216,6 +216,8 @@ type Sandbox struct {
 	Conditions      json.RawMessage
 	Kind            string
 	Runtime         string
+	EgressMode      string
+	EgressAllow     []string
 }
 
 type SandboxResource struct {

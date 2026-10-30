@@ -185,7 +185,7 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		// Provider (api.md §3). A Node that has not reported Capabilities is
 		// treated as potentially matching, so it is not proof of exhaustion.
 		if sb.Kind != string(SandboxKindBuild) && len(node.Capabilities) > 0 &&
-			!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) {
+			(!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) || !egressPlaceable(sb.EgressMode)(node)) {
 			known = true
 			continue
 		}
@@ -415,6 +415,9 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 				continue
 			}
 			if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
+				continue
+			}
+			if !egressPlaceable(sb.EgressMode)(node) {
 				continue
 			}
 		}
