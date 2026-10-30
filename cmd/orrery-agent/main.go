@@ -94,7 +94,7 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.Containerd, "containerd", agent.DefaultContainerdSock, "containerd socket (--runtime containerd)")
 	fs.StringVar(&opts.SandboxSubnet, "sandbox-subnet", agent.DefaultSandboxSubnet, "this Node's Sandbox subnet, not overlapping other Nodes' (--runtime containerd)")
 	fs.StringVar(&opts.LocalUser, "local-user", "", "unprivileged user every Local Runtime Exec runs as (required with --runtime local)")
-	fs.StringVar(&opts.Buildkit, "buildkit", "", "BuildKit endpoint (default: dockerd's built-in BuildKit via the Docker socket)")
+	fs.StringVar(&opts.Buildkit, "buildkit", "", "BuildKit endpoint, a standalone buildkitd (a Docker Node defaults to dockerd's built-in BuildKit; other Nodes have none)")
 	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "Workspace and Supervisor data directory")
 	fs.Float64Var(&opts.ReserveCPU, "reserve-cpu", agent.DefaultReserveCPU, "CPU cores kept free for the host")
 	fs.Int64Var(&opts.ReserveMemory, "reserve-memory", agent.DefaultReserveBytes, "memory bytes kept free for the host")

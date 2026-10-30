@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 )
 
@@ -186,7 +188,7 @@ func loadImageUsage(dataRoot string) map[string]time.Time {
 
 // imageLastUsed is the LRU clock for an image: the latest touch of any of its
 // references, else its Created time.
-func imageLastUsed(usage map[string]time.Time, image dockerImage) time.Time {
+func imageLastUsed(usage map[string]time.Time, image cachedImage) time.Time {
 	var latest time.Time
 	for _, key := range append([]string{imageDigestKey(image.ID)}, image.RepoDigests...) {
 		if used := usage[imageDigestKey(key)]; used.After(latest) {
@@ -199,7 +201,7 @@ func imageLastUsed(usage map[string]time.Time, image dockerImage) time.Time {
 	return latest
 }
 
-func imagePinned(pins map[string]bool, image dockerImage) bool {
+func imagePinned(pins map[string]bool, image cachedImage) bool {
 	if pins[imageDigestKey(image.ID)] {
 		return true
 	}
@@ -234,9 +236,6 @@ func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 	if watermark <= 0 || !belowWatermark("/", watermark) {
 		return
 	}
-	if err := r.d.negotiate(ctx); err != nil {
-		return
-	}
 	treePins, imagePins := loadNodePins(r.dataRoot)
 	candidates := r.evictionCandidates(ctx, treePins, imagePins)
 	sortEvictionCandidates(candidates)
@@ -267,11 +266,11 @@ func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 				slog.Warn("evict Resource version tree", "path", candidate.key, "error", err)
 			}
 		case evictImage:
-			if err := r.d.removeImage(ctx, candidate.key); err != nil {
+			if err := r.driver.(imageStore).removeImage(ctx, candidate.key); err != nil {
 				slog.Debug("evict local image", "id", candidate.key, "error", err)
 			}
 		case evictBuildCache:
-			if _, err := r.d.pruneBuildCache(ctx); err != nil {
+			if err := r.pruneBuildCache(ctx); err != nil {
 				slog.Debug("prune BuildKit cache", "error", err)
 			}
 		}
@@ -301,7 +300,8 @@ func (r *Runtime) evictionCandidates(ctx context.Context, treePins, imagePins ma
 			})
 		}
 	}
-	if images, err := r.d.listImages(ctx); err == nil {
+	if store, ok := r.driver.(imageStore); ok {
+		images, _ := store.listImages(ctx) // an unreachable store has no candidates
 		usage := loadImageUsage(r.dataRoot)
 		for _, image := range images {
 			if imagePinned(imagePins, image) || !r.managesImage(image) {
@@ -312,7 +312,7 @@ func (r *Runtime) evictionCandidates(ctx context.Context, treePins, imagePins ma
 			})
 		}
 	}
-	// BuildKit cache has no per-entry order through the Engine API; the daemon
+	// BuildKit cache has no per-entry order through its prune API; the daemon
 	// prunes every unused record at once, so it is the candidate of last
 	// resort. Its clause is only reached when trees and images did not bring
 	// the free space back above the watermark.
@@ -322,7 +322,7 @@ func (r *Runtime) evictionCandidates(ctx context.Context, treePins, imagePins ma
 	return candidates
 }
 
-func (r *Runtime) managesImage(image dockerImage) bool {
+func (r *Runtime) managesImage(image cachedImage) bool {
 	r.registryMu.Lock()
 	defer r.registryMu.Unlock()
 	if r.registry == nil {
@@ -420,8 +420,17 @@ func (c *resourceCache) reclaimObjects() {
 	}
 }
 
-// dockerImage is the subset of GET /images/json eviction needs.
-type dockerImage struct {
+// imageStore is the Provider's local image store the disk budget covers
+// (runtime.md §11). Local Nodes have none.
+type imageStore interface {
+	listImages(ctx context.Context) ([]cachedImage, error)
+	removeImage(ctx context.Context, id string) error
+}
+
+// cachedImage is what eviction needs of a local image: the Docker
+// GET /images/json subset, or a containerd image record (ID is then its name,
+// the key the record is removed by).
+type cachedImage struct {
 	ID          string   `json:"Id"`
 	RepoTags    []string `json:"RepoTags"`
 	RepoDigests []string `json:"RepoDigests"`
@@ -429,8 +438,8 @@ type dockerImage struct {
 	Size        int64    `json:"Size"`
 }
 
-func (d *dockerClient) listImages(ctx context.Context) ([]dockerImage, error) {
-	var images []dockerImage
+func (d *dockerClient) listImages(ctx context.Context) ([]cachedImage, error) {
+	var images []cachedImage
 	if err := d.do(ctx, http.MethodGet, d.api("/images/json"), nil, &images); err != nil {
 		return nil, err
 	}
@@ -449,6 +458,69 @@ func (d *dockerClient) removeImage(ctx context.Context, id string) error {
 		return nil
 	}
 	return fmt.Errorf("remove image: %s", resp.Status)
+}
+
+func (d containerDriver) listImages(ctx context.Context) ([]cachedImage, error) {
+	if err := d.r.d.negotiate(ctx); err != nil {
+		return nil, err
+	}
+	return d.r.d.listImages(ctx)
+}
+
+func (d containerDriver) removeImage(ctx context.Context, id string) error {
+	return d.r.d.removeImage(ctx, id)
+}
+
+func (d *containerdDriver) listImages(ctx context.Context) ([]cachedImage, error) {
+	records, err := d.client.ImageService().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]cachedImage, 0, len(records))
+	for _, record := range records {
+		out = append(out, containerdCachedImage(record))
+	}
+	return out, nil
+}
+
+// containerdCachedImage keys a record by name and pins it by target digest:
+// a Sandbox's image is pulled by digest, but the same content can carry a tag.
+func containerdCachedImage(record images.Image) cachedImage {
+	return cachedImage{
+		ID:          record.Name,
+		RepoTags:    []string{record.Name},
+		RepoDigests: []string{record.Target.Digest.String()},
+		Created:     record.CreatedAt.Unix(),
+	}
+}
+
+// removeImage deletes the record synchronously, so containerd's garbage
+// collector frees the unreferenced content and snapshots before it returns.
+func (d *containerdDriver) removeImage(ctx context.Context, name string) error {
+	err := d.client.ImageService().Delete(ctx, name, images.SynchronousDelete())
+	if errdefs.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// pruneBuildCache prunes the unused records of the Node's BuildKit endpoint.
+// A Docker Node without --buildkit prunes dockerd's built-in BuildKit through
+// the Engine API.
+func (r *Runtime) pruneBuildCache(ctx context.Context) error {
+	if r.buildkit == "" && r.provider == ProviderDocker {
+		if err := r.d.negotiate(ctx); err != nil {
+			return err
+		}
+		_, err := r.d.pruneBuildCache(ctx)
+		return err
+	}
+	c, err := r.buildkitClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close() //nolint:errcheck // one-shot client
+	return c.Prune(ctx, nil)
 }
 
 // pruneBuildCache runs `docker builder prune` through the Engine API and
