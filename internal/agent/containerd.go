@@ -89,13 +89,22 @@ func bindMount(source, destination, mode string) specs.Mount {
 }
 
 // limitOpts sets the three hard limits with the same CPU rounding as every
-// other Provider (ADR-0009).
+// other Provider (ADR-0009), in a private cgroup namespace whose cgroupfs is
+// mounted read-only as Docker does: the Supervisor reads memory.events there
+// for oom_killed (runtime.md §4).
 func limitOpts(cpu float64, memory int64) []oci.SpecOpts {
 	return []oci.SpecOpts{
 		oci.WithCPUCFS(localQuota(cpu), 100000),
 		oci.WithMemoryLimit(uint64(memory)),
+		// No swap on top: unset, runc leaves memory.swap.max at max and a
+		// Sandbox at its limit swaps instead of being OOM-killed.
+		oci.WithMemorySwap(memory),
 		oci.WithPidsLimit(sandboxPidsLimit),
 		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.CgroupNamespace}),
+		oci.WithMounts([]specs.Mount{{
+			Destination: "/sys/fs/cgroup", Type: "cgroup", Source: "cgroup",
+			Options: []string{"ro", "nosuid", "noexec", "nodev"},
+		}}),
 	}
 }
 
