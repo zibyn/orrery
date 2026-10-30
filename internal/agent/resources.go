@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	specs "github.com/opencontainers/runtime-spec/specs-go"
+
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/castransfer"
 	"github.com/zibyn/orrery/internal/manifest"
@@ -383,10 +385,9 @@ func validResourceMount(mount string) bool {
 	return mount != "" && mount != "." && mount != ".." && !strings.ContainsAny(mount, "/\x00")
 }
 
-// resourceBinds fetches every version and returns the read-only binds for the
-// Sandbox's HostConfig.
-func (r *Runtime) resourceBinds(ctx context.Context, resources []resourceMount) ([]string, string, error) {
-	binds := make([]string, 0, len(resources))
+// resourceMounts fetches every version and returns its read-only bind mount.
+func (r *Runtime) resourceMounts(ctx context.Context, resources []resourceMount) ([]specs.Mount, string, error) {
+	mounts := make([]specs.Mount, 0, len(resources))
 	for _, resource := range resources {
 		if !validResourceMount(resource.mount) {
 			return nil, "runtime_create_failed", fmt.Errorf("invalid Resource mount %q", resource.mount)
@@ -395,7 +396,7 @@ func (r *Runtime) resourceBinds(ctx context.Context, resources []resourceMount) 
 		if err != nil {
 			return nil, "resource_fetch_failed", err
 		}
-		binds = append(binds, tree+":"+resourceMountRoot+"/"+resource.mount+":ro")
+		mounts = append(mounts, bindMount(tree, resourceMountRoot+"/"+resource.mount, "ro"))
 	}
-	return binds, "", nil
+	return mounts, "", nil
 }

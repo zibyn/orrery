@@ -227,7 +227,7 @@ func (r *Runtime) deleteWorkspace(workspaceID uuid.UUID) error {
 	return os.RemoveAll(workspacePath(r.dataRoot, workspaceID))
 }
 
-// prepareSandboxHost lays out the host side every container Provider mounts:
+// prepareSandboxHost lays out the host side the containerd Provider mounts:
 // the Workspace, the record directory, the file API's Workspace record and
 // the eviction pins (runtime.md §2, §11). It returns the effective mode.
 func (r *Runtime) prepareSandboxHost(id, workspaceID uuid.UUID, cmd *createSandboxSpec) (workspace, runDir, mode string, err error) {

@@ -40,7 +40,7 @@ import (
 const containerdNamespace = "orrery"
 
 // containerdDriver is the containerd Runtime Provider under runc (runtime.md
-// §9, ADR-0026). It shares every host-path operation with the other Providers.
+// §9, ADR-0026). It shares every host-path operation with the Local Runtime.
 type containerdDriver struct {
 	r      *Runtime
 	client *containerd.Client
@@ -113,8 +113,8 @@ func bindMount(source, destination, mode string) specs.Mount {
 	return specs.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", mode}}
 }
 
-// limitOpts sets the three hard limits with the same CPU rounding as every
-// other Provider (ADR-0009), in a private cgroup namespace whose cgroupfs is
+// limitOpts sets the three hard limits with the same CPU rounding as the
+// Local Runtime (ADR-0009), in a private cgroup namespace whose cgroupfs is
 // mounted read-only: the Supervisor reads memory.events there for oom_killed
 // (runtime.md §4).
 func limitOpts(cpu float64, memory int64) []oci.SpecOpts {
@@ -206,7 +206,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err := d.teardown(ctx, id); err != nil {
 		return "runtime_create_failed", err
 	}
-	resourcePaths, cause, err := d.r.resourceBinds(ctx, cmd.resources)
+	resources, cause, err := d.r.resourceMounts(ctx, cmd.resources)
 	if err != nil {
 		return cause, err
 	}
@@ -223,10 +223,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 		bindMount(filepath.Join(etc, "hosts"), "/etc/hosts", "ro"),
 		bindMount(filepath.Join(etc, "hostname"), "/etc/hostname", "ro"),
 	}
-	for _, bind := range resourcePaths {
-		parts := strings.SplitN(bind, ":", 3)
-		mounts = append(mounts, bindMount(parts[0], parts[1], "ro"))
-	}
+	mounts = append(mounts, resources...)
 	opts := append([]oci.SpecOpts{
 		oci.WithProcessArgs(supervisorBin, "init"),
 		oci.WithProcessCwd(workspaceMount),
