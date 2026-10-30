@@ -88,6 +88,8 @@ type Runtime struct {
 	egressMu    sync.Mutex
 	egressAllow []string
 	egressDeny  []string
+	// egressEnforced is this Agent's last reported egress_policy.
+	egressEnforced bool
 
 	mu      sync.Mutex
 	managed map[string]int64 // sandbox id -> generation known to run
@@ -886,6 +888,7 @@ type createSandboxSpec struct {
 	workspaceMode string
 	gpuUUIDs      []string
 	resources     []resourceMount
+	egress        egressMode
 }
 
 // resourceMount is one version to fetch and mount at /resources/<mount>.

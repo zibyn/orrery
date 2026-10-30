@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
@@ -89,6 +90,41 @@ func (r *Runtime) setEgressRules(allow, deny []string) {
 	r.egressMu.Lock()
 	r.egressAllow, r.egressDeny = allow, deny
 	r.egressMu.Unlock()
+}
+
+// egressModeOf reads CreateSandbox.egress; a Control Plane that sends none
+// means open.
+func egressModeOf(m *nodev1.EgressMode) egressMode {
+	if m.GetMode() == "" {
+		return egressMode{name: egressOpen}
+	}
+	return egressMode{name: m.GetMode(), allow: m.GetAllow()}
+}
+
+// setEgressEnforced records the egress_policy this Agent last reported.
+func (r *Runtime) setEgressEnforced(report nodeproto.CapabilityReport) {
+	enforced := false
+	for _, entry := range report.Entries {
+		if entry.Name == nodeproto.CapEgressPolicy {
+			enforced = entry.Value == nodeproto.ValueEnforced
+		}
+	}
+	r.egressMu.Lock()
+	r.egressEnforced = enforced
+	r.egressMu.Unlock()
+}
+
+// egressRefused is the Create-time check: a Mode other than open on a Node
+// that does not enforce egress_policy fails rather than running unfiltered
+// (node-protocol.md).
+func (r *Runtime) egressRefused(mode egressMode) error {
+	r.egressMu.Lock()
+	enforced := r.egressEnforced
+	r.egressMu.Unlock()
+	if mode.name != egressOpen && !enforced {
+		return fmt.Errorf("egress mode %s needs egress_policy enforced on this Node", mode.name)
+	}
+	return nil
 }
 
 // egressPolicy resolves mode against the Rules this Agent holds now.

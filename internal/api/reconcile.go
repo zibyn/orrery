@@ -338,6 +338,7 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 			Workspace:   &nodev1.WorkspaceMount{WorkspaceId: att.WorkspaceID.String(), Mode: att.Mode},
 			GpuUuids:    gpus,
 			Resources:   resources,
+			Egress:      &nodev1.EgressMode{Mode: sandboxEgressValue(sb.EgressMode), Allow: sb.EgressAllow},
 		},
 	}})
 }

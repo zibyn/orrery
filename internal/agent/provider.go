@@ -81,6 +81,9 @@ func (d containerDriver) runtimeAlive(ctx context.Context, sandboxID uuid.UUID) 
 // on the Provider.
 
 func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (string, error) {
+	if err := r.egressRefused(cmd.egress); err != nil {
+		return "runtime_create_failed", err
+	}
 	return r.driver.createSandbox(ctx, cmd)
 }
 

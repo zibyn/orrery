@@ -1,6 +1,10 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -85,6 +89,74 @@ func TestSandboxRuntimeRequest(t *testing.T) {
 			}
 			if got != tt.runtime {
 				t.Fatalf("sandboxRuntime = %q, want %q", got, tt.runtime)
+			}
+		})
+	}
+}
+
+// api.md §3 egress: omitted is open; mode is required and one of three;
+// allowlist needs a non-empty allow; allow with any other mode, even empty, is
+// invalid; each entry is CIDR[:port]; at most 64 entries (defaults.md).
+func TestSandboxEgressRequest(t *testing.T) {
+	many := make([]string, 65)
+	for i := range many {
+		many[i] = fmt.Sprintf("10.0.0.%d", i)
+	}
+	tooMany, _ := json.Marshal(many)
+	maxOK, _ := json.Marshal(many[:64])
+	tests := []struct {
+		name    string
+		body    string
+		runtime string
+		mode    string
+		allow   []string
+		code    string
+	}{
+		{name: "omitted is open", body: `{}`, mode: "open"},
+		{name: "null is open", body: `{"egress":null}`, mode: "open"},
+		{name: "open", body: `{"egress":{"mode":"open"}}`, mode: "open"},
+		{name: "none", body: `{"egress":{"mode":"none"}}`, mode: "none"},
+		{name: "allowlist", body: `{"egress":{"mode":"allowlist","allow":["10.1.2.3","10.2.0.0/16:443"]}}`,
+			mode: "allowlist", allow: []string{"10.1.2.3", "10.2.0.0/16:443"}},
+		{name: "allowlist at the limit", body: `{"egress":{"mode":"allowlist","allow":` + string(maxOK) + `}}`,
+			mode: "allowlist", allow: many[:64]},
+		{name: "allowlist over the limit", body: `{"egress":{"mode":"allowlist","allow":` + string(tooMany) + `}}`, code: "invalid_request"},
+		{name: "egress without mode", body: `{"egress":{}}`, code: "invalid_request"},
+		{name: "empty mode", body: `{"egress":{"mode":""}}`, code: "invalid_request"},
+		{name: "unknown mode", body: `{"egress":{"mode":"closed"}}`, code: "invalid_request"},
+		{name: "allowlist without allow", body: `{"egress":{"mode":"allowlist"}}`, code: "invalid_request"},
+		{name: "allowlist with empty allow", body: `{"egress":{"mode":"allowlist","allow":[]}}`, code: "invalid_request"},
+		{name: "none with allow", body: `{"egress":{"mode":"none","allow":["10.0.0.1"]}}`, code: "invalid_request"},
+		{name: "none with empty allow", body: `{"egress":{"mode":"none","allow":[]}}`, code: "invalid_request"},
+		{name: "open with empty allow", body: `{"egress":{"mode":"open","allow":[]}}`, code: "invalid_request"},
+		{name: "bad entry", body: `{"egress":{"mode":"allowlist","allow":["example.com"]}}`, code: "invalid_request"},
+		{name: "IPv6 entry", body: `{"egress":{"mode":"allowlist","allow":["::1"]}}`, code: "invalid_request"},
+		{name: "port out of range", body: `{"egress":{"mode":"allowlist","allow":["10.0.0.1:0"]}}`, code: "invalid_request"},
+		{name: "local with open", body: `{"egress":{"mode":"open"}}`, runtime: "local", mode: "open"},
+		{name: "local with none", body: `{"egress":{"mode":"none"}}`, runtime: "local", code: "unsupported"},
+		{name: "local with allowlist", body: `{"egress":{"mode":"allowlist","allow":["10.0.0.1"]}}`, runtime: "local", code: "unsupported"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req createSandboxRequest
+			dec := json.NewDecoder(strings.NewReader(tt.body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			runtime := tt.runtime
+			if runtime == "" {
+				runtime = "container"
+			}
+			mode, allow, code, detail := sandboxEgressMode(req, runtime)
+			if code != tt.code {
+				t.Fatalf("sandboxEgress problem = %q (%s), want %q", code, detail, tt.code)
+			}
+			if code != "" {
+				return
+			}
+			if mode != tt.mode || !slices.Equal(allow, tt.allow) {
+				t.Fatalf("sandboxEgress = %q %v, want %q %v", mode, allow, tt.mode, tt.allow)
 			}
 		})
 	}

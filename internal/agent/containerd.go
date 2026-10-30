@@ -181,8 +181,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if d.gvisor() && len(cmd.gpuUUIDs) > 0 {
 		return "runtime_create_failed", errors.New("this gvisor Node does not attach GPUs")
 	}
-	// shortcut: every Sandbox is Mode open until CreateSandbox carries egress (#165).
-	policy, err := d.r.egressPolicy(egressMode{name: egressOpen})
+	policy, err := d.r.egressPolicy(cmd.egress)
 	if err != nil {
 		return "runtime_create_failed", err
 	}

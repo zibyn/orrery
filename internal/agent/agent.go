@@ -447,6 +447,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		slog.Error("runtime self-check failed", "error", probeErr)
 	}
 	report = withSnapshotBuild(report, buildOK)
+	rt.setEgressEnforced(report)
 	// The inventory is a hardware fact; placement still requires the CDI
 	// capability above, so an old Docker's GPUs are visible but not usable.
 	gpus := enumerateGPUs(streamCtx)

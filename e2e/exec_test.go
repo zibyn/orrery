@@ -55,12 +55,19 @@ func readyExecSandbox(t *testing.T, admin string, memory int64) string {
 // it to reach ready.
 func createReadySandbox(t *testing.T, admin, name string, memory int64) string {
 	t.Helper()
-	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
+	return createReadySandboxWith(t, admin, map[string]any{
 		"name":      name,
 		"cpu":       0.5,
 		"memory":    memory,
 		"idle_stop": 0,
 	})
+}
+
+// createReadySandboxWith creates a Sandbox from a full request body and waits
+// for it to be ready.
+func createReadySandboxWith(t *testing.T, admin string, body map[string]any) string {
+	t.Helper()
+	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, body)
 	if status != http.StatusCreated {
 		t.Fatalf("create Sandbox: %d %s", status, data)
 	}

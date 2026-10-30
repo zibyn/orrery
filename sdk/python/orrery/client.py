@@ -73,11 +73,20 @@ class WorkspaceRef:
 
 
 @dataclass
+class Egress:
+    """Egress Mode: open, none, or allowlist with a non-empty allow."""
+
+    mode: str = "open"
+    allow: list[str] | None = None
+
+
+@dataclass
 class Sandbox:
     id: str = ""
     name: str = ""
     labels: dict[str, str] = field(default_factory=dict)
     runtime: str = ""
+    egress: Egress = field(default_factory=Egress)
     state: str = ""
     cause: str | None = None
     node_id: str | None = None
@@ -99,6 +108,10 @@ class Sandbox:
             data["gpu"] = _fit(GPU, data["gpu"])
         if isinstance(data.get("workspace"), dict):
             data["workspace"] = _fit(WorkspaceRef, data["workspace"])
+        if isinstance(data.get("egress"), dict):
+            data["egress"] = _fit(Egress, data["egress"])
+        else:
+            data.pop("egress", None)
         return _fit(cls, data)
 
 
