@@ -185,9 +185,6 @@ func TestSecretInject(t *testing.T) {
 	}
 	var sb sandboxView
 	mustJSON(t, body, &sb)
-	t.Cleanup(func() {
-		removeSandboxRuntime(sb.ID)
-	})
 	status, body = call(t, http.MethodGet, "/api/v1/sandboxes/"+sb.ID+"?wait_for=ready", admin, nil)
 	var ready sandboxView
 	mustJSON(t, body, &ready)

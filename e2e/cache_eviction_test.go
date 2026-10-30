@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -155,10 +154,7 @@ func TestCacheEviction(t *testing.T) {
 	if !imageExists(pinnedImage) {
 		t.Fatal("an image pinned by a running or stopped Sandbox was evicted")
 	}
-	hostImage := "alpine:3.22"
-	if e2eRuntime() == "containerd" {
-		hostImage = "docker.io/library/alpine:3.22"
-	}
+	hostImage := "docker.io/library/alpine:3.22"
 	if !imageExists(hostImage) {
 		t.Fatalf("a host-owned image %s was evicted", hostImage)
 	}
@@ -204,16 +200,6 @@ func pathExists(path string) bool {
 func buildUnreferencedImage(t *testing.T, suffix int64) string {
 	t.Helper()
 	tag := fmt.Sprintf("127.0.0.1:15000/e2e-evict:%d", suffix)
-	if e2eRuntime() != "containerd" {
-		buildDir := t.TempDir()
-		dockerfile := fmt.Sprintf("FROM alpine:3.22\nRUN echo evict-%d > /cache.txt\n", suffix)
-		writeTestFile(t, filepath.Join(buildDir, "Dockerfile"), dockerfile, 0o644)
-		if out, err := exec.Command("docker", "build", "--network=none", "-t", tag, buildDir).CombinedOutput(); err != nil {
-			t.Fatalf("build eviction image: %v\n%s", err, out)
-		}
-		t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
-		return dockerInspect(t, tag, "{{.Id}}")
-	}
 	// The Agent's containerd namespace gets the image by import: buildkitd
 	// has no containerd image store of its own here.
 	script := fmt.Sprintf(`set -e
@@ -225,7 +211,7 @@ ctr -n orrery images import "$d/image.tar"`, suffix, shellQuote(e2eBuildkit(t)),
 	if out, err := nodeShell(script); err != nil {
 		t.Fatalf("build eviction image: %v\n%s", err, out)
 	}
-	t.Cleanup(func() { _ = sandboxCommand(nil, "images", "rm", tag).Run() })
+	t.Cleanup(func() { _ = sandboxCommand("images", "rm", tag).Run() })
 	return tag
 }
 
@@ -238,22 +224,16 @@ func e2eBuildkit(t *testing.T) string {
 	return addr
 }
 
-// imageExists takes a Docker image id, or a containerd image name.
+// imageExists takes a containerd image name.
 func imageExists(id string) bool {
-	if e2eRuntime() != "containerd" {
-		return exec.Command("docker", "image", "inspect", id).Run() == nil
-	}
-	out, err := sandboxCommand(nil, "images", "ls", "-q").Output()
+	out, err := sandboxCommand("images", "ls", "-q").Output()
 	return err == nil && slices.Contains(strings.Fields(string(out)), id)
 }
 
 // sandboxImage is the image key of a Sandbox's Runtime, as imageExists takes.
 func sandboxImage(t *testing.T, id string) string {
 	t.Helper()
-	if e2eRuntime() != "containerd" {
-		return dockerInspect(t, "orrery-"+id, "{{.Image}}")
-	}
-	out, err := sandboxCommand(nil, "containers", "info", "orrery-"+id).Output()
+	out, err := sandboxCommand("containers", "info", "orrery-"+id).Output()
 	var info struct {
 		Image string `json:"Image"`
 	}
@@ -261,15 +241,6 @@ func sandboxImage(t *testing.T, id string) string {
 		t.Fatalf("ctr containers info orrery-%s: %v\n%s", id, err, out)
 	}
 	return info.Image
-}
-
-func dockerInspect(t *testing.T, ref, format string) string {
-	t.Helper()
-	out, err := exec.Command("docker", "inspect", "-f", format, ref).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker inspect %s: %v\n%s", ref, err, out)
-	}
-	return strings.TrimSpace(string(out))
 }
 
 func digestHex(content []byte) string {
@@ -281,32 +252,16 @@ func digestHex(content []byte) string {
 // all-or-nothing, so the test compares sets to isolate its entries.
 func buildCacheIDs(t *testing.T) map[string]bool {
 	t.Helper()
-	if e2eRuntime() == "containerd" {
-		out, err := nodeShell("buildctl --addr " + shellQuote(e2eBuildkit(t)) + " du --format '{{json .}}'")
-		var records []struct {
-			ID string `json:"id"`
-		}
-		if err != nil || json.Unmarshal(out, &records) != nil {
-			t.Fatalf("buildctl du: %v\n%s", err, out)
-		}
-		ids := map[string]bool{}
-		for _, record := range records {
-			ids[record.ID] = true
-		}
-		return ids
+	out, err := nodeShell("buildctl --addr " + shellQuote(e2eBuildkit(t)) + " du --format '{{json .}}'")
+	var records []struct {
+		ID string `json:"id"`
 	}
-	out, err := exec.Command("docker", "buildx", "du", "--format", "{{json .}}").Output()
-	if err != nil {
-		t.Fatalf("docker buildx du: %v", err)
+	if err != nil || json.Unmarshal(out, &records) != nil {
+		t.Fatalf("buildctl du: %v\n%s", err, out)
 	}
 	ids := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		var entry struct {
-			ID string `json:"ID"`
-		}
-		if json.Unmarshal([]byte(line), &entry) == nil && entry.ID != "" {
-			ids[entry.ID] = true
-		}
+	for _, record := range records {
+		ids[record.ID] = true
 	}
 	return ids
 }

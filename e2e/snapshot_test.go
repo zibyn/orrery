@@ -483,8 +483,5 @@ func dockerCLI(t *testing.T, configDir string, args ...string) string {
 func runDocker(configDir string, args ...string) *exec.Cmd {
 	cmd := exec.Command("docker", args...)
 	cmd.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
-	if socket := os.Getenv("ORRERY_E2E_DOCKER_SOCKET"); socket != "" {
-		cmd.Env = append(cmd.Env, "DOCKER_HOST=unix://"+socket)
-	}
 	return cmd
 }

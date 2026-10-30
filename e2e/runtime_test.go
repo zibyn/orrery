@@ -9,45 +9,25 @@ import (
 	"time"
 )
 
-// e2eRuntime is the --runtime the shared scenarios' Agents run with:
-// containerd unless ORRERY_E2E_RUNTIME names another container Provider (#169).
-func e2eRuntime() string { return envOr("ORRERY_E2E_RUNTIME", "containerd") }
-
 // inspectSandboxRuntime is the Runtime's own record of a Sandbox's container:
-// docker inspect, or ctr's container info (labels and OCI spec).
+// ctr's container info (labels and OCI spec).
 func inspectSandboxRuntime(id string) ([]byte, error) {
-	return sandboxCommand([]string{"inspect", "orrery-" + id},
-		"containers", "info", "orrery-"+id).CombinedOutput()
+	return sandboxCommand("containers", "info", "orrery-"+id).CombinedOutput()
 }
 
-// sandboxCommand runs a container CLI against a Sandbox's Runtime: docker, or
-// ctr in the Agent's containerd namespace. ORRERY_E2E_CTR may name a ctr
-// wrapper, for example one that runs ctr on the Node host over SSH.
-func sandboxCommand(docker []string, ctr ...string) *exec.Cmd {
-	if e2eRuntime() != "containerd" {
-		return exec.Command("docker", docker...)
-	}
-	return exec.Command(envOr("ORRERY_E2E_CTR", "ctr"), append([]string{"-n", "orrery"}, ctr...)...)
+// sandboxCommand runs ctr in the Agent's containerd namespace. ORRERY_E2E_CTR
+// may name a ctr wrapper, for example one that runs ctr on the Node host over
+// SSH.
+func sandboxCommand(args ...string) *exec.Cmd {
+	return exec.Command(envOr("ORRERY_E2E_CTR", "ctr"), append([]string{"-n", "orrery"}, args...)...)
 }
 
 func killSandboxRuntime(id string) ([]byte, error) {
-	return sandboxCommand([]string{"kill", "orrery-" + id},
-		"task", "kill", "-s", "SIGKILL", "orrery-"+id).CombinedOutput()
-}
-
-func removeSandboxRuntime(id string) {
-	if e2eRuntime() == "containerd" {
-		return // the Agent's Stop or the next Agent's adopt removes it
-	}
-	_ = exec.Command("docker", "rm", "-f", "orrery-"+id).Run()
+	return sandboxCommand("task", "kill", "-s", "SIGKILL", "orrery-"+id).CombinedOutput()
 }
 
 func containerRunning(id string) bool {
-	if e2eRuntime() != "containerd" {
-		out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", "orrery-"+id).CombinedOutput()
-		return err == nil && strings.TrimSpace(string(out)) == "true"
-	}
-	out, err := sandboxCommand(nil, "task", "ls").CombinedOutput()
+	out, err := sandboxCommand("task", "ls").CombinedOutput()
 	if err != nil {
 		return false
 	}
@@ -70,8 +50,7 @@ func hostGPUCount() int {
 }
 
 func catInSandbox(id, path string) ([]byte, error) {
-	return sandboxCommand([]string{"exec", "orrery-" + id, "cat", path},
-		"task", "exec", "--exec-id", fmt.Sprintf("e2e-cat-%d", time.Now().UnixNano()),
+	return sandboxCommand("task", "exec", "--exec-id", fmt.Sprintf("e2e-cat-%d", time.Now().UnixNano()),
 		"orrery-"+id, "cat", path).CombinedOutput()
 }
 
@@ -80,4 +59,9 @@ func catInSandbox(id, path string) ([]byte, error) {
 // paths, cgroups and the BuildKit endpoint live on that host.
 func nodeShell(script string) ([]byte, error) {
 	return exec.Command(envOr("ORRERY_E2E_NODE_SHELL", "sh"), "-c", script).CombinedOutput()
+}
+
+// shellQuote single-quotes s for a nodeShell or ssh script.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }

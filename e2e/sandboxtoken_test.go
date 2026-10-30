@@ -26,9 +26,6 @@ func TestSandboxTokenScope(t *testing.T) {
 	waitForNodeReady(t, admin, nodeName)
 
 	sandboxID := createReadySandbox(t, admin, fmt.Sprintf("token-%d", suffix), 256<<20)
-	t.Cleanup(func() {
-		removeSandboxRuntime(sandboxID)
-	})
 
 	run := func(argv ...string) (string, string) {
 		t.Helper()

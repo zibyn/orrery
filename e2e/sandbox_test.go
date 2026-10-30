@@ -37,7 +37,7 @@ type sandboxView struct {
 }
 
 // TestSandboxLifecycle is the "sandbox-lifecycle" acceptance scenario (#50):
-// create → ready → stop → start → delete on a real Docker Node, with the
+// create → ready → stop → start → delete on a real containerd Node, with the
 // container limits matching the request and the implicit Workspace reclaimed.
 func TestSandboxLifecycle(t *testing.T) {
 	admin := adminToken(t)

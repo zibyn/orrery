@@ -12,17 +12,16 @@ import (
 	"time"
 )
 
-// TestGvisorParity is #160's gVisor parity scenario (#168), replacing
-// TestPodmanParity: a containerd Node under --isolation gvisor reports
+// TestGvisorParity is #160's gVisor parity scenario (#168): a containerd Node under --isolation gvisor reports
 // kernel_isolation enforced and GPU unsupported, and exec-log-stream,
 // agent-restart-survives and an Egress Rules scenario pass on it. It needs a
 // containerd host with runsc and its shim on PATH; the e2e harness runs every
 // Agent there over SSH:
 //
-//	ORRERY_E2E_RUNTIME=containerd ORRERY_E2E_ISOLATION=gvisor make e2e -run GvisorParity
+//	ORRERY_E2E_ISOLATION=gvisor make e2e -run GvisorParity
 func TestGvisorParity(t *testing.T) {
-	if e2eRuntime() != "containerd" || os.Getenv("ORRERY_E2E_ISOLATION") != "gvisor" {
-		t.Skip("needs a gvisor containerd Node (ORRERY_E2E_RUNTIME=containerd ORRERY_E2E_ISOLATION=gvisor)")
+	if os.Getenv("ORRERY_E2E_ISOLATION") != "gvisor" {
+		t.Skip("needs a gvisor containerd Node (ORRERY_E2E_ISOLATION=gvisor)")
 	}
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)

@@ -20,9 +20,6 @@ type egressView struct {
 // allowlist Modes narrow an otherwise open deployment, are stored on the
 // Sandbox and reapplied on restart, and Rules allow still applies to none.
 func TestEgressMode(t *testing.T) {
-	if e2eRuntime() != "containerd" {
-		t.Skip("Egress Modes are enforced only on containerd Nodes (ORRERY_E2E_RUNTIME=containerd)")
-	}
 	if composeArgs() == nil || os.Getenv("ORRERY_CONFIG_DIR") == "" {
 		t.Skip("needs the Compose stack and its config.yaml (scripts/e2e.sh)")
 	}
@@ -75,7 +72,7 @@ func TestEgressMode(t *testing.T) {
 
 // TestEgressModeUnsupported: without a Node that enforces egress_policy, a
 // Mode other than open is refused at create, while open is accepted (api.md
-// §3). It runs only where no such Node is enrolled, e.g. the Docker job.
+// §3). It runs only where no such Node is enrolled.
 func TestEgressModeUnsupported(t *testing.T) {
 	admin := adminToken(t)
 	status, data := call(t, http.MethodGet, "/api/v1/nodes?limit=100", admin, nil)

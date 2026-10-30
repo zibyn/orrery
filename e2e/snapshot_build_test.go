@@ -166,7 +166,7 @@ func TestSnapshotBuildRun(t *testing.T) {
 	// The image config and history must not carry the Secret. (The probe
 	// layer deliberately contains it; that is what the RUN wrote.) Read the
 	// config blob through the platform registry, independent of the local
-	// Docker image store.
+	// image store.
 	config := registryImageConfig(t, sb.Snapshot)
 	if strings.Contains(config, secretValue) {
 		t.Fatal("the built image config or history leaks the Secret value")
@@ -301,7 +301,7 @@ echo "$procs"; cat "$root/cpu.max" "$root/memory.max"`
 
 // registryImageConfig fetches the built image's config blob (including its
 // history) through the platform registry. It does not depend on the local
-// Docker image store.
+// image store.
 func registryImageConfig(t *testing.T, ref string) string {
 	t.Helper()
 	name, digest, ok := strings.Cut(ref, "@")
@@ -401,9 +401,6 @@ func registryGet(t *testing.T, host, path, auth, accept string) string {
 // so without --buildkit it reports snapshot_build unsupported (runtime.md §12,
 // ADR-0026).
 func TestSnapshotBuildNeedsBuildkit(t *testing.T) {
-	if e2eRuntime() != "containerd" {
-		t.Skip("a Docker Node falls back to dockerd's built-in BuildKit")
-	}
 	admin := adminToken(t)
 	nodeName := fmt.Sprintf("e2e-no-buildkit-node-%d", time.Now().UnixNano())
 	state, dataRoot := enrollAgent(t, admin, nodeName)

@@ -61,7 +61,7 @@ func waitForNodeHealth(t *testing.T, admin, name, wantStatus, wantHealth string)
 }
 
 // TestMultiNodePlacement is #93's "multi-node-placement" scenario: with two
-// Nodes on one Docker daemon, a new persistent Workspace lands on a feasible
+// Nodes on one containerd, a new persistent Workspace lands on a feasible
 // Node, and its Sandbox is admitted only on the Node the Workspace is bound to
 // (ADR-0015 locality). The policy would prefer the older Node, so the two
 // Agents are brought up out of order to make a broken pin visible.
@@ -125,7 +125,7 @@ func TestMultiNodePlacement(t *testing.T) {
 // TestUnhealthyRuntime is #93's "unhealthy-runtime" scenario: a Node whose
 // Runtime self-check and heartbeat report unhealthy receives no new placement.
 // The shared Runtime cannot be stopped for one Agent, so the unhealthy Agent
-// is given an unreachable --docker or --containerd socket.
+// is given an unreachable --containerd socket.
 func TestUnhealthyRuntime(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
@@ -136,7 +136,7 @@ func TestUnhealthyRuntime(t *testing.T) {
 	healthy := startAgentNode(t, admin, healthyName)
 
 	state, dataRoot := enrollAgent(t, admin, unhealthyName)
-	startAgentWith(t, state, dataRoot, "--"+e2eRuntime(), filepath.Join(t.TempDir(), "unreachable.sock"))
+	startAgentWith(t, state, dataRoot, "--containerd", filepath.Join(t.TempDir(), "unreachable.sock"))
 	unhealthy := waitForNodeHealth(t, admin, unhealthyName, "unavailable", "unhealthy")
 	if unhealthy.ID == healthy.ID {
 		t.Fatalf("the unhealthy Agent reused Node %s", healthy.ID)
@@ -231,9 +231,7 @@ func rawHello(t *testing.T, client nodev1.NodeClient, nodeID, token string, majo
 
 func sandboxContainerLabel(t *testing.T, sandboxID, key string) string {
 	t.Helper()
-	// Docker's .Config and ctr's container info both carry a Labels object.
-	out, err := sandboxCommand([]string{"inspect", "-f", "{{json .Config}}", "orrery-" + sandboxID},
-		"containers", "info", "orrery-"+sandboxID).Output()
+	out, err := sandboxCommand("containers", "info", "orrery-"+sandboxID).Output()
 	if err != nil {
 		t.Fatalf("inspect label %s: %v\n%s", key, err, out)
 	}

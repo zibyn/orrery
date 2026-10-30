@@ -389,9 +389,6 @@ func newGitFixture(t *testing.T, admin string, link bool) *gitFixture {
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
 	sandboxID := createReadySandbox(t, userToken, fmt.Sprintf("git-cred-%d", suffix), 256<<20)
-	t.Cleanup(func() {
-		removeSandboxRuntime(sandboxID)
-	})
 
 	stdout, stderr, code := execInSandbox(t, admin, sandboxID, "sh", "-c", `printf %s "$ORRERY_SANDBOX_TOKEN"`)
 	if code != 0 || !strings.HasPrefix(stdout, "ors_") {

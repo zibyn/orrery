@@ -23,7 +23,7 @@ import (
 // The SSH login must reach root (directly or with sudo -n). When the login is
 // root, ORRERY_E2E_LOCAL_USER defaults to nobody; when it is a user, that user
 // is the default. The scenario does not need a GPU, but it reuses the remote
-// host variable the GPU and Podman scenarios already use.
+// host variable the GPU scenarios already use.
 func TestLocalRuntime(t *testing.T) {
 	admin := adminToken(t)
 	host := startLocalHost(t, "e2e-local-runtime")

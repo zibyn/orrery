@@ -24,9 +24,6 @@ func readySandboxWithAgent(t *testing.T, admin string) (sandboxID string, agent 
 	waitForNodeReady(t, admin, nodeName)
 
 	sandboxID = createReadySandbox(t, admin, fmt.Sprintf("restart-%d", suffix), 128<<20)
-	t.Cleanup(func() {
-		removeSandboxRuntime(sandboxID)
-	})
 	return sandboxID, agent, state, dataRoot
 }
 

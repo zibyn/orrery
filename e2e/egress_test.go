@@ -21,9 +21,6 @@ var recommendedDeny = []string{"169.254.169.254/32", "10.213.0.0/16", "10.0.0.0/
 // Control Plane restart, deny drops, allow overrides deny, and two Sandboxes
 // on one Node cannot reach each other under the recommended Rules.
 func TestEgressRules(t *testing.T) {
-	if e2eRuntime() != "containerd" {
-		t.Skip("Egress Rules are enforced only on containerd Nodes (ORRERY_E2E_RUNTIME=containerd)")
-	}
 	if composeArgs() == nil || os.Getenv("ORRERY_CONFIG_DIR") == "" {
 		t.Skip("needs the Compose stack and its config.yaml (scripts/e2e.sh)")
 	}
