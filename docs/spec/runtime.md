@@ -90,7 +90,7 @@ Agent 只接管它 containerd namespace 里带本 Node `orrery.node=<node_id>` �
 
 ## 9. containerd
 
-Agent 用 containerd 原生 gRPC 客户端（2.x），连 `--containerd` 给出的 socket，所有对象都放在 Agent 自己的 namespace `orrery` 里。只支持 rootful。每台 Node 只跑一种 Isolation Runtime，由 `--isolation runc|gvisor` 选定（ADR-0026）：`runc` 用 containerd 默认的 `io.containerd.runc.v2`，`gvisor` 用 `io.containerd.runsc.v1`。下面的步骤两者相同，gvisor 的差别单列在后面。
+Agent 用 containerd 原生 gRPC 客户端（2.x），连 `--containerd` 给出的 socket，所有对象都放在 Agent 自己的 namespace `orrery` 里。只支持 rootful。每台 Node 只跑一种 Isolation Runtime，由 `--isolation runc|runsc` 选定（ADR-0026）：`runc` 用 containerd 默认的 `io.containerd.runc.v2`，`runsc`（gVisor 的 OCI runtime）用 `io.containerd.runsc.v1`。下面的步骤两者相同，runsc 的差别单列在后面。
 
 - **Create**：先用 Node 的 registry 凭据按 digest 拉取镜像并解包（失败时为 `image_pull_failed`）。然后按 §13 建好 netns，再创建容器和 task，配置如下：
   - 标签 `orrery.managed` 和 `orrery.node=<node_id>`（§8）；
@@ -100,19 +100,19 @@ Agent 用 containerd 原生 gRPC 客户端（2.x），连 `--containerd` 给出�
   - 设置 CPU、内存、PID 限额；cgroup 路径取 containerd 默认的 `/<namespace>/<id>`；
   - GPU 只用 CDI：`pkg/cdi.WithCDIDevices("nvidia.com/gpu=GPU-<UUID>", …)`，不用 `pkg/oci` 里的设备选项。它会往 spec 里加 env、hook 和 mount，所以要排在会重置这些字段的 SpecOpts 之后；registry 用 `cdi.Configure(cdi.WithAutoRefresh(false))` 关掉自动刷新，与 `ctr` 一致。
 
-  task 启动后回读：CPU、内存、PID 上限直接读宿主上的 `/sys/fs/cgroup/<cgroupsPath>/{cpu.max,memory.max,pids.max}`，runc 和 gvisor 共用这一个读法（gvisor 的客户机里看到的是 Sentry 模拟的 cgroupfs，不能拿来回读）；设备节点由同步执行的 `supervisor probe` 列出。与请求不一致就 `runtime_create_failed`。
+  task 启动后回读：CPU、内存、PID 上限直接读宿主上的 `/sys/fs/cgroup/<cgroupsPath>/{cpu.max,memory.max,pids.max}`，runc 和 runsc 共用这一个读法（runsc 的客户机里看到的是 Sentry 模拟的 cgroupfs，不能拿来回读）；设备节点由同步执行的 `supervisor probe` 列出。与请求不一致就 `runtime_create_failed`。
 - **Exec**：对 task 起一个 exec 进程，不接 stdio，进程为 `supervisor run <exec_id>`，然后按 §4 发送 spec。
 - **Inspect**：读 task 状态。Agent 订阅 `/tasks/exit` 事件，再加上周期性扫描，及时发现 Runtime 死亡。
 - **Stop**：kill 并删除 task，删除容器，再按 §13 拆掉网络。幂等；对象不存在视为成功。
-- **Capabilities**：Node 注册时，用一个探针容器跑一遍 Create、回读和 §13 的出网自检。哪一项不对，那一项就是 `unsupported`，不另列最低版本表。`kernel_isolation` 在 gvisor 上是 `enforced`，在 runc 上是 `unsupported`。
+- **Capabilities**：Node 注册时，用一个探针容器跑一遍 Create、回读和 §13 的出网自检。哪一项不对，那一项就是 `unsupported`，不另列最低版本表。`kernel_isolation` 在 runsc 上是 `enforced`，在 runc 上是 `unsupported`。
 
-**gvisor 的差别**（`docs/research/containerd-cdi-runsc-cni-spike.md`）：
+**runsc 的差别**（`docs/research/containerd-cdi-runsc-cni-spike.md`）：
 
 - **runsc 选项**：每个容器经 shim 的 runtime options 传入，不改 containerd 配置：`runtimeoptions.Options{TypeUrl: "io.containerd.runsc.v1.options", ConfigPath: <Agent 写的 TOML>}`，TOML 里 `[runsc_config]` 设 `host-uds = "create"`。没有它，Sandbox 里建的 unix socket 在宿主上看不到，PTY 的 `ctl.sock`（§5）和端口转发的 socket（§14）都会失效。代价是 Sandbox 能在它的宿主挂载（Workspace、运行目录）上建出宿主可见的 socket；反方向（连宿主上的 socket，`open`）仍然关闭。
 - **GPU**：报 `unsupported`。spec 里一旦有 NVIDIA 设备，runsc 会自己开启 nvproxy，不会报错，所以带 GPU 的 Create 由 Agent 在建容器之前拒绝。
 - **PID 上限**：`pids.max` 数的是宿主任务，包括 Sentry 的线程（空闲时约 20 到 51 个）和每个客户机线程对应的 systrap stub，不是客户机进程数 1:1。回读照样准确，上限照样是边界，但同一个数值能容纳的客户机进程更少；撞到上限时整个 Sandbox 退出（Runtime 死亡，Exec 以 `runtime_lost` 结束），而不是客户机里的 `fork()` 返回 `EAGAIN`。平台不为此调整请求的数值。
 - **`oom_killed`**：Supervisor 在客户机里读到的 `memory.events` 是 Sentry 模拟的。实现时要验证 OOM 时 `oom_kill` 计数会上涨；如果不会，改读宿主 cgroup 的 `memory.events`（§4 第 7 步的依据不变）。
-- **数据目录**：runsc 执行不了宿主 tmpfs bind 挂载上的 Supervisor 二进制，所以 gvisor Node 的 `--data-root` 不能放在 tmpfs 上。Agent 启动时检查，在 tmpfs 上就拒绝启动。
+- **数据目录**：runsc 执行不了宿主 tmpfs bind 挂载上的 Supervisor 二进制，所以 runsc Node 的 `--data-root` 不能放在 tmpfs 上。Agent 启动时检查，在 tmpfs 上就拒绝启动。
 
 ## 10. Local Runtime
 
@@ -171,4 +171,4 @@ Agent 不进入 Sandbox 的网络命名空间（ADR-0026）。`OpenTunnel` 的�
 2. 连不上就对 task 起一个 detached exec：`supervisor forward <port> /.orrery/run/ports/<port>.sock`。Supervisor 在 Sandbox 里监听这个 socket，每个连接转到 Sandbox 内的 `127.0.0.1:<port>`。同一端口已有转发进程时，新的直接退出。
 3. Agent 连上 socket，与 Tunnel 流双向拷贝字节。
 
-runc 和 gvisor 走同一条路；gvisor 上 socket 在宿主可见，靠的是 §9 的 `host-uds=create`。Local Runtime 没有 netns，Agent 直接拨 `127.0.0.1:<port>`。
+runc 和 runsc 走同一条路；runsc 上 socket 在宿主可见，靠的是 §9 的 `host-uds=create`。Local Runtime 没有 netns，Agent 直接拨 `127.0.0.1:<port>`。
