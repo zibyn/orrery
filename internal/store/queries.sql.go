@@ -4642,14 +4642,13 @@ func (q *Queries) ListSandboxGPUs(ctx context.Context, sandboxID uuid.UUID) ([]s
 
 const listSandboxLinkEnds = `-- name: ListSandboxLinkEnds :many
 SELECT t.id AS target_id, t.node_id::uuid AS target_node_id, t.address::text AS target_address,
-       s.id AS source_id, s.node_id::uuid AS source_node_id, s.address::text AS source_address,
+       src.id::uuid AS source_id, s.node_id AS source_node_id, COALESCE(s.address, '')::text AS source_address,
        t.links_ports
 FROM sandboxes t
-JOIN sandboxes s ON s.id = ANY (t.links_from)
-WHERE t.deleted_at IS NULL AND s.deleted_at IS NULL
-  AND t.address IS NOT NULL AND s.address IS NOT NULL
-  AND t.node_id IS NOT NULL AND s.node_id IS NOT NULL
-ORDER BY t.id, s.id
+CROSS JOIN LATERAL unnest(t.links_from) AS src(id)
+LEFT JOIN sandboxes s ON s.id = src.id AND s.deleted_at IS NULL
+WHERE t.deleted_at IS NULL AND t.address IS NOT NULL AND t.node_id IS NOT NULL
+ORDER BY t.id, src.id
 `
 
 type ListSandboxLinkEndsRow struct {
@@ -4657,14 +4656,15 @@ type ListSandboxLinkEndsRow struct {
 	TargetNodeID  uuid.UUID
 	TargetAddress string
 	SourceID      uuid.UUID
-	SourceNodeID  uuid.UUID
+	SourceNodeID  *uuid.UUID
 	SourceAddress string
 	LinksPorts    []int32
 }
 
-// ListSandboxLinkEnds is every Sandbox Link whose two ends are addressed,
-// with the Node of each end: the rows each Node's SandboxLinks is cut from
-// (node-protocol.md). A deleted source no longer matches (api.md §3).
+// ListSandboxLinkEnds is every Sandbox Link whose target is addressed, with
+// the Node of each end: the rows each Node's SandboxLinks is cut from
+// (node-protocol.md). A source that is not running, or deleted, has an empty
+// address, so the target's inbound chain still ends in a drop (api.md §3).
 func (q *Queries) ListSandboxLinkEnds(ctx context.Context) ([]ListSandboxLinkEndsRow, error) {
 	rows, err := q.db.Query(ctx, listSandboxLinkEnds)
 	if err != nil {

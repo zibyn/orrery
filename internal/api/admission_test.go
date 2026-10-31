@@ -329,6 +329,14 @@ func TestOrderPlacementNodes(t *testing.T) {
 			},
 			want: []byte{2, 1},
 		},
+		"a Link target prefers its sources' Node over everything else": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 10, 0, nil),
+				{node: store.Node{ID: uuid.UUID{2}, CreatedAt: at(20)}, gpus: 4, linkSource: true},
+			},
+			want: []byte{2, 1},
+		},
 		"GPU-less request prefers a Node without cards": {
 			sb: store.Sandbox{},
 			nodes: []placementNode{

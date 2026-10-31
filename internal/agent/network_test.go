@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -44,6 +45,8 @@ func evaluate(t *testing.T, tables []nftTable, p packet) bool {
 				switch r.verdict {
 				case "accept", "drop":
 					return r.verdict
+				case "": // a statement such as clampMSS
+					continue
 				}
 				target, ok := chains[r.verdict]
 				if !ok {
@@ -269,5 +272,92 @@ func TestRenderNetworkLinkPrecedesTheSourcesEgressPolicy(t *testing.T) {
 	}
 	if evaluate(t, tables, out("10.213.1.8", 8080)) {
 		t.Error("an unlinked address was accepted")
+	}
+}
+
+// #194: a target whose sources are all stopped gets Links with an empty
+// source address; its inbound chain stays and ends in a drop (runtime.md §13).
+func TestRenderNetworkTargetWithNoRunningSource(t *testing.T) {
+	open, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressOpen})
+	target, unlinked := uuid.New(), uuid.New()
+	tables := renderNetwork(networkState{
+		sandboxes: map[uuid.UUID]sandboxNetwork{
+			target:   {HostVeth: "vethtarget", Address: "10.213.0.2", Policy: open},
+			unlinked: {HostVeth: "vethopen", Address: "10.213.0.5", Policy: open},
+		},
+		links: []*nodev1.SandboxLink{{TargetId: target.String(), TargetAddress: "10.213.0.2", SourceId: uuid.NewString()}},
+	})
+	if evaluate(t, tables, packet{hook: "forward", iif: "vethopen", oif: "vethtarget", src: "10.213.0.5", dst: "10.213.0.2", proto: "tcp", port: 8080}) {
+		t.Error("an unlinked open Sandbox reached the target")
+	}
+	if evaluate(t, tables, packet{hook: "output", oif: "vethtarget", src: "10.213.0.1", dst: "10.213.0.2", proto: "tcp", port: 8080}) {
+		t.Error("the host reached the target")
+	}
+}
+
+// runtime.md §15: orrery_mesh lets only linked pairs on linked ports and
+// established traffic through orrery-wg, drops everything the host sends
+// into it, and clamps the MSS of SYNs through it.
+func TestRenderNetworkMesh(t *testing.T) {
+	open, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressOpen})
+	target, source, other := uuid.New(), uuid.New(), uuid.New()
+	tables := renderNetwork(networkState{
+		sandboxes: map[uuid.UUID]sandboxNetwork{
+			target: {HostVeth: "vethtarget", Address: "10.213.0.2", Policy: open},
+			source: {HostVeth: "vethsource", Address: "10.213.0.3", Policy: open},
+			other:  {HostVeth: "vethother", Address: "10.213.0.6", Policy: open},
+		},
+		links: []*nodev1.SandboxLink{
+			{TargetId: target.String(), TargetAddress: "10.213.0.2", SourceId: uuid.NewString(), SourceAddress: "10.213.1.4", Ports: []uint32{8080}},
+			{TargetId: uuid.NewString(), TargetAddress: "10.213.1.7", SourceId: source.String(), SourceAddress: "10.213.0.3", Ports: []uint32{5432}},
+			// Neither end is here: this Node must not relay it.
+			{TargetId: uuid.NewString(), TargetAddress: "10.213.2.9", SourceId: uuid.NewString(), SourceAddress: "10.213.1.4"},
+		},
+	})
+	in := func(src, dst string, port uint16) packet {
+		return packet{hook: "forward", iif: meshInterface, oif: "orrery0", src: src, dst: dst, proto: "tcp", port: port}
+	}
+	out := func(src, dst string, port uint16) packet {
+		return packet{hook: "forward", iif: "orrery0", oif: meshInterface, src: src, dst: dst, proto: "tcp", port: port}
+	}
+	tests := []struct {
+		name   string
+		p      packet
+		accept bool
+	}{
+		{"a linked remote source reaches the target's linked port", in("10.213.1.4", "10.213.0.2", 8080), true},
+		{"but not another port", in("10.213.1.4", "10.213.0.2", 22), false},
+		{"an unlinked remote Sandbox cannot reach the target", in("10.213.1.5", "10.213.0.2", 8080), false},
+		{"nor a Sandbox that is not a target", in("10.213.1.4", "10.213.0.6", 8080), false},
+		{"replies come back in", packet{hook: "forward", iif: meshInterface, oif: "orrery0", src: "10.213.1.7",
+			dst: "10.213.0.3", proto: "tcp", port: 40000, established: true}, true},
+		{"a local source reaches its remote target", out("10.213.0.3", "10.213.1.7", 5432), true},
+		{"but not another port of it", out("10.213.0.3", "10.213.1.7", 22), false},
+		{"an open unlinked Sandbox cannot send into the Mesh", out("10.213.0.6", "10.213.1.7", 5432), false},
+		{"replies go out", packet{hook: "forward", iif: "orrery0", oif: meshInterface, src: "10.213.0.2",
+			dst: "10.213.1.4", proto: "tcp", port: 40000, established: true}, true},
+		{"a pair with no end here is not relayed", packet{hook: "forward", iif: meshInterface, oif: meshInterface,
+			src: "10.213.1.4", dst: "10.213.2.9", proto: "tcp", port: 80}, false},
+		{"traffic off the Mesh is untouched", packet{hook: "forward", iif: "orrery0", oif: "eth0", src: "10.213.0.6",
+			dst: "8.8.8.8", proto: "tcp", port: 443}, true},
+		{"the host cannot send into the Mesh", packet{hook: "output", oif: meshInterface, src: "192.0.2.10",
+			dst: "10.213.1.7", proto: "tcp", port: 5432}, false},
+		{"the host's other traffic is untouched", packet{hook: "output", oif: "eth0", src: "192.0.2.10",
+			dst: "8.8.8.8", proto: "tcp", port: 443}, true},
+	}
+	for _, tt := range tests {
+		if got := evaluate(t, tables, tt.p); got != tt.accept {
+			t.Errorf("%s: accepted = %v, want %v", tt.name, got, tt.accept)
+		}
+	}
+	script := nftScript(tables)
+	for _, want := range []string{
+		"table inet orrery_mesh {",
+		`iifname "orrery-wg" tcp flags syn tcp option maxseg size set rt mtu` + "\n",
+		`oifname "orrery-wg" tcp flags syn tcp option maxseg size set rt mtu` + "\n",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q:\n%s", want, script)
+		}
 	}
 }

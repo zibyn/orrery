@@ -184,10 +184,24 @@ type nftRule struct {
 	daddr       netip.Prefix
 	notDaddr    bool   // ip daddr != daddr
 	port        uint16 // TCP or UDP destination port
+	clampMSS    bool   // a TCP SYN's MSS set to the route MTU; with no verdict
 	verdict     string // also masquerade
 }
 
 func linkChain(id uuid.UUID) string { return "link-" + id.String() }
+
+// linkEnds is a Link's two addresses as /32 prefixes; one that is empty or
+// not IPv4 is the zero Prefix. ok reports that both are set.
+func linkEnds(link *nodev1.SandboxLink) (target, source netip.Prefix, ok bool) {
+	host := func(raw string) netip.Prefix {
+		if addr, err := netip.ParseAddr(raw); err == nil && addr.Is4() {
+			return netip.PrefixFrom(addr, 32)
+		}
+		return netip.Prefix{}
+	}
+	target, source = host(link.TargetAddress), host(link.SourceAddress)
+	return target, source, target.IsValid() && source.IsValid()
+}
 
 // linkRules is match once per linked port, or once for every port. A port
 // out of range is left out, so it fails closed rather than matching all.
@@ -234,17 +248,19 @@ func renderNetwork(state networkState) []nftTable {
 		var inbound []nftRule
 		isTarget := false
 		for _, link := range state.links {
-			target, terr := netip.ParseAddr(link.TargetAddress)
-			source, serr := netip.ParseAddr(link.SourceAddress)
-			if terr != nil || serr != nil || !target.Is4() || !source.Is4() {
+			target, source, ok := linkEnds(link)
+			if !target.IsValid() {
 				continue
 			}
-			if link.SourceId == id.String() {
-				chain.rules = append(chain.rules, linkRules(nftRule{daddr: netip.PrefixFrom(target, 32), verdict: "accept"}, link.Ports)...)
+			if link.SourceId == id.String() && ok {
+				chain.rules = append(chain.rules, linkRules(nftRule{daddr: target, verdict: "accept"}, link.Ports)...)
 			}
 			if link.TargetId == id.String() {
+				// A source with no address renders no accept; the chain still ends in a drop.
 				isTarget = true
-				inbound = append(inbound, linkRules(nftRule{saddr: netip.PrefixFrom(source, 32), verdict: "accept"}, link.Ports)...)
+				if ok {
+					inbound = append(inbound, linkRules(nftRule{saddr: source, verdict: "accept"}, link.Ports)...)
+				}
 			}
 		}
 		if isTarget {
@@ -269,11 +285,45 @@ func renderNetwork(state networkState) []nftTable {
 	}
 	forward.rules = append(forward.rules, egressJumps...)
 	table.chains = append([]nftChain{forward, input, output}, table.chains...)
-	tables := []nftTable{table}
+	tables := []nftTable{table, meshTable(state)}
 	if state.subnet.IsValid() {
 		tables = append(tables, natTable(state.subnet))
 	}
 	return tables
+}
+
+// meshTable is the inet table orrery_mesh: through orrery-wg only established
+// traffic and linked pairs with an end here pass, and the host itself sends
+// nothing into it (runtime.md §15).
+func meshTable(state networkState) nftTable {
+	forward := nftChain{name: "forward", hook: "forward", rules: []nftRule{
+		{iif: meshInterface, clampMSS: true},
+		{oif: meshInterface, clampMSS: true},
+		{iif: meshInterface, established: true, verdict: "accept"},
+		{oif: meshInterface, established: true, verdict: "accept"},
+	}}
+	local := func(id string) bool {
+		parsed, err := uuid.Parse(id)
+		_, ok := state.sandboxes[parsed]
+		return err == nil && ok
+	}
+	for _, link := range state.links {
+		target, source, ok := linkEnds(link)
+		if !ok {
+			continue
+		}
+		pair := nftRule{saddr: source, daddr: target, verdict: "accept"}
+		if local(link.TargetId) {
+			pair.iif = meshInterface
+			forward.rules = append(forward.rules, linkRules(pair, link.Ports)...)
+		} else if local(link.SourceId) {
+			pair.oif = meshInterface
+			forward.rules = append(forward.rules, linkRules(pair, link.Ports)...)
+		}
+	}
+	forward.rules = append(forward.rules, nftRule{iif: meshInterface, verdict: "drop"}, nftRule{oif: meshInterface, verdict: "drop"})
+	output := nftChain{name: "output", hook: "output", rules: []nftRule{{oif: meshInterface, verdict: "drop"}}}
+	return nftTable{family: "inet", name: "orrery_mesh", chains: []nftChain{forward, output}}
 }
 
 // natTable is the ip table orrery_nat: Sandbox traffic leaving the subnet
@@ -342,6 +392,9 @@ func (r nftRule) String() string {
 	}
 	if r.port != 0 {
 		match = append(match, fmt.Sprintf("meta l4proto { tcp, udp } th dport %d", r.port))
+	}
+	if r.clampMSS {
+		return strings.Join(append(match, "tcp flags syn tcp option maxseg size set rt mtu"), " ")
 	}
 	verdict := r.verdict
 	if verdict != "accept" && verdict != "drop" && verdict != "masquerade" {
