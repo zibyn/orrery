@@ -95,11 +95,11 @@ CGO_ENABLED=0 "$GO" build -o .e2e/orrery-agent ./cmd/orrery-agent
 CGO_ENABLED=0 "$GO" build -o .e2e/orrery ./cmd/orrery
 
 # A small Exec log cap keeps the truncation scenario fast, and a short PTY
-# idle window keeps the pty-idle scenario fast; 30s leaves margin over an Agent
-# restart plus PTY reattach under runsc (about 12s, #174). A short admission deadline
+# idle window keeps the pty-idle scenario fast; 15s leaves margin over an Agent
+# restart plus PTY reattach under runsc (about 4s since #178, #174). A short admission deadline
 # keeps the queue-and-deadline scenario fast.
 export ORRERY_EXEC_LOG_CAP="${ORRERY_EXEC_LOG_CAP:-1048576}"
-export ORRERY_PTY_IDLE_SECONDS="${ORRERY_PTY_IDLE_SECONDS:-30}"
+export ORRERY_PTY_IDLE_SECONDS="${ORRERY_PTY_IDLE_SECONDS:-15}"
 export ORRERY_ADMISSION_TIMEOUT="${ORRERY_ADMISSION_TIMEOUT:-10s}"
 # The retention scenario (#90) observes a real sweep without waiting for the
 # documented 10-minute cadence and 30-day TTL. Production defaults are
