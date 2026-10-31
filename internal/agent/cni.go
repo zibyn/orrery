@@ -30,6 +30,8 @@ func netnsPath(id uuid.UUID) string { return "/run/netns/" + netnsName(id) }
 type sandboxNetwork struct {
 	HostVeth string `json:"host_veth"`
 	Address  string `json:"address"`
+	// Policy is the Egress Policy resolved at Create.
+	Policy []egressRule `json:"policy"`
 }
 
 func (d *containerdDriver) bridgeConf() []byte {
@@ -106,9 +108,10 @@ func parseCNIResult(raw []byte, bridge string) (sandboxNetwork, error) {
 	return network, nil
 }
 
-// setupNetwork builds the netns at netnsPath(id) on the bridge, applies the
-// Egress Policy to its veth, and writes network.json and the files mounted
-// over /etc into dir (runtime.md §2, §13).
+// setupNetwork builds the netns at netnsPath(id) on the bridge, and writes
+// into dir network.json, the veth, address and Egress Policy a render
+// filters it by, and the files mounted over /etc (runtime.md §2, §13). The
+// caller renders.
 func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID, dir string, policy []egressRule) (sandboxNetwork, error) {
 	if _, err := runLocalCommand(ctx, "ip", "netns", "add", netnsName(id)); err != nil {
 		return sandboxNetwork{}, err
@@ -124,11 +127,9 @@ func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID, dir s
 	if err != nil {
 		return sandboxNetwork{}, err
 	}
+	network.Policy = policy
 	raw, _ := json.Marshal(network)
 	if err := os.WriteFile(filepath.Join(dir, "network.json"), raw, 0o644); err != nil {
-		return sandboxNetwork{}, err
-	}
-	if err := applyEgress(ctx, id, network.HostVeth, policy); err != nil {
 		return sandboxNetwork{}, err
 	}
 	if err := writeSandboxEtc(filepath.Join(dir, "etc"), id.String(), network.Address); err != nil {
@@ -137,10 +138,15 @@ func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID, dir s
 	return network, nil
 }
 
-// teardownNetwork removes the egress rules, CNI DEL, the netns and dir's
-// network.json; every step is idempotent.
+// teardownNetwork drops the Sandbox's recorded network and re-renders the
+// table without its chain, then CNI DEL and the netns; every step is
+// idempotent.
 func (d *containerdDriver) teardownNetwork(ctx context.Context, id uuid.UUID, dir string) error {
-	if err := removeEgress(ctx, id); err != nil {
+	if err := os.Remove(filepath.Join(dir, "network.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	d.setProbe(id, nil)
+	if err := d.applyNetwork(ctx); err != nil {
 		return err
 	}
 	// The bridge plugin's DEL tolerates a missing netns and still releases
@@ -153,10 +159,58 @@ func (d *containerdDriver) teardownNetwork(ctx context.Context, id uuid.UUID, di
 			return err
 		}
 	}
-	if err := os.Remove(filepath.Join(dir, "network.json")); err != nil && !os.IsNotExist(err) {
+	return nil
+}
+
+// setProbe records a self-check probe's network, or forgets it when network
+// is nil. Probes live only in memory, so the first render after a crash
+// drops a leftover probe's chain.
+func (d *containerdDriver) setProbe(id uuid.UUID, network *sandboxNetwork) {
+	d.networkMu.Lock()
+	defer d.networkMu.Unlock()
+	if network == nil {
+		delete(d.probes, id)
+		return
+	}
+	if d.probes == nil {
+		d.probes = map[uuid.UUID]sandboxNetwork{}
+	}
+	d.probes[id] = *network
+}
+
+// applyNetwork renders the bridge table orrery from every Sandbox's recorded
+// network.json plus the running probes, and replaces it in one nft
+// transaction (runtime.md §13).
+func (d *containerdDriver) applyNetwork(ctx context.Context) error {
+	d.networkMu.Lock()
+	defer d.networkMu.Unlock()
+	state := networkState{sandboxes: map[uuid.UUID]sandboxNetwork{}}
+	paths, err := filepath.Glob(filepath.Join(d.r.dataRoot, "sandboxes", "*", "network.json"))
+	if err != nil {
 		return err
 	}
-	return nil
+	for _, path := range paths {
+		id, err := uuid.Parse(filepath.Base(filepath.Dir(path)))
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // torn down since the glob
+		}
+		if err != nil {
+			return err
+		}
+		var network sandboxNetwork
+		if err := json.Unmarshal(raw, &network); err != nil {
+			return fmt.Errorf("decode %s: %w", path, err)
+		}
+		state.sandboxes[id] = network
+	}
+	for id, network := range d.probes {
+		state.sandboxes[id] = network
+	}
+	return nft(ctx, nftScript(renderNetwork(state)), "-f", "-")
 }
 
 // hostResolvConf is the host's upstream resolver list: systemd-resolved's
