@@ -230,7 +230,7 @@ func renderNetwork(state networkState) []nftTable {
 func natTable(subnet netip.Prefix) nftTable {
 	return nftTable{family: "ip", name: "orrery_nat", chains: []nftChain{{
 		name: "postrouting", hook: "postrouting",
-		rules: []nftRule{{saddr: subnet, daddr: subnet, notDaddr: true, oif: "orrery-wg", notOif: true, verdict: "masquerade"}},
+		rules: []nftRule{{saddr: subnet, daddr: subnet, notDaddr: true, oif: meshInterface, notOif: true, verdict: "masquerade"}},
 	}}}
 }
 
