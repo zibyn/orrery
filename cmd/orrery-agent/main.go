@@ -64,7 +64,8 @@ func usage() {
   orrery-agent supervisor probe [WORKSPACE]
   orrery-agent supervisor run EXEC_ID
   orrery-agent supervisor forward PORT SOCKET
-  orrery-agent supervisor dial HOST:PORT`)
+  orrery-agent supervisor dial HOST:PORT
+  orrery-agent supervisor listen HOST:PORT`)
 	os.Exit(2)
 }
 
@@ -136,6 +137,11 @@ func supervise(args []string) error {
 			usage()
 		}
 		return supervisor.Dial(args[1])
+	case "listen":
+		if len(args) != 2 {
+			usage()
+		}
+		return supervisor.Listen(args[1])
 	default:
 		usage()
 		return nil

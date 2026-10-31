@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -235,6 +236,9 @@ func (d *containerdDriver) applyNetwork(ctx context.Context) error {
 	}
 	for id, network := range d.probes {
 		state.sandboxes[id] = network
+	}
+	if d.probeLink != nil {
+		state.links = append(slices.Clone(d.links), d.probeLink)
 	}
 	return nft(ctx, nftScript(renderNetwork(state)), "-f", "-")
 }

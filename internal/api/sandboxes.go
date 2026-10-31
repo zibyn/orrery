@@ -309,6 +309,17 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		writeProblem(w, linksCode, linksDetail)
 		return
 	}
+	if len(linksFrom) > 0 {
+		nodes, err := s.q.ListAllNodes(ctx)
+		if err != nil {
+			s.internal(w, "list Nodes", err)
+			return
+		}
+		if !slices.ContainsFunc(nodes, linksCapable(linksFrom)) {
+			writeProblem(w, "unsupported", "no Node enforces sandbox_links, so a Sandbox with links cannot be placed")
+			return
+		}
+	}
 	if req.CPU == nil || *req.CPU <= 0 {
 		writeProblem(w, "invalid_request", "cpu must be a positive number of cores")
 		return
