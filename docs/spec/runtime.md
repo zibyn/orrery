@@ -168,7 +168,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
   3. 这个 Sandbox 作为来源的 Sandbox Link：`ip daddr <目标地址> [tcp|udp dport <ports>] accept`，排在 Egress Policy 之前（ADR-0027）；
   4. Egress Policy：按 Egress Rules `allow` → Egress Rules `deny` → Egress Mode 的顺序渲染（`open` 全部放行；`none` 全部丢弃；`allowlist` 先放行所列条目，再丢弃其余）。
 - **每个 Link 目标的入站链**：`ct state established,related accept`；ARP 放行，其余非 IPv4 帧丢弃；每个来源一条 `ip saddr <来源地址> [tcp|udp dport <ports>] accept`；最后全部丢弃。来源没有地址（不在运行）时不渲染那一条。
-- **Link 的生效**：Control Plane 用 `SandboxLinks` 把一端在这台 Node 上的全部 Link 连同两端当前地址整份下发（`node-protocol.md`），任一端地址变化或起停时重新下发；Agent 收到后整张 `orrery` 表重新渲染。重新下发之前，目标只认旧地址，即 fail-closed。
+- **Link 的生效**：Control Plane 用 `SandboxLinks` 把一端在这台 Node 上的全部 Link 连同两端当前地址整份下发（`node-protocol.md`），任一端地址变化或起停时重新下发；Agent 收到后整张 `orrery` 表重新渲染。重新下发之前，目标只认旧地址，即 fail-closed。目标的入站链在 Create 时按 `CreateSandbox.link_target` 先建好，第一份 `SandboxLinks` 到达之前谁都连不上它。
 
   Egress Policy 由一个纯函数从（Egress Rules，Egress Mode）算出有序条目，nftables 程序由它的输出渲染。条目是 `CIDR` 时匹配 `ip daddr`，任何协议；带 `:port` 时只匹配该端口的 TCP 和 UDP。
 - **生效时机**：Rules 取 Agent 当前持有的那份（`node-protocol.md` 的 `HelloAck`），Mode 取 `CreateSandbox` 里的 `egress`，都在 Create 时渲染。运行中的 Sandbox 不因 Rules 变化而改写；Stop 再 start 后按新 Rules 重建。
