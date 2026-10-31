@@ -221,7 +221,7 @@ pty?: {rows, cols}    # 带上就是 PTY 模式
 
 Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`pending`、`running`、`canceling`、`finished`）；`result: {cause, exit_code?, signal?}`；`log_truncated`。
 
-`cause` 的取值：`exited`、`canceled`、`timed_out`、`oom_killed`、`runtime_lost`、`node_lost`、`pty_idle`、`start_failed`。`start_failed` 表示命令从未开始，可以重试（ADR-0015）。
+`cause` 的取值：`exited`、`canceled`、`timed_out`、`oom_killed`、`runtime_lost`、`node_lost`、`pty_idle`、`start_failed`。`start_failed` 表示命令从未开始，可以重试（ADR-0015）。在 runsc Node 上撞到内存上限，Exec 报 `oom_killed`，但也可能整个 Sandbox 随之停止（`stopped/runtime_lost`，runtime.md §9）。
 
 **输出**（仅限非 PTY）：`GET /execs/{id}/output?after=<offset>` 返回一页 `[{seq, stream, data, encoding?}]`。`offset` 是上一帧末尾在 Node 记录里的字节偏移（`seq + 5 + len(data)`，base64 帧按解码后的长度算）；首屏省略或传 `0`。`stream` 取 `stdout`、`stderr`、`truncated` 之一。`data` 是 UTF-8 文本，Exec Supervisor 只在字符边界上切分；遇到非法字节时，该帧带 `encoding: base64`。加 `&follow=true` 就升级为 WebSocket，推送同样的帧，Exec 结束后以一条 `{type: "result", ...}` 帧收尾。
 
