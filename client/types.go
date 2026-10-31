@@ -351,6 +351,7 @@ type Sandbox struct {
 	Labels        map[string]string `json:"labels"`
 	Runtime       string            `json:"runtime"`
 	Egress        SandboxEgress     `json:"egress"`
+	Address       string            `json:"address"`
 	State         string            `json:"state"`
 	Cause         *string           `json:"cause"`
 	NodeID        *string           `json:"node_id"`

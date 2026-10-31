@@ -436,17 +436,10 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		}
 	}()
 
-	reportSandbox := func(sandboxID string, generation int64, phase nodeproto.SandboxPhase, cause string) {
-		send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{
-			SandboxObserved: &nodev1.SandboxObserved{
-				SandboxId: sandboxID, Generation: generation, Phase: string(phase), Cause: cause,
-			},
-		}})
-	}
-
 	// Sandboxes this Node already runs are served from here on; the
 	// self-check below only holds back new placements (#178).
 	runner := newCommandRunner(streamCtx, rt, send)
+	reportSandbox := runner.observeSandbox
 	rt.connect(nodev1.NewNodeClient(conn), send)
 	recvErr := make(chan error, 1)
 	go func() {

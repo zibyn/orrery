@@ -172,6 +172,7 @@ type sandboxDTO struct {
 	Labels        map[string]string    `json:"labels"`
 	Runtime       string               `json:"runtime"`
 	Egress        sandboxEgress        `json:"egress"`
+	Address       string               `json:"address"`
 	State         string               `json:"state"`
 	Cause         *string              `json:"cause"`
 	NodeID        *string              `json:"node_id"`
@@ -988,6 +989,9 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
 		Conditions: parseSandboxConditions(sb.Conditions).names(),
+	}
+	if sb.Address != nil {
+		dto.Address = *sb.Address
 	}
 	if sb.GpuCount > 0 {
 		dto.GPU = &sandboxGPUDTO{Count: sb.GpuCount, Model: sb.GpuModel}

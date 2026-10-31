@@ -41,6 +41,13 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 		if err != nil {
 			n.s.log.Warn("record SandboxObserved running", "sandbox_id", id, "error", err)
 		}
+		// Also on a re-report of a ready Sandbox: an adopted one, or one an
+		// older Agent ran before the upgrade.
+		if err := n.s.q.SetSandboxAddress(ctx, store.SetSandboxAddressParams{
+			ID: id, Generation: obs.Generation, Address: obs.Address,
+		}); err != nil {
+			n.s.log.Warn("record SandboxObserved address", "sandbox_id", id, "error", err)
+		}
 		if rows > 0 {
 			n.s.reconcile.notify()
 		}

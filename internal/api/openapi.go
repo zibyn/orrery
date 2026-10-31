@@ -707,6 +707,7 @@ func schemas() map[string]any {
 				"labels":   map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
 				"runtime":  map[string]any{"type": "string", "enum": []string{"container", "local"}},
 				"egress":   schemaRef("Egress"),
+				"address":  map[string]any{"type": "string", "description": "Current IPv4 address; changes on every start, empty while not running."},
 				"state":    map[string]any{"type": "string", "enum": sandboxStateNames},
 				"cause":    nullableString,
 				"node_id":  nullableString,
