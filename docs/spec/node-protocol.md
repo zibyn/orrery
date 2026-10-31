@@ -38,7 +38,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 - `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, mount}], egress{mode: open|none|allowlist, allow[]}}`；对象经 `Presign` 拉取；`egress` 是 Sandbox 存下的 Egress Mode，每次（重新）下发都带同一份，Agent 拿它和当前的 Egress Rules 在 Create 时算出 Egress Policy。Mode 不是 `open` 时 Control Plane 只会把它下发给 `egress_policy` 为 `enforced` 的 Node；Agent 收到时自己的 `egress_policy` 不是 `enforced`，就以 `create_failed`、cause `runtime_create_failed` 上报，不降级
 - `StopSandbox{sandbox_id, generation}`
 - `MeshPeers{peers[{node_id, public_key, sandbox_subnet, endpoint?}]}`：除本机外所有带 `mesh` 的 Node，Sandbox 子网与本机重叠的除外；整份下发，Node 注册、重连或删除时重发
-- `SandboxLinks{links[{target_id, target_address, source_id, source_address, ports[]}]}`：一端在本机的全部 Sandbox Link，只含两端都有地址的条目；整份下发，任一端地址变化时重发。Agent 收到后重新渲染 `orrery` 和 `orrery_mesh` 两张表（`runtime.md` §13、§15）
+- `SandboxLinks{links[{target_id, target_address, source_id, source_address, ports[]}]}`：一端在本机的全部 Sandbox Link，只含目标有地址的条目；来源不在运行或已删除时 `source_address` 为空，Agent 不为它渲染放行规则，目标的入站链照样以丢弃结尾；整份下发，任一端地址变化时重发。Agent 收到后重新渲染 `orrery` 和 `orrery_mesh` 两张表（`runtime.md` §13、§15）
 - `StartExec{exec_id, sandbox_id, generation, argv, env, secret_env, cwd, timeout, log_cap, stdin?, pty?}`
 - `CancelExec{exec_id}`
 - `PublishWorkspace{version_id, workspace_id, path}`
