@@ -217,6 +217,14 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		go c.run("tunnel:"+cmd.TunnelId, cmd.CommandId, noGenerationFence, func() error {
 			return serve(c.ctx, cmd.TunnelId)
 		})
+	case *nodev1.ControlMessage_MeshPeers:
+		// Applied inline so successive full sets land in order; a Node
+		// without Mesh ignores it (runtime.md §15).
+		if c.rt.mesh != nil {
+			if err := c.rt.mesh.apply(m.MeshPeers.Peers); err != nil {
+				slog.Warn("apply mesh peers", "error", err)
+			}
+		}
 	}
 }
 

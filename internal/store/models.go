@@ -154,6 +154,9 @@ type Node struct {
 	CpuPerGpu      float64
 	MemoryPerGpu   int64
 	DeletedAt      pgtype.Timestamptz
+	MeshPublicKey  *string
+	MeshEndpoint   *string
+	SandboxSubnet  *string
 }
 
 type Resource struct {

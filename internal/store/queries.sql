@@ -268,7 +268,10 @@ UPDATE nodes
 SET last_seen_at = now(),
     agent_version = $2,
     proto_major = $3,
-    proto_minor = $4
+    proto_minor = $4,
+    mesh_public_key = $5,
+    mesh_endpoint = $6,
+    sandbox_subnet = $7
 WHERE id = $1;
 
 -- name: NodeHeartbeat :exec
