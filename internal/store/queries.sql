@@ -328,9 +328,33 @@ WHERE used_at IS NOT NULL OR expires_at < now();
 INSERT INTO sandboxes (
     id, owner_id, name, labels, runtime, desired_state, state, snapshot_digest,
     cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation,
-    idempotency_key, secret_env_ct, token_ct, token_key_id, egress_mode, egress_allow
-) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15, $16, $17)
+    idempotency_key, secret_env_ct, token_ct, token_key_id, egress_mode, egress_allow,
+    links_from, links_ports
+) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15, $16, $17, $18, $19)
 RETURNING *;
+
+-- ListSandboxLinkEnds is every Sandbox Link whose two ends are addressed,
+-- with the Node of each end: the rows each Node's SandboxLinks is cut from
+-- (node-protocol.md). A deleted source no longer matches (api.md §3).
+-- name: ListSandboxLinkEnds :many
+SELECT t.id AS target_id, t.node_id::uuid AS target_node_id, t.address::text AS target_address,
+       s.id AS source_id, s.node_id::uuid AS source_node_id, s.address::text AS source_address,
+       t.links_ports
+FROM sandboxes t
+JOIN sandboxes s ON s.id = ANY (t.links_from)
+WHERE t.deleted_at IS NULL AND s.deleted_at IS NULL
+  AND t.address IS NOT NULL AND s.address IS NOT NULL
+  AND t.node_id IS NOT NULL AND s.node_id IS NOT NULL
+ORDER BY t.id, s.id;
+
+-- ListLinkSourceNodes is the distinct Nodes of a Sandbox's placed Link
+-- sources; a pending source does not constrain placement (api.md §3).
+-- name: ListLinkSourceNodes :many
+SELECT DISTINCT s.node_id::uuid AS node_id
+FROM sandboxes t
+JOIN sandboxes s ON s.id = ANY (t.links_from)
+WHERE t.id = $1 AND s.deleted_at IS NULL AND s.node_id IS NOT NULL
+  AND s.state NOT IN ('pending', 'failed', 'deleted');
 
 -- CreateBuildSandbox is the internal row that carries a Snapshot build's
 -- Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no

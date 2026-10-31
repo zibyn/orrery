@@ -29,6 +29,8 @@ type reconciler struct {
 	s    *Server
 	hub  *nodeHub
 	wake chan struct{}
+	// linksSent is each Node's last SandboxLinks command id (links.go).
+	linksSent map[uuid.UUID]string
 }
 
 func newReconciler(s *Server) *reconciler {
@@ -125,6 +127,7 @@ func (r *reconciler) once(ctx context.Context) {
 	r.builds(ctx)
 	r.execs(ctx)
 	r.idle(ctx)
+	r.sandboxLinks(ctx)
 	// Admission is last so its writes commit with the sweep and its own
 	// capacity arithmetic sees everything this tick already released.
 	if err := r.admit(ctx, tx); err != nil {

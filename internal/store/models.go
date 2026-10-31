@@ -222,6 +222,8 @@ type Sandbox struct {
 	EgressMode      string
 	EgressAllow     []string
 	Address         *string
+	LinksFrom       []uuid.UUID
+	LinksPorts      []int32
 }
 
 type SandboxResource struct {

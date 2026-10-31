@@ -224,7 +224,24 @@ message ControlMessage {
     PublishWorkspace publish_workspace = 9;
     BuildSnapshot build_snapshot = 10;
     MeshPeers mesh_peers = 11;
+    SandboxLinks sandbox_links = 12;
   }
+}
+
+// SandboxLinks is every Sandbox Link with an end on this Node and both ends
+// addressed, sent whole whenever it changes (node-protocol.md, runtime.md
+// §13). Agents older than minor 5 are never sent it.
+message SandboxLinks {
+  repeated SandboxLink links = 1;
+}
+
+message SandboxLink {
+  string target_id = 1;
+  string target_address = 2;
+  string source_id = 3;
+  string source_address = 4;
+  // Empty means every port.
+  repeated uint32 ports = 5;
 }
 
 // MeshPeers is the full peer set for this Node, sent on every Node

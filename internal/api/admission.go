@@ -388,11 +388,18 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 	// admission request `unsatisfiable` instead.
 	isBuild := sb.Kind == string(SandboxKindBuild)
 	var resourceMounts int64
+	var linkSourceNodes []uuid.UUID
 	if !isBuild {
 		var err error
 		resourceMounts, err = q.CountSandboxResources(ctx, sb.ID)
 		if err != nil {
 			return false, err
+		}
+		// A Link target waits for its sources' Node (api.md §3).
+		if len(sb.LinksFrom) > 0 {
+			if linkSourceNodes, err = q.ListLinkSourceNodes(ctx, sb.ID); err != nil {
+				return false, err
+			}
 		}
 	}
 	var candidates []placementNode
@@ -420,6 +427,9 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 				continue
 			}
 			if !egressPlaceable(sb.EgressMode)(node) {
+				continue
+			}
+			if !linkPlaceable(linkSourceNodes, node.ID) {
 				continue
 			}
 		}

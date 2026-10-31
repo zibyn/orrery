@@ -150,11 +150,12 @@ type egressRuleJSON struct {
 }
 
 // networkState is the local state the Agent-owned nftables tables are
-// rendered from: every local Sandbox's recorded network and the Sandbox
-// subnet.
+// rendered from: every local Sandbox's recorded network, the Sandbox
+// subnet, and the latest SandboxLinks.
 type networkState struct {
 	sandboxes map[uuid.UUID]sandboxNetwork
 	subnet    netip.Prefix
+	links     []*nodev1.SandboxLink
 }
 
 // nftTable, nftChain and nftRule are the rendered tables, before nftScript
@@ -186,9 +187,29 @@ type nftRule struct {
 	verdict     string // also masquerade
 }
 
+func linkChain(id uuid.UUID) string { return "link-" + id.String() }
+
+// linkRules is match once per linked port, or once for every port. A port
+// out of range is left out, so it fails closed rather than matching all.
+func linkRules(match nftRule, ports []uint32) []nftRule {
+	if len(ports) == 0 {
+		return []nftRule{match}
+	}
+	var rules []nftRule
+	for _, port := range ports {
+		if port >= 1 && port <= 65535 {
+			match.port = uint16(port)
+			rules = append(rules, match)
+		}
+	}
+	return rules
+}
+
 // renderNetwork is the whole bridge table orrery: forward and input jump on
-// each Sandbox's host-side veth into its chain, which ends in its Egress
-// Policy (runtime.md §13).
+// each Sandbox's host-side veth into its chain, which accepts its Links and
+// then applies its Egress Policy; forward and output jump on a Link target's
+// veth into its inbound chain, and in forward every inbound jump comes first
+// so an open source cannot bypass it (runtime.md §13).
 func renderNetwork(state networkState) []nftTable {
 	ids := make([]uuid.UUID, 0, len(state.sandboxes))
 	for id := range state.sandboxes {
@@ -197,17 +218,46 @@ func renderNetwork(state networkState) []nftTable {
 	slices.SortFunc(ids, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
 	forward := nftChain{name: "forward", hook: "forward"}
 	input := nftChain{name: "input", hook: "input"}
+	output := nftChain{name: "output", hook: "output"}
+	var egressJumps []nftRule
 	table := nftTable{family: egressFamily, name: egressTableName}
 	for _, id := range ids {
 		network := state.sandboxes[id]
 		jump := nftRule{iif: network.HostVeth, verdict: egressChain(id)}
-		forward.rules = append(forward.rules, jump)
+		egressJumps = append(egressJumps, jump)
 		input.rules = append(input.rules, jump)
 		chain := nftChain{name: egressChain(id), rules: []nftRule{
 			{established: true, verdict: "accept"},
 			{arp: true, verdict: "accept"},
 			{notIP: true, verdict: "drop"},
 		}}
+		var inbound []nftRule
+		isTarget := false
+		for _, link := range state.links {
+			target, terr := netip.ParseAddr(link.TargetAddress)
+			source, serr := netip.ParseAddr(link.SourceAddress)
+			if terr != nil || serr != nil || !target.Is4() || !source.Is4() {
+				continue
+			}
+			if link.SourceId == id.String() {
+				chain.rules = append(chain.rules, linkRules(nftRule{daddr: netip.PrefixFrom(target, 32), verdict: "accept"}, link.Ports)...)
+			}
+			if link.TargetId == id.String() {
+				isTarget = true
+				inbound = append(inbound, linkRules(nftRule{saddr: netip.PrefixFrom(source, 32), verdict: "accept"}, link.Ports)...)
+			}
+		}
+		if isTarget {
+			in := nftRule{oif: network.HostVeth, verdict: linkChain(id)}
+			forward.rules = append(forward.rules, in)
+			output.rules = append(output.rules, in)
+			rules := append([]nftRule{
+				{established: true, verdict: "accept"},
+				{arp: true, verdict: "accept"},
+				{notIP: true, verdict: "drop"},
+			}, inbound...)
+			table.chains = append(table.chains, nftChain{name: linkChain(id), rules: append(rules, nftRule{verdict: "drop"})})
+		}
 		for _, rule := range network.Policy {
 			verdict := "drop"
 			if rule.accept {
@@ -217,7 +267,8 @@ func renderNetwork(state networkState) []nftTable {
 		}
 		table.chains = append(table.chains, chain)
 	}
-	table.chains = append([]nftChain{forward, input}, table.chains...)
+	forward.rules = append(forward.rules, egressJumps...)
+	table.chains = append([]nftChain{forward, input, output}, table.chains...)
 	tables := []nftTable{table}
 	if state.subnet.IsValid() {
 		tables = append(tables, natTable(state.subnet))

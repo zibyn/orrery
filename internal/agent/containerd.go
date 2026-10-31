@@ -56,6 +56,9 @@ type containerdDriver struct {
 	// the self-check's networks, which are never recorded on disk.
 	networkMu sync.Mutex
 	probes    map[uuid.UUID]sandboxNetwork
+	// links is the latest SandboxLinks set, in memory only: the Control
+	// Plane resends it on every reconnect. Guarded by networkMu.
+	links []*nodev1.SandboxLink
 }
 
 // runsc reports whether this Node runs Sandboxes under runsc.

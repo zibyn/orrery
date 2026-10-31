@@ -21,6 +21,10 @@ const sandboxSchema = `{
       "mode": {"type": "string"},
       "allow": {"type": ["array", "null"], "items": {"type": "string"}}
     }},
+    "links": {"type": ["object", "null"], "properties": {
+      "from": {"type": "array", "items": {"type": "string"}},
+      "ports": {"type": ["array", "null"], "items": {"type": "integer"}}
+    }},
     "address": {"type": "string"},
     "state": {"type": "string"},
     "cause": {"type": ["string", "null"]},
@@ -178,7 +182,11 @@ func (s *server) register(srv *sdk.Server) {
     "egress": {"type": "object", "additionalProperties": false, "description": "Egress Mode, fixed for the Sandbox's life; omitted means open. A mode other than open needs a Node that enforces egress_policy.", "properties": {
       "mode": {"type": "string", "enum": ["open", "none", "allowlist"]},
       "allow": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "allowlist only: IPv4 CIDR[:port] entries."}
-    }, "required": ["mode"]}`, ""),
+    }, "required": ["mode"]},
+    "links": {"type": "object", "additionalProperties": false, "description": "Sandbox Links, fixed for the Sandbox's life: which of your Sandboxes may connect to this one, bypassing their egress. Connect to this Sandbox's address, re-read after each start.", "properties": {
+      "from": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"}, "description": "Your source Sandbox ids."},
+      "ports": {"type": "array", "maxItems": 16, "items": {"type": "integer", "minimum": 1, "maximum": 65535}, "description": "Linked ports; omitted means every TCP and UDP port."}
+    }, "required": ["from"]}`, ""),
 		OutputSchema: json.RawMessage(sandboxSchema),
 		Annotations:  &sdk.ToolAnnotations{},
 	}, s.sandboxCreate)

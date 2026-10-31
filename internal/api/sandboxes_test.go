@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -8,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/zibyn/orrery/internal/store"
 )
@@ -157,6 +160,93 @@ func TestSandboxEgressRequest(t *testing.T) {
 			}
 			if mode != tt.mode || !slices.Equal(allow, tt.allow) {
 				t.Fatalf("sandboxEgress = %q %v, want %q %v", mode, allow, tt.mode, tt.allow)
+			}
+		})
+	}
+}
+
+// api.md §3 links: from is non-empty and names the caller's own undeleted
+// Sandboxes, else 400 (a foreign one is the same as a missing one); a Local
+// source or a Local target is 422; ports are 1-65535; both lists at most 16
+// entries (defaults.md).
+func TestSandboxLinksRequest(t *testing.T) {
+	owner := uuid.New()
+	mine, local, foreign, deleted := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	rows := map[uuid.UUID]store.Sandbox{
+		mine:    {ID: mine, OwnerID: owner, Runtime: "container"},
+		local:   {ID: local, OwnerID: owner, Runtime: "local"},
+		foreign: {ID: foreign, OwnerID: uuid.New(), Runtime: "container"},
+		deleted: {ID: deleted, OwnerID: owner, Runtime: "container", DeletedAt: pgtype.Timestamptz{Valid: true}},
+	}
+	get := func(_ context.Context, id uuid.UUID) (store.Sandbox, error) {
+		if sb, ok := rows[id]; ok {
+			return sb, nil
+		}
+		return store.Sandbox{}, pgx.ErrNoRows
+	}
+	ids := func(n int) string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = `"` + mine.String() + `"`
+		}
+		return "[" + strings.Join(out, ",") + "]"
+	}
+	ports := func(n int) string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprint(8000 + i)
+		}
+		return "[" + strings.Join(out, ",") + "]"
+	}
+	tests := []struct {
+		name    string
+		body    string
+		runtime string
+		from    []uuid.UUID
+		ports   []int32
+		code    string
+	}{
+		{name: "omitted", body: `{}`, from: []uuid.UUID{}, ports: []int32{}},
+		{name: "every port", body: `{"links":{"from":["` + mine.String() + `"]}}`, from: []uuid.UUID{mine}, ports: []int32{}},
+		{name: "some ports", body: `{"links":{"from":["` + mine.String() + `"],"ports":[1,65535]}}`, from: []uuid.UUID{mine}, ports: []int32{1, 65535}},
+		{name: "at the limits", body: `{"links":{"from":` + ids(16) + `,"ports":` + ports(16) + `}}`, from: slices.Repeat([]uuid.UUID{mine}, 16)},
+		{name: "empty from", body: `{"links":{"from":[]}}`, code: "invalid_request"},
+		{name: "no from", body: `{"links":{}}`, code: "invalid_request"},
+		{name: "too many from", body: `{"links":{"from":` + ids(17) + `}}`, code: "invalid_request"},
+		{name: "too many ports", body: `{"links":{"from":` + ids(1) + `,"ports":` + ports(17) + `}}`, code: "invalid_request"},
+		{name: "port zero", body: `{"links":{"from":` + ids(1) + `,"ports":[0]}}`, code: "invalid_request"},
+		{name: "port too high", body: `{"links":{"from":` + ids(1) + `,"ports":[65536]}}`, code: "invalid_request"},
+		{name: "not a uuid", body: `{"links":{"from":["x"]}}`, code: "invalid_request"},
+		{name: "missing source", body: `{"links":{"from":["` + uuid.NewString() + `"]}}`, code: "invalid_request"},
+		{name: "foreign source", body: `{"links":{"from":["` + foreign.String() + `"]}}`, code: "invalid_request"},
+		{name: "deleted source", body: `{"links":{"from":["` + deleted.String() + `"]}}`, code: "invalid_request"},
+		{name: "Local source", body: `{"links":{"from":["` + local.String() + `"]}}`, code: "unsupported"},
+		{name: "Local target", body: `{"links":{"from":["` + mine.String() + `"]}}`, runtime: "local", code: "unsupported"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req createSandboxRequest
+			dec := json.NewDecoder(strings.NewReader(tt.body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			runtime := tt.runtime
+			if runtime == "" {
+				runtime = "container"
+			}
+			from, ports, code, detail, err := sandboxLinksRequest(context.Background(), req, runtime, owner, get)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code != tt.code {
+				t.Fatalf("problem = %q (%s), want %q", code, detail, tt.code)
+			}
+			if code != "" {
+				return
+			}
+			if !slices.Equal(from, tt.from) || (tt.ports != nil && !slices.Equal(ports, tt.ports)) {
+				t.Fatalf("links = %v %v, want %v %v", from, ports, tt.from, tt.ports)
 			}
 		})
 	}
