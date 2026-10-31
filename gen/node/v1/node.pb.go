@@ -1881,7 +1881,7 @@ type SandboxLink struct {
 	TargetAddress string                 `protobuf:"bytes,2,opt,name=target_address,json=targetAddress,proto3" json:"target_address,omitempty"`
 	SourceId      string                 `protobuf:"bytes,3,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
 	SourceAddress string                 `protobuf:"bytes,4,opt,name=source_address,json=sourceAddress,proto3" json:"source_address,omitempty"`
-	// Empty means every port.
+	// Empty means every TCP and UDP port (api.md §3).
 	Ports         []uint32 `protobuf:"varint,5,rep,packed,name=ports,proto3" json:"ports,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2810,7 +2810,11 @@ type CreateSandbox struct {
 	Resources []*ResourceMount `protobuf:"bytes,8,rep,name=resources,proto3" json:"resources,omitempty"`
 	// The Sandbox's stored Egress Mode, the same on every (re)start. The Agent
 	// resolves it with the current Egress Rules at Create (runtime.md §13).
-	Egress        *EgressMode `protobuf:"bytes,9,opt,name=egress,proto3" json:"egress,omitempty"`
+	Egress *EgressMode `protobuf:"bytes,9,opt,name=egress,proto3" json:"egress,omitempty"`
+	// True when the Sandbox has links, the same on every (re)send. The Agent
+	// records it with the veth and renders the inbound chain, ending in a drop,
+	// at Create before the Sandbox runs (runtime.md §13).
+	LinkTarget    bool `protobuf:"varint,10,opt,name=link_target,json=linkTarget,proto3" json:"link_target,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2906,6 +2910,13 @@ func (x *CreateSandbox) GetEgress() *EgressMode {
 		return x.Egress
 	}
 	return nil
+}
+
+func (x *CreateSandbox) GetLinkTarget() bool {
+	if x != nil {
+		return x.LinkTarget
+	}
+	return false
 }
 
 // EgressMode is open, none or allowlist; allow is set only for allowlist, with
@@ -3909,7 +3920,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x03R\n" +
-	"generation\"\x8c\x03\n" +
+	"generation\"\xad\x03\n" +
 	"\rCreateSandbox\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x1d\n" +
@@ -3923,7 +3934,10 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\tworkspace\x18\x06 \x01(\v2\x1e.orrery.node.v1.WorkspaceMountR\tworkspace\x12\x1b\n" +
 	"\tgpu_uuids\x18\a \x03(\tR\bgpuUuids\x12;\n" +
 	"\tresources\x18\b \x03(\v2\x1d.orrery.node.v1.ResourceMountR\tresources\x122\n" +
-	"\x06egress\x18\t \x01(\v2\x1a.orrery.node.v1.EgressModeR\x06egress\"6\n" +
+	"\x06egress\x18\t \x01(\v2\x1a.orrery.node.v1.EgressModeR\x06egress\x12\x1f\n" +
+	"\vlink_target\x18\n" +
+	" \x01(\bR\n" +
+	"linkTarget\"6\n" +
 	"\n" +
 	"EgressMode\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x14\n" +

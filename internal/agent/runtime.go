@@ -518,6 +518,7 @@ type createSandboxSpec struct {
 	gpuUUIDs      []string
 	resources     []resourceMount
 	egress        egressMode
+	linkTarget    bool
 }
 
 // resourceMount is one version to fetch and mount at /resources/<mount>.

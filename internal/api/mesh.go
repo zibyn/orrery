@@ -18,18 +18,27 @@ import (
 const meshLiveWindow = 180 * time.Second
 
 // meshPeers is the MeshPeers set for self: every other Node with mesh,
-// except those whose Sandbox subnet overlaps self's and those where neither
-// side has an endpoint, since such a pair can never handshake
-// (node-protocol.md, runtime.md §15).
+// except those where neither side has an endpoint, since such a pair can
+// never handshake (node-protocol.md, runtime.md §15). A Node whose Sandbox
+// subnet overlaps any other mesh Node's is never peered, so no two peers
+// share AllowedIPs.
 func meshPeers(self store.Node, nodes []store.Node) []*nodev1.MeshPeer {
-	selfSubnet, ok := meshSubnet(self)
-	if !ok {
+	overlapping := map[uuid.UUID]bool{}
+	for i, a := range nodes {
+		sa, ok := meshSubnet(a)
+		for _, b := range nodes[i+1:] {
+			if sb, okb := meshSubnet(b); ok && okb && a.ID != b.ID && sa.Overlaps(sb) {
+				overlapping[a.ID], overlapping[b.ID] = true, true
+			}
+		}
+	}
+	if _, ok := meshSubnet(self); !ok || overlapping[self.ID] {
 		return nil
 	}
 	var peers []*nodev1.MeshPeer
 	for _, n := range nodes {
 		subnet, ok := meshSubnet(n)
-		if !ok || n.ID == self.ID || subnet.Overlaps(selfSubnet) {
+		if !ok || n.ID == self.ID || overlapping[n.ID] {
 			continue
 		}
 		endpoint := deref(n.MeshEndpoint)

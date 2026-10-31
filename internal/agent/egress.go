@@ -172,8 +172,8 @@ type nftChain struct {
 	rules []nftRule
 }
 
-// nftRule matches on every field that is set. verdict is accept, drop, or the
-// name of a chain to jump to.
+// nftRule matches on every field that is set, then jumps to the chain jump
+// or applies verdict.
 type nftRule struct {
 	iif, oif    string
 	notOif      bool // oifname != oif
@@ -184,8 +184,20 @@ type nftRule struct {
 	daddr       netip.Prefix
 	notDaddr    bool   // ip daddr != daddr
 	port        uint16 // TCP or UDP destination port
+	tcpUDP      bool   // TCP or UDP, any port
 	clampMSS    bool   // a TCP SYN's MSS set to the route MTU; with no verdict
-	verdict     string // also masquerade
+	verdict     string // accept, drop or masquerade
+	jump        string // a chain name
+}
+
+// chainPrelude opens both per-Sandbox chains: replies pass, ARP passes, and
+// every other non-IPv4 frame is dropped (runtime.md §13).
+func chainPrelude() []nftRule {
+	return []nftRule{
+		{established: true, verdict: "accept"},
+		{arp: true, verdict: "accept"},
+		{notIP: true, verdict: "drop"},
+	}
 }
 
 func linkChain(id uuid.UUID) string { return "link-" + id.String() }
@@ -203,10 +215,12 @@ func linkEnds(link *nodev1.SandboxLink) (target, source netip.Prefix, ok bool) {
 	return target, source, target.IsValid() && source.IsValid()
 }
 
-// linkRules is match once per linked port, or once for every port. A port
-// out of range is left out, so it fails closed rather than matching all.
+// linkRules is match once per linked port, or once for every TCP and UDP
+// port (api.md §3). A port out of range is left out, so it fails closed
+// rather than matching all.
 func linkRules(match nftRule, ports []uint32) []nftRule {
 	if len(ports) == 0 {
+		match.tcpUDP = true
 		return []nftRule{match}
 	}
 	var rules []nftRule
@@ -237,16 +251,12 @@ func renderNetwork(state networkState) []nftTable {
 	table := nftTable{family: egressFamily, name: egressTableName}
 	for _, id := range ids {
 		network := state.sandboxes[id]
-		jump := nftRule{iif: network.HostVeth, verdict: egressChain(id)}
+		jump := nftRule{iif: network.HostVeth, jump: egressChain(id)}
 		egressJumps = append(egressJumps, jump)
 		input.rules = append(input.rules, jump)
-		chain := nftChain{name: egressChain(id), rules: []nftRule{
-			{established: true, verdict: "accept"},
-			{arp: true, verdict: "accept"},
-			{notIP: true, verdict: "drop"},
-		}}
+		chain := nftChain{name: egressChain(id), rules: chainPrelude()}
 		var inbound []nftRule
-		isTarget := false
+		isTarget := network.LinkTarget
 		for _, link := range state.links {
 			target, source, ok := linkEnds(link)
 			if !target.IsValid() {
@@ -264,14 +274,10 @@ func renderNetwork(state networkState) []nftTable {
 			}
 		}
 		if isTarget {
-			in := nftRule{oif: network.HostVeth, verdict: linkChain(id)}
+			in := nftRule{oif: network.HostVeth, jump: linkChain(id)}
 			forward.rules = append(forward.rules, in)
 			output.rules = append(output.rules, in)
-			rules := append([]nftRule{
-				{established: true, verdict: "accept"},
-				{arp: true, verdict: "accept"},
-				{notIP: true, verdict: "drop"},
-			}, inbound...)
+			rules := append(chainPrelude(), inbound...)
 			table.chains = append(table.chains, nftChain{name: linkChain(id), rules: append(rules, nftRule{verdict: "drop"})})
 		}
 		for _, rule := range network.Policy {
@@ -392,13 +398,15 @@ func (r nftRule) String() string {
 	}
 	if r.port != 0 {
 		match = append(match, fmt.Sprintf("meta l4proto { tcp, udp } th dport %d", r.port))
+	} else if r.tcpUDP {
+		match = append(match, "meta l4proto { tcp, udp }")
 	}
 	if r.clampMSS {
 		return strings.Join(append(match, "tcp flags syn tcp option maxseg size set rt mtu"), " ")
 	}
 	verdict := r.verdict
-	if verdict != "accept" && verdict != "drop" && verdict != "masquerade" {
-		verdict = "jump " + verdict
+	if r.jump != "" {
+		verdict = "jump " + r.jump
 	}
 	return strings.Join(append(match, verdict), " ")
 }

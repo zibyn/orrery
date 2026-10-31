@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,9 +44,13 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 		}
 		// Also on a re-report of a ready Sandbox: an adopted one, or one an
 		// older Agent ran before the upgrade.
-		if err := n.s.q.SetSandboxAddress(ctx, store.SetSandboxAddressParams{
-			ID: id, Generation: obs.Generation, Address: obs.Address,
-		}); err != nil {
+		node, err := n.s.q.GetNode(ctx, nodeID)
+		if err == nil {
+			err = n.s.q.SetSandboxAddress(ctx, store.SetSandboxAddressParams{
+				ID: id, Generation: obs.Generation, Address: observedSandboxAddress(obs.Address, node.SandboxSubnet),
+			})
+		}
+		if err != nil {
 			n.s.log.Warn("record SandboxObserved address", "sandbox_id", id, "error", err)
 		}
 		if rows > 0 {
@@ -72,6 +77,22 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 	case nodeproto.SandboxPhaseGone:
 		n.recordSandboxGone(ctx, id, obs.Generation)
 	}
+}
+
+// observedSandboxAddress validates a reported address at the trust boundary:
+// it is kept only when IPv4 and inside the Node's Sandbox subnet, when known
+// (runtime.md §13). Anything else reads as no address.
+func observedSandboxAddress(raw string, subnet *string) string {
+	addr, err := netip.ParseAddr(raw)
+	if err != nil || !addr.Is4() {
+		return ""
+	}
+	if subnet != nil {
+		if p, err := netip.ParsePrefix(*subnet); err == nil && !p.Contains(addr) {
+			return ""
+		}
+	}
+	return addr.String()
 }
 
 func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, generation int64) {

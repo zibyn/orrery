@@ -16,18 +16,18 @@ import (
 // createRecorder is a driver whose only used operation is Create.
 type createRecorder struct {
 	runtimeDriver
-	created chan string
+	created chan *createSandboxSpec
 }
 
 func (d *createRecorder) createSandbox(_ context.Context, cmd *createSandboxSpec) (string, error) {
-	d.created <- cmd.sandboxID
+	d.created <- cmd
 	return "", nil
 }
 
 // #178: commands are served before the self-check ends, but a CreateSandbox
 // that arrives early runs only once the Capabilities are known.
 func TestCreateSandboxWaitsForSelfCheck(t *testing.T) {
-	driver := &createRecorder{created: make(chan string, 1)}
+	driver := &createRecorder{created: make(chan *createSandboxSpec, 1)}
 	rt := newRuntime(ProviderContainerd, t.TempDir(), uuid.NewString())
 	rt.driver = driver
 	runner := newCommandRunner(t.Context(), rt, func(*nodev1.AgentMessage) {})
@@ -44,11 +44,32 @@ func TestCreateSandboxWaitsForSelfCheck(t *testing.T) {
 	runner.selfChecked()
 	select {
 	case got := <-driver.created:
-		if got != id {
-			t.Fatalf("created %s, want %s", got, id)
+		if got.sandboxID != id {
+			t.Fatalf("created %s, want %s", got.sandboxID, id)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Create did not run after the self-check")
+	}
+}
+
+// #195: CreateSandbox.link_target reaches the driver, which records it with
+// the veth (node-protocol.md).
+func TestCreateSandboxPassesLinkTarget(t *testing.T) {
+	driver := &createRecorder{created: make(chan *createSandboxSpec, 1)}
+	rt := newRuntime(ProviderContainerd, t.TempDir(), uuid.NewString())
+	rt.driver = driver
+	runner := newCommandRunner(t.Context(), rt, func(*nodev1.AgentMessage) {})
+	runner.selfChecked()
+	runner.handle(&nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{
+		CreateSandbox: &nodev1.CreateSandbox{CommandId: "c1", SandboxId: uuid.NewString(), Generation: 1, LinkTarget: true},
+	}})
+	select {
+	case got := <-driver.created:
+		if !got.linkTarget {
+			t.Fatal("link_target was not passed to the driver")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Create did not run")
 	}
 }
 

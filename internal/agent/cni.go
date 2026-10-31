@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 )
@@ -35,6 +37,9 @@ type sandboxNetwork struct {
 	Address  string `json:"address"`
 	// Policy is the Egress Policy resolved at Create.
 	Policy []egressRule `json:"policy"`
+	// LinkTarget is CreateSandbox.link_target: the inbound chain is rendered
+	// before any SandboxLinks names this Sandbox (node-protocol.md).
+	LinkTarget bool `json:"link_target,omitempty"`
 }
 
 // recordedAddress is the address in the Sandbox's network.json, or empty when
@@ -45,7 +50,9 @@ func recordedAddress(dataRoot string, id uuid.UUID) string {
 		return ""
 	}
 	var network sandboxNetwork
-	_ = json.Unmarshal(raw, &network)
+	if err := json.Unmarshal(raw, &network); err != nil {
+		slog.Warn("decode network.json", "sandbox_id", id, "error", err)
+	}
 	return network.Address
 }
 
@@ -123,10 +130,10 @@ func parseCNIResult(raw []byte, bridge string) (sandboxNetwork, error) {
 }
 
 // setupNetwork builds the netns at netnsPath(id) on the bridge, and writes
-// into dir network.json, the veth, address and Egress Policy a render
-// filters it by, and the files mounted over /etc (runtime.md §2, §13). The
+// into dir network.json, the veth, address, Egress Policy and Link target
+// flag a render filters it by, and the files mounted over /etc (runtime.md §2, §13). The
 // caller renders.
-func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID, dir string, policy []egressRule) (sandboxNetwork, error) {
+func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID, dir string, policy []egressRule, linkTarget bool) (sandboxNetwork, error) {
 	if _, err := runLocalCommand(ctx, "ip", "netns", "add", netnsName(id)); err != nil {
 		return sandboxNetwork{}, err
 	}
@@ -141,7 +148,7 @@ func (d *containerdDriver) setupNetwork(ctx context.Context, id uuid.UUID, dir s
 	if err != nil {
 		return sandboxNetwork{}, err
 	}
-	network.Policy = policy
+	network.Policy, network.LinkTarget = policy, linkTarget
 	raw, _ := json.Marshal(network)
 	if err := os.WriteFile(filepath.Join(dir, "network.json"), raw, 0o644); err != nil {
 		return sandboxNetwork{}, err
@@ -192,12 +199,55 @@ func (d *containerdDriver) setProbe(id uuid.UUID, network *sandboxNetwork) {
 	d.probes[id] = *network
 }
 
-// setLinks replaces the SandboxLinks set and re-renders (runtime.md §13).
+// setProbeLink records the Link self-check's Link, or forgets it when link
+// is nil; like the probes, it lives only in memory.
+func (d *containerdDriver) setProbeLink(link *nodev1.SandboxLink) {
+	d.networkMu.Lock()
+	d.probeLink = link
+	d.networkMu.Unlock()
+}
+
+// setLinks replaces the SandboxLinks set, records it for a restart, and
+// re-renders (runtime.md §13). A failed record still renders the new set.
 func (d *containerdDriver) setLinks(ctx context.Context, links []*nodev1.SandboxLink) error {
 	d.networkMu.Lock()
 	d.links = links
+	saveErr := saveSandboxLinks(d.r.dataRoot, links)
 	d.networkMu.Unlock()
-	return d.applyNetwork(ctx)
+	return errors.Join(d.applyNetwork(ctx), saveErr)
+}
+
+func sandboxLinksPath(dataRoot string) string { return filepath.Join(dataRoot, "sandbox-links.pb") }
+
+// saveSandboxLinks records the last SandboxLinks set, atomically.
+func saveSandboxLinks(dataRoot string, links []*nodev1.SandboxLink) error {
+	raw, err := proto.Marshal(&nodev1.SandboxLinks{Links: links})
+	if err != nil {
+		return fmt.Errorf("encode SandboxLinks: %w", err)
+	}
+	tmp := sandboxLinksPath(dataRoot) + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return fmt.Errorf("record SandboxLinks: %w", err)
+	}
+	return os.Rename(tmp, sandboxLinksPath(dataRoot))
+}
+
+// loadSandboxLinks is the last recorded SandboxLinks set, or none. A target
+// recorded with link_target still gets a drop-all inbound chain without it.
+func loadSandboxLinks(dataRoot string) []*nodev1.SandboxLink {
+	raw, err := os.ReadFile(sandboxLinksPath(dataRoot))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	var set nodev1.SandboxLinks
+	if err == nil {
+		err = proto.Unmarshal(raw, &set)
+	}
+	if err != nil {
+		slog.Warn("read the recorded SandboxLinks", "error", err)
+		return nil
+	}
+	return set.Links
 }
 
 // applyNetwork renders the bridge table orrery from every Sandbox's recorded
