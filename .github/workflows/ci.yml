@@ -1,7 +1,8 @@
 # CI gate, images and releases (ADR-0023). Pull requests run the checks and
 # the Compose e2e suite once; a push to main or a v* tag only publishes (:main,
 # or :X.Y.Z, :latest and the GitHub Release), since the merged PR already
-# passed the gate (#179). The nightly run re-checks main.
+# passed the gate (#179). There is no scheduled run; workflow_dispatch runs
+# the full gate, and the Playwright console suite, by hand.
 name: ci
 
 on:
@@ -9,8 +10,6 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-  schedule:
-    - cron: "17 19 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -119,9 +118,9 @@ jobs:
           # (deploy/compose.ci.yaml).
           ORRERY_E2E_COMPOSE_OVERRIDE: ${{ github.workspace }}/deploy/compose.ci.yaml
 
-  # Playwright is slow and not a merge gate; it runs nightly or on demand.
+  # Playwright is slow and not a merge gate; it runs on demand.
   e2e-console:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
