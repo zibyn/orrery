@@ -302,7 +302,9 @@ func TestExecLogCap(t *testing.T) {
 	}
 }
 
-// TestExecOOMKilled is the "oom-killed" acceptance scenario (#51).
+// TestExecOOMKilled is the "oom-killed" acceptance scenario (#51). Under
+// runsc the host may kill the Exec or the whole Sandbox; either way the
+// cause is oom_killed (runtime.md §9).
 func TestExecOOMKilled(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)

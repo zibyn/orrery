@@ -174,7 +174,8 @@ func TestPTYMultiIdle(t *testing.T) {
 func TestAgentRestartKeepsPTY(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
-	ptyIdle(t) // this scenario depends on a short deployment idle window
+	// The reattach must land inside the idle window, or the reclaim fires (#174).
+	idle := ptyIdle(t)
 	sandboxID, agent, state, dataRoot := readySandboxWithAgent(t, admin)
 
 	e := createExec(t, admin, sandboxID, map[string]any{
@@ -187,23 +188,28 @@ func TestAgentRestartKeepsPTY(t *testing.T) {
 	a.send("x=42; echo READ\"\"Y-OK\n")
 	a.waitContains("READY-OK", 20*time.Second)
 	a.close()
+	detached := time.Now()
 
 	agent.stop()
 	startAgent(t, state, dataRoot)
 
 	// The old tunnel died with the Agent; reattach through the new one.
 	var b *ptyClient
-	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var err error
-		if b, err = tryDialPTY(admin, e.ID); err == nil {
-			break
+		b, err = tryDialPTY(admin, e.ID)
+		if took := time.Since(detached); took >= idle {
+			if b != nil {
+				b.close()
+			}
+			t.Fatalf("reattach took %s, longer than the PTY idle window %s (last dial error: %v)", took.Round(time.Millisecond), idle, err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("reattach after Agent restart: %v", err)
+		if err == nil {
+			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	t.Logf("reattach took %s (PTY idle window %s)", time.Since(detached).Round(time.Millisecond), idle)
 	b.t = t
 	defer b.close()
 	b.waitContains("READY-OK", 20*time.Second) // the ring survived the restart
