@@ -1,6 +1,6 @@
 # ADR-0023: Release artifacts and a pull-based install script
 
-- Status: accepted; amended in place by #135 and #136; deployment configuration layout amended by ADR-0024
+- Status: accepted; amended in place by #135, #136 and #179 (CI gate runs once, on the pull request); deployment configuration layout amended by ADR-0024
 - Date: 2026-10-19
 
 ## Context
@@ -18,7 +18,7 @@
 
 The version is the tag, stamped into all three binaries at build time; the Agent reports it in the handshake.
 
-**CI gate.** Every pull request and push to `main` runs vet, unit tests, the Web console checks, the embedded build, the Python SDK tests and the Compose e2e suite. Scenarios that need a GPU or a remote host skip themselves.
+**CI gate.** Every pull request runs vet, unit tests, the Web console checks, the embedded build, the Python SDK tests and the Compose e2e suite. Scenarios that need a GPU or a remote host skip themselves. A push to `main` or a `v*` tag does not run them again, since the merged pull request already passed them; it only publishes. A nightly run on `main`, which can also be started by hand, runs the full gate, and it covers changes pushed to `main` without a pull request.
 
 **Pull-based install.** Servers fetch `deploy/install.sh` from GitHub and run it; GitHub holds no server credentials and never connects to a server. The version defaults to the newest published release: the script reads the tag from `releases/latest` and installs that tag's Compose file, configuration and binaries, never a branch. A bootstrap may fetch the script from `main`; the auto-updater fetches the resolved tag's script. An explicit `--version vX.Y.Z` pins an older or newer release. The script checks for Docker, Podman or Compose and fails if they are missing; it does not install them.
 
