@@ -1,6 +1,6 @@
 # ADR-0026: containerd Runtime Provider, Isolation Runtime and platform Egress Rules
 
-- Status: accepted; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31)
+- Status: accepted; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31); runsc `oom_killed` consequence added by #173 (2026-10-31)
 - Date: 2026-10-30
 
 ## Context
@@ -34,6 +34,7 @@ Spike #161 checked the premises on containerd 2.2.1, runsc `release-20261026.0` 
 - A misconfigured Rules set can cut Sandboxes off from `api`, breaking Git authentication; the platform does not detect this.
 - Sandbox subnets must be planned non-overlapping across Nodes for Rules to name them.
 - Under runsc, `pids.max` counts host tasks (Sentry threads and one systrap stub per guest thread), not guest processes one to one: the same limit admits fewer guest processes, and reaching it kills the whole Sandbox instead of failing one `fork()`. The limit is still read back exactly and still a boundary.
+- Under runsc the guest has no OOM counter and the Sentry has no OOM killer (spike #177, `docs/research/runsc-memory-oom-spike.md`). A memory-limit breach is resolved by the host OOM killer, which kills either the Exec's systrap stub (the Exec ends by SIGKILL, the Sandbox lives) or the Sentry (the Sandbox stops with `runtime_lost`); the workload decides which, and the platform does not promise either. The Agent attributes both from the host cgroup's `oom_kill` against a per-Exec baseline kept in the Exec record, so the affected Execs still end `oom_killed` (runtime.md §9).
 - With `host-uds=create`, code in a runsc Sandbox can create host-visible unix sockets on its host-backed mounts (Workspace and run directory). Connecting to host sockets (`open`) stays closed.
 - Snapshot builds run in buildkitd, on its own network, so Egress Rules do not apply to a build's `RUN` steps.
 - Rootless Podman Nodes must be reinstalled with rootful containerd.
