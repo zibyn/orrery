@@ -480,7 +480,7 @@ func (r *reconciler) placeWorkspace(ctx context.Context, ws store.Workspace, now
 		r.s.log.Warn("reconcile: place Workspace", "workspace_id", ws.ID, "error", err)
 		return
 	}
-	for _, node := range nodes {
+	for _, node := range r.hub.currentReports(nodes) {
 		if deriveNodeStatus(node, now) != "ready" || !r.hub.connected(node.ID) {
 			continue
 		}
@@ -676,6 +676,9 @@ type agentConn struct {
 	send   chan *nodev1.ControlMessage
 	done   chan struct{}
 	once   sync.Once
+	// reported is set once this stream has sent Capabilities; guarded by the
+	// hub's mutex.
+	reported bool
 }
 
 // close ends the Control stream; the handler returns UNAUTHENTICATED so the
@@ -713,6 +716,27 @@ func (h *nodeHub) connected(nodeID uuid.UUID) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.conns[nodeID] != nil
+}
+
+// capabilitiesReported records that this stream's Capabilities are stored.
+func (h *nodeHub) capabilitiesReported(c *agentConn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c.reported = true
+}
+
+// currentReports hides the stored Capabilities of a Node whose live stream has
+// not reported yet, so placement waits for the fresh self-check as on first
+// registration (ADR-0014). The slice is modified in place and returned.
+func (h *nodeHub) currentReports(nodes []store.Node) []store.Node {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range nodes {
+		if conn := h.conns[nodes[i].ID]; conn != nil && !conn.reported {
+			nodes[i].Capabilities = nil
+		}
+	}
+	return nodes
 }
 
 // close ends a Node's live stream, if any, so the Agent reconnects with a

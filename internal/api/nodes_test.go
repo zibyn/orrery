@@ -152,6 +152,51 @@ func TestNodeHubClose(t *testing.T) {
 	}
 }
 
+// A reconnecting Node is placed only on the Capabilities its new stream
+// reports: until then admission sees no report, as on first registration
+// (ADR-0014), while the stored report stays for the Node list.
+func TestReconnectedNodeAwaitsCapabilities(t *testing.T) {
+	now := time.Now()
+	hub := newNodeHub()
+	node := readyNode(t, now)
+	node.ID = uuid.New()
+	connect := func() *agentConn {
+		conn := &agentConn{nodeID: node.ID, send: make(chan *nodev1.ControlMessage, 1), done: make(chan struct{})}
+		hub.register(conn)
+		return conn
+	}
+	schedulable := func() bool {
+		seen := hub.currentReports([]store.Node{node})[0]
+		return nodeSchedulable(seen, now, false)
+	}
+
+	first := connect()
+	if schedulable() {
+		t.Fatal("a Node was placeable before its stream reported Capabilities")
+	}
+	hub.capabilitiesReported(first)
+	if !schedulable() {
+		t.Fatal("a Node that reported Capabilities on its stream must be placeable")
+	}
+
+	hub.unregister(first)
+	second := connect()
+	if schedulable() {
+		t.Fatal("a reconnected Node was placed on the previous stream's Capabilities")
+	}
+	if len(node.Capabilities) == 0 {
+		t.Fatal("the stored report must not be cleared")
+	}
+	hub.capabilitiesReported(first) // a late report from the old stream does not count
+	if schedulable() {
+		t.Fatal("the old stream's report made the new stream placeable")
+	}
+	hub.capabilitiesReported(second)
+	if !schedulable() {
+		t.Fatal("a reconnected Node must be placeable once it reports Capabilities")
+	}
+}
+
 func mutate(node store.Node, change func(*store.Node)) store.Node {
 	change(&node)
 	return node
