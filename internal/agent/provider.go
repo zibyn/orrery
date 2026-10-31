@@ -35,6 +35,8 @@ type runtimeDriver interface {
 	// startForward runs `supervisor forward` in the Sandbox for a Tunnel
 	// (runtime.md §14).
 	startForward(ctx context.Context, sandboxID uuid.UUID, args ...string) error
+	// setLinks replaces the SandboxLinks set and re-renders (runtime.md §13).
+	setLinks(ctx context.Context, links []*nodev1.SandboxLink) error
 	close()
 }
 

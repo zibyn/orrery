@@ -738,6 +738,9 @@ func (d *localDriver) startForward(context.Context, uuid.UUID, ...string) error 
 	return errors.New("runtime local has no port forwarder")
 }
 
+// setLinks is a no-op: Local has no netns and no Links (runtime.md §15).
+func (d *localDriver) setLinks(context.Context, []*nodev1.SandboxLink) error { return nil }
+
 func (d *localDriver) close() {}
 
 func (d *localDriver) runtimeAlive(ctx context.Context, sandboxID uuid.UUID) (bool, bool) {

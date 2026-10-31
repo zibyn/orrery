@@ -225,6 +225,11 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				slog.Warn("apply mesh peers", "error", err)
 			}
 		}
+	case *nodev1.ControlMessage_SandboxLinks:
+		// Inline for the same reason: each set replaces the last whole.
+		if err := c.rt.driver.setLinks(c.ctx, m.SandboxLinks.Links); err != nil {
+			slog.Warn("apply sandbox links", "error", err)
+		}
 	}
 }
 

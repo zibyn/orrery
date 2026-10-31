@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 )
 
 const (
@@ -189,13 +191,21 @@ func (d *containerdDriver) setProbe(id uuid.UUID, network *sandboxNetwork) {
 	d.probes[id] = *network
 }
 
+// setLinks replaces the SandboxLinks set and re-renders (runtime.md §13).
+func (d *containerdDriver) setLinks(ctx context.Context, links []*nodev1.SandboxLink) error {
+	d.networkMu.Lock()
+	d.links = links
+	d.networkMu.Unlock()
+	return d.applyNetwork(ctx)
+}
+
 // applyNetwork renders the bridge table orrery from every Sandbox's recorded
-// network.json plus the running probes, and replaces it in one nft
-// transaction (runtime.md §13).
+// network.json plus the running probes and the SandboxLinks set, and replaces
+// it in one nft transaction (runtime.md §13).
 func (d *containerdDriver) applyNetwork(ctx context.Context) error {
 	d.networkMu.Lock()
 	defer d.networkMu.Unlock()
-	state := networkState{sandboxes: map[uuid.UUID]sandboxNetwork{}}
+	state := networkState{sandboxes: map[uuid.UUID]sandboxNetwork{}, links: d.links}
 	subnet, err := netip.ParsePrefix(d.subnet)
 	if err != nil {
 		return fmt.Errorf("sandbox subnet: %w", err)
