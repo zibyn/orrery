@@ -37,6 +37,7 @@ Supervisor 和命令都以镜像默认的 USER 运行，平台不另选 uid。`/
 | `started` | execve 成功后原子写入（先写 tmp 再 rename），内容是 `started_at` |
 | `exit` | 原子写入的 JSON：`{cause, exit_code?, signal?, finished_at}` |
 | `ctl.sock` | 控制 socket，见 §5 |
+| `oom_kill` | 只在 runsc Node 上有：Agent 在发 spec 之前读到的宿主 cgroup `oom_kill` 计数，十进制整数，原子写入（§9） |
 
 - **`seq` 就是这一帧在 `output` 里的字节偏移。** Agent 重启后直接 seek 到 `stored_seq` 接着读。
 - **UTF-8 切分由 Supervisor 负责。** 它按流暂存末尾不完整的字节；遇到非法字节就单独成一帧，Agent 发出这一帧时标 `encoding: base64`。Agent 只逐帧转发，所以 seq 跨 Agent 重启保持稳定。
@@ -51,7 +52,7 @@ Supervisor 和命令都以镜像默认的 USER 运行，平台不另选 uid。`/
 4. fork 后用一条 CLOEXEC 管道判断 execve 是否成功。管道直接 EOF，说明 execve 成功，写 `started`；读到 errno，说明失败，写 `exit`，cause 为 `start_failed`。命令在新的进程组里运行，PTY 模式下用 `setsid` 并分配 pty。
 5. 一次性的 `stdin` 写完后关闭。PTY 模式下忽略它（api.md §4）。
 6. **主进程退出就算 Exec 结束。** Supervisor 先读完管道里已有的数据，再关掉读端，然后写 `exit`。后台子进程不杀，之后它们再写 stdout 会收到 EPIPE，并被重新挂到 PID 1 下，一直活到 Sandbox 停止。只有超时和取消才杀整个进程组。
-7. `oom_killed` 的判定：命令被 SIGKILL，而且在它运行期间容器 cgroup 的 `memory.events` 里 `oom_kill` 计数上涨了。Docker 判 `OOMKilled` 用的是同一个依据。
+7. `oom_killed` 的判定：命令被 SIGKILL，而且在它运行期间容器 cgroup 的 `memory.events` 里 `oom_kill` 计数上涨了。Docker 判 `OOMKilled` 用的是同一个依据。runc 上由 Supervisor 判定；runsc 的客户机里没有这个计数，改由 Agent 读宿主 cgroup 判定（§9）。
 
 ## 5. `ctl.sock` 中继
 
@@ -86,6 +87,8 @@ Agent 对它掌握的每个 Sandbox 扫描 `run/*`，对每个目录做如下判
 | 没有 `exit`，连不上 socket，Runtime 还活着 | Supervisor 死了。Agent 代写 `exit`，cause 为 `runtime_lost` |
 | Runtime 已经没了 | 所有未结束的 Exec，由 Agent 代写 `exit`，cause 为 `runtime_lost`（ADR-0017） |
 
+在 runsc Node 上，Agent 代写的 `runtime_lost` 先按 §9 的 `oom_killed` 规则判一次。
+
 Agent 只接管它 containerd namespace 里带本 Node `orrery.node=<node_id>` 标签的 Runtime 实例；其余带 `orrery.managed` 的容器（例如宿主以新身份重新注册前、上一个身份留下的）直接删掉，连同它的网络（§13）。被接管的 Sandbox 的 netns、veth 和出网规则原样保留，Agent 不重写。Workspace 目录不动，只记一条日志：宣告 lost 可能是误判，那里也许是最后一份数据。
 
 ## 9. containerd
@@ -111,7 +114,11 @@ Agent 用 containerd 原生 gRPC 客户端（2.x），连 `--containerd` 给出�
 - **runsc 选项**：每个容器经 shim 的 runtime options 传入，不改 containerd 配置：`runtimeoptions.Options{TypeUrl: "io.containerd.runsc.v1.options", ConfigPath: <Agent 写的 TOML>}`，TOML 里 `[runsc_config]` 设 `host-uds = "create"`。没有它，Sandbox 里建的 unix socket 在宿主上看不到，PTY 的 `ctl.sock`（§5）和端口转发的 socket（§14）都会失效。代价是 Sandbox 能在它的宿主挂载（Workspace、运行目录）上建出宿主可见的 socket；反方向（连宿主上的 socket，`open`）仍然关闭。
 - **GPU**：报 `unsupported`。spec 里一旦有 NVIDIA 设备，runsc 会自己开启 nvproxy，不会报错，所以带 GPU 的 Create 由 Agent 在建容器之前拒绝。
 - **PID 上限**：`pids.max` 数的是宿主任务，包括 Sentry 的线程（空闲时约 20 到 51 个）和每个客户机线程对应的 systrap stub，不是客户机进程数 1:1。回读照样准确，上限照样是边界，但同一个数值能容纳的客户机进程更少；撞到上限时整个 Sandbox 退出（Runtime 死亡，Exec 以 `runtime_lost` 结束），而不是客户机里的 `fork()` 返回 `EAGAIN`。平台不为此调整请求的数值。
-- **`oom_killed`**：Supervisor 在客户机里读到的 `memory.events` 是 Sentry 模拟的。实现时要验证 OOM 时 `oom_kill` 计数会上涨；如果不会，改读宿主 cgroup 的 `memory.events`（§4 第 7 步的依据不变）。
+- **`oom_killed`**（`docs/research/runsc-memory-oom-spike.md`，#177）：客户机里没有 OOM 计数。Sentry 模拟的 cgroupfs 里没有 `memory.events`（v2 的是写死的全 0），Sentry 自己也没有 OOM killer，所以 Supervisor 在客户机里永远判不出 `oom_killed`。撞到内存上限时，宿主 OOM killer 在 Sandbox 的 cgroup 里杀 RSS 最大的那个进程：要么是这个 Exec 的 systrap stub，Sentry 随后以 SIGKILL 结束它，Supervisor 写下 `exited` 加信号 9，Sandbox 继续运行；要么是 Sentry 本身，整个 Sandbox 停止。是哪一种取决于负载，平台不保证。两种都由 Agent 读宿主的 `/sys/fs/cgroup/<cgroupsPath>/memory.events` 来判：
+  - **基线**：Agent 连上 `ctl.sock` 之后、发 spec 之前，读一次宿主 `oom_kill`，写进记录目录的 `oom_kill` 文件（§3）。execve 在 spec 之后，所以基线一定早于命令。它和记录一起落在宿主上，Agent 重启后照样能读；没有这个文件就不做下面的改判。
+  - **判定**：宿主 `oom_kill` 比基线大，下面两种 `exit` 改成 `oom_killed`：Supervisor 写的 `exited` 且信号为 SIGKILL（Agent 第一次读到这个 `exit` 时读计数并原子改写，之后的重发都用改写后的记录）；Agent 代写的 `runtime_lost`（§8，读计数后直接写成 `oom_killed`）。只看涨没涨，不看涨了多少：一次 OOM 可能杀好几个进程。`canceled`、`timed_out` 等其他 cause 不改。
+  - **Sandbox 本身**：Sentry 被杀就是 Runtime 死亡，Sandbox 仍按 ADR-0017 变成 `stopped`，cause 为 `runtime_lost`，不新增 cause。只有其中的 Exec 报 `oom_killed`。
+  - **局限**：计数是整个 Sandbox 的，读的时刻是 Agent 处理 `exit` 时而不是命令结束的那一刻，所以同一 Sandbox 里同时被 SIGKILL 的几个 Exec 分不开，与 ADR-0019 的结论相同。宿主 cgroup 读不到（例如 task 已被删）就当作没涨，结果保持 `exited` 或 `runtime_lost`。不设 `memory.oom.group`（它让每次 OOM 都杀掉 Sentry），也不调 Sentry 或 gofer 的 `oom_score_adj`。
 - **数据目录**：runsc 执行不了宿主 tmpfs bind 挂载上的 Supervisor 二进制，所以 runsc Node 的 `--data-root` 不能放在 tmpfs 上。Agent 启动时检查，在 tmpfs 上就拒绝启动。
 
 ## 10. Local Runtime
