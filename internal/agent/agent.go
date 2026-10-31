@@ -431,39 +431,10 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		}})
 	}
 
-	// snapshot_build is the BuildKit endpoint self-check, independent of the
-	// Runtime (runtime.md §12). It is reported even when the Runtime probe
-	// fails; the Node's status already keeps it out of placement then.
-	buildOK := rt.buildkitAvailable(streamCtx)
-	report, probeErr := rt.probe(streamCtx)
-	health := "healthy"
-	if probeErr != nil {
-		health = "unhealthy"
-		report = nodeproto.CapabilityReport{RuntimeProvider: rt.provider}
-		slog.Error("runtime self-check failed", "error", probeErr)
-	}
-	report = withSnapshotBuild(report, buildOK)
-	rt.setEgressEnforced(report)
-	// The inventory is a hardware fact; placement still requires the CDI
-	// capability above, so a Node without working CDI shows GPUs it cannot attach.
-	gpus := enumerateGPUs(streamCtx)
-	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
-		Capabilities: capabilitiesMessage(report, gpus),
-	}})
-	host := hostHardware()
-	heartbeat := func() *nodev1.AgentMessage {
-		return heartbeatMessage(health, host, opts, gpuHealth(streamCtx, gpus))
-	}
-	send(heartbeat())
-
+	// Sandboxes this Node already runs are served from here on; the
+	// self-check below only holds back new placements (#178).
 	runner := newCommandRunner(streamCtx, rt, send)
 	rt.connect(nodev1.NewNodeClient(conn), send)
-	// A build a previous process (or a dropped stream) left behind is
-	// interrupted, never retried (runtime.md §12).
-	go rt.resumeBuilds(streamCtx)
-	// Cache eviction owns its own loop (runtime.md §11): a Node below the disk
-	// watermark reclaims LRU cache without touching Sandbox lifecycle.
-	go rt.evictLoop(streamCtx, opts.DiskWatermark)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {
@@ -491,6 +462,39 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// Repair what a previous Agent process, or an earlier connection, left
 	// unfinished (runtime.md §8).
 	go rt.reconcileRecords(streamCtx, reportGone)
+
+	// snapshot_build is the BuildKit endpoint self-check, independent of the
+	// Runtime (runtime.md §12). It is reported even when the Runtime probe
+	// fails; the Node's status already keeps it out of placement then.
+	buildOK := rt.buildkitAvailable(streamCtx)
+	report, probeErr := rt.probe(streamCtx)
+	health := "healthy"
+	if probeErr != nil {
+		health = "unhealthy"
+		report = nodeproto.CapabilityReport{RuntimeProvider: rt.provider}
+		slog.Error("runtime self-check failed", "error", probeErr)
+	}
+	report = withSnapshotBuild(report, buildOK)
+	rt.setEgressEnforced(report)
+	// The inventory is a hardware fact; placement still requires the CDI
+	// capability above, so a Node without working CDI shows GPUs it cannot attach.
+	gpus := enumerateGPUs(streamCtx)
+	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
+		Capabilities: capabilitiesMessage(report, gpus),
+	}})
+	host := hostHardware()
+	heartbeat := func() *nodev1.AgentMessage {
+		return heartbeatMessage(health, host, opts, gpuHealth(streamCtx, gpus))
+	}
+	send(heartbeat())
+
+	// A build a previous process (or a dropped stream) left behind is
+	// interrupted, never retried (runtime.md §12).
+	go rt.resumeBuilds(streamCtx)
+	// Cache eviction owns its own loop (runtime.md §11): a Node below the disk
+	// watermark reclaims LRU cache without touching Sandbox lifecycle.
+	go rt.evictLoop(streamCtx, opts.DiskWatermark)
+	runner.selfChecked()
 
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()

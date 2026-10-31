@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	eventtypes "github.com/containerd/containerd/api/events"
@@ -47,6 +48,9 @@ type containerdDriver struct {
 	subnet string
 	// runscConfig is the runsc options TOML on a runsc Node; empty under runc.
 	runscConfig string
+	// probing is the name of the probe container now running (a string), which
+	// adopt, running alongside the self-check, must leave alone.
+	probing atomic.Value
 }
 
 // runsc reports whether this Node runs Sandboxes under runsc.
@@ -470,6 +474,8 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	opts = append(opts, cdispec.WithCDIDevices(cdiDeviceNames(gpus)...))
 	// Labelled managed but owned by no Node, so a probe a crash left behind is
 	// removed with its network by the next adopt.
+	d.probing.Store(name)
+	defer d.probing.Store("")
 	c, err := d.start(ctx, name, img, map[string]string{labelManaged: "true", labelSandboxID: id.String()}, opts)
 	defer d.removeContainer(context.WithoutCancel(ctx), name) //nolint:errcheck // disposable
 	if err != nil {
@@ -588,6 +594,9 @@ func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)
 		}
 		id, parseErr := uuid.Parse(labels[labelSandboxID])
 		if !containerOwnedBy(labels, d.r.nodeID) {
+			if probing, _ := d.probing.Load().(string); c.ID() == probing {
+				continue // this Agent's own self-check, removed when it ends
+			}
 			// The Workspace directory stays untouched: declaring it lost may be
 			// wrong, and the data may have no other copy.
 			slog.Info("removing a Runtime left by another Node",

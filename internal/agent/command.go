@@ -28,13 +28,32 @@ type commandRunner struct {
 	mu    sync.Mutex
 	gens  map[string]int64
 	locks map[string]*sync.Mutex
+	// checked is closed once the startup self-check has reported Capabilities.
+	checked chan struct{}
 }
 
 func newCommandRunner(ctx context.Context, rt *Runtime, send func(*nodev1.AgentMessage)) *commandRunner {
 	return &commandRunner{
 		ctx: ctx, rt: rt, send: send,
-		gens:  make(map[string]int64),
-		locks: make(map[string]*sync.Mutex),
+		gens:    make(map[string]int64),
+		locks:   make(map[string]*sync.Mutex),
+		checked: make(chan struct{}),
+	}
+}
+
+// selfChecked releases the commands that wait for the Capabilities.
+func (c *commandRunner) selfChecked() { close(c.checked) }
+
+// afterSelfCheck orders a command that places new work after the self-check:
+// Create and Build depend on the capability state (egress_policy,
+// snapshot_build), while commands for running Sandboxes are served at once.
+// The Reconciler re-sends a command lost to a dropped stream.
+func (c *commandRunner) afterSelfCheck() error {
+	select {
+	case <-c.checked:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	}
 }
 
@@ -76,6 +95,9 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			return
 		}
 		go c.run("sandbox:"+cmd.SandboxId, cmd.CommandId, cmd.Generation, func() error {
+			if err := c.afterSelfCheck(); err != nil {
+				return err
+			}
 			if len(cmd.Resources) > 0 {
 				// The Control Plane maps this to the fetching_resources
 				// condition until running or failed (node-protocol.md).
@@ -172,6 +194,9 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		// SnapshotVersions have no generation; the version id keys the lock.
 		// Buildx is canceled through the Exec id, not a Supervisor socket.
 		go c.run("build:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
+			if err := c.afterSelfCheck(); err != nil {
+				return err
+			}
 			return c.rt.buildSnapshot(c.ctx, cmd)
 		})
 	case *nodev1.ControlMessage_OpenTunnel:
