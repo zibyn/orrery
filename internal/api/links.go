@@ -16,8 +16,8 @@ import (
 // sandboxLinksMinor is the protocol minor that carries SandboxLinks.
 const sandboxLinksMinor = 5
 
-// sandboxLinksByNode cuts each Node's SandboxLinks from the addressed Link
-// rows: a Link goes to the Node of each of its ends (node-protocol.md).
+// sandboxLinksByNode cuts each Node's SandboxLinks from the Link rows: a Link
+// goes to the Node of each of its ends (node-protocol.md).
 func sandboxLinksByNode(rows []store.ListSandboxLinkEndsRow) map[uuid.UUID][]*nodev1.SandboxLink {
 	out := map[uuid.UUID][]*nodev1.SandboxLink{}
 	for _, row := range rows {
@@ -29,19 +29,23 @@ func sandboxLinksByNode(rows []store.ListSandboxLinkEndsRow) map[uuid.UUID][]*no
 			link.Ports = append(link.Ports, uint32(port))
 		}
 		out[row.TargetNodeID] = append(out[row.TargetNodeID], link)
-		if row.SourceNodeID != row.TargetNodeID {
-			out[row.SourceNodeID] = append(out[row.SourceNodeID], link)
+		if row.SourceNodeID != nil && *row.SourceNodeID != row.TargetNodeID {
+			out[*row.SourceNodeID] = append(out[*row.SourceNodeID], link)
 		}
 	}
 	return out
 }
 
 // linkPlaceable reports whether a Link target may go to node, given the
-// distinct Nodes of its placed sources.
-// shortcut: same Node only, because there is no Mesh placement yet; #191 adds
-// Nodes with a live Mesh path to every source Node.
-func linkPlaceable(sourceNodes []uuid.UUID, node uuid.UUID) bool {
-	return len(sourceNodes) == 0 || (len(sourceNodes) == 1 && sourceNodes[0] == node)
+// distinct Nodes of its placed sources: each must be node itself or have a
+// live Mesh path to it (runtime.md §15).
+func linkPlaceable(sourceNodes []uuid.UUID, node uuid.UUID, live func(a, b uuid.UUID) bool) bool {
+	for _, source := range sourceNodes {
+		if source != node && !live(source, node) {
+			return false
+		}
+	}
+	return true
 }
 
 // linksCapable reports whether a Node may run a Sandbox with these Link
