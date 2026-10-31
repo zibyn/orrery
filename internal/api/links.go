@@ -80,12 +80,25 @@ func (r *reconciler) pushSandboxLinks(nodes []store.Node, rows []store.ListSandb
 	if r.linksSent == nil {
 		r.linksSent = map[uuid.UUID]string{}
 	}
+	live := map[uuid.UUID]bool{}
+	for _, n := range nodes {
+		live[n.ID] = true
+	}
+	for id := range r.linksSent {
+		if !live[id] {
+			delete(r.linksSent, id) // a deleted Node
+		}
+	}
 	for _, n := range nodes {
 		if n.ProtoMinor == nil || *n.ProtoMinor < sandboxLinksMinor {
 			continue
 		}
 		msg := &nodev1.SandboxLinks{Links: byNode[n.ID]}
-		raw, _ := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
+		raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
+		if err != nil {
+			r.s.log.Warn("reconcile: encode sandbox links", "node_id", n.ID, "error", err)
+			continue
+		}
 		sum := sha256.Sum256(raw)
 		id := "sandbox-links:" + hex.EncodeToString(sum[:16])
 		if prev := r.linksSent[n.ID]; prev != id {

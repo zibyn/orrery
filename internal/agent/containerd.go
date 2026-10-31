@@ -227,7 +227,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err != nil {
 		return cause, err
 	}
-	if _, err = d.setupNetwork(ctx, id, sandboxPath(d.r.dataRoot, id), policy); err == nil {
+	if _, err = d.setupNetwork(ctx, id, sandboxPath(d.r.dataRoot, id), policy, cmd.linkTarget); err == nil {
 		err = d.applyNetwork(ctx)
 	}
 	if err != nil {
@@ -447,11 +447,11 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 		attempts = [][]string{uuids, nil}
 	}
 	var result supervisor.Result
-	var limitsEnforced, gpuVisible, egressEnforced, linksEnforced bool
+	var checks probeChecks
 	for _, attempt := range attempts {
-		result, limitsEnforced, egressEnforced, linksEnforced, err = d.probeOnce(ctx, img, dir, attempt)
+		result, checks, err = d.probeOnce(ctx, img, dir, attempt)
 		if err == nil {
-			gpuVisible = len(attempt) > 0 && numberedDeviceCount(result.NvidiaDevices) == len(uuids)
+			checks.gpuVisible = len(attempt) > 0 && numberedDeviceCount(result.NvidiaDevices) == len(uuids)
 			break
 		}
 		slog.Warn("probe container failed", "gpus", len(attempt), "error", err)
@@ -459,13 +459,14 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 	if err != nil {
 		return nodeproto.CapabilityReport{}, err
 	}
-	return capabilities(result, limitsEnforced, gpuVisible, egressEnforced, linksEnforced, d.runsc()), nil
+	checks.runsc = d.runsc()
+	return capabilities(result, checks), nil
 }
 
 // probeOnce runs one probe container with the given cards attached, in dir
 // (bin/ and workspace/ inside). It reports the limits readback and the
-// egress and Link self-checks.
-func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, dir string, gpus []string) (supervisor.Result, bool, bool, bool, error) {
+// egress and Link self-checks; the caller fills gpuVisible and runsc.
+func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, dir string, gpus []string) (supervisor.Result, probeChecks, error) {
 	binDir, workspace := filepath.Join(dir, "bin"), filepath.Join(dir, "workspace")
 	const cpu = 0.5
 	id := uuid.New()
@@ -473,14 +474,14 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	// The egress self-check starts at Mode none, without the operator's Rules
 	// (runtime.md §13).
 	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressNone})
-	network, err := d.setupNetwork(ctx, id, dir, none)
+	network, err := d.setupNetwork(ctx, id, dir, none, false)
 	defer d.teardownNetwork(context.WithoutCancel(ctx), id, dir) //nolint:errcheck // disposable
 	if err == nil {
 		d.setProbe(id, &network)
 		err = d.applyNetwork(ctx)
 	}
 	if err != nil {
-		return supervisor.Result{}, false, false, false, fmt.Errorf("probe network: %w", err)
+		return supervisor.Result{}, probeChecks{}, fmt.Errorf("probe network: %w", err)
 	}
 	opts := append([]oci.SpecOpts{
 		oci.WithProcessArgs(probeSupervisor, "init"),
@@ -499,15 +500,16 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	c, err := d.start(ctx, name, img, map[string]string{labelManaged: "true", labelSandboxID: id.String()}, opts)
 	defer d.removeContainer(context.WithoutCancel(ctx), name) //nolint:errcheck // disposable
 	if err != nil {
-		return supervisor.Result{}, false, false, false, err
+		return supervisor.Result{}, probeChecks{}, err
 	}
-	limitsEnforced := hostLimitsMatch(ctx, c, cpu, probeMemory)
+	checks := probeChecks{limits: hostLimitsMatch(ctx, c, cpu, probeMemory)}
 	result, err := d.execOutput(ctx, c, probeSupervisor, "probe", probeWorkspace)
 	if err != nil {
-		return result, limitsEnforced, false, false, err
+		return result, checks, err
 	}
-	egressEnforced := d.egressEnforced(ctx, c, id, network)
-	return result, limitsEnforced, egressEnforced, d.linksEnforced(ctx, img, dir, name, c, id, network), nil
+	checks.egress = d.egressEnforced(ctx, c, id, network)
+	checks.links = d.linksEnforced(ctx, img, dir, name, c, id, network)
+	return result, checks, nil
 }
 
 // linksEnforced is the sandbox_links self-check (runtime.md §13): a second
@@ -521,32 +523,25 @@ func (d *containerdDriver) linksEnforced(ctx context.Context, img containerd.Ima
 	}
 	id := uuid.New()
 	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressNone})
-	network, err := d.setupNetwork(ctx, id, targetDir, none)
+	network, err := d.setupNetwork(ctx, id, targetDir, none, true)
 	defer d.teardownNetwork(context.WithoutCancel(ctx), id, targetDir) //nolint:errcheck // disposable
 	if err != nil {
 		slog.Warn("link self-check: target network", "error", err)
 		return false
 	}
-	target := netip.AddrPortFrom(netip.MustParseAddr(network.Address), 8080).String()
-	d.networkMu.Lock()
-	d.probeLink = &nodev1.SandboxLink{TargetId: id.String(), TargetAddress: network.Address,
-		SourceId: sourceID.String(), SourceAddress: sourceNet.Address, Ports: []uint32{8080}}
-	d.networkMu.Unlock()
+	target := netip.AddrPortFrom(netip.MustParseAddr(network.Address), probeLinkPort).String()
+	d.setProbeLink(&nodev1.SandboxLink{TargetId: id.String(), TargetAddress: network.Address,
+		SourceId: sourceID.String(), SourceAddress: sourceNet.Address, Ports: []uint32{probeLinkPort}})
 	// Runs before the teardown above, whose render then drops the Link.
-	defer func() {
-		d.networkMu.Lock()
-		d.probeLink = nil
-		d.networkMu.Unlock()
-	}()
+	defer d.setProbeLink(nil)
 	d.setProbe(id, &network)
 	if err := d.applyNetwork(ctx); err != nil {
 		slog.Warn("link self-check: apply the Link", "error", err)
 		return false
 	}
-	// Named after the source probe so adopt leaves it alone too.
-	name := sourceName + "-target"
+	name := probeTargetName(sourceName)
 	_, err = d.start(ctx, name, img, map[string]string{labelManaged: "true", labelSandboxID: id.String()}, append([]oci.SpecOpts{
-		oci.WithProcessArgs(probeSupervisor, "listen", "0.0.0.0:8080"),
+		oci.WithProcessArgs(probeSupervisor, "listen", netip.AddrPortFrom(netip.IPv4Unspecified(), probeLinkPort).String()),
 		oci.WithMounts([]specs.Mount{bindMount(filepath.Join(dir, "bin"), binaryDir, "ro")}),
 		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: netnsPath(id)}),
 	}, limitOpts(0.5, probeMemory)...))
@@ -680,6 +675,11 @@ func (d *containerdDriver) healthy(ctx context.Context) bool {
 // adopt takes over this Node's running Sandboxes and removes every other
 // managed container in the namespace with its network (runtime.md §8).
 func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)) {
+	// Every render below, the teardowns included, sees the last SandboxLinks.
+	links := loadSandboxLinks(d.r.dataRoot)
+	d.networkMu.Lock()
+	d.links = links
+	d.networkMu.Unlock()
 	containers, err := d.client.Containers(ctx, `labels."`+labelManaged+`"==true`)
 	if err != nil {
 		return
@@ -691,7 +691,7 @@ func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)
 		}
 		id, parseErr := uuid.Parse(labels[labelSandboxID])
 		if !containerOwnedBy(labels, d.r.nodeID) {
-			if probing, _ := d.probing.Load().(string); probing != "" && strings.HasPrefix(c.ID(), probing) {
+			if probing, _ := d.probing.Load().(string); probing != "" && (c.ID() == probing || c.ID() == probeTargetName(probing)) {
 				continue // this Agent's own self-check, removed when it ends
 			}
 			// The Workspace directory stays untouched: declaring it lost may be

@@ -114,6 +114,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				gpuUUIDs:      cmd.GpuUuids,
 				resources:     resourceMounts(cmd.Resources),
 				egress:        egressModeOf(cmd.Egress),
+				linkTarget:    cmd.LinkTarget,
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)

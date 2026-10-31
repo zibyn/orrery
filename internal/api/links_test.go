@@ -13,6 +13,21 @@ import (
 	"github.com/zibyn/orrery/internal/store"
 )
 
+// #195: CreateSandbox flags a Sandbox with links as a Link target, so the
+// Agent renders its inbound chain before it runs (node-protocol.md).
+func TestCreateSandboxCommandFlagsALinkTarget(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		from []uuid.UUID
+		want bool
+	}{{"with links", []uuid.UUID{uuid.New()}, true}, {"without links", nil, false}} {
+		sb := store.Sandbox{ID: uuid.New(), Generation: 2, LinksFrom: tt.from}
+		if got := createSandboxCommand("c", sb, nil, nil, nil).GetLinkTarget(); got != tt.want {
+			t.Errorf("%s: link_target = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 // node-protocol.md: each Node gets every Link with an end on it; a Link
 // across two Nodes goes to both, and a Node with no Link end gets none.
 func TestSandboxLinksByNode(t *testing.T) {
@@ -131,6 +146,10 @@ func TestPushSandboxLinks(t *testing.T) {
 	}
 	if len(oldConn.send) != 0 {
 		t.Fatal("an Agent older than minor 5 was sent SandboxLinks")
+	}
+	r.pushSandboxLinks(nil, nil)
+	if len(r.linksSent) != 0 {
+		t.Fatalf("a deleted Node's last set is still remembered: %v", r.linksSent)
 	}
 }
 

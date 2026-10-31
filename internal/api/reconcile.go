@@ -331,19 +331,27 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 		resources = append(resources, &nodev1.ResourceMount{Address: *mount.Address, Mount: mount.Mount})
 	}
 	id := commandID("create-sandbox", sb.ID, sb.Generation)
+	workspace := &nodev1.WorkspaceMount{WorkspaceId: att.WorkspaceID.String(), Mode: att.Mode}
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{
-		CreateSandbox: &nodev1.CreateSandbox{
-			CommandId:   id,
-			SandboxId:   sb.ID.String(),
-			Generation:  sb.Generation,
-			ImageDigest: sb.SnapshotDigest,
-			Limits:      &nodev1.Limits{Cpu: sb.Cpu, Memory: sb.Memory},
-			Workspace:   &nodev1.WorkspaceMount{WorkspaceId: att.WorkspaceID.String(), Mode: att.Mode},
-			GpuUuids:    gpus,
-			Resources:   resources,
-			Egress:      &nodev1.EgressMode{Mode: sandboxEgressValue(sb.EgressMode), Allow: sb.EgressAllow},
-		},
+		CreateSandbox: createSandboxCommand(id, sb, workspace, gpus, resources),
 	}})
+}
+
+// createSandboxCommand is the same on every (re)send of one generation
+// (node-protocol.md).
+func createSandboxCommand(id string, sb store.Sandbox, workspace *nodev1.WorkspaceMount, gpus []string, resources []*nodev1.ResourceMount) *nodev1.CreateSandbox {
+	return &nodev1.CreateSandbox{
+		CommandId:   id,
+		SandboxId:   sb.ID.String(),
+		Generation:  sb.Generation,
+		ImageDigest: sb.SnapshotDigest,
+		Limits:      &nodev1.Limits{Cpu: sb.Cpu, Memory: sb.Memory},
+		Workspace:   workspace,
+		GpuUuids:    gpus,
+		Resources:   resources,
+		Egress:      &nodev1.EgressMode{Mode: sandboxEgressValue(sb.EgressMode), Allow: sb.EgressAllow},
+		LinkTarget:  len(sb.LinksFrom) > 0,
+	}
 }
 
 func (r *reconciler) stop(ctx context.Context, sb store.Sandbox) {

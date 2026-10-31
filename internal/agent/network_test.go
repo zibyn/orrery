@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/nodeproto"
@@ -42,15 +43,15 @@ func evaluate(t *testing.T, tables []nftTable, p packet) bool {
 				if !ruleMatches(t, r, p) {
 					continue
 				}
-				switch r.verdict {
-				case "accept", "drop":
+				if r.verdict == "accept" || r.verdict == "drop" {
 					return r.verdict
-				case "": // a statement such as clampMSS
-					continue
 				}
-				target, ok := chains[r.verdict]
+				if r.jump == "" {
+					continue // a statement such as clampMSS
+				}
+				target, ok := chains[r.jump]
 				if !ok {
-					t.Fatalf("chain %s jumps to missing chain %q", c.name, r.verdict)
+					t.Fatalf("chain %s jumps to missing chain %q", c.name, r.jump)
 				}
 				if v := run(target, depth+1); v != "" {
 					return v
@@ -78,7 +79,8 @@ func ruleMatches(t *testing.T, r nftRule, p packet) bool {
 		r.notIP && ip,
 		r.saddr.IsValid() && (!ip || !r.saddr.Contains(netip.MustParseAddr(p.src))),
 		r.daddr.IsValid() && (!ip || !r.daddr.Contains(netip.MustParseAddr(p.dst))),
-		r.port != 0 && ((p.proto != "tcp" && p.proto != "udp") || r.port != p.port):
+		(r.port != 0 || r.tcpUDP) && p.proto != "tcp" && p.proto != "udp",
+		r.port != 0 && r.port != p.port:
 		return false
 	}
 	return true
@@ -358,6 +360,81 @@ func TestRenderNetworkMesh(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script lacks %q:\n%s", want, script)
+		}
+	}
+}
+
+// runtime.md §13: after an Agent restart the inbound chains are rebuilt from
+// the last SandboxLinks, so the set survives in the data root.
+func TestSandboxLinksSurviveARestart(t *testing.T) {
+	dataRoot := t.TempDir()
+	if got := loadSandboxLinks(dataRoot); got != nil {
+		t.Fatalf("links before any SandboxLinks = %v, want none", got)
+	}
+	links := []*nodev1.SandboxLink{{TargetId: uuid.NewString(), TargetAddress: "10.213.0.2",
+		SourceId: uuid.NewString(), SourceAddress: "10.213.0.3", Ports: []uint32{8080}}}
+	if err := saveSandboxLinks(dataRoot, links); err != nil {
+		t.Fatal(err)
+	}
+	got := loadSandboxLinks(dataRoot)
+	if !proto.Equal(&nodev1.SandboxLinks{Links: got}, &nodev1.SandboxLinks{Links: links}) {
+		t.Fatalf("loaded %v, want %v", got, links)
+	}
+}
+
+// #195: a Sandbox recorded as a Link target has its inbound chain before any
+// SandboxLinks arrives, so nothing reaches it in the meantime.
+func TestRenderNetworkLinkTargetWithNoSandboxLinks(t *testing.T) {
+	open, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressOpen})
+	target, unlinked := uuid.New(), uuid.New()
+	tables := renderNetwork(networkState{sandboxes: map[uuid.UUID]sandboxNetwork{
+		target:   {HostVeth: "vethtarget", Address: "10.213.0.2", Policy: open, LinkTarget: true},
+		unlinked: {HostVeth: "vethopen", Address: "10.213.0.5", Policy: open},
+	}})
+	if evaluate(t, tables, packet{hook: "forward", iif: "vethopen", oif: "vethtarget", src: "10.213.0.5", dst: "10.213.0.2", proto: "tcp", port: 8080}) {
+		t.Error("an open same-Node Sandbox reached the target")
+	}
+	if evaluate(t, tables, packet{hook: "output", oif: "vethtarget", src: "10.213.0.1", dst: "10.213.0.2", proto: "tcp", port: 8080}) {
+		t.Error("the host reached the target")
+	}
+}
+
+// api.md §3: a Link that omits ports covers every TCP and UDP port, and no
+// other protocol, in orrery and in orrery_mesh alike.
+func TestRenderNetworkLinkWithoutPortsIsTCPAndUDPOnly(t *testing.T) {
+	open, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressOpen})
+	target, source := uuid.New(), uuid.New()
+	tables := renderNetwork(networkState{
+		sandboxes: map[uuid.UUID]sandboxNetwork{
+			target: {HostVeth: "vethtarget", Address: "10.213.0.2", Policy: open},
+			source: {HostVeth: "vethsource", Address: "10.213.0.3", Policy: open},
+		},
+		links: []*nodev1.SandboxLink{
+			{TargetId: target.String(), TargetAddress: "10.213.0.2", SourceId: source.String(), SourceAddress: "10.213.0.3"},
+			{TargetId: target.String(), TargetAddress: "10.213.0.2", SourceId: uuid.NewString(), SourceAddress: "10.213.1.4"},
+		},
+	})
+	local := func(l4 string, port uint16) packet {
+		return packet{hook: "forward", iif: "vethsource", oif: "vethtarget", src: "10.213.0.3", dst: "10.213.0.2", proto: l4, port: port}
+	}
+	mesh := func(l4 string, port uint16) packet {
+		return packet{hook: "forward", iif: meshInterface, oif: "orrery0", src: "10.213.1.4", dst: "10.213.0.2", proto: l4, port: port}
+	}
+	for _, tt := range []struct {
+		name   string
+		p      packet
+		accept bool
+	}{
+		{"local TCP", local("tcp", 22), true},
+		{"local UDP", local("udp", 53), true},
+		{"local ICMP", local("icmp", 0), false},
+		{"local SCTP", local("sctp", 0), false},
+		{"Mesh TCP", mesh("tcp", 22), true},
+		{"Mesh UDP", mesh("udp", 53), true},
+		{"Mesh ICMP", mesh("icmp", 0), false},
+	} {
+		if got := evaluate(t, tables, tt.p); got != tt.accept {
+			t.Errorf("%s: accepted = %v, want %v", tt.name, got, tt.accept)
 		}
 	}
 }

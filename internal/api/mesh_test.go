@@ -27,16 +27,15 @@ func peerIDs(peers []*nodev1.MeshPeer) map[string]*nodev1.MeshPeer {
 	return out
 }
 
-// MeshPeers is every other Node with mesh, minus overlapping subnets and
-// pairs where neither side has an endpoint (runtime.md §15).
+// MeshPeers is every other Node with mesh, minus pairs where neither side
+// has an endpoint (runtime.md §15).
 func TestMeshPeers(t *testing.T) {
 	self := meshNode("10.213.1.0/24", "")
 	public := meshNode("10.213.2.0/24", "198.51.100.10:51820")
 	natted := meshNode("10.213.3.0/24", "")
-	overlap := meshNode("10.213.0.0/16", "203.0.113.5:51820")
 	noMesh := store.Node{ID: uuid.New()}
 
-	nodes := []store.Node{self, public, natted, overlap, noMesh}
+	nodes := []store.Node{self, public, natted, noMesh}
 	got := peerIDs(meshPeers(self, nodes))
 	if len(got) != 1 {
 		t.Fatalf("peers = %v, want only the Node with an endpoint", got)
@@ -55,12 +54,27 @@ func TestMeshPeers(t *testing.T) {
 	if got[self.ID.String()].Endpoint != "" {
 		t.Fatalf("NAT-ed peer got endpoint %q", got[self.ID.String()].Endpoint)
 	}
-	if got[overlap.ID.String()] != nil {
-		t.Fatal("an overlapping subnet was peered")
-	}
 
 	if peers := meshPeers(noMesh, nodes); len(peers) != 0 {
 		t.Fatalf("a Node without mesh got peers %v", peers)
+	}
+}
+
+// Story 37 of #185: a Node whose subnet overlaps any other mesh Node's is
+// peered by no one, so a third Node never gets two peers with the same
+// AllowedIPs, and it gets no peers itself.
+func TestMeshPeersSkipsOverlappingNodes(t *testing.T) {
+	third := meshNode("10.214.0.0/24", "192.0.2.3:51820")
+	x := meshNode("10.213.1.0/24", "192.0.2.1:51820")
+	y := meshNode("10.213.1.128/25", "192.0.2.2:51820")
+	z := meshNode("10.215.0.0/24", "192.0.2.4:51820")
+	nodes := []store.Node{third, x, y, z}
+	got := peerIDs(meshPeers(third, nodes))
+	if len(got) != 1 || got[z.ID.String()] == nil {
+		t.Fatalf("peers = %v, want only the Node that overlaps nobody", got)
+	}
+	if peers := meshPeers(x, nodes); len(peers) != 0 {
+		t.Fatalf("an overlapping Node got peers %v", peers)
 	}
 }
 
