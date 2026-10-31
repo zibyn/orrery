@@ -391,7 +391,13 @@ func resultOf(state *os.ProcessState, terminated string, oomBefore int64) Exit {
 
 // oomKills reads the cgroup's cumulative OOM kill count (runtime.md §4).
 func oomKills() int64 {
-	for _, path := range []string{"/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory/memory.oom_control"} {
+	return OOMKills("/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory/memory.oom_control")
+}
+
+// OOMKills reads the `oom_kill` count from the first readable file; 0 when
+// none is. The Agent reads a runsc Sandbox's host cgroup with it (§9).
+func OOMKills(paths ...string) int64 {
+	for _, path := range paths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			continue
