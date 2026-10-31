@@ -34,6 +34,18 @@ type sandboxNetwork struct {
 	Policy []egressRule `json:"policy"`
 }
 
+// recordedAddress is the address in the Sandbox's network.json, or empty when
+// it has none (a Local Sandbox, or one torn down).
+func recordedAddress(dataRoot string, id uuid.UUID) string {
+	raw, err := os.ReadFile(filepath.Join(sandboxPath(dataRoot, id), "network.json"))
+	if err != nil {
+		return ""
+	}
+	var network sandboxNetwork
+	_ = json.Unmarshal(raw, &network)
+	return network.Address
+}
+
 func (d *containerdDriver) bridgeConf() []byte {
 	conf, _ := json.Marshal(map[string]any{
 		"cniVersion": "1.0.0",
@@ -41,10 +53,9 @@ func (d *containerdDriver) bridgeConf() []byte {
 		"type":       "bridge",
 		"bridge":     sandboxBridge,
 		"isGateway":  true,
-		"ipMasq":     true,
-		// The Agent's own nftables table, not iptables rules in tables the
-		// host's other software owns (ADR-0026).
-		"ipMasqBackend": "nftables",
+		// orrery_nat masquerades instead: CNI's rule would also rewrite
+		// traffic to other Nodes' Sandbox subnets (runtime.md §13).
+		"ipMasq": false,
 		"ipam": map[string]any{
 			"type":   "host-local",
 			"ranges": [][]map[string]string{{{"subnet": d.subnet}}},
@@ -185,6 +196,11 @@ func (d *containerdDriver) applyNetwork(ctx context.Context) error {
 	d.networkMu.Lock()
 	defer d.networkMu.Unlock()
 	state := networkState{sandboxes: map[uuid.UUID]sandboxNetwork{}}
+	subnet, err := netip.ParsePrefix(d.subnet)
+	if err != nil {
+		return fmt.Errorf("sandbox subnet: %w", err)
+	}
+	state.subnet = subnet.Masked()
 	paths, err := filepath.Glob(filepath.Join(d.r.dataRoot, "sandboxes", "*", "network.json"))
 	if err != nil {
 		return err

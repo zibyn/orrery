@@ -1077,8 +1077,10 @@ type SandboxObserved struct {
 	SandboxId  string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
 	Generation int64                  `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
 	// "running", "gone" or "create_failed".
-	Phase         string `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
-	Cause         string `protobuf:"bytes,4,opt,name=cause,proto3" json:"cause,omitempty"`
+	Phase string `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
+	Cause string `protobuf:"bytes,4,opt,name=cause,proto3" json:"cause,omitempty"`
+	// The Sandbox's IPv4 address from CNI, sent with "running" (minor 5).
+	Address       string `protobuf:"bytes,5,opt,name=address,proto3" json:"address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1137,6 +1139,13 @@ func (x *SandboxObserved) GetPhase() string {
 func (x *SandboxObserved) GetCause() string {
 	if x != nil {
 		return x.Cause
+	}
+	return ""
+}
+
+func (x *SandboxObserved) GetAddress() string {
+	if x != nil {
+		return x.Address
 	}
 	return ""
 }
@@ -3294,7 +3303,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x0e2\x1f.orrery.node.v1.CapabilityValueR\x05value\"/\n" +
 	"\x03GPU\x12\x12\n" +
 	"\x04uuid\x18\x01 \x01(\tR\x04uuid\x12\x14\n" +
-	"\x05model\x18\x02 \x01(\tR\x05model\"|\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"\x96\x01\n" +
 	"\x0fSandboxObserved\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x1e\n" +
@@ -3302,7 +3311,8 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"generation\x18\x02 \x01(\x03R\n" +
 	"generation\x12\x14\n" +
 	"\x05phase\x18\x03 \x01(\tR\x05phase\x12\x14\n" +
-	"\x05cause\x18\x04 \x01(\tR\x05cause\"\x82\x01\n" +
+	"\x05cause\x18\x04 \x01(\tR\x05cause\x12\x18\n" +
+	"\aaddress\x18\x05 \x01(\tR\aaddress\"\x82\x01\n" +
 	"\x11WorkspaceObserved\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x1e\n" +
 	"\n" +

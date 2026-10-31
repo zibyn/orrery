@@ -384,7 +384,7 @@ WHERE owner_id = $1 AND kind = 'user'
 
 -- name: StartSandbox :one
 UPDATE sandboxes
-SET desired_state = 'running', state = 'pending', cause = NULL,
+SET desired_state = 'running', state = 'pending', cause = NULL, address = NULL,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state = 'stopped'
 RETURNING *;
@@ -449,7 +449,7 @@ WHERE id = $1 AND desired_state = 'stopped'
 
 -- name: SetSandboxStopped :execrows
 UPDATE sandboxes
-SET state = 'stopped', updated_at = now()
+SET state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping');
 
@@ -466,14 +466,22 @@ SET state = 'ready', cause = NULL, conditions = NULL, last_activity_at = now(), 
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning');
 
+-- SetSandboxAddress records the address the Agent reported with `running`;
+-- an older Agent sends none and the column stays NULL (node-protocol.md).
+-- name: SetSandboxAddress :exec
+UPDATE sandboxes
+SET address = NULLIF(sqlc.arg('address')::text, '')
+WHERE id = $1 AND generation = $2 AND desired_state = 'running'
+  AND state IN ('provisioning', 'ready');
+
 -- name: MarkSandboxFailed :execrows
 UPDATE sandboxes
-SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', updated_at = now()
+SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
 -- name: MarkSandboxRuntimeLost :execrows
 UPDATE sandboxes
-SET state = 'stopped', cause = $3, desired_state = 'stopped', updated_at = now()
+SET state = 'stopped', cause = $3, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning', 'ready');
 
@@ -494,7 +502,7 @@ WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'run
 
 -- name: MarkSandboxStopped :execrows
 UPDATE sandboxes
-SET state = 'stopped', conditions = NULL, updated_at = now()
+SET state = 'stopped', conditions = NULL, address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping');
 
@@ -1417,7 +1425,7 @@ WHERE id = $1;
 -- name: FailSandboxesOnNodeLost :execrows
 UPDATE sandboxes
 SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
-    conditions = NULL, updated_at = now()
+    conditions = NULL, address = NULL, updated_at = now()
 WHERE node_id = $1 AND state <> 'deleted';
 
 -- name: DeleteSandboxAttachmentsOnNodeLost :execrows

@@ -150,6 +150,8 @@ message SandboxObserved {
   // "running", "gone" or "create_failed".
   string phase = 3;
   string cause = 4;
+  // The Sandbox's IPv4 address from CNI, sent with "running" (minor 5).
+  string address = 5;
 }
 
 message WorkspaceObserved {

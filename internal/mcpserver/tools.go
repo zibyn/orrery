@@ -21,6 +21,7 @@ const sandboxSchema = `{
       "mode": {"type": "string"},
       "allow": {"type": ["array", "null"], "items": {"type": "string"}}
     }},
+    "address": {"type": "string"},
     "state": {"type": "string"},
     "cause": {"type": ["string", "null"]},
     "node_id": {"type": ["string", "null"]},

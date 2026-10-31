@@ -161,3 +161,27 @@ func TestSandboxEgressRequest(t *testing.T) {
 		})
 	}
 }
+
+// api.md §3: `address` is the Sandbox's current IPv4 address and empty when it
+// has none (not running, or reported by an older Agent).
+func TestSandboxDTOAddress(t *testing.T) {
+	addr := "10.88.0.7"
+	for _, tt := range []struct {
+		name string
+		sb   store.Sandbox
+		want string
+	}{
+		{"running", store.Sandbox{State: "ready", Address: &addr}, `"address":"10.88.0.7"`},
+		{"stopped", store.Sandbox{State: "stopped"}, `"address":""`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal((&Server{}).sandboxToDTO(t.Context(), tt.sb))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), tt.want) {
+				t.Fatalf("sandbox JSON %s lacks %s", raw, tt.want)
+			}
+		})
+	}
+}

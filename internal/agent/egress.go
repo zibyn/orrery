@@ -150,14 +150,16 @@ type egressRuleJSON struct {
 }
 
 // networkState is the local state the Agent-owned nftables tables are
-// rendered from: every local Sandbox's recorded network.
+// rendered from: every local Sandbox's recorded network and the Sandbox
+// subnet.
 type networkState struct {
 	sandboxes map[uuid.UUID]sandboxNetwork
+	subnet    netip.Prefix
 }
 
 // nftTable, nftChain and nftRule are the rendered tables, before nftScript
-// turns them into nft syntax. A chain with a hook is a base chain at priority
-// filter with policy accept.
+// turns them into nft syntax. A chain with a hook is a base chain with policy
+// accept: nat at priority srcnat on postrouting, else filter.
 type nftTable struct {
 	family, name string
 	chains       []nftChain
@@ -173,12 +175,15 @@ type nftChain struct {
 // name of a chain to jump to.
 type nftRule struct {
 	iif, oif    string
+	notOif      bool // oifname != oif
 	established bool // ct state established,related
 	arp         bool // ether type arp
 	notIP       bool // ether type != ip
+	saddr       netip.Prefix
 	daddr       netip.Prefix
+	notDaddr    bool   // ip daddr != daddr
 	port        uint16 // TCP or UDP destination port
-	verdict     string
+	verdict     string // also masquerade
 }
 
 // renderNetwork is the whole bridge table orrery: forward and input jump on
@@ -213,7 +218,20 @@ func renderNetwork(state networkState) []nftTable {
 		table.chains = append(table.chains, chain)
 	}
 	table.chains = append([]nftChain{forward, input}, table.chains...)
-	return []nftTable{table}
+	tables := []nftTable{table}
+	if state.subnet.IsValid() {
+		tables = append(tables, natTable(state.subnet))
+	}
+	return tables
+}
+
+// natTable is the ip table orrery_nat: Sandbox traffic leaving the subnet
+// takes the Node's address, except into the Mesh (runtime.md §13).
+func natTable(subnet netip.Prefix) nftTable {
+	return nftTable{family: "ip", name: "orrery_nat", chains: []nftChain{{
+		name: "postrouting", hook: "postrouting",
+		rules: []nftRule{{saddr: subnet, daddr: subnet, notDaddr: true, oif: "orrery-wg", notOif: true, verdict: "masquerade"}},
+	}}}
 }
 
 // nftScript replaces each table whole in one nft transaction: adding first
@@ -225,7 +243,11 @@ func nftScript(tables []nftTable) string {
 		fmt.Fprintf(&script, "add table %s\ndelete table %s\ntable %s {\n", name, name, name)
 		for _, chain := range table.chains {
 			fmt.Fprintf(&script, "\tchain %s {\n", chain.name)
-			if chain.hook != "" {
+			switch chain.hook {
+			case "":
+			case "postrouting":
+				script.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
+			default:
 				fmt.Fprintf(&script, "\t\ttype filter hook %s priority filter; policy accept;\n", chain.hook)
 			}
 			for _, rule := range chain.rules {
@@ -240,11 +262,17 @@ func nftScript(tables []nftTable) string {
 
 func (r nftRule) String() string {
 	var match []string
+	not := func(negate bool) string {
+		if negate {
+			return "!= "
+		}
+		return ""
+	}
 	if r.iif != "" {
 		match = append(match, fmt.Sprintf("iifname %q", r.iif))
 	}
 	if r.oif != "" {
-		match = append(match, fmt.Sprintf("oifname %q", r.oif))
+		match = append(match, fmt.Sprintf("oifname %s%q", not(r.notOif), r.oif))
 	}
 	if r.established {
 		match = append(match, "ct state established,related")
@@ -255,14 +283,17 @@ func (r nftRule) String() string {
 	if r.notIP {
 		match = append(match, "ether type != ip")
 	}
+	if r.saddr.IsValid() {
+		match = append(match, "ip saddr "+r.saddr.String())
+	}
 	if r.daddr.IsValid() {
-		match = append(match, "ip daddr "+r.daddr.String())
+		match = append(match, "ip daddr "+not(r.notDaddr)+r.daddr.String())
 	}
 	if r.port != 0 {
 		match = append(match, fmt.Sprintf("meta l4proto { tcp, udp } th dport %d", r.port))
 	}
 	verdict := r.verdict
-	if verdict != "accept" && verdict != "drop" {
+	if verdict != "accept" && verdict != "drop" && verdict != "masquerade" {
 		verdict = "jump " + verdict
 	}
 	return strings.Join(append(match, verdict), " ")

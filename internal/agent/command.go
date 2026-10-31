@@ -266,10 +266,18 @@ func resourceMounts(in []*nodev1.ResourceMount) []resourceMount {
 	return mounts
 }
 
+// observeSandbox reports a phase; `running` carries the address recorded at
+// Create (node-protocol.md).
 func (c *commandRunner) observeSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string) {
+	var address string
+	if phase == nodeproto.SandboxPhaseRunning {
+		if sbID, err := uuid.Parse(id); err == nil {
+			address = recordedAddress(c.rt.dataRoot, sbID)
+		}
+	}
 	c.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{
 		SandboxObserved: &nodev1.SandboxObserved{
-			SandboxId: id, Generation: generation, Phase: string(phase), Cause: cause,
+			SandboxId: id, Generation: generation, Phase: string(phase), Cause: cause, Address: address,
 		},
 	}})
 }
