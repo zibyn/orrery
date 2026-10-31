@@ -58,8 +58,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  orrery-agent enroll --server HOST:PORT --packet ore_... [--ca FILE] [--name NAME] [--state FILE]
-  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|runsc] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
+  orrery-agent enroll --server HOST:PORT --packet ore_... [--ca FILE] [--name NAME] [--state FILE] [--data-root DIR]
+  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|runsc] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES] [--mesh-port PORT] [--mesh-endpoint HOST:PORT]
   orrery-agent supervisor init
   orrery-agent supervisor probe [WORKSPACE]
   orrery-agent supervisor run EXEC_ID
@@ -76,6 +76,7 @@ func enroll(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.CAPath, "ca", "", "PEM file with the Control Plane CA")
 	fs.StringVar(&opts.Name, "name", "", "Node name (default: hostname)")
 	fs.StringVar(&opts.State, "state", agent.DefaultStatePath, "identity file")
+	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "data directory of the Node (its mesh key is cleared)")
 	fs.Parse(args)
 	id, err := agent.Enroll(ctx, opts)
 	if err == nil {
@@ -99,6 +100,8 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "Workspace and Supervisor data directory")
 	fs.Float64Var(&opts.ReserveCPU, "reserve-cpu", agent.DefaultReserveCPU, "CPU cores kept free for the host")
 	fs.Int64Var(&opts.ReserveMemory, "reserve-memory", agent.DefaultReserveBytes, "memory bytes kept free for the host")
+	fs.IntVar(&opts.MeshPort, "mesh-port", agent.DefaultMeshPort, "Node Mesh WireGuard UDP listen port")
+	fs.StringVar(&opts.MeshEndpoint, "mesh-endpoint", "", "host:port other Nodes reach this Node's WireGuard at (default: none, only dial out)")
 	fs.Float64Var(&opts.DiskWatermark, "disk-watermark", agent.DefaultDiskWatermark, "fraction of disk kept free before new allocations are refused")
 	fs.Parse(args)
 	return agent.Run(ctx, opts)

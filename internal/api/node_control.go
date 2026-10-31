@@ -39,11 +39,15 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 		return incompatibleError("the Node Agent protocol version is not supported")
 	}
 	major, minor := int32(hello.ProtoMajor), int32(hello.ProtoMinor)
+	meshKey, meshEndpoint, sandboxSubnet := helloMesh(hello.Mesh)
 	if err := n.s.q.NodeHello(ctx, store.NodeHelloParams{
-		ID:           node.ID,
-		AgentVersion: &hello.AgentVersion,
-		ProtoMajor:   &major,
-		ProtoMinor:   &minor,
+		ID:            node.ID,
+		AgentVersion:  &hello.AgentVersion,
+		ProtoMajor:    &major,
+		ProtoMinor:    &minor,
+		MeshPublicKey: meshKey,
+		MeshEndpoint:  meshEndpoint,
+		SandboxSubnet: sandboxSubnet,
 	}); err != nil {
 		n.s.log.Error("record node hello", "node_id", node.ID, "error", err)
 		return status.Error(codes.Internal, "record Hello")
@@ -66,6 +70,8 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 	conn := &agentConn{nodeID: node.ID, send: make(chan *nodev1.ControlMessage, 64), done: make(chan struct{})}
 	n.s.reconcile.hub.register(conn)
 	defer n.s.reconcile.hub.unregister(conn)
+	// Every Node's peer set may have changed with this Hello (node-protocol.md).
+	n.s.sendMeshPeers(ctx)
 	go func() {
 		for {
 			select {
@@ -133,6 +139,8 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 				n.recordExecObserved(ctx, node.ID, m.ExecObserved)
 			case *nodev1.AgentMessage_BuildObserved:
 				n.recordBuildObserved(ctx, node.ID, m.BuildObserved)
+			case *nodev1.AgentMessage_MeshReport:
+				n.s.mesh.report(node.ID, m.MeshReport.Peers)
 			case *nodev1.AgentMessage_CommandResult:
 				// A Workspace publish is finalized from its CommandResult: success
 				// verifies the objects, failure ends the version (node-protocol.md).

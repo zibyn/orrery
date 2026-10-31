@@ -737,7 +737,7 @@ const createNode = `-- name: CreateNode :one
 INSERT INTO nodes (
     id, name, token_hash, agent_version, proto_major, proto_minor, last_seen_at
 ) VALUES ($1, $2, $3, $4, $5, $6, now())
-RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at
+RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet
 `
 
 type CreateNodeParams struct {
@@ -778,6 +778,9 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
 		&i.DeletedAt,
+		&i.MeshPublicKey,
+		&i.MeshEndpoint,
+		&i.SandboxSubnet,
 	)
 	return i, err
 }
@@ -2225,7 +2228,7 @@ func (q *Queries) GetLiveResourceByName(ctx context.Context, arg GetLiveResource
 }
 
 const getNode = `-- name: GetNode :one
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at FROM nodes WHERE id = $1 AND deleted_at IS NULL
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet FROM nodes WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
@@ -2250,12 +2253,15 @@ func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
 		&i.DeletedAt,
+		&i.MeshPublicKey,
+		&i.MeshEndpoint,
+		&i.SandboxSubnet,
 	)
 	return i, err
 }
 
 const getNodeByName = `-- name: GetNodeByName :one
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at FROM nodes WHERE name = $1
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet FROM nodes WHERE name = $1
 `
 
 func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) {
@@ -2280,6 +2286,9 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
 		&i.DeletedAt,
+		&i.MeshPublicKey,
+		&i.MeshEndpoint,
+		&i.SandboxSubnet,
 	)
 	return i, err
 }
@@ -3308,7 +3317,7 @@ func (q *Queries) ListActiveExecs(ctx context.Context) ([]ListActiveExecsRow, er
 }
 
 const listAllNodes = `-- name: ListAllNodes :many
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at FROM nodes WHERE deleted_at IS NULL ORDER BY id
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet FROM nodes WHERE deleted_at IS NULL ORDER BY id
 `
 
 func (q *Queries) ListAllNodes(ctx context.Context) ([]Node, error) {
@@ -3339,6 +3348,9 @@ func (q *Queries) ListAllNodes(ctx context.Context) ([]Node, error) {
 			&i.CpuPerGpu,
 			&i.MemoryPerGpu,
 			&i.DeletedAt,
+			&i.MeshPublicKey,
+			&i.MeshEndpoint,
+			&i.SandboxSubnet,
 		); err != nil {
 			return nil, err
 		}
@@ -4104,7 +4116,7 @@ func (q *Queries) ListNodeSandboxObjectRefs(ctx context.Context, arg ListNodeSan
 }
 
 const listNodes = `-- name: ListNodes :many
-SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at FROM nodes
+SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet FROM nodes
 WHERE deleted_at IS NULL
   AND ($1::uuid IS NULL OR id > $1)
 ORDER BY id
@@ -4144,6 +4156,9 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 			&i.CpuPerGpu,
 			&i.MemoryPerGpu,
 			&i.DeletedAt,
+			&i.MeshPublicKey,
+			&i.MeshEndpoint,
+			&i.SandboxSubnet,
 		); err != nil {
 			return nil, err
 		}
@@ -5601,15 +5616,21 @@ UPDATE nodes
 SET last_seen_at = now(),
     agent_version = $2,
     proto_major = $3,
-    proto_minor = $4
+    proto_minor = $4,
+    mesh_public_key = $5,
+    mesh_endpoint = $6,
+    sandbox_subnet = $7
 WHERE id = $1
 `
 
 type NodeHelloParams struct {
-	ID           uuid.UUID
-	AgentVersion *string
-	ProtoMajor   *int32
-	ProtoMinor   *int32
+	ID            uuid.UUID
+	AgentVersion  *string
+	ProtoMajor    *int32
+	ProtoMinor    *int32
+	MeshPublicKey *string
+	MeshEndpoint  *string
+	SandboxSubnet *string
 }
 
 func (q *Queries) NodeHello(ctx context.Context, arg NodeHelloParams) error {
@@ -5618,6 +5639,9 @@ func (q *Queries) NodeHello(ctx context.Context, arg NodeHelloParams) error {
 		arg.AgentVersion,
 		arg.ProtoMajor,
 		arg.ProtoMinor,
+		arg.MeshPublicKey,
+		arg.MeshEndpoint,
+		arg.SandboxSubnet,
 	)
 	return err
 }
@@ -5660,7 +5684,7 @@ func (q *Queries) NodePlacement(ctx context.Context, nodeID uuid.UUID) (NodePlac
 
 const pauseNode = `-- name: PauseNode :one
 
-UPDATE nodes SET paused = true WHERE id = $1 AND deleted_at IS NULL RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at
+UPDATE nodes SET paused = true WHERE id = $1 AND deleted_at IS NULL RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet
 `
 
 // Node pause/resume/delete (#94)
@@ -5688,6 +5712,9 @@ func (q *Queries) PauseNode(ctx context.Context, id uuid.UUID) (Node, error) {
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
 		&i.DeletedAt,
+		&i.MeshPublicKey,
+		&i.MeshEndpoint,
+		&i.SandboxSubnet,
 	)
 	return i, err
 }
@@ -5866,7 +5893,7 @@ func (q *Queries) RedeemEnrollmentPacket(ctx context.Context, id uuid.UUID) (Enr
 
 const resumeNode = `-- name: ResumeNode :one
 UPDATE nodes SET paused = false
-WHERE id = $1 AND deleted_at IS NULL AND lost_at IS NULL RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at
+WHERE id = $1 AND deleted_at IS NULL AND lost_at IS NULL RETURNING id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet
 `
 
 // Declaring a Node lost is irreversible, so a lost Node cannot be resumed
@@ -5893,6 +5920,9 @@ func (q *Queries) ResumeNode(ctx context.Context, id uuid.UUID) (Node, error) {
 		&i.CpuPerGpu,
 		&i.MemoryPerGpu,
 		&i.DeletedAt,
+		&i.MeshPublicKey,
+		&i.MeshEndpoint,
+		&i.SandboxSubnet,
 	)
 	return i, err
 }
