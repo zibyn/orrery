@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -61,6 +62,8 @@ type EnrollOptions struct {
 	Packet string
 	Name   string
 	State  string
+	// DataRoot holds mesh.key, which a new identity must not inherit.
+	DataRoot string
 }
 
 // Enroll redeems a single-use Enrollment Packet and stores the Node identity
@@ -107,6 +110,7 @@ func Enroll(ctx context.Context, opts EnrollOptions) (Identity, error) {
 	if err := SaveIdentity(opts.State, id); err != nil {
 		return Identity{}, err
 	}
+	removeMeshKey(opts.DataRoot)
 	return id, nil
 }
 
@@ -169,6 +173,12 @@ type RunOptions struct {
 	ReserveCPU    float64
 	ReserveMemory int64
 	DiskWatermark float64
+	// MeshPort is the WireGuard listen port and MeshEndpoint the optional
+	// host:port other Nodes dial (defaults.md).
+	MeshPort     int
+	MeshEndpoint string
+	// mesh is the started Node Mesh, filled by Run; nil without one.
+	mesh *mesh
 }
 
 // resolveRuntime picks the one Runtime Provider this Node runs (ADR-0014).
@@ -265,6 +275,21 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Isolation == IsolationRunsc && onTmpfs(filepath.Join(opts.DataRoot, "bin")) {
 		return fmt.Errorf("--isolation runsc needs a --data-root off tmpfs: %s is on tmpfs", opts.DataRoot)
 	}
+	if opts.MeshEndpoint != "" {
+		if _, _, err := net.SplitHostPort(opts.MeshEndpoint); err != nil {
+			return fmt.Errorf("--mesh-endpoint: %w", err)
+		}
+	}
+	if opts.MeshPort == 0 {
+		opts.MeshPort = DefaultMeshPort
+	}
+	if provider == ProviderContainerd {
+		// The interface outlives each Control stream; without kernel WireGuard
+		// the Node runs on with no Mesh paths (runtime.md §15).
+		if opts.mesh, err = startMesh(opts.DataRoot, opts.MeshPort, opts.MeshEndpoint, opts.SandboxSubnet); err != nil {
+			slog.Warn("node mesh unavailable", "error", err)
+		}
+	}
 	version := buildinfo.Version()
 
 	backoff := time.Second
@@ -277,6 +302,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 			if rmErr := os.Remove(opts.State); rmErr != nil && !os.IsNotExist(rmErr) {
 				slog.Warn("identity was rejected and could not be removed", "error", rmErr)
 			}
+			removeMeshKey(opts.DataRoot)
 			return fmt.Errorf("identity rejected by the Control Plane, local identity cleared: %w", err)
 		}
 		if connected {
@@ -342,6 +368,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	}
 	defer rt.driver.close()
 	rt.buildkit = opts.Buildkit
+	rt.mesh = opts.mesh
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
 		return false, err
@@ -365,6 +392,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 			AgentVersion: version,
 			ProtoMajor:   nodeproto.Major,
 			ProtoMinor:   nodeproto.Minor,
+			Mesh:         opts.mesh.hello(),
 		},
 	}}); err != nil {
 		return false, err
@@ -480,6 +508,9 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// Cache eviction owns its own loop (runtime.md §11): a Node below the disk
 	// watermark reclaims LRU cache without touching Sandbox lifecycle.
 	go rt.evictLoop(streamCtx, opts.DiskWatermark)
+	if rt.mesh != nil {
+		go rt.mesh.reportLoop(streamCtx, send)
+	}
 	runner.selfChecked()
 
 	ticker := time.NewTicker(HeartbeatInterval)
