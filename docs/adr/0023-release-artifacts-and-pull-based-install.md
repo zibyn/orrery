@@ -18,7 +18,7 @@
 
 The version is the tag, stamped into all three binaries at build time; the Agent reports it in the handshake.
 
-**CI gate.** Every pull request runs vet, unit tests, the Web console checks, the embedded build, the Python SDK tests and the Compose e2e suite. Scenarios that need a GPU or a remote host skip themselves. A push to `main` or a `v*` tag does not run them again, since the merged pull request already passed them; it only publishes. A nightly run on `main`, which can also be started by hand, runs the full gate, and it covers changes pushed to `main` without a pull request.
+**CI gate.** Every pull request runs vet, unit tests, the Web console checks, the embedded build, the Python SDK tests and the Compose e2e suite. Scenarios that need a GPU or a remote host skip themselves. A push to `main` or a `v*` tag does not run them again, since the merged pull request already passed them; it only publishes. The full gate can also be started by hand on any branch; there is no scheduled run, so a change pushed to `main` without a pull request is not checked unless someone starts it.
 
 **Pull-based install.** Servers fetch `deploy/install.sh` from GitHub and run it; GitHub holds no server credentials and never connects to a server. The version defaults to the newest published release: the script reads the tag from `releases/latest` and installs that tag's Compose file, configuration and binaries, never a branch. A bootstrap may fetch the script from `main`; the auto-updater fetches the resolved tag's script. An explicit `--version vX.Y.Z` pins an older or newer release. The script checks for Docker, Podman or Compose and fails if they are missing; it does not install them.
 
