@@ -1,6 +1,6 @@
 # ADR-0026: containerd Runtime Provider, Isolation Runtime and platform Egress Rules
 
-- Status: accepted; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31); runsc `oom_killed` consequence added by #173 (2026-10-31)
+- Status: accepted; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31); runsc `oom_killed` consequence added by #173 (2026-10-31); "no implicit entries" excepts Sandbox Links, and CNI masquerade replaced by the Agent's, by ADR-0027
 - Date: 2026-10-30
 
 ## Context

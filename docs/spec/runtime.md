@@ -107,7 +107,7 @@ Agent 用 containerd 原生 gRPC 客户端（2.x），连 `--containerd` 给出�
 - **Exec**：对 task 起一个 exec 进程，不接 stdio，进程为 `supervisor run <exec_id>`，然后按 §4 发送 spec。
 - **Inspect**：读 task 状态。Agent 订阅 `/tasks/exit` 事件，再加上周期性扫描，及时发现 Runtime 死亡。
 - **Stop**：kill 并删除 task，删除容器，再按 §13 拆掉网络。幂等；对象不存在视为成功。
-- **Capabilities**：Node 注册时，用一个探针容器跑一遍 Create、回读和 §13 的出网自检。哪一项不对，那一项就是 `unsupported`，不另列最低版本表。`kernel_isolation` 在 runsc 上是 `enforced`，在 runc 上是 `unsupported`。
+- **Capabilities**：Node 注册时，用探针容器跑一遍 Create、回读，以及 §13 的出网自检和 Link 自检。哪一项不对，那一项就是 `unsupported`，不另列最低版本表。`kernel_isolation` 在 runsc 上是 `enforced`，在 runc 上是 `unsupported`。
 
 **runsc 的差别**（`docs/research/containerd-cdi-runsc-cni-spike.md`）：
 
@@ -158,16 +158,21 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 平台拥有每个 Sandbox 的网络（ADR-0026）。只有 IPv4。
 
 - **Sandbox 子网**：每台 Node 一个，由 Agent 的 `--sandbox-subnet` 给出（默认值见 `defaults.md`）。多台 Node 的子网不能重叠，否则 Egress Rules 无法按子网区分 Sandbox；由运维规划，平台不检查。
-- **建网**（Create 时，先于容器）：Agent 建 netns `/run/netns/orrery-<sandbox_id>`，直接调 CNI 插件：`loopback` 配 `lo`；`bridge` 配 `eth0`，网桥 `orrery0`，`isGateway: true`，`ipMasq: true`（出宿主时做源地址转换），IPAM 用 `host-local`，地址取自 Sandbox 子网。宿主侧 veth 的名字由 CNI 结果给出，Agent 记在 Sandbox 目录里，Stop 和对账时用。
+- **建网**（Create 时，先于容器）：Agent 建 netns `/run/netns/orrery-<sandbox_id>`，直接调 CNI 插件：`loopback` 配 `lo`；`bridge` 配 `eth0`，网桥 `orrery0`，`isGateway: true`，`ipMasq: false`，IPAM 用 `host-local`，地址取自 Sandbox 子网，默认路由指向网桥。宿主侧 veth 的名字和 Sandbox 的地址由 CNI 结果给出，Agent 记在 Sandbox 目录里，Stop 和对账时用；地址随 `SandboxObserved` 上报（`node-protocol.md`）。
+- **源地址转换**：不用 CNI 的 `ipMasq`，它会把发往别的 Node 的 Sandbox 子网的流量也转换成 Node 地址，WireGuard 按 AllowedIPs 把它丢掉（spike #183）。Agent 独占一张 `ip` family 的表 `orrery_nat`，`postrouting` 钩子、优先级 `srcnat`，一条规则：`ip saddr <Sandbox 子网> ip daddr != <Sandbox 子网> oifname != "orrery-wg" masquerade`。在更早优先级的 nat 链里 `accept` 挡不住别的 nat 链，所以不能保留 CNI 的规则再去豁免。
 - **拆网**（Stop 时，在删除容器之后）：删掉这个 Sandbox 的出网规则，CNI DEL，删除 netns。每一步幂等。runsc 启动后会把 netns 里的地址和路由搬进自己的网络栈，这个 netns 不能复用，所以每次 Create 都重新建。
-- **规则表**：Agent 独占一张 `bridge` family 的 nftables 表 `orrery`，两条基础链分别挂 `forward` 钩子（发往同一网桥上别的 Sandbox）和 `input` 钩子（发往宿主，以及经宿主路由出去的一切），优先级 `filter`，`policy accept`，所以不经 Sandbox veth 的流量不受影响。每个 Sandbox 一条普通链，基础链按 `iifname "<宿主侧 veth>"` 跳进去。不用 `inet` 表：没有 `br_netfilter` 时它看到的入接口是网桥而不是 veth；Agent 也不加载 `br_netfilter`，否则会改变宿主上其他网桥的过滤行为。
+- **规则表**：Agent 独占一张 `bridge` family 的 nftables 表 `orrery`，三条基础链分别挂 `forward` 钩子（同一网桥上 Sandbox 之间）、`input` 钩子（发往宿主，以及经宿主路由出去的一切）和 `output` 钩子（由网桥自己发给某个 Sandbox 的，包括从 Mesh 路由进来的），优先级 `filter`，`policy accept`，所以不经 Sandbox veth 的流量不受影响。每个 Sandbox 一条出网链，`forward` 和 `input` 按 `iifname "<宿主侧 veth>"` 跳进去；每个带 `links` 的 Sandbox 另有一条入站链，`forward` 和 `output` 按 `oifname "<宿主侧 veth>"` 跳进去。`forward` 里所有入站跳转排在所有出网跳转之前：`accept` 会结束整条基础链，出网链在前时，`open` 的 Sandbox 能绕过目标的入站检查（spike #183 §3.3）。不用 `inet` 表：没有 `br_netfilter` 时它看到的入接口是网桥而不是 veth；Agent 也不加载 `br_netfilter`，否则会改变宿主上其他网桥的过滤行为。
 - **每个 Sandbox 的链**，按下面的顺序：
   1. `ct state established,related accept`：别人发起的连接，回包照常放行；
   2. ARP 放行，其余非 IPv4 帧丢弃；
-  3. Egress Policy：按 Egress Rules `allow` → Egress Rules `deny` → Egress Mode 的顺序渲染（`open` 全部放行；`none` 全部丢弃；`allowlist` 先放行所列条目，再丢弃其余）。
+  3. 这个 Sandbox 作为来源的 Sandbox Link：`ip daddr <目标地址> [tcp|udp dport <ports>] accept`，排在 Egress Policy 之前（ADR-0027）；
+  4. Egress Policy：按 Egress Rules `allow` → Egress Rules `deny` → Egress Mode 的顺序渲染（`open` 全部放行；`none` 全部丢弃；`allowlist` 先放行所列条目，再丢弃其余）。
+- **每个 Link 目标的入站链**：`ct state established,related accept`；ARP 放行，其余非 IPv4 帧丢弃；每个来源一条 `ip saddr <来源地址> [tcp|udp dport <ports>] accept`；最后全部丢弃。来源没有地址（不在运行）时不渲染那一条。
+- **Link 的生效**：Control Plane 用 `SandboxLinks` 把一端在这台 Node 上的全部 Link 连同两端当前地址整份下发（`node-protocol.md`），任一端地址变化或起停时重新下发；Agent 收到后整张 `orrery` 表重新渲染。重新下发之前，目标只认旧地址，即 fail-closed。
 
   Egress Policy 由一个纯函数从（Egress Rules，Egress Mode）算出有序条目，nftables 程序由它的输出渲染。条目是 `CIDR` 时匹配 `ip daddr`，任何协议；带 `:port` 时只匹配该端口的 TCP 和 UDP。
 - **生效时机**：Rules 取 Agent 当前持有的那份（`node-protocol.md` 的 `HelloAck`），Mode 取 `CreateSandbox` 里的 `egress`，都在 Create 时渲染。运行中的 Sandbox 不因 Rules 变化而改写；Stop 再 start 后按新 Rules 重建。
+- **自检 `sandbox_links`**：注册时用两个探针容器。一个作为目标监听 TCP 端口，只链接另一个；被链接的那个必须连得上，Agent 从宿主（网桥网关地址）连必须连不上。都符合才报 `enforced`。
 - **自检 `egress_policy`**：注册时在探针容器上做。Agent 在网桥网关地址上临时监听一个 TCP 端口；探针容器先按 Mode `none`（不带 Rules）建网，由 Supervisor 拨这个端口，必须连不上；再按 `allowlist`、只列这个地址和端口建网，必须连得上。两步都符合才报 `enforced`，否则 `unsupported`。自检不用运维的 Rules，结果与它们无关。
 
 ## 14. 端口转发（containerd）
@@ -179,3 +184,15 @@ Agent 不进入 Sandbox 的网络命名空间（ADR-0026）。`OpenTunnel` 的�
 3. Agent 连上 socket，与 Tunnel 流双向拷贝字节。
 
 runc 和 runsc 走同一条路；runsc 上 socket 在宿主可见，靠的是 §9 的 `host-uds=create`。Local Runtime 没有 netns，Agent 直接拨 `127.0.0.1:<port>`。
+
+## 15. Node Mesh（containerd）
+
+Node 之间的 WireGuard 网络，只承载跨 Node 的 Sandbox Link 流量（ADR-0027）。只有 IPv4。
+
+- **接口**：Agent 自己经 netlink 建内核 WireGuard 接口 `orrery-wg`、写私钥和 peer、加路由，不依赖 `wireguard-tools` 或 `ip`。接口没有地址。私钥在数据目录的 `mesh.key`（0600），第一次启动时生成，之后不变；Node 被删除或重新注册时随身份一起清掉。监听端口为 `--mesh-port`。内核没有 WireGuard 时 Agent 照常运行，`Hello` 不带 `mesh`，这台 Node 没有任何 Mesh 通路。
+- **peer**：Control Plane 用 `MeshPeers` 下发其他每台 Node 的公钥、Sandbox 子网和端点（如果有）。Agent 把每个 peer 的 `AllowedIPs` 设成对方的 Sandbox 子网，并为它加一条 `<对方子网> dev orrery-wg` 路由；对带端点的 peer 设 keepalive（`defaults.md`）。两台都没有端点的 Node 之间没有通路。Sandbox 子网与本机重叠的 peer 不会下发。
+- **过滤**：Agent 在 `orrery_nat` 之外再独占一张 `inet` 表 `orrery_mesh`，`forward` 钩子：从 `orrery-wg` 进来的，只放行 `ct state established,related` 和「来源地址 → 本机 Link 目标地址:端口」；发往 `orrery-wg` 的，只放行 established 和「本机 Link 来源地址 → 目标地址:端口」；其余丢弃。`output` 钩子丢弃宿主自己发往 `orrery-wg` 的一切。这样 Mesh 只承载 Link 流量，与运维的 Egress Rules 无关。条目来自同一份 `SandboxLinks`。
+- **MSS**：`orrery_mesh` 在 `forward` 钩子上对经过 `orrery-wg` 的 TCP SYN 做 `tcp option maxseg size set rt mtu`。WireGuard 的封装开销是 60–80 字节，veth 是 1500；大包和 runsc 对 ICMP fragmentation-needed 的处理还没有实测（spike #183 §5）。
+- **通路上报**：Agent 每个上报间隔读一次每个 peer 的最近握手时间，发 `MeshReport`。Control Plane 只在内存里保存这张连通矩阵：两台 Node 之间，任一方报告的最近握手在判定时限内（`defaults.md`），就算有通路。Control Plane 重启后矩阵为空，直到下一轮上报；这期间跨 Node 放置只能等待。
+- **放置**：带 `links` 的 Sandbox 优先放在已放置来源所在的 Node 上；放不下时，只考虑与每个已放置来源的 Node 都有通路的 Node（ADR-0027）。已经运行的 Link 不因通路消失而被停止，只是连不上。
+- Local Runtime 没有 netns，也不参加 Mesh。

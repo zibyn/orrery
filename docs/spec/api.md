@@ -98,9 +98,10 @@ secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}
 idle_stop?: 秒数，默认 900，0 表示关闭
 egress?: {mode: open|none|allowlist, allow?: [CIDR[:port]]}   # 不写等于 {mode: open}
+links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自己的 Sandbox 连进来；不写就谁也连不进来
 ```
 
-每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
+每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
 
 `runtime`（ADR-0009）：
 
@@ -116,6 +117,15 @@ egress?: {mode: open|none|allowlist, allow?: [CIDR[:port]]}   # 不写等于 {mo
 - 校验，不合法一律 `400 invalid_request`：带了 `egress` 就必须带 `mode`，取值只能是上面三种；`allowlist` 必须带非空的 `allow`；其他 mode 带了 `allow`（哪怕是空列表）也拒绝；`allow` 的每一项是 IPv4 CIDR（单个地址等于 `/32`），可带 `:port`（1–65535），项数上限见 `defaults.md`。没有「空 `allow` 等于不出网」的写法，不出网用 `none`。
 - 创建后不可改，存在 Sandbox 上，每次 start 原样重新应用。Egress Rules 变了，只影响此后创建或 start 的 Sandbox。
 - `mode` 不是 `open` 时，只放到 `egress_policy` 为 `enforced` 的 Node 上，重启后仍作为准入约束；创建时没有这样的 Node 就返回 `422 unsupported`。`runtime: local` 带这样的 `egress` 同样是 `422 unsupported`。`open` 不约束放置。
+
+`links`（ADR-0027）：
+
+- 声明在**被连接的一方**（目标）上：`from` 里的 Sandbox 可以连目标的 `ports`；不写 `ports` 表示所有 TCP 和 UDP 端口。来源和目标在同一 Node 或不同 Node 都行，跨 Node 时走 Node Mesh。
+- 这一对之间的流量不受来源的 Egress Mode 和运维的 Egress Rules 约束；双方其余的流量照旧受各自 Egress Policy 约束。目标收到的其他一切连接（包括 Node 自己的进程）都被丢弃。
+- 校验：`from` 非空，每个 id 都必须是调用方自己的、未删除的 Sandbox，否则 `400 invalid_request`（别人的 Sandbox 与不存在同样处理）；来源是 `runtime: local` 时 `422 unsupported`；`ports` 每项 1–65535；`from` 和 `ports` 的项数上限见 `defaults.md`。
+- 创建后不可改。来源被删除后，那一项就不再匹配任何地址。
+- 只放到 `sandbox_links` 为 `enforced` 的 Node 上，重启后仍作为准入约束；创建时没有这样的 Node 返回 `422 unsupported`，`runtime: local` 带 `links` 同样是 `422 unsupported`。放置时优先来源所在的 Node；放不下时只考虑与每个已放置来源的 Node 之间有 Mesh 通路的 Node（`runtime.md` §15）。还在 `pending` 的来源不约束放置。
+- 地址不做 DNS，也不写 `/etc/hosts`：调用方用 `GET /sandboxes/{id}` 的 `address`，目标重启后要重新读。
 
 **Exec**：`GET /execs/{id}` · `POST /execs/{id}/cancel` · `GET /execs/{id}/output` · `GET /execs/{id}/pty`，见 §4。
 

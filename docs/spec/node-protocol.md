@@ -22,13 +22,14 @@ service Node {
 Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，或用 `incompatible` 拒绝（ADR-0014）。
 
 `AgentMessage`（oneof）：
-- `Hello{node_id, agent_version, proto_major, proto_minor}`
+- `Hello{node_id, agent_version, proto_major, proto_minor, mesh?{public_key, sandbox_subnet, endpoint?}}`；`mesh` 只在 containerd Node 且内核有 WireGuard 时带，`endpoint` 是 `--mesh-endpoint`（`runtime.md` §15，ADR-0027）
 - `Heartbeat{runtime_health, disk_free, gpu_health[]}`
-- `Capabilities{runtime_provider, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime_provider` 是这台 Node 唯一的 Runtime Provider（`containerd`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount`、`snapshot_build`、`kernel_isolation` 和 `egress_policy`；`kernel_isolation` 在 runsc Node 上为 `enforced`，runc 和 Local 上为 `unsupported`；`egress_policy` 由注册时的出网自检决定，Local 上为 `unsupported`（`runtime.md` §13，ADR-0026）；Local Runtime 的 `resource_mount` 报 `unsupported`，`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
-- `SandboxObserved{sandbox_id, generation, phase: fetching_resources|running|gone|create_failed, cause?}`；`fetching_resources` 让 Sandbox 挂上同名 condition，`create_failed` 的 cause 可以是 `resource_fetch_failed`（`runtime.md` §11）
+- `Capabilities{runtime_provider, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime_provider` 是这台 Node 唯一的 Runtime Provider（`containerd`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount`、`snapshot_build`、`kernel_isolation`、`egress_policy` 和 `sandbox_links`；`sandbox_links` 由注册时的 Link 自检决定，Local 上为 `unsupported`；`kernel_isolation` 在 runsc Node 上为 `enforced`，runc 和 Local 上为 `unsupported`；`egress_policy` 由注册时的出网自检决定，Local 上为 `unsupported`（`runtime.md` §13，ADR-0026）；Local Runtime 的 `resource_mount` 报 `unsupported`，`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
+- `SandboxObserved{sandbox_id, generation, phase: fetching_resources|running|gone|create_failed, cause?, address?}`；`address` 随 `running` 上报，是 CNI 分给这次 Create 的地址，Control Plane 存为 Sandbox 的 `address`，`gone` 时清空；`fetching_resources` 让 Sandbox 挂上同名 condition，`create_failed` 的 cause 可以是 `resource_fetch_failed`（`runtime.md` §11）
 - `WorkspaceObserved{workspace_id, phase, cause?}`
 - `ExecObserved{exec_id, started_at}`（结果不走这里，见 ExecOutput）
 - `BuildObserved{version_id, digest?, from_digests[], cause?}`：构建结束时上报，见下文「构建」
+- `MeshReport{peers[{node_id, last_handshake_at}]}`：每个上报间隔一次，Control Plane 据此维护内存里的连通矩阵（`runtime.md` §15）
 - `CommandResult{command_id, error?}`
 
 `ControlMessage`（oneof）：
@@ -36,6 +37,8 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 - `ProvisionWorkspace` · `DeleteWorkspace`
 - `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, mount}], egress{mode: open|none|allowlist, allow[]}}`；对象经 `Presign` 拉取；`egress` 是 Sandbox 存下的 Egress Mode，每次（重新）下发都带同一份，Agent 拿它和当前的 Egress Rules 在 Create 时算出 Egress Policy。Mode 不是 `open` 时 Control Plane 只会把它下发给 `egress_policy` 为 `enforced` 的 Node；Agent 收到时自己的 `egress_policy` 不是 `enforced`，就以 `create_failed`、cause `runtime_create_failed` 上报，不降级
 - `StopSandbox{sandbox_id, generation}`
+- `MeshPeers{peers[{node_id, public_key, sandbox_subnet, endpoint?}]}`：除本机外所有带 `mesh` 的 Node，Sandbox 子网与本机重叠的除外；整份下发，Node 注册、重连或删除时重发
+- `SandboxLinks{links[{target_id, target_address, source_id, source_address, ports[]}]}`：一端在本机的全部 Sandbox Link，只含两端都有地址的条目；整份下发，任一端地址变化时重发。Agent 收到后重新渲染 `orrery` 和 `orrery_mesh` 两张表（`runtime.md` §13、§15）
 - `StartExec{exec_id, sandbox_id, generation, argv, env, secret_env, cwd, timeout, log_cap, stdin?, pty?}`
 - `CancelExec{exec_id}`
 - `PublishWorkspace{version_id, workspace_id, path}`

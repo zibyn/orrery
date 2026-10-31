@@ -200,6 +200,14 @@ _Avoid_: certificate, runner key
 An owner-or-admin connection from outside to a port a process listens on inside a Sandbox, made through the Gateway without exposing the Sandbox on a network address.
 _Avoid_: preview URL, public link, ingress
 
+**Sandbox Link**:
+An owner's declaration that one of their Sandboxes may connect to another of their Sandboxes. It is fixed when the receiving Sandbox is created, and traffic between the pair is outside both Sandboxes' Egress Policy.
+_Avoid_: ingress, service, sidecar
+
+**Node Mesh**:
+The direct encrypted network between Nodes that carries Sandbox Link traffic across Nodes. The Control Plane coordinates it but never relays it; two Nodes that cannot reach each other directly have no path.
+_Avoid_: overlay, tailnet, VPN
+
 **Egress Rules**:
 The operator-written allow and deny entries that every Sandbox's outbound traffic is subject to and that a caller cannot override.
 _Avoid_: baseline, guardrail, Node Egress Rules
@@ -209,7 +217,7 @@ A caller's creation-time choice of how a Sandbox's outbound traffic is narrowed:
 _Avoid_: egress allowlist (for the whole choice), network policy
 
 **Egress Policy**:
-The outbound traffic a Sandbox is actually allowed, resolved from Egress Rules and its Egress Mode.
+The outbound traffic a Sandbox is actually allowed, resolved from Egress Rules and its Egress Mode. Sandbox Link traffic is outside it.
 _Avoid_: firewall, Egress Opening
 
 **Secret**:

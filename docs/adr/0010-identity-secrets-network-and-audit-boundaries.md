@@ -1,6 +1,6 @@
 # ADR-0010: Identity, secrets, network, and audit boundaries
 
-- Status: accepted; Capability Channel, Egress and Audit superseded by ADR-0016; Node identity, Ingress, Deletion and caller tokens amended by ADR-0017; caller identity amended by ADR-0020 (password and OIDC login); platform secret storage amended by ADR-0024
+- Status: accepted; Capability Channel, Egress and Audit superseded by ADR-0016; Node identity, Ingress, Deletion and caller tokens amended by ADR-0017; caller identity amended by ADR-0020 (password and OIDC login); platform secret storage amended by ADR-0024; Ingress amended by ADR-0027 (a Sandbox accepts its linked Sandboxes)
 - Date: 2026-10-17
 
 ## Context
