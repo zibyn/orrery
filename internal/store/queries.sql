@@ -744,12 +744,9 @@ WHERE id = $1;
 -- name: LockExecStoredSeq :one
 SELECT stored_seq FROM execs WHERE id = $1 FOR UPDATE;
 
--- ON CONFLICT DO UPDATE replaces orphan chunks a pre-#157 server left unadvanced at stored_seq.
 -- name: AppendExecChunk :exec
 INSERT INTO exec_log_chunks (exec_id, first_seq, last_seq, frames)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (exec_id, first_seq) DO UPDATE
-SET last_seq = EXCLUDED.last_seq, frames = EXCLUDED.frames;
+VALUES ($1, $2, $3, $4);
 
 -- name: AdvanceExecStoredSeq :exec
 UPDATE execs

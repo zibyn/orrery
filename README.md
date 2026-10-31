@@ -36,7 +36,7 @@
 
 部署是 pull 式的：服务器从 release tag 取 `deploy/install.sh` 执行，GitHub 不持有服务器凭据。详见 [`docs/deploy.md`](docs/deploy.md)（前置条件、TLS、Node 注册、升级与回滚），所有配置项见 [`docs/spec/defaults.md`](docs/spec/defaults.md)。
 
-首次安装后还需要：配置平台 Snapshot、用 `orrery-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。Node 需要 containerd、CNI 插件和（做构建时）buildkitd；Docker 和 Podman Node 的迁移步骤见 [`docs/deploy.md`](docs/deploy.md)。
+首次安装后还需要：配置平台 Snapshot、用 `orrery-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。Node 需要 containerd、CNI 插件和（做构建时）buildkitd，见 [`docs/deploy.md`](docs/deploy.md)。
 
 ## 客户端
 

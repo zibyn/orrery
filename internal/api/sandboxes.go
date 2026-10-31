@@ -109,7 +109,7 @@ func sandboxRuntime(req createSandboxRequest) (runtime, code, detail string) {
 }
 
 // sandboxRuntimeValue normalizes a stored Runtime for the DTO and placement.
-// A pre-#97 row (or an in-memory test row) is a container Sandbox.
+// An in-memory test row without one is a container Sandbox.
 func sandboxRuntimeValue(runtime string) string {
 	if runtime == "local" {
 		return "local"
@@ -117,8 +117,8 @@ func sandboxRuntimeValue(runtime string) string {
 	return "container"
 }
 
-// sandboxEgressValue normalizes a stored Egress Mode. A pre-#165 row (or an
-// in-memory test row) is open.
+// sandboxEgressValue normalizes a stored Egress Mode. An in-memory test row
+// without one is open.
 func sandboxEgressValue(mode string) string {
 	if mode == "" {
 		return nodeproto.EgressOpen

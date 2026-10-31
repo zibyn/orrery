@@ -91,7 +91,6 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.Server, "server", "", "override the enrolled node address")
 	fs.StringVar(&opts.State, "state", agent.DefaultStatePath, "identity file")
 	fs.StringVar(&opts.Runtime, "runtime", agent.ProviderContainerd, "Runtime Provider: containerd or local")
-	fs.StringVar(&opts.Docker, "docker", "", "removed: Docker Nodes run on containerd now (--runtime containerd, --containerd SOCKET)")
 	fs.StringVar(&opts.Containerd, "containerd", agent.DefaultContainerdSock, "containerd socket (--runtime containerd)")
 	fs.StringVar(&opts.Isolation, "isolation", "", "Isolation Runtime: runc (default) or runsc (--runtime containerd)")
 	fs.StringVar(&opts.SandboxSubnet, "sandbox-subnet", agent.DefaultSandboxSubnet, "this Node's Sandbox subnet, not overlapping other Nodes' (--runtime containerd)")

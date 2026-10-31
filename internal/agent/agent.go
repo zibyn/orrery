@@ -147,9 +147,6 @@ type RunOptions struct {
 	CAPath string
 	Server string // overrides the address stored at enroll time
 	State  string
-	// Docker is the removed --docker flag. Any value fails Run, so a stale
-	// Docker configuration stops at startup (ADR-0026).
-	Docker string
 	// Containerd is the containerd socket and SandboxSubnet the CNI address
 	// pool for --runtime containerd (runtime.md §9, §13).
 	Containerd    string
@@ -175,25 +172,16 @@ type RunOptions struct {
 }
 
 // resolveRuntime picks the one Runtime Provider this Node runs (ADR-0014).
-// The removed Docker and Podman Providers fail loudly with the way forward
-// (ADR-0026) instead of half-working on a stale configuration.
 func resolveRuntime(name string) (string, error) {
 	switch name {
 	case "", ProviderContainerd:
 		return ProviderContainerd, nil
-	case "docker", "podman":
-		return "", fmt.Errorf("--runtime %s is no longer supported: Docker and Podman Nodes were replaced by containerd. "+
-			"Install containerd, buildkitd and the CNI plugins, then run with --runtime containerd (see docs/deploy.md)", name)
 	case ProviderLocal:
 		return ProviderLocal, nil
 	default:
 		return "", fmt.Errorf("unknown runtime %q", name)
 	}
 }
-
-// errDockerFlag is Run's answer to the removed --docker socket flag.
-var errDockerFlag = errors.New("--docker is no longer supported: Docker Nodes were replaced by containerd. " +
-	"Remove --docker and pass --containerd SOCKET with --runtime containerd (see docs/deploy.md)")
 
 // Isolation Runtimes a containerd Node runs every Sandbox under (ADR-0026).
 const (
@@ -224,9 +212,6 @@ func resolveIsolation(provider, isolation string) (string, error) {
 // connection. NOT_FOUND/UNAUTHENTICATED clears local identity; anything else
 // keeps it and backs off (ADR-0010's asymmetric rule).
 func Run(ctx context.Context, opts RunOptions) error {
-	if opts.Docker != "" {
-		return errDockerFlag
-	}
 	provider, err := resolveRuntime(opts.Runtime)
 	if err != nil {
 		return err

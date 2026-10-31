@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -92,39 +91,6 @@ func wantLines(t *testing.T, got []logFrame, written []*nodev1.OutputFrame) {
 			t.Fatalf("frame %d = {%d %q}, want {%d %q}", i, got[i].Seq, got[i].Data, f.Seq, f.Data)
 		}
 	}
-}
-
-// #157: a chunk stored at stored_seq whose advance never committed must not
-// swallow the longer batch the restarted Agent resends from the same seq.
-func TestExecOutputResendOverUnadvancedChunk(t *testing.T) {
-	n, execID := testExecDB(t)
-	ctx := context.Background()
-	all := frames(0, 0, 12)
-	orphan := all[:8]
-	var lf []logFrame
-	for _, f := range orphan {
-		lf = append(lf, logFrameFromProto(f.Seq, f.Stream, f.Data))
-	}
-	raw, err := json.Marshal(lf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	last := all[8].Seq
-	if err := n.s.q.AppendExecChunk(ctx, store.AppendExecChunkParams{
-		ExecID: execID, FirstSeq: 0, LastSeq: last, Frames: raw,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	stored, err := n.storeExecBatch(ctx, execID, all)
-	if err != nil {
-		t.Fatal(err)
-	}
-	end := all[11].Seq + supervisor.HeaderSize + int64(len(all[11].Data))
-	if stored != end {
-		t.Fatalf("stored_seq = %d, want %d", stored, end)
-	}
-	wantLines(t, readAll(t, n, execID), all)
 }
 
 // #157: when stored_seq cannot advance, the batch's chunk is not left behind.

@@ -172,10 +172,6 @@ server() {
   if [ ! -f .env ]; then
     first_install "$version" "$host" "$port" "$tls" "$cert" "$key" "$ca" "$access_url" "$registry_addr" "$s3_url" "$bind"
   else
-    [ -f config/config.yaml ] ||
-      die "this installation predates config.yaml (issue #147); it is pre-release: move $etc aside and install again"
-    grep -q '^ORRERY_PUBLIC_PORT=' .env && grep -q '^ORRERY_S3_PUBLIC_HOST=' .env ||
-      die "this .env predates the nginx front (issue #135); reinstall, or add ORRERY_PUBLIC_HOST, ORRERY_PUBLIC_PORT, ORRERY_S3_PUBLIC_HOST and ORRERY_PUBLIC_BIND and write nginx/orrery.conf"
     [ -f nginx/orrery.conf ] ||
       die "nginx/orrery.conf is missing; recreate it from deploy/release/nginx.conf at this release tag"
     if [ -n "$host$port$cert$key$ca$access_url$registry_addr$s3_url$bind" ] || [ "$tls" != self-signed ]; then
@@ -664,11 +660,6 @@ node() {
   # Manual runs and the updater service share one lock.
   exec 9>/etc/orrery-agent/.install.lock
   flock -n 9 || die "another install or auto-update is running"
-  # Docker and Podman Nodes were removed (ADR-0026): a kept unit naming them
-  # would only fail at Agent startup, so stop here with the migration.
-  if [ -z "$runtime" ] && grep -Eq -- '--runtime (docker|podman)' "/etc/systemd/system/orrery-agent.service" 2>/dev/null; then
-    die "this Node runs the removed Docker or Podman Runtime; drain it, install containerd, buildkitd and the CNI plugins, and re-run with --runtime containerd (docs/deploy.md)"
-  fi
   case "${runtime:-containerd}" in
     containerd)
       need ctr nft ip
@@ -676,7 +667,6 @@ node() {
         die "the CNI plugins (bridge, host-local, loopback) must be installed in /opt/cni/bin"
       ;;
     local) ;;
-    docker | podman) die "--runtime $runtime was removed: install containerd, buildkitd and the CNI plugins and use --runtime containerd (docs/deploy.md)" ;;
     *) die "--runtime is containerd or local" ;;
   esac
 

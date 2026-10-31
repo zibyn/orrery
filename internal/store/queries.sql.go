@@ -53,8 +53,6 @@ func (q *Queries) AdvanceExecStoredSeq(ctx context.Context, arg AdvanceExecStore
 const appendExecChunk = `-- name: AppendExecChunk :exec
 INSERT INTO exec_log_chunks (exec_id, first_seq, last_seq, frames)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (exec_id, first_seq) DO UPDATE
-SET last_seq = EXCLUDED.last_seq, frames = EXCLUDED.frames
 `
 
 type AppendExecChunkParams struct {
@@ -64,7 +62,6 @@ type AppendExecChunkParams struct {
 	Frames   json.RawMessage
 }
 
-// ON CONFLICT DO UPDATE replaces orphan chunks a pre-#157 server left unadvanced at stored_seq.
 func (q *Queries) AppendExecChunk(ctx context.Context, arg AppendExecChunkParams) error {
 	_, err := q.db.Exec(ctx, appendExecChunk,
 		arg.ExecID,

@@ -153,17 +153,6 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 
 Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules 为空时 Sandbox 的出站完全放开，包括云 metadata 地址和 Control Plane 所在的内网**；`defaults.md` 有一份推荐的 Rules。Local Runtime 不受 Egress Rules 约束。
 
-### 从 Docker 或 Podman Node 迁移
-
-Docker 和 Podman Runtime Provider 已删除（ADR-0026），不能双栈并行。升级后的 Agent 遇到 `--runtime docker`、`--runtime podman` 或 `--docker` 会在启动时报错退出，`install.sh` 也会拒绝保留这样的 unit。按 Node 逐台迁移，Control Plane 先升级：
-
-1. **排空**：`orrery node pause <node_id>`，再停掉这台 Node 上仍在运行的 Sandbox（或等它们空闲停止），直到这台 Node 上没有运行中的 Sandbox（paused 且没有运行中的 Sandbox 即 drained，ADR-0014）。Paused Node 不再接收新的 Workspace 和构建，已绑定的 Workspace 留在宿主上。
-2. **安装 containerd、buildkitd 和 CNI 插件**，见上一节。Docker 可以留着，也可以在确认无用后卸载；旧 Agent 留下的 `orrery-*` 容器和镜像可以用 `docker` 清掉，containerd Agent 不会去碰 `moby` namespace。
-3. **升级 Agent**：用 `--runtime containerd` 重跑 Node 安装命令（带上需要的 `-- --buildkit ...` 等参数），脚本会重写 systemd unit。不要传 `--packet`，也不要删 `/var/lib/orrery-agent/identity.json` 和 data root（默认 `/var/lib/orrery`）：Workspace 还在 data root 里。
-4. **重新注册**：Agent 以原来的 identity 重连，重新跑自检，Capabilities 里的 `runtime_provider` 变成 `containerd`。确认 Node 是 `ready` 后 `orrery node resume <node_id>`。
-
-已停止的 Sandbox 下次 start 时由 `Create` 在 containerd 上重建 Runtime（没有单独的 Start 操作），Workspace 原样挂回。没有迁移的 Docker 或 Podman Node 不再接收容器 Sandbox。Rootless Podman Node 需要改成 rootful containerd 重装。
-
 脚本校验 `SHA256SUMS` 后把 Agent 和 CLI 装到 `/opt/orrery/bin/`，首次运行用 Packet 注册（identity 在 `/var/lib/orrery-agent/`），再以 systemd 服务 `orrery-agent` 运行。服务使用 `KillMode=process`，重启 Agent 不会停掉 Exec。
 
 ## 升级与回滚
@@ -181,25 +170,11 @@ Docker 和 Podman Runtime Provider 已删除（ADR-0026），不能双栈并行�
   sed -i 's/^ORRERY_VERSION=.*/ORRERY_VERSION=<旧版本>/' .env && docker compose up -d
   ```
 
-- Node：下载、校验、替换二进制后 `systemctl restart`；不带 `--runtime` 或 `--` 参数时保留现有 systemd unit（Docker 或 Podman 的 unit 除外，见“从 Docker 或 Podman Node 迁移”）。允许装旧版本，Control Plane 会把它标为 `outdated`。回滚前同样先停掉 `orrery-update.service`。
+- Node：下载、校验、替换二进制后 `systemctl restart`；不带 `--runtime` 或 `--` 参数时保留现有 systemd unit。允许装旧版本，Control Plane 会把它标为 `outdated`。回滚前同样先停掉 `orrery-update.service`。
 
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 
-`registry/config.yml` 同样只在首次安装时生成，升级不覆盖。purge 要删掉已删除 Snapshot 和 SnapshotVersion 的 registry manifest，需要 registry 允许删除（#151）。较早安装的部署缺这一项，purge 会一直收到 `UNSUPPORTED` 并重试，manifest 不会被清理。在 `storage:` 下、与 `s3:` 同级补上，然后重启 registry：
-
-```yaml
-storage:
-  s3:
-    ...
-  delete:
-    enabled: true
-```
-
-```sh
-cd /etc/orrery && docker compose restart registry
-```
-
-只删 manifest，不回收 blob；blob GC 仍是运维流程（ADR-0014）。
+`registry/config.yml` 同样只在首次安装时生成，升级不覆盖；其中开启了 `storage.delete`，purge 靠它删掉已删除 Snapshot 和 SnapshotVersion 的 registry manifest（#151）。只删 manifest，不回收 blob；blob GC 仍是运维流程（ADR-0014）。
 
 排障：Control Plane 通过公开地址推送 registry（`registry.push_addr` 默认等于 `registry.addr`）。如果容器解析不到公开地址或 NAT 不回环，Platform Snapshot 导入会失败。没有用 `--public-bind` 时（nginx 监听所有接口），可以在 `/etc/orrery/compose.override.yaml` 里给 `server` 加：
 

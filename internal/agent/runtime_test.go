@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 
@@ -86,22 +85,10 @@ func TestResolveRuntime(t *testing.T) {
 			t.Fatalf("resolveRuntime(%s) = %q, %v; want %s", name, got, err, name)
 		}
 	}
-	for _, name := range []string{"docker", "podman"} {
-		_, err := resolveRuntime(name)
-		if err == nil || !strings.Contains(err.Error(), "--runtime containerd") {
-			t.Fatalf("resolveRuntime(%s) = %v; want an error pointing at --runtime containerd", name, err)
+	for _, name := range []string{"docker", "bogus"} {
+		if _, err := resolveRuntime(name); err == nil {
+			t.Fatalf("resolveRuntime(%s) accepted an unknown provider", name)
 		}
-	}
-	if _, err := resolveRuntime("bogus"); err == nil {
-		t.Fatal("resolveRuntime(bogus) accepted an unknown provider")
-	}
-}
-
-// #170: a stale --docker socket fails Run before anything else happens.
-func TestRunRejectsDockerFlag(t *testing.T) {
-	err := Run(context.Background(), RunOptions{Docker: "/var/run/docker.sock"})
-	if err == nil || !strings.Contains(err.Error(), "--containerd") {
-		t.Fatalf("Run(--docker) = %v; want an error pointing at --containerd", err)
 	}
 }
 
@@ -115,7 +102,6 @@ func TestResolveIsolation(t *testing.T) {
 		{"containerd", "", "runc", true},
 		{"containerd", "runc", "runc", true},
 		{"containerd", "runsc", "runsc", true},
-		{"containerd", "gvisor", "", false}, // #176: never released, no alias
 		{"containerd", "kata", "", false},
 		{"local", "", "", true},
 		{"local", "runsc", "", false},
