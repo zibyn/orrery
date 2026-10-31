@@ -309,14 +309,77 @@ func TestExecOOMKilled(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
 	sandboxID := readyExecSandbox(t, admin, 128<<20)
+	since, task := hostNow(), runtimeTaskPID(sandboxID)
 
 	e := createExec(t, admin, sandboxID, map[string]any{
 		"argv": []string{"sh", "-c", `a=xxxxxxxxxxxxxxxx; while :; do a="$a$a"; done`},
 	})
 	_, _, _, result := followExec(t, admin, e.ID, 60*time.Second)
+	logOOMVictims(t, since, task)
 	if result.Cause != "oom_killed" {
 		t.Fatalf("result = %+v, want oom_killed", result)
 	}
+}
+
+// TestExecOOMSentryKilled forces the other runsc outcome (#173, #177): memory
+// the Sentry copies into the guest (a pipe) counts against the Sentry, so the
+// host OOM killer takes the whole Sandbox. The Exec still ends oom_killed and
+// the Sandbox stops with runtime_lost (runtime.md §9).
+func TestExecOOMSentryKilled(t *testing.T) {
+	if os.Getenv("ORRERY_E2E_ISOLATION") != "runsc" {
+		t.Skip("only runsc has a Sentry to kill (ORRERY_E2E_ISOLATION=runsc)")
+	}
+	admin := adminToken(t)
+	raiseSandboxQuota(t, admin, 10)
+	sandboxID := readyExecSandbox(t, admin, 128<<20)
+	since, task := hostNow(), runtimeTaskPID(sandboxID)
+
+	e := createExec(t, admin, sandboxID, map[string]any{
+		"argv": []string{"sh", "-c", "head -c 600m /dev/zero | tail"},
+	})
+	_, _, _, result := followExec(t, admin, e.ID, 60*time.Second)
+	victims := logOOMVictims(t, since, task)
+	if result.Cause != "oom_killed" {
+		t.Fatalf("result = %+v, want oom_killed (victims %v, Sentry %s)", result, victims, task)
+	}
+	sb := waitForSandboxState(t, admin, sandboxID, "stopped", 60*time.Second)
+	if sb.Cause == nil || *sb.Cause != "runtime_lost" {
+		t.Fatalf("Sandbox cause = %v, want runtime_lost", sb.Cause)
+	}
+}
+
+// runtimeTaskPID is the host pid of the Sandbox's task: runsc-sandbox (the
+// Sentry) under runsc. Empty when ctr cannot say.
+func runtimeTaskPID(sandboxID string) string {
+	out, _ := sandboxCommand("task", "ls").CombinedOutput()
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == "orrery-"+sandboxID {
+			return f[1]
+		}
+	}
+	return ""
+}
+
+// hostNow is the Node host's Unix time; its clock need not match this one.
+func hostNow() string {
+	out, _ := nodeShell("date +%s")
+	return strings.TrimSpace(string(out))
+}
+
+// logOOMVictims logs the host kernel's OOM kills since a host Unix time, next to
+// the Sandbox's task pid, so a run shows whether the stub or the Sentry died.
+// Best effort: the Node shell may not read the kernel log.
+func logOOMVictims(t *testing.T, since, task string) []string {
+	t.Helper()
+	out, _ := nodeShell(fmt.Sprintf("journalctl -k --no-pager --since @%s | grep 'Killed process'", since))
+	var pids []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if _, rest, ok := strings.Cut(line, "Killed process "); ok {
+			pids = append(pids, strings.Fields(rest)[0])
+		}
+	}
+	t.Logf("OOM victims %v, Sandbox task pid %s:\n%s", pids, task, out)
+	return pids
 }
 
 // TestExecDeleteCascade covers the running-Exec half of "delete-cascade".

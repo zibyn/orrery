@@ -485,6 +485,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// so their deliveries end with an exit frame.
 	reportGone := func(sandboxID string, generation int64) {
 		rt.finalizeLost(sandboxID)
+		rt.awaitDeliveries(sandboxID)
 		reportSandbox(sandboxID, generation, nodeproto.SandboxPhaseGone, "")
 	}
 	go rt.watchEvents(streamCtx, reportGone)

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -87,5 +88,31 @@ func TestHostOOMBaselineSurvivesRestart(t *testing.T) {
 	after.finalizeLost(sandboxID.String())
 	if got, _ := readExit(dir); got.Cause != "oom_killed" {
 		t.Fatalf("lost Sandbox cause = %q, want oom_killed", got.Cause)
+	}
+}
+
+// A lost Sandbox is reported gone only after its in-flight exit deliveries
+// land: the Control Plane ends Execs still active with runtime_lost, which
+// would hide an oom_killed (runtime.md §9).
+func TestAwaitDeliveriesBeforeGone(t *testing.T) {
+	root := t.TempDir()
+	sandboxID, execID := uuid.New(), uuid.New()
+	if err := os.MkdirAll(filepath.Join(sandboxRunPath(root, sandboxID), execID.String()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := newTestRuntime(root, nil)
+	r.beginExec(execID.String())
+	done := make(chan struct{})
+	go func() { r.awaitDeliveries(sandboxID.String()); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("returned while a delivery was in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+	r.endExec(execID.String())
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("still waiting after the delivery ended")
 	}
 }

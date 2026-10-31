@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -60,6 +61,29 @@ func (r *Runtime) hostOOMRose(sandboxID uuid.UUID, dir string) bool {
 	}
 	base, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
 	return err == nil && r.hostOOMKills(sandboxID) > base
+}
+
+// lostDeliveryWait bounds how long a lost Sandbox's report waits for its
+// exit deliveries.
+const lostDeliveryWait = 5 * time.Second
+
+// awaitDeliveries lets the exit frames already in flight for a lost Sandbox
+// land before it is reported gone: the Control Plane ends any Exec still
+// active with runtime_lost, which would hide an oom_killed (runtime.md §9).
+func (r *Runtime) awaitDeliveries(sandboxID string) {
+	dirs, _ := filepath.Glob(filepath.Join(r.dataRoot, "sandboxes", sandboxID, "run", "*"))
+	for deadline := time.Now().Add(lostDeliveryWait); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		r.execMu.Lock()
+		busy := false
+		for _, dir := range dirs {
+			_, inFlight := r.execs[filepath.Base(dir)]
+			busy = busy || inFlight
+		}
+		r.execMu.Unlock()
+		if !busy {
+			return
+		}
+	}
 }
 
 // attributeHostOOM rewrites a Supervisor-written SIGKILL exit as oom_killed
