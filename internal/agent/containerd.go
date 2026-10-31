@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,6 +52,10 @@ type containerdDriver struct {
 	// probing is the name of the probe container now running (a string), which
 	// adopt, running alongside the self-check, must leave alone.
 	probing atomic.Value
+	// networkMu serialises renders of the nftables table and guards probes,
+	// the self-check's networks, which are never recorded on disk.
+	networkMu sync.Mutex
+	probes    map[uuid.UUID]sandboxNetwork
 }
 
 // runsc reports whether this Node runs Sandboxes under runsc.
@@ -216,7 +221,10 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err != nil {
 		return cause, err
 	}
-	if _, err := d.setupNetwork(ctx, id, sandboxPath(d.r.dataRoot, id), policy); err != nil {
+	if _, err = d.setupNetwork(ctx, id, sandboxPath(d.r.dataRoot, id), policy); err == nil {
+		err = d.applyNetwork(ctx)
+	}
+	if err != nil {
 		d.teardown(context.WithoutCancel(ctx), id) //nolint:errcheck // best effort
 		return "runtime_create_failed", err
 	}
@@ -461,6 +469,10 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressNone})
 	network, err := d.setupNetwork(ctx, id, dir, none)
 	defer d.teardownNetwork(context.WithoutCancel(ctx), id, dir) //nolint:errcheck // disposable
+	if err == nil {
+		d.setProbe(id, &network)
+		err = d.applyNetwork(ctx)
+	}
 	if err != nil {
 		return supervisor.Result{}, false, false, fmt.Errorf("probe network: %w", err)
 	}
@@ -488,13 +500,13 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	if err != nil {
 		return result, limitsEnforced, false, err
 	}
-	return result, limitsEnforced, d.egressEnforced(ctx, c, id, network.HostVeth), nil
+	return result, limitsEnforced, d.egressEnforced(ctx, c, id, network), nil
 }
 
 // egressEnforced is the egress_policy self-check (runtime.md §13): under
 // Mode none the probe cannot reach a port the Agent listens on at the bridge
 // gateway, and under an allowlist of just that port it can.
-func (d *containerdDriver) egressEnforced(ctx context.Context, c containerd.Container, id uuid.UUID, veth string) bool {
+func (d *containerdDriver) egressEnforced(ctx context.Context, c containerd.Container, id uuid.UUID, network sandboxNetwork) bool {
 	subnet, err := netip.ParsePrefix(d.subnet)
 	if err != nil {
 		return false
@@ -515,7 +527,9 @@ func (d *containerdDriver) egressEnforced(ctx context.Context, c containerd.Cont
 	allowlist, err := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressAllowlist,
 		allow: []string{fmt.Sprintf("%s/32:%d", addrPort.Addr(), addrPort.Port())}})
 	if err == nil {
-		err = applyEgress(ctx, id, veth, allowlist)
+		network.Policy = allowlist
+		d.setProbe(id, &network)
+		err = d.applyNetwork(ctx)
 	}
 	if err != nil {
 		slog.Warn("egress self-check: apply the allowlist", "error", err)
@@ -621,6 +635,10 @@ func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)
 		}
 		d.r.track(id, gen)
 		report(id.String(), gen)
+	}
+	// After an Agent restart the table is rebuilt from what is on disk.
+	if err := d.applyNetwork(ctx); err != nil {
+		slog.Warn("render the Sandbox network table", "error", err)
 	}
 }
 
