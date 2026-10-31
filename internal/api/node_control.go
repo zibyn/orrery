@@ -123,6 +123,8 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 				if err := n.recordCapabilities(ctx, node.ID, m.Capabilities); err != nil {
 					return status.Error(codes.Internal, "record Capabilities")
 				}
+				n.s.reconcile.hub.capabilitiesReported(conn)
+				n.s.reconcile.notify() // admission waited for this report
 			case *nodev1.AgentMessage_SandboxObserved:
 				n.recordSandboxObserved(ctx, node.ID, m.SandboxObserved)
 			case *nodev1.AgentMessage_WorkspaceObserved:

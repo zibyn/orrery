@@ -246,6 +246,7 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 	if err != nil {
 		return err
 	}
+	nodes = r.hub.currentReports(nodes)
 	// GPU inventory is a hardware fact, independent of what this sweep
 	// allocates, so one read serves every request's exhaust check.
 	inventory := make(map[uuid.UUID][]store.Gpu, len(nodes))
