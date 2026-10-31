@@ -95,10 +95,11 @@ CGO_ENABLED=0 "$GO" build -o .e2e/orrery-agent ./cmd/orrery-agent
 CGO_ENABLED=0 "$GO" build -o .e2e/orrery ./cmd/orrery
 
 # A small Exec log cap keeps the truncation scenario fast, and a short PTY
-# idle window keeps the pty-idle scenario fast. A short admission deadline
+# idle window keeps the pty-idle scenario fast; 30s leaves margin over an Agent
+# restart plus PTY reattach under runsc (about 12s, #174). A short admission deadline
 # keeps the queue-and-deadline scenario fast.
 export ORRERY_EXEC_LOG_CAP="${ORRERY_EXEC_LOG_CAP:-1048576}"
-export ORRERY_PTY_IDLE_SECONDS="${ORRERY_PTY_IDLE_SECONDS:-10}"
+export ORRERY_PTY_IDLE_SECONDS="${ORRERY_PTY_IDLE_SECONDS:-30}"
 export ORRERY_ADMISSION_TIMEOUT="${ORRERY_ADMISSION_TIMEOUT:-10s}"
 # The retention scenario (#90) observes a real sweep without waiting for the
 # documented 10-minute cadence and 30-day TTL. Production defaults are
@@ -109,6 +110,11 @@ export ORRERY_TEST_PURGE_INTERVAL="${ORRERY_TEST_PURGE_INTERVAL:-1s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
 export ORRERY_APPS_DOMAIN="${ORRERY_APPS_DOMAIN:-apps.test}"
+# The Agents run on containerd (#170): run this script as root (the Agents
+# start as the test process's user), with containerd's socket at its default
+# path, the CNI plugins in /opt/cni/bin, ctr on PATH and, for snapshot builds,
+# a standalone buildkitd named by ORRERY_E2E_BUILDKIT. ORRERY_E2E_ISOLATION=
+# runsc runs every Agent under runsc.
 # GPU scenarios are skipped unless a GPU host is reachable over SSH:
 #   ORRERY_E2E_GPU_SSH=user@gpu-host ./scripts/e2e.sh -run GPU
 # The test deploys the Agent there and tunnels back to this machine's node
@@ -421,11 +427,6 @@ if [ "$code" != "200" ]; then
   exit 1
 fi
 
-DOCKER_SOCKET=""
-case "${DOCKER_HOST:-}" in
-  unix://*) DOCKER_SOCKET="${DOCKER_HOST#unix://}" ;;
-esac
-
 # make e2e-console: Compose starts no Node Agent, so the Playwright Sandbox
 # would never leave pending. Bootstrap the admin, mint an admin Token, enroll a
 # local Agent and wait until the Control Plane reports it ready, then drive the
@@ -461,7 +462,9 @@ run_console_e2e() {
   # The build ceiling is 4 CPU (defaults.md) and CI runners have exactly four,
   # so the default 1-CPU host reserve would leave every build unsatisfiable.
   local run_args=(run --ca "$PWD/.e2e/tls/server.crt" --state "$state" --data-root "$data_root" --reserve-cpu 0)
-  [ -n "$DOCKER_SOCKET" ] && run_args+=(--docker "$DOCKER_SOCKET")
+  # The same containerd Node as the Go scenarios (runAgentCommand).
+  [ -n "${ORRERY_E2E_BUILDKIT:-}" ] && run_args+=(--buildkit "$ORRERY_E2E_BUILDKIT")
+  [ -n "${ORRERY_E2E_ISOLATION:-}" ] && run_args+=(--isolation "$ORRERY_E2E_ISOLATION")
   .e2e/orrery-agent "${run_args[@]}" >"$log" 2>&1 &
   CONSOLE_AGENT_PID=$!
 
@@ -520,7 +523,6 @@ ORRERY_E2E_CLI="$PWD/.e2e/orrery" \
 ORRERY_E2E_AGENT="$PWD/.e2e/orrery-agent" \
 ORRERY_E2E_NODE_URL="$NODE_URL" \
 ORRERY_E2E_NODE_CA="$PWD/.e2e/tls/server.crt" \
-ORRERY_E2E_DOCKER_SOCKET="$DOCKER_SOCKET" \
 ORRERY_E2E_COMPOSE_FILE="$COMPOSE_FILE" \
 ORRERY_E2E_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
 ORRERY_E2E_EXEC_LOG_CAP="$ORRERY_EXEC_LOG_CAP" \

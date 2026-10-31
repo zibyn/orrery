@@ -96,6 +96,10 @@ type Config struct {
 	// RegistryCredentialDoc is the parsed credential. It must resolve
 	// RegistryPushAddr as well as RegistryAddr (see ConfigFromEnv).
 	RegistryCredentialDoc *registry.Credential
+	// EgressAllow and EgressDeny are the Egress Rules (`CIDR[:port]`) sent to
+	// every Node in HelloAck (defaults.md "egress"); config.yaml only.
+	EgressAllow []string
+	EgressDeny  []string
 }
 
 // PlatformSnapshot is one ORRERY_PLATFORM_SNAPSHOTS entry.

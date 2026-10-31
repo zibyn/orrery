@@ -639,7 +639,7 @@ func schemas() map[string]any {
 					"type":        "string",
 					"enum":        []string{"container", "local"},
 					"default":     "container",
-					"description": "container places on Docker or Podman; local places on a Local Runtime Node and accepts no Snapshot or Resources.",
+					"description": "container places on a containerd Node; local places on a Local Runtime Node and accepts no Snapshot or Resources.",
 				},
 				"workspace": map[string]any{
 					"type":        "object",
@@ -680,16 +680,33 @@ func schemas() map[string]any {
 					"required": []string{"count"},
 				},
 				"idle_stop": map[string]any{"type": "integer", "minimum": 0, "default": 900, "description": "Seconds; 0 disables idle stop."},
+				"egress":    schemaRef("Egress"),
+			},
+		},
+		"Egress": map[string]any{
+			"type":        "object",
+			"description": "Egress Mode, fixed for the Sandbox's life and narrowing only what the deployment's Egress Rules permit. Omitted means open. A mode other than open is placed only on Nodes where egress_policy is enforced.",
+			"required":    []string{"mode"},
+			"properties": map[string]any{
+				"mode": map[string]any{"type": "string", "enum": []string{"open", "none", "allowlist"}},
+				"allow": map[string]any{
+					"type":        "array",
+					"minItems":    1,
+					"maxItems":    maxEgressAllow,
+					"items":       map[string]any{"type": "string", "description": "IPv4 CIDR (a bare address is /32) with an optional :port."},
+					"description": "Required and non-empty for allowlist; rejected with any other mode.",
+				},
 			},
 		},
 		"Sandbox": map[string]any{
 			"type":     "object",
-			"required": []string{"id", "name", "labels", "runtime", "state", "snapshot", "conditions", "cpu", "memory", "idle_stop", "created_at"},
+			"required": []string{"id", "name", "labels", "runtime", "egress", "state", "snapshot", "conditions", "cpu", "memory", "idle_stop", "created_at"},
 			"properties": map[string]any{
 				"id":       map[string]any{"type": "string", "format": "uuid"},
 				"name":     map[string]any{"type": "string"},
 				"labels":   map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
 				"runtime":  map[string]any{"type": "string", "enum": []string{"container", "local"}},
+				"egress":   schemaRef("Egress"),
 				"state":    map[string]any{"type": "string", "enum": sandboxStateNames},
 				"cause":    nullableString,
 				"node_id":  nullableString,

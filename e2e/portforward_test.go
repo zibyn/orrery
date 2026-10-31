@@ -124,15 +124,8 @@ func TestPortForward(t *testing.T) {
 	}
 	cliForward(t, otherAdmin, sandboxID, "hello-app")
 
-	// The Sandbox itself publishes nothing on the host.
-	out, err := exec.Command("docker", "inspect", "--format", "{{json .HostConfig.PortBindings}}",
-		"orrery-"+sandboxID).Output()
-	if err != nil {
-		t.Fatalf("docker inspect: %v", err)
-	}
-	if bindings := strings.TrimSpace(string(out)); bindings != "{}" && bindings != "null" {
-		t.Fatalf("Sandbox publishes ports: %s", bindings)
-	}
+	// The Sandbox itself publishes nothing on the host: containerd has no
+	// published ports at all, and the Sandbox's netns is only on the bridge.
 }
 
 // gatewayRequest sends a request to the API listener with a port subdomain's

@@ -5,7 +5,6 @@ package e2e
 import (
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -27,9 +26,6 @@ func TestSandboxTokenScope(t *testing.T) {
 	waitForNodeReady(t, admin, nodeName)
 
 	sandboxID := createReadySandbox(t, admin, fmt.Sprintf("token-%d", suffix), 256<<20)
-	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", "orrery-"+sandboxID).Run()
-	})
 
 	run := func(argv ...string) (string, string) {
 		t.Helper()
@@ -87,25 +83,29 @@ func TestSandboxTokenScope(t *testing.T) {
 	if out, _ := run("sh", "-c", `test -x /.orrery/bin/orrery && echo ok`); strings.TrimSpace(out) != "ok" {
 		t.Fatal("the external CLI is not staged in /.orrery/bin")
 	}
-	run("sh", "-c", `apk add --no-cache git >/dev/null 2>&1 || true`)
-	helpers, _ := run("sh", "-c", `git config --get-all credential.helper | sed '/^$/d'`)
-	if got := strings.TrimSpace(helpers); got != "/.orrery/bin/orrery git-credential" {
-		t.Fatalf("credential.helper = %q, want only the platform helper", got)
-	}
 	path, _ := run("sh", "-c", `printf %s "$PATH"`)
 	if !strings.HasSuffix(path, ":/.orrery/bin") && path != "/.orrery/bin" {
 		t.Fatalf("PATH = %q, want /.orrery/bin appended", path)
 	}
+	if noSandboxEgress() {
+		t.Log("ORRERY_E2E_SANDBOX_NO_EGRESS: no git and no route to ORRERY_URL; the helper checks are skipped")
+	} else {
+		installGit(t, admin, sandboxID)
+		helpers, _ := run("sh", "-c", `git config --get-all credential.helper | sed '/^$/d'`)
+		if got := strings.TrimSpace(helpers); got != "/.orrery/bin/orrery git-credential" {
+			t.Fatalf("credential.helper = %q, want only the platform helper", got)
+		}
 
-	// An unmatched host passes through: no output, and a not_found round
-	// trip through ORRERY_URL still exits 0 so git can try the next helper.
-	stdout, stderr := run("sh", "-c",
-		`printf 'protocol=https\nhost=github.com\n\n' | /.orrery/bin/orrery git-credential get`)
-	if stdout != "" {
-		t.Fatalf("pass-through helper stdout = %q, want empty", stdout)
-	}
-	if stderr != "" {
-		t.Fatalf("pass-through helper stderr = %q, want empty", stderr)
+		// An unmatched host passes through: no output, and a not_found round
+		// trip through ORRERY_URL still exits 0 so git can try the next helper.
+		stdout, stderr := run("sh", "-c",
+			`printf 'protocol=https\nhost=github.com\n\n' | /.orrery/bin/orrery git-credential get`)
+		if stdout != "" {
+			t.Fatalf("pass-through helper stdout = %q, want empty", stdout)
+		}
+		if stderr != "" {
+			t.Fatalf("pass-through helper stderr = %q, want empty", stderr)
+		}
 	}
 
 	// The token is never persisted: not in the Workspace, not in the
@@ -118,12 +118,12 @@ func TestSandboxTokenScope(t *testing.T) {
 	if home != "" {
 		t.Fatalf("git credential files exist: %s", home)
 	}
-	out, err := exec.Command("docker", "inspect", "orrery-"+sandboxID).CombinedOutput()
+	out, err := inspectSandboxRuntime(sandboxID)
 	if err != nil {
-		t.Fatalf("docker inspect: %v\n%s", err, out)
+		t.Fatalf("inspect the Sandbox container: %v\n%s", err, out)
 	}
 	if strings.Contains(string(out), token) {
-		t.Fatalf("docker inspect exposes the Sandbox Token:\n%s", out)
+		t.Fatalf("the container record exposes the Sandbox Token:\n%s", out)
 	}
 
 	// Deleting the Sandbox revokes the token at once, before teardown finishes.

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/binary"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -10,19 +9,6 @@ import (
 	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/supervisor"
 )
-
-func TestDemux(t *testing.T) {
-	frame := func(stream byte, payload string) []byte {
-		header := make([]byte, 8)
-		header[0] = stream
-		binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
-		return append(header, payload...)
-	}
-	raw := append(frame(1, `{"cpu_max":"50000 100000"}`), frame(2, "warning")...)
-	if got := string(demux(raw)); got != `{"cpu_max":"50000 100000"}warning` {
-		t.Fatalf("demux = %q", got)
-	}
-}
 
 func TestCapabilitiesFollowTheProbe(t *testing.T) {
 	caps := capabilities(supervisor.Result{
@@ -33,7 +19,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 		MountNamespace:    "mnt:[different]",
 		NvidiaDevices:     []string{"/dev/nvidia0", "/dev/nvidiactl"},
 		WorkspaceWritable: true,
-	}, true, true, ProviderDocker)
+	}, true, true, true, true)
 	values := map[string]string{}
 	for _, entry := range caps.Entries {
 		values[entry.Name] = entry.Value
@@ -41,6 +27,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 	for _, name := range []string{
 		"process_mount_namespace", "cpu_memory_pid_limits", "workspace_rw_mount",
 		"exec_supervisor", "gpu_device_visibility", "resource_mount",
+		"kernel_isolation", "egress_policy",
 	} {
 		if values[name] != nodeproto.ValueEnforced {
 			t.Errorf("%s = %q, want enforced", name, values[name])
@@ -52,13 +39,13 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 
 	// A daemon that refused the limits must not claim them, and a probe that
 	// could not see the requested cards must not claim GPU visibility.
-	weak := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false, ProviderDocker)
+	weak := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false, false, false)
 	for _, entry := range weak.Entries {
 		if entry.Name == "exec_supervisor" {
 			continue // the probe ran, so the Supervisor works
 		}
 		if entry.Name == nodeproto.CapResourceMount {
-			continue // the Docker adapter's bind mounts do not depend on the probe
+			continue // the container adapter's bind mounts do not depend on the probe
 		}
 		if entry.Value != nodeproto.ValueUnsupported {
 			t.Errorf("%s = %q, want unsupported", entry.Name, entry.Value)
@@ -67,7 +54,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 }
 
 func TestSnapshotBuildCapabilityIsIndependent(t *testing.T) {
-	report := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false, ProviderDocker)
+	report := capabilities(supervisor.Result{WorkspaceWritable: false}, false, false, false, false)
 	enforced := withSnapshotBuild(report, true)
 	values := map[string]string{}
 	for _, entry := range enforced.Entries {

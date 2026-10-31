@@ -1,6 +1,6 @@
 # Orrery
 
-面向 agent 的远程开发与 GPU 执行平台。Control Plane 统一管理身份、Workspace、Sandbox、Exec 和资源；Node Agent 在受信任的主机上通过 Docker、Podman 或 Local Runtime 实际执行命令。
+面向 agent 的远程开发与 GPU 执行平台。Control Plane 统一管理身份、Workspace、Sandbox、Exec 和资源；Node Agent 在受信任的主机上通过 containerd（runc 或 gVisor 的 runsc）或 Local Runtime 实际执行命令。
 
 - **Workspace**：可变工作目录，永久绑定一个 Node，可以是持久的，也可以随 Sandbox 一起删除（临时 Workspace）。
 - **Sandbox**：短期隔离执行实例，挂载一个 Workspace 和若干只读 Resource，按 CPU、内存、GPU 分配。
@@ -22,7 +22,7 @@
                                      │ Node Agent 出站连接
                           ┌──────────▼──────────┐
                           │      Node Agent     │
-                          │ Docker / Podman /   │
+                          │ containerd /        │
                           │ Local Runtime       │
                           └─────────────────────┘
 ```
@@ -36,7 +36,7 @@
 
 部署是 pull 式的：服务器从 release tag 取 `deploy/install.sh` 执行，GitHub 不持有服务器凭据。详见 [`docs/deploy.md`](docs/deploy.md)（前置条件、TLS、Node 注册、升级与回滚），所有配置项见 [`docs/spec/defaults.md`](docs/spec/defaults.md)。
 
-首次安装后还需要：配置平台 Snapshot、用 `orrery-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。
+首次安装后还需要：配置平台 Snapshot、用 `orrery-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。Node 需要 containerd、CNI 插件和（做构建时）buildkitd；Docker 和 Podman Node 的迁移步骤见 [`docs/deploy.md`](docs/deploy.md)。
 
 ## 客户端
 
@@ -123,7 +123,7 @@ make e2e       # 起 PostgreSQL + Control Plane，跑黑盒 e2e，再清理
 make e2e-console  # 同一部署上跑 Playwright
 ```
 
-`make e2e` 需要 Docker 和用到的镜像；它自带 compose 项目，不会碰现有部署。修改 proto 后 `make proto`，修改 SQL 后 `make sqlc`。
+`make e2e` 需要 Docker（Control Plane 的 compose 栈）和用到的镜像；测试里的 Agent 是 containerd Node，所以要以 root 运行，并装好 containerd 2.x、`ctr`、`/opt/cni/bin` 下的 CNI 插件，构建场景另需 `ORRERY_E2E_BUILDKIT` 指向一个独立的 buildkitd（CI 的做法见 `scripts/ci-e2e-node.sh`）。它自带 compose 项目，不会碰现有部署。修改 proto 后 `make proto`，修改 SQL 后 `make sqlc`。
 
 仓库布局：
 

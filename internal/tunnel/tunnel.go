@@ -44,8 +44,9 @@ type Conn struct {
 
 	sendMu sync.Mutex
 
-	done chan struct{}
-	once sync.Once
+	done  chan struct{}
+	once  sync.Once
+	ended chan struct{} // closed when the pump stops: the peer ended the stream
 }
 
 func NewConn(id string, stream Stream) *Conn {
@@ -55,12 +56,14 @@ func NewConn(id string, stream Stream) *Conn {
 		incoming: make(chan []byte, 16),
 		wake:     make(chan struct{}),
 		done:     make(chan struct{}),
+		ended:    make(chan struct{}),
 	}
 	go c.pump()
 	return c
 }
 
 func (c *Conn) pump() {
+	defer close(c.ended)
 	defer close(c.incoming)
 	for {
 		frame, err := c.stream.Recv()
@@ -83,6 +86,10 @@ func (c *Conn) pump() {
 // Done closes when the Conn is closed. The server-side Tunnel handler waits on
 // it and then returns, which ends the RPC.
 func (c *Conn) Done() <-chan struct{} { return c.done }
+
+// Ended closes once no more frames will be read: the peer ended the RPC, or
+// a frame arrived after Close.
+func (c *Conn) Ended() <-chan struct{} { return c.ended }
 
 func (c *Conn) Read(p []byte) (int, error) {
 	c.readMu.Lock()

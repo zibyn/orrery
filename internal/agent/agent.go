@@ -31,12 +31,15 @@ import (
 
 const (
 	// HeartbeatInterval is a constant in defaults.md.
-	HeartbeatInterval   = 15 * time.Second
-	DefaultStatePath    = "/var/lib/orrery-agent/identity.json"
-	DefaultDockerSock   = "/var/run/docker.sock"
-	DefaultDataRoot     = "/var/lib/orrery"
-	DefaultReserveCPU   = 1.0
-	DefaultReserveBytes = 2 << 30 // 2 GiB
+	HeartbeatInterval = 15 * time.Second
+	DefaultStatePath  = "/var/lib/orrery-agent/identity.json"
+	// DefaultContainerdSock and DefaultSandboxSubnet are the containerd
+	// Provider's defaults (runtime.md §9, defaults.md).
+	DefaultContainerdSock = "/run/containerd/containerd.sock"
+	DefaultSandboxSubnet  = "10.213.0.0/24"
+	DefaultDataRoot       = "/var/lib/orrery"
+	DefaultReserveCPU     = 1.0
+	DefaultReserveBytes   = 2 << 30 // 2 GiB
 	// DefaultDiskWatermark is the fraction of the disk that must stay free
 	// (defaults.md, Node configuration).
 	DefaultDiskWatermark = 0.10
@@ -144,17 +147,26 @@ type RunOptions struct {
 	CAPath string
 	Server string // overrides the address stored at enroll time
 	State  string
+	// Docker is the removed --docker flag. Any value fails Run, so a stale
+	// Docker configuration stops at startup (ADR-0026).
 	Docker string
-	// Runtime is the Node's one Runtime Provider (ADR-0014): docker, podman
-	// or local.
+	// Containerd is the containerd socket and SandboxSubnet the CNI address
+	// pool for --runtime containerd (runtime.md §9, §13).
+	Containerd    string
+	SandboxSubnet string
+	// Isolation is the containerd Node's Isolation Runtime, runc or runsc
+	// (runtime.md §9); empty elsewhere.
+	Isolation string
+	// Runtime is the Node's one Runtime Provider (ADR-0014, ADR-0026):
+	// containerd or local.
 	Runtime string
 	// LocalUser is the unprivileged user every Local Runtime Exec runs as
 	// (runtime.md §10). Required for --runtime local.
 	LocalUser string
 	// localUser is the resolved LocalUser, filled by Run.
 	localUser *localUser
-	// Buildkit is the BuildKit endpoint. Empty means the Docker daemon's
-	// built-in BuildKit, reached through the Docker socket's /grpc upgrade.
+	// Buildkit is the standalone buildkitd endpoint. Empty means none, and
+	// snapshot_build is unsupported (runtime.md §12).
 	Buildkit      string
 	DataRoot      string
 	ReserveCPU    float64
@@ -163,13 +175,15 @@ type RunOptions struct {
 }
 
 // resolveRuntime picks the one Runtime Provider this Node runs (ADR-0014).
-// Unimplemented providers fail loudly rather than silently running Docker.
+// The removed Docker and Podman Providers fail loudly with the way forward
+// (ADR-0026) instead of half-working on a stale configuration.
 func resolveRuntime(name string) (string, error) {
 	switch name {
-	case "", ProviderDocker:
-		return ProviderDocker, nil
-	case ProviderPodman:
-		return ProviderPodman, nil
+	case "", ProviderContainerd:
+		return ProviderContainerd, nil
+	case "docker", "podman":
+		return "", fmt.Errorf("--runtime %s is no longer supported: Docker and Podman Nodes were replaced by containerd. "+
+			"Install containerd, buildkitd and the CNI plugins, then run with --runtime containerd (see docs/deploy.md)", name)
 	case ProviderLocal:
 		return ProviderLocal, nil
 	default:
@@ -177,15 +191,50 @@ func resolveRuntime(name string) (string, error) {
 	}
 }
 
+// errDockerFlag is Run's answer to the removed --docker socket flag.
+var errDockerFlag = errors.New("--docker is no longer supported: Docker Nodes were replaced by containerd. " +
+	"Remove --docker and pass --containerd SOCKET with --runtime containerd (see docs/deploy.md)")
+
+// Isolation Runtimes a containerd Node runs every Sandbox under (ADR-0026).
+const (
+	IsolationRunc  = "runc"
+	IsolationRunsc = "runsc"
+)
+
+// resolveIsolation is the Node's --isolation: runc unless runsc is named,
+// and only on a containerd Node.
+func resolveIsolation(provider, isolation string) (string, error) {
+	if provider != ProviderContainerd {
+		if isolation != "" {
+			return "", fmt.Errorf("--isolation applies only to --runtime containerd, not %s", provider)
+		}
+		return "", nil
+	}
+	switch isolation {
+	case "", IsolationRunc:
+		return IsolationRunc, nil
+	case IsolationRunsc:
+		return IsolationRunsc, nil
+	default:
+		return "", fmt.Errorf("unknown isolation %q: want runc or runsc", isolation)
+	}
+}
+
 // Run keeps one Control stream alive, probing capabilities once per
 // connection. NOT_FOUND/UNAUTHENTICATED clears local identity; anything else
 // keeps it and backs off (ADR-0010's asymmetric rule).
 func Run(ctx context.Context, opts RunOptions) error {
+	if opts.Docker != "" {
+		return errDockerFlag
+	}
 	provider, err := resolveRuntime(opts.Runtime)
 	if err != nil {
 		return err
 	}
 	opts.Runtime = provider
+	if opts.Isolation, err = resolveIsolation(provider, opts.Isolation); err != nil {
+		return err
+	}
 	if provider == ProviderLocal {
 		// Local Runtime uses the system manager and systemd-run, so the Agent
 		// must be root; commands never run as root (runtime.md §10).
@@ -209,11 +258,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if server == "" {
 		return errors.New("no node address: pass --server or re-enroll")
 	}
-	if opts.Docker == "" {
-		opts.Docker = DefaultDockerSock
-	}
 	if opts.DataRoot == "" {
 		opts.DataRoot = DefaultDataRoot
+	}
+	if opts.Containerd == "" {
+		opts.Containerd = DefaultContainerdSock
+	}
+	if opts.SandboxSubnet == "" {
+		opts.SandboxSubnet = DefaultSandboxSubnet
 	}
 	if opts.ReserveMemory == 0 {
 		opts.ReserveMemory = DefaultReserveBytes
@@ -223,6 +275,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	if err := PrepareDataRoot(opts.DataRoot); err != nil {
 		return err
+	}
+	// runsc cannot execute the Supervisor from a tmpfs bind mount (runtime.md §9).
+	if opts.Isolation == IsolationRunsc && onTmpfs(filepath.Join(opts.DataRoot, "bin")) {
+		return fmt.Errorf("--isolation runsc needs a --data-root off tmpfs: %s is on tmpfs", opts.DataRoot)
 	}
 	version := buildinfo.Version()
 
@@ -284,13 +340,11 @@ func isIncompatible(err error) bool {
 }
 
 func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, version string) (bool, error) {
-	// The --runtime flag is the single source of truth: an explicit Provider
-	// wins over any path heuristic, so a Docker Node pointing at an unusual
-	// socket never silently becomes Podman.
-	rt := NewRuntime(opts.Docker, opts.DataRoot, id.NodeID)
-	if opts.Runtime == ProviderPodman {
+	// The --runtime flag is the single source of truth (resolveRuntime).
+	var rt *Runtime
+	if opts.Runtime == ProviderContainerd {
 		var err error
-		rt, err = newPodmanRuntime(opts.Docker, opts.DataRoot, id.NodeID)
+		rt, err = newContainerdRuntime(opts.Containerd, opts.SandboxSubnet, opts.Isolation, opts.DataRoot, id.NodeID)
 		if err != nil {
 			return false, err
 		}
@@ -301,6 +355,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		}
 		rt = newLocalRuntime(opts.DataRoot, id.NodeID, *opts.localUser, agentBinDir())
 	}
+	defer rt.driver.close()
 	rt.buildkit = opts.Buildkit
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
@@ -338,6 +393,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		return false, errors.New("the Control Plane rejected Hello")
 	}
 	rt.setRegistryCredential(ack.RegistryCredential)
+	rt.setEgressRules(ack.GetEgressRules().GetAllow(), ack.GetEgressRules().GetDeny())
 	slog.Info("control stream connected", "node_id", id.NodeID)
 
 	// One goroutine owns Send; the receive loop and command goroutines only
@@ -375,38 +431,10 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		}})
 	}
 
-	// snapshot_build is the BuildKit endpoint self-check, independent of the
-	// Runtime (runtime.md §12). It is reported even when the Runtime probe
-	// fails; the Node's status already keeps it out of placement then.
-	buildOK := rt.buildkitAvailable(streamCtx)
-	report, probeErr := rt.probe(streamCtx)
-	health := "healthy"
-	if probeErr != nil {
-		health = "unhealthy"
-		report = nodeproto.CapabilityReport{RuntimeProvider: rt.provider}
-		slog.Error("runtime self-check failed", "error", probeErr)
-	}
-	report = withSnapshotBuild(report, buildOK)
-	// The inventory is a hardware fact; placement still requires the CDI
-	// capability above, so an old Docker's GPUs are visible but not usable.
-	gpus := enumerateGPUs(streamCtx)
-	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
-		Capabilities: capabilitiesMessage(report, gpus),
-	}})
-	host := hostHardware()
-	heartbeat := func() *nodev1.AgentMessage {
-		return heartbeatMessage(health, host, opts, gpuHealth(streamCtx, gpus))
-	}
-	send(heartbeat())
-
+	// Sandboxes this Node already runs are served from here on; the
+	// self-check below only holds back new placements (#178).
 	runner := newCommandRunner(streamCtx, rt, send)
 	rt.connect(nodev1.NewNodeClient(conn), send)
-	// A build a previous process (or a dropped stream) left behind is
-	// interrupted, never retried (runtime.md §12).
-	go rt.resumeBuilds(streamCtx)
-	// Cache eviction owns its own loop (runtime.md §11): a Node below the disk
-	// watermark reclaims LRU cache without touching Sandbox lifecycle.
-	go rt.evictLoop(streamCtx, opts.DiskWatermark)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {
@@ -428,12 +456,46 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// so their deliveries end with an exit frame.
 	reportGone := func(sandboxID string, generation int64) {
 		rt.finalizeLost(sandboxID)
+		rt.awaitDeliveries(sandboxID)
 		reportSandbox(sandboxID, generation, nodeproto.SandboxPhaseGone, "")
 	}
 	go rt.watchEvents(streamCtx, reportGone)
 	// Repair what a previous Agent process, or an earlier connection, left
 	// unfinished (runtime.md §8).
 	go rt.reconcileRecords(streamCtx, reportGone)
+
+	// snapshot_build is the BuildKit endpoint self-check, independent of the
+	// Runtime (runtime.md §12). It is reported even when the Runtime probe
+	// fails; the Node's status already keeps it out of placement then.
+	buildOK := rt.buildkitAvailable(streamCtx)
+	report, probeErr := rt.probe(streamCtx)
+	health := "healthy"
+	if probeErr != nil {
+		health = "unhealthy"
+		report = nodeproto.CapabilityReport{RuntimeProvider: rt.provider}
+		slog.Error("runtime self-check failed", "error", probeErr)
+	}
+	report = withSnapshotBuild(report, buildOK)
+	rt.setEgressEnforced(report)
+	// The inventory is a hardware fact; placement still requires the CDI
+	// capability above, so a Node without working CDI shows GPUs it cannot attach.
+	gpus := enumerateGPUs(streamCtx)
+	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
+		Capabilities: capabilitiesMessage(report, gpus),
+	}})
+	host := hostHardware()
+	heartbeat := func() *nodev1.AgentMessage {
+		return heartbeatMessage(health, host, opts, gpuHealth(streamCtx, gpus))
+	}
+	send(heartbeat())
+
+	// A build a previous process (or a dropped stream) left behind is
+	// interrupted, never retried (runtime.md §12).
+	go rt.resumeBuilds(streamCtx)
+	// Cache eviction owns its own loop (runtime.md §11): a Node below the disk
+	// watermark reclaims LRU cache without touching Sandbox lifecycle.
+	go rt.evictLoop(streamCtx, opts.DiskWatermark)
+	runner.selfChecked()
 
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
@@ -548,4 +610,10 @@ func diskUsage(path string) (free, total uint64) {
 		return 0, 0
 	}
 	return stat.Bavail * uint64(stat.Bsize), stat.Blocks * uint64(stat.Bsize)
+}
+
+func onTmpfs(path string) bool {
+	const tmpfsMagic = 0x01021994 // TMPFS_MAGIC, statfs(2)
+	var stat syscall.Statfs_t
+	return syscall.Statfs(path, &stat) == nil && stat.Type == tmpfsMagic
 }

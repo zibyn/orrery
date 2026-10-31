@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 // Forward serves one Sandbox port on a unix socket in the shared run mount.
@@ -47,6 +48,16 @@ func Forward(portRaw, socket string) error {
 		}
 		go forwardConn(conn, port)
 	}
+}
+
+// Dial opens and closes one TCP connection from inside the Sandbox: the
+// egress_policy self-check (runtime.md §13).
+func Dial(addr string) error {
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 func forwardConn(conn net.Conn, port int) {

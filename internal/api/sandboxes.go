@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/store"
 )
 
@@ -33,6 +34,54 @@ type createSandboxRequest struct {
 	Memory    *int64                   `json:"memory"`
 	GPU       *sandboxGPURequest       `json:"gpu"`
 	IdleStop  *int32                   `json:"idle_stop"`
+	Egress    *sandboxEgress           `json:"egress"`
+}
+
+// sandboxEgress is the caller's Egress Mode (ADR-0026), as requested and as
+// returned: allow is set only for allowlist.
+type sandboxEgress struct {
+	Mode  *string  `json:"mode"`
+	Allow []string `json:"allow,omitempty"`
+}
+
+// maxEgressAllow is defaults.md's `egress.allow` entry limit.
+const maxEgressAllow = 64
+
+// sandboxEgressMode validates the requested Egress Mode (api.md §3). Omitted
+// is open. A Local Sandbox cannot narrow egress at all (ADR-0026).
+func sandboxEgressMode(req createSandboxRequest, runtime string) (mode string, allow []string, code, detail string) {
+	if req.Egress == nil {
+		return nodeproto.EgressOpen, nil, "", ""
+	}
+	if req.Egress.Mode == nil {
+		return "", nil, "invalid_request", "egress.mode is required"
+	}
+	mode, allow = *req.Egress.Mode, req.Egress.Allow
+	switch mode {
+	case nodeproto.EgressOpen, nodeproto.EgressNone:
+		// A present allow, even an empty one, is ambiguous with these modes.
+		if allow != nil {
+			return "", nil, "invalid_request", "egress.allow is only valid with mode allowlist"
+		}
+	case nodeproto.EgressAllowlist:
+		if len(allow) == 0 {
+			return "", nil, "invalid_request", "egress mode allowlist needs a non-empty allow; use mode none for no egress"
+		}
+		if len(allow) > maxEgressAllow {
+			return "", nil, "invalid_request", fmt.Sprintf("egress.allow has at most %d entries", maxEgressAllow)
+		}
+		for _, entry := range allow {
+			if _, err := nodeproto.ParseEgressEntry(entry); err != nil {
+				return "", nil, "invalid_request", fmt.Sprintf("egress.allow: %v", err)
+			}
+		}
+	default:
+		return "", nil, "invalid_request", "egress.mode must be open, none or allowlist"
+	}
+	if mode != nodeproto.EgressOpen && runtime == "local" {
+		return "", nil, "unsupported", "runtime: local cannot narrow egress"
+	}
+	return mode, allow, "", ""
 }
 
 // sandboxRuntime resolves the requested Runtime (ADR-0009). `container` is the
@@ -66,6 +115,24 @@ func sandboxRuntimeValue(runtime string) string {
 		return "local"
 	}
 	return "container"
+}
+
+// sandboxEgressValue normalizes a stored Egress Mode. A pre-#165 row (or an
+// in-memory test row) is open.
+func sandboxEgressValue(mode string) string {
+	if mode == "" {
+		return nodeproto.EgressOpen
+	}
+	return mode
+}
+
+// egressPlaceable reports whether a Node may run a Sandbox with this Egress
+// Mode: anything but open needs egress_policy enforced (api.md §3).
+func egressPlaceable(mode string) func(store.Node) bool {
+	return func(node store.Node) bool {
+		return sandboxEgressValue(mode) == nodeproto.EgressOpen ||
+			nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapEgressPolicy)
+	}
 }
 
 // sandboxResourceRequest pins one Resource version at create time (api.md §3).
@@ -104,6 +171,7 @@ type sandboxDTO struct {
 	Name          string               `json:"name"`
 	Labels        map[string]string    `json:"labels"`
 	Runtime       string               `json:"runtime"`
+	Egress        sandboxEgress        `json:"egress"`
 	State         string               `json:"state"`
 	Cause         *string              `json:"cause"`
 	NodeID        *string              `json:"node_id"`
@@ -153,6 +221,25 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if runtimeCode != "" {
 		writeProblem(w, runtimeCode, runtimeDetail)
 		return
+	}
+	egressMode, egressAllow, egressCode, egressDetail := sandboxEgressMode(req, runtime)
+	if egressCode != "" {
+		writeProblem(w, egressCode, egressDetail)
+		return
+	}
+	if egressMode != nodeproto.EgressOpen {
+		nodes, err := s.q.ListAllNodes(ctx)
+		if err != nil {
+			s.internal(w, "list Nodes", err)
+			return
+		}
+		if !slices.ContainsFunc(nodes, egressPlaceable(egressMode)) {
+			writeProblem(w, "unsupported", "no Node enforces egress_policy, so egress.mode "+egressMode+" cannot be placed")
+			return
+		}
+	}
+	if egressAllow == nil {
+		egressAllow = []string{} // the column is NOT NULL
 	}
 	if req.CPU == nil || *req.CPU <= 0 {
 		writeProblem(w, "invalid_request", "cpu must be a positive number of cores")
@@ -329,6 +416,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 				GpuCount: gpuCount, GpuModel: gpuModel,
 				IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
 				TokenCt: tokenCt, TokenKeyID: tokenKeyID,
+				EgressMode: egressMode, EgressAllow: egressAllow,
 			})
 		})
 	if err != nil {
@@ -895,6 +983,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 	dto := sandboxDTO{
 		ID: sb.ID.String(), Name: sb.Name, Labels: labels,
 		Runtime: sandboxRuntimeValue(sb.Runtime),
+		Egress:  sandboxEgress{Mode: new(sandboxEgressValue(sb.EgressMode)), Allow: sb.EgressAllow},
 		State:   sb.State, Cause: sb.Cause, NodeID: uuidPtr(sb.NodeID),
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),

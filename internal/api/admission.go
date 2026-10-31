@@ -103,14 +103,15 @@ func takeGPUs(free []store.Gpu, count int32, model *string) ([]string, bool) {
 }
 
 // runtimeMatches reports whether a Node's Provider can run a Sandbox's
-// requested Runtime (api.md §3, ADR-0009). A container request goes to Docker
-// or Podman; a local request only to a Local Node.
+// requested Runtime (api.md §3, ADR-0009). A container request goes to a
+// containerd Node; a local request only to a Local Node. An outdated Agent
+// still reporting the removed docker or podman gets nothing (ADR-0026).
 func runtimeMatches(capabilities json.RawMessage, runtime string) bool {
 	provider := nodeproto.RuntimeProvider(capabilities)
 	if runtime == "local" {
 		return provider == "local"
 	}
-	return provider == "docker" || provider == "podman"
+	return provider == "containerd"
 }
 
 // gpuVisibilityAccepted applies ADR-0009's one exception: a local request
@@ -185,7 +186,7 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		// Provider (api.md §3). A Node that has not reported Capabilities is
 		// treated as potentially matching, so it is not proof of exhaustion.
 		if sb.Kind != string(SandboxKindBuild) && len(node.Capabilities) > 0 &&
-			!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) {
+			(!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) || !egressPlaceable(sb.EgressMode)(node)) {
 			known = true
 			continue
 		}
@@ -409,12 +410,15 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			}
 		} else {
 			// The request's Runtime is an admission constraint (api.md §3): a
-			// container Sandbox only goes to Docker or Podman, a local one only
+			// container Sandbox only goes to containerd, a local one only
 			// to a Local Node.
 			if !runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) {
 				continue
 			}
 			if resourceMounts > 0 && !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapResourceMount) {
+				continue
+			}
+			if !egressPlaceable(sb.EgressMode)(node) {
 				continue
 			}
 		}

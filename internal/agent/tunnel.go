@@ -91,8 +91,24 @@ func (r *Runtime) dialTunnel(ctx context.Context, tunnelID string) (*tunnel.Conn
 		cancel()
 		return nil, nil, err
 	}
-	return tunnel.NewConn(tunnelID, stream), cancel, nil
+	conn := tunnel.NewConn(tunnelID, stream)
+	// Cancelling resets the stream. Until the Control Plane ends the RPC it may
+	// not have claimed the tunnel yet, or read its last bytes: an app that
+	// answers and hangs up at once otherwise loses the whole tunnel (#172).
+	release := func() {
+		conn.Close() //nolint:errcheck // half-closes our side
+		select {
+		case <-conn.Ended():
+		case <-time.After(tunnelDrainTimeout):
+		}
+		cancel()
+	}
+	return conn, release, nil
 }
+
+// tunnelDrainTimeout bounds the wait for the Control Plane to end a Tunnel
+// after the Agent's side is done; it matches the Control Plane's dial wait.
+const tunnelDrainTimeout = 10 * time.Second
 
 // dialSandboxPort starts a forwarder inside the Sandbox and connects to it.
 // An already running forwarder for the same port is reused. Local Runtime has
@@ -114,25 +130,9 @@ func (r *Runtime) dialSandboxPort(ctx context.Context, sandboxID uuid.UUID, port
 	if conn, err := dialSocket(socket); err == nil {
 		return conn, nil
 	}
-	if err := r.d.negotiate(ctx); err != nil {
+	if err := r.driver.startForward(ctx, sandboxID, supervisorBin, "forward", strconv.Itoa(port),
+		runMount+"/ports/"+filepath.Base(socket)); err != nil {
 		return nil, err
-	}
-	create := map[string]any{
-		"AttachStdout": false,
-		"AttachStderr": false,
-		"Tty":          false,
-		"Cmd": []string{supervisorBin, "forward", strconv.Itoa(port),
-			runMount + "/ports/" + filepath.Base(socket)},
-	}
-	var created struct {
-		ID string `json:"Id"`
-	}
-	if err := r.d.do(ctx, "POST", r.d.api("/containers/"+containerName(sandboxID)+"/exec"), create, &created); err != nil {
-		return nil, fmt.Errorf("create forward exec: %w", err)
-	}
-	if err := r.d.do(ctx, "POST", r.d.api("/exec/"+created.ID+"/start"),
-		map[string]any{"Detach": true, "Tty": false}, nil); err != nil {
-		return nil, fmt.Errorf("start forward exec: %w", err)
 	}
 	return dialUnix(ctx, socket, 5*time.Second)
 }

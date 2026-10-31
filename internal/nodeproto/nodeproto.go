@@ -37,6 +37,12 @@ const (
 	// host build API. It is optional: Local Runtime reports it unsupported and
 	// the Scheduler filters build rows to Nodes that enforce it (ADR-0021).
 	CapSnapshotBuild = "snapshot_build"
+	// CapKernelIsolation is enforced only by a runsc containerd Node
+	// (ADR-0026).
+	CapKernelIsolation = "kernel_isolation"
+	// CapEgressPolicy is enforced only after the registration egress
+	// self-check passes (runtime.md §13).
+	CapEgressPolicy = "egress_policy"
 )
 
 // Required lists the capabilities a container Runtime must enforce before the
@@ -127,7 +133,7 @@ func CapabilityValue(raw json.RawMessage, name string) string {
 	return storedValues(raw)[name]
 }
 
-// RuntimeProvider is the Node's one Runtime Provider (docker, podman or
+// RuntimeProvider is the Node's one Runtime Provider (containerd or
 // local), or "" when the Node has not reported Capabilities.
 func RuntimeProvider(raw json.RawMessage) string {
 	var report CapabilityReport

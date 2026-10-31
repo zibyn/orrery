@@ -224,7 +224,7 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 		Hardware: mustHardware(t, nodeHardware{
 			CPUCores: 8, MemoryBytes: 32 * gib,
 		}),
-		Capabilities: json.RawMessage(`{"runtime_provider":"docker","entries":[{"name":"gpu_device_visibility","value":"enforced"}]}`),
+		Capabilities: json.RawMessage(`{"runtime_provider":"containerd","entries":[{"name":"gpu_device_visibility","value":"enforced"}]}`),
 	}
 	gpus := map[uuid.UUID][]store.Gpu{gpuNode.ID: {
 		{Uuid: "GPU-a", NodeID: gpuNode.ID, Model: "H100"},
@@ -248,7 +248,7 @@ func TestAdmissionExhaustedGPU(t *testing.T) {
 
 	// Without the CDI capability the cards exist but cannot be attached.
 	noCDI := gpuNode
-	noCDI.Capabilities = json.RawMessage(`{"runtime_provider":"docker","entries":[{"name":"gpu_device_visibility","value":"unsupported"}]}`)
+	noCDI.Capabilities = json.RawMessage(`{"runtime_provider":"containerd","entries":[{"name":"gpu_device_visibility","value":"unsupported"}]}`)
 	if !admissionExhausted([]store.Node{noCDI}, gpus, request, nil) {
 		t.Fatal("a Node without CDI must be exhausted for GPU requests")
 	}
@@ -395,21 +395,26 @@ func capabilitySnapshot(t *testing.T, provider string, values map[string]string)
 	return raw
 }
 
-// api.md §3 / ADR-0009: a container request only goes to Docker or Podman, a
+// api.md §3 / ADR-0009: a container request only goes to a container Node, a
 // local request only to a Local Node. Build rows are filtered elsewhere.
 func TestRuntimeMatching(t *testing.T) {
-	container := capabilitySnapshot(t, "docker", nil)
+	docker := capabilitySnapshot(t, "docker", nil)
 	podman := capabilitySnapshot(t, "podman", nil)
+	containerd := capabilitySnapshot(t, "containerd", nil)
 	local := capabilitySnapshot(t, "local", nil)
 	for _, tt := range []struct {
 		caps    json.RawMessage
 		runtime string
 		want    bool
 	}{
-		{container, "", true},
-		{container, "container", true},
-		{container, "local", false},
-		{podman, "container", true},
+		// The removed Providers (ADR-0026) take nothing.
+		{docker, "", false},
+		{docker, "container", false},
+		{docker, "local", false},
+		{podman, "container", false},
+		{containerd, "container", true},
+		{containerd, "", true},
+		{containerd, "local", false},
 		{local, "container", false},
 		{local, "local", true},
 		{podman, "local", false},
@@ -460,8 +465,8 @@ func TestAdmissionExhaustedRuntime(t *testing.T) {
 		}
 		return capabilitySnapshot(t, provider, values)
 	}
-	dockerNode := store.Node{
-		ID: uuid.New(), Hardware: hw, Capabilities: caps("docker"),
+	containerNode := store.Node{
+		ID: uuid.New(), Hardware: hw, Capabilities: caps("containerd"),
 		ReservedCpu: 1, ReservedMemory: 2 * gib,
 	}
 	localNode := store.Node{
@@ -471,16 +476,56 @@ func TestAdmissionExhaustedRuntime(t *testing.T) {
 	localSB := store.Sandbox{Cpu: 1, Memory: gib, Runtime: "local"}
 	containerSB := store.Sandbox{Cpu: 1, Memory: gib, Runtime: "container"}
 
-	if !admissionExhausted([]store.Node{dockerNode}, nil, localSB, nil) {
-		t.Fatal("a local Sandbox among Docker Nodes is not provably unsatisfiable")
+	if !admissionExhausted([]store.Node{containerNode}, nil, localSB, nil) {
+		t.Fatal("a local Sandbox among containerd Nodes is not provably unsatisfiable")
 	}
-	if admissionExhausted([]store.Node{dockerNode, localNode}, nil, localSB, nil) {
+	if admissionExhausted([]store.Node{containerNode, localNode}, nil, localSB, nil) {
 		t.Fatal("a local Sandbox with a Local Node is not exhausted")
 	}
 	if !admissionExhausted([]store.Node{localNode}, nil, containerSB, nil) {
 		t.Fatal("a container Sandbox among Local Nodes is not provably unsatisfiable")
 	}
-	if admissionExhausted([]store.Node{dockerNode, localNode}, nil, containerSB, nil) {
+	if admissionExhausted([]store.Node{containerNode, localNode}, nil, containerSB, nil) {
 		t.Fatal("a container Sandbox with a Docker Node is not exhausted")
+	}
+}
+
+// api.md §3: a Mode other than open only goes to a Node where egress_policy is
+// enforced, on restart too; open is not constrained. A reported Node without
+// it can never take the Sandbox.
+func TestAdmissionExhaustedEgress(t *testing.T) {
+	const gib = int64(1) << 30
+	hw := mustHardware(t, nodeHardware{
+		CPUCores: 8, MemoryBytes: 32 * gib, DiskFree: 50, DiskTotal: 100,
+	})
+	node := func(egress string) store.Node {
+		values := map[string]string{nodeproto.CapEgressPolicy: egress}
+		for _, name := range nodeproto.RequiredFor("containerd") {
+			values[name] = nodeproto.ValueEnforced
+		}
+		return store.Node{
+			ID: uuid.New(), Hardware: hw, Capabilities: capabilitySnapshot(t, "containerd", values),
+			ReservedCpu: 1, ReservedMemory: 2 * gib,
+		}
+	}
+	filtered, unfiltered := node(nodeproto.ValueEnforced), node(nodeproto.ValueUnsupported)
+	sandbox := func(mode string) store.Sandbox {
+		return store.Sandbox{Cpu: 1, Memory: gib, Runtime: "container", EgressMode: mode}
+	}
+	for _, tt := range []struct {
+		mode  string
+		nodes []store.Node
+		want  bool
+	}{
+		{"", []store.Node{unfiltered}, false},
+		{"open", []store.Node{unfiltered}, false},
+		{"none", []store.Node{unfiltered}, true},
+		{"allowlist", []store.Node{unfiltered}, true},
+		{"none", []store.Node{unfiltered, filtered}, false},
+		{"allowlist", []store.Node{filtered}, false},
+	} {
+		if got := admissionExhausted(tt.nodes, nil, sandbox(tt.mode), nil); got != tt.want {
+			t.Errorf("admissionExhausted(mode %q, %d Nodes) = %v, want %v", tt.mode, len(tt.nodes), got, tt.want)
+		}
 	}
 }

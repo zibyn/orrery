@@ -107,8 +107,12 @@ func TestEnrollNode(t *testing.T) {
 			if current.Capabilities == nil {
 				t.Fatal("ready Node has no Capabilities")
 			}
-			if len(current.GPUs) != 0 {
-				t.Fatalf("CPU-only Node reports GPUs: %v", current.GPUs)
+			if got := current.Capabilities["runtime_provider"]; got != "containerd" {
+				t.Fatalf("runtime_provider = %v, want containerd", got)
+			}
+			// The Node reports the host's cards: none on a CPU-only host.
+			if want := hostGPUCount(); len(current.GPUs) != want {
+				t.Fatalf("Node reports %d GPUs, the host has %d: %v", len(current.GPUs), want, current.GPUs)
 			}
 			break
 		}
@@ -163,24 +167,32 @@ func agentCommand(t *testing.T, args ...string) *exec.Cmd {
 	return exec.Command(agentPath(t), args...)
 }
 
-// runAgentCommand includes the Docker socket when the caller's DOCKER_HOST
-// points at a unix socket, and a writable data root because the Agent runs as
-// the test user, not root.
+// runAgentCommand includes ORRERY_E2E_ISOLATION's Isolation Runtime unless
+// the test names a --runtime, ORRERY_E2E_BUILDKIT's endpoint unless the test
+// names one, and a data root of its own unless the test passes one.
 func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
 	args = append([]string{"run"}, args...)
-	hasDocker := false
 	hasRoot := false
+	hasRuntime := false
+	hasBuildkit := false
 	for _, arg := range args {
-		if arg == "--docker" {
-			hasDocker = true
-		}
 		if arg == "--data-root" {
 			hasRoot = true
 		}
+		if arg == "--runtime" {
+			hasRuntime = true
+		}
+		if strings.HasPrefix(arg, "--buildkit") {
+			hasBuildkit = true
+		}
 	}
-	if socket := os.Getenv("ORRERY_E2E_DOCKER_SOCKET"); socket != "" && !hasDocker {
-		args = append(args, "--docker", socket)
+	if isolation := os.Getenv("ORRERY_E2E_ISOLATION"); isolation != "" && !hasRuntime {
+		args = append(args, "--isolation", isolation)
+	}
+	// A containerd Node builds only against a standalone buildkitd (#167).
+	if buildkit := os.Getenv("ORRERY_E2E_BUILDKIT"); buildkit != "" && !hasBuildkit {
+		args = append(args, "--buildkit", buildkit)
 	}
 	if !hasRoot {
 		args = append(args, "--data-root", t.TempDir())

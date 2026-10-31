@@ -6,12 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,50 +24,6 @@ const (
 	// execBatchBytes bounds one OutputBatch.
 	execBatchBytes = 64 << 10
 )
-
-// startExec launches `supervisor run` detached and starts delivering its
-// record. The Supervisor's atomic mkdir makes a repeated command harmless.
-func (r *Runtime) startContainerExec(ctx context.Context, cmd *nodev1.StartExec) error {
-	sandboxID, err := uuid.Parse(cmd.SandboxId)
-	if err != nil {
-		return errors.New("invalid sandbox id")
-	}
-	execID, err := uuid.Parse(cmd.ExecId)
-	if err != nil {
-		return errors.New("invalid exec id")
-	}
-	slog.Info("start exec", "exec_id", execID, "sandbox_id", sandboxID)
-	dir := filepath.Join(sandboxRunPath(r.dataRoot, sandboxID), execID.String())
-	// Reconnect replay: the Supervisor may have finished and exited while the
-	// control stream was down. The record still holds every frame still owed.
-	if _, err := os.Stat(filepath.Join(dir, "exit")); err == nil {
-		go r.streamExec(ctx, sandboxID, execID, dir)
-		return nil
-	}
-	if err := r.d.negotiate(ctx); err != nil {
-		return err
-	}
-
-	create := map[string]any{
-		"AttachStdout": false,
-		"AttachStderr": false,
-		"Tty":          false,
-		"Cmd":          []string{supervisorBin, "run", execID.String()},
-	}
-	var created struct {
-		ID string `json:"Id"`
-	}
-	if err := r.d.do(ctx, "POST", r.d.api("/containers/"+containerName(sandboxID)+"/exec"), create, &created); err != nil {
-		return fmt.Errorf("create exec: %w", err)
-	}
-	if err := r.d.do(ctx, "POST", r.d.api("/exec/"+created.ID+"/start"),
-		map[string]any{"Detach": true, "Tty": false}, nil); err != nil {
-		return fmt.Errorf("start exec: %w", err)
-	}
-
-	return r.deliverExecSpec(ctx, sandboxID, execID, dir, cmd,
-		r.commandEnv(ctx, sandboxID, cmd.Env), cmd.Cwd)
-}
 
 // deliverExecSpec starts delivering the record and sends the spec over the
 // Supervisor socket. env and cwd are Provider-specific (the container path
@@ -93,6 +46,8 @@ func (r *Runtime) deliverExecSpec(ctx context.Context, sandboxID, execID uuid.UU
 		}
 		return fmt.Errorf("connect to Supervisor: %w", err)
 	}
+	// The baseline precedes the command: execve waits for the spec (§9).
+	r.writeOOMBaseline(sandboxID, dir)
 	spec := supervisor.Spec{
 		Argv:           cmd.Argv,
 		Env:            env,
@@ -156,36 +111,6 @@ func execEnv(caller map[string]string, basePath, binDir string) map[string]strin
 	env["GIT_CONFIG_KEY_1"] = "credential.helper"
 	env["GIT_CONFIG_VALUE_1"] = binDir + "/orrery git-credential"
 	return env
-}
-
-// commandEnv chooses the PATH base: the caller's env wins, then the image
-// config, then the Agent's own PATH for a Runtime without an image.
-func (r *Runtime) commandEnv(ctx context.Context, sandboxID uuid.UUID, caller map[string]string) map[string]string {
-	imagePath := ""
-	if caller["PATH"] == "" {
-		imagePath = r.imagePath(ctx, sandboxID)
-	}
-	return execEnv(caller, imagePath, binaryDir)
-}
-
-// imagePath reads the container's PATH, which the Runtime filled from the
-// image config. A failed read falls back to the Agent's own PATH.
-func (r *Runtime) imagePath(ctx context.Context, sandboxID uuid.UUID) string {
-	var info struct {
-		Config struct {
-			Env []string `json:"Env"`
-		} `json:"Config"`
-	}
-	if err := r.d.do(ctx, http.MethodGet, r.d.api("/containers/"+containerName(sandboxID)+"/json"), nil, &info); err != nil {
-		slog.Warn("inspect container PATH", "sandbox_id", sandboxID, "error", err)
-		return os.Getenv("PATH")
-	}
-	for _, entry := range info.Config.Env {
-		if path, ok := strings.CutPrefix(entry, "PATH="); ok {
-			return path
-		}
-	}
-	return os.Getenv("PATH")
 }
 
 // cancelExec relays the persistent cancel intent. It waits for the Supervisor's
@@ -349,6 +274,7 @@ func (r *Runtime) streamExec(ctx context.Context, sandboxID, execID uuid.UUID, d
 
 		exit, ready := readExit(dir)
 		if ready {
+			exit = r.attributeHostOOM(sandboxID, dir, exit)
 			frame := &nodev1.OutputFrame{Seq: seq, Stream: "exit", Cause: exit.Cause}
 			if exit.ExitCode != nil {
 				frame.ExitCode = exit.ExitCode

@@ -24,9 +24,6 @@ func readySandboxWithAgent(t *testing.T, admin string) (sandboxID string, agent 
 	waitForNodeReady(t, admin, nodeName)
 
 	sandboxID = createReadySandbox(t, admin, fmt.Sprintf("restart-%d", suffix), 128<<20)
-	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", "orrery-"+sandboxID).Run()
-	})
 	return sandboxID, agent, state, dataRoot
 }
 
@@ -140,7 +137,7 @@ func TestRuntimeLostStopsSandbox(t *testing.T) {
 	e := createExec(t, admin, sandboxID, map[string]any{"argv": []string{"sleep", "300"}})
 	waitExecRunning(t, admin, e.ID, 30*time.Second)
 
-	if out, err := exec.Command("docker", "kill", "orrery-"+sandboxID).CombinedOutput(); err != nil {
+	if out, err := killSandboxRuntime(sandboxID); err != nil {
 		t.Fatalf("kill Sandbox container: %v\n%s", err, out)
 	}
 	assertExitedWith(t, waitExecFinished(t, admin, e.ID, 60*time.Second), "runtime_lost")

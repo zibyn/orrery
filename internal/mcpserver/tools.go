@@ -17,6 +17,10 @@ const sandboxSchema = `{
     "name": {"type": "string"},
     "labels": {"type": ["object", "null"], "additionalProperties": {"type": "string"}},
     "runtime": {"type": "string"},
+    "egress": {"type": ["object", "null"], "properties": {
+      "mode": {"type": "string"},
+      "allow": {"type": ["array", "null"], "items": {"type": "string"}}
+    }},
     "state": {"type": "string"},
     "cause": {"type": ["string", "null"]},
     "node_id": {"type": ["string", "null"]},
@@ -169,7 +173,11 @@ func (s *server) register(srv *sdk.Server) {
       "count": {"type": "integer", "minimum": 1},
       "model": {"type": "string"}
     }, "required": ["count"]},
-    "idle_stop": {"type": "integer", "minimum": 0, "description": "Idle Stop in seconds; 0 disables it."}`, ""),
+    "idle_stop": {"type": "integer", "minimum": 0, "description": "Idle Stop in seconds; 0 disables it."},
+    "egress": {"type": "object", "additionalProperties": false, "description": "Egress Mode, fixed for the Sandbox's life; omitted means open. A mode other than open needs a Node that enforces egress_policy.", "properties": {
+      "mode": {"type": "string", "enum": ["open", "none", "allowlist"]},
+      "allow": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "allowlist only: IPv4 CIDR[:port] entries."}
+    }, "required": ["mode"]}`, ""),
 		OutputSchema: json.RawMessage(sandboxSchema),
 		Annotations:  &sdk.ToolAnnotations{},
 	}, s.sandboxCreate)

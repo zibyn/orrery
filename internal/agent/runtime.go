@@ -2,13 +2,10 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -36,32 +33,29 @@ const (
 	recordSettle = time.Second
 )
 
-// Runtime is the Docker adapter for this Node (runtime.md §2, §9). Its data
-// root holds the Workspace directories and per-Sandbox Supervisor records.
+// Runtime is this Node's Runtime Provider (runtime.md §2, §9). Its data root
+// holds the Workspace directories and per-Sandbox Supervisor records.
 type Runtime struct {
-	d        *dockerClient
 	dataRoot string
 	// nodeID is this Agent's Node identity. Every Runtime instance carries it
-	// as orrery.node so two Agents sharing a daemon never touch each other's
-	// containers (runtime.md §8).
+	// as orrery.node so two Agents sharing a containerd never touch each
+	// other's containers (runtime.md §8).
 	nodeID string
-	// socket is the Engine API socket. It is also the default BuildKit
-	// endpoint for Docker (dockerd's built-in BuildKit via /grpc).
-	socket string
 	// provider is the Node's single Runtime Provider (node-protocol.md).
 	provider string
 	// driver is the Provider-specific half of the Runtime contract (ADR-0009):
-	// container lifecycle/Exec/self-check for Docker and Podman, systemd for
-	// Local. Host-path work (Workspaces, records, files, publish, resources,
-	// tunnels) stays on Runtime and is shared.
+	// container lifecycle/Exec/self-check for containerd, systemd for Local.
+	// Host-path work (Workspaces, records, files, publish, resources, tunnels)
+	// stays on Runtime and is shared.
 	driver runtimeDriver
-	// owner maps host paths to the rootless Podman user (runtime.md §9) or the
-	// Local Runtime user; nil for rootful Docker, whose container root maps to
-	// host root.
+	// owner maps host paths to the Local Runtime user; nil for containerd,
+	// whose container root maps to host root.
 	owner *rootlessOwner
-	// buildkit is the Agent-configured BuildKit endpoint. Empty means the
-	// Docker daemon's built-in BuildKit.
+	// buildkit is the Agent-configured BuildKit endpoint; empty means none.
 	buildkit string
+	// hostCgroup is the host cgroupfs root on a runsc Node, where the Agent
+	// attributes oom_killed (runtime.md §9); empty elsewhere.
+	hostCgroup string
 
 	// Execs are launched from the Control stream; the output stream is opened
 	// per Exec against the same connection.
@@ -84,32 +78,28 @@ type Runtime struct {
 	registryMu sync.Mutex
 	registry   *registry.Credential
 
+	// Egress Rules from the last HelloAck, applied at each Create.
+	egressMu    sync.Mutex
+	egressAllow []string
+	egressDeny  []string
+	// egressEnforced is this Agent's last reported egress_policy.
+	egressEnforced bool
+
 	mu      sync.Mutex
 	managed map[string]int64 // sandbox id -> generation known to run
 }
 
-// NewRuntime is the explicit Docker Provider constructor. The Provider comes
-// from --runtime, never from the socket path, so this never turns into Podman.
-func NewRuntime(socket, dataRoot, nodeID string) *Runtime {
-	return newRuntime(runtimeConfig{provider: ProviderDocker, socket: socket}, dataRoot, nodeID)
-}
-
-func newRuntime(cfg runtimeConfig, dataRoot, nodeID string) *Runtime {
-	rt := &Runtime{
-		d:              &dockerClient{http: unixHTTPClient(cfg.socket)},
+func newRuntime(provider, dataRoot, nodeID string) *Runtime {
+	return &Runtime{
 		dataRoot:       dataRoot,
 		nodeID:         nodeID,
-		socket:         cfg.socket,
-		provider:       cfg.provider,
-		owner:          cfg.owner,
+		provider:       provider,
 		execs:          make(map[string]struct{}),
 		ptyAttachments: make(map[string]int),
 		buildCancels:   make(map[string]context.CancelCauseFunc),
 		buildDone:      make(map[string]struct{}),
 		managed:        make(map[string]int64),
 	}
-	rt.driver = containerDriver{rt}
-	return rt
 }
 
 // connect attaches the Runtime to the live Control stream. Commands arrive only
@@ -194,6 +184,23 @@ func stageBinary(src, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close() //nolint:errcheck // read-only
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close() //nolint:errcheck // report the copy error instead
+		return err
+	}
+	return out.Close()
+}
+
 func workspacePath(root string, id uuid.UUID) string {
 	return filepath.Join(root, "workspaces", id.String())
 }
@@ -208,12 +215,26 @@ func sandboxRunPath(root string, id uuid.UUID) string {
 
 func containerName(id uuid.UUID) string { return "orrery-" + id.String() }
 
+// Runtime container label keys (runtime.md §8).
+const (
+	labelSandboxID  = "orrery.sandbox_id"
+	labelGeneration = "orrery.generation"
+	labelManaged    = "orrery.managed"
+	labelNode       = "orrery.node"
+)
+
 // containerOwnedBy reports whether a container belongs to this Node. A
 // container carrying orrery.managed without this Node's label was left by a
 // previous identity (or another Node on the same daemon) and must not be
 // adopted (runtime.md §8).
 func containerOwnedBy(labels map[string]string, nodeID string) bool {
-	return labels["orrery.managed"] == "true" && nodeID != "" && labels["orrery.node"] == nodeID
+	return labels[labelManaged] == "true" && nodeID != "" && labels[labelNode] == nodeID
+}
+
+// createAdopts reports whether a Create may take over the running Runtime it
+// finds under its name: this Node owns it, at the requested generation.
+func createAdopts(labels map[string]string, nodeID string, generation int64) bool {
+	return containerOwnedBy(labels, nodeID) && labels[labelGeneration] == strconv.FormatInt(generation, 10)
 }
 
 func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {
@@ -225,8 +246,7 @@ func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {
 	if err := os.Chmod(path, 0o777); err != nil {
 		return err
 	}
-	// Rootless Podman maps container root to the invoking user, so the host
-	// directory must belong to that user (runtime.md §9).
+	// A Local Runtime's commands run as its unprivileged user (runtime.md §10).
 	return r.owner.own(path)
 }
 
@@ -236,55 +256,34 @@ func (r *Runtime) deleteWorkspace(workspaceID uuid.UUID) error {
 	return os.RemoveAll(workspacePath(r.dataRoot, workspaceID))
 }
 
-// createSandbox is idempotent: an existing running container is adopted, a
-// stopped one is replaced. It returns a Sandbox lifecycle cause on failure.
-func (r *Runtime) createContainerSandbox(ctx context.Context, cmd *createSandboxSpec) (string, error) {
-	id, err := uuid.Parse(cmd.sandboxID)
-	if err != nil {
-		return "runtime_create_failed", err
-	}
-	workspaceID, err := uuid.Parse(cmd.workspaceID)
-	if err != nil {
-		return "runtime_create_failed", err
-	}
-	if err := r.d.negotiate(ctx); err != nil {
-		return "runtime_create_failed", err
-	}
-	if err := r.d.ensureImageRef(ctx, cmd.imageDigest, r.registryAuthHeader(cmd.imageDigest)); err != nil {
-		return "image_pull_failed", err
-	}
-	workspace := workspacePath(r.dataRoot, workspaceID)
+// prepareSandboxHost lays out the host side the containerd Provider mounts:
+// the Workspace, the record directory, the file API's Workspace record and
+// the eviction pins (runtime.md §2, §11). It returns the effective mode.
+func (r *Runtime) prepareSandboxHost(id, workspaceID uuid.UUID, cmd *createSandboxSpec) (workspace, runDir, mode string, err error) {
+	workspace = workspacePath(r.dataRoot, workspaceID)
 	if err := os.MkdirAll(workspace, 0o777); err != nil {
-		return "runtime_create_failed", err
+		return "", "", "", err
 	}
 	if err := os.Chmod(workspace, 0o777); err != nil {
-		return "runtime_create_failed", err
+		return "", "", "", err
 	}
-	// Rootless Podman maps container root to the invoking user, so the host
-	// directory must belong to that user (runtime.md §9).
-	if err := r.owner.own(workspace); err != nil {
-		return "runtime_create_failed", err
-	}
-	// The image's default USER writes here; rootful and rootless map that uid
-	// differently, so the Agent cannot chown it correctly without knowing the
-	// image. ponytail: world-writable, per-uid chown when USERs become common.
-	runDir := sandboxRunPath(r.dataRoot, id)
+	// The image's default USER writes here, and the Agent cannot chown it
+	// correctly without knowing the image. ponytail: world-writable, per-uid
+	// chown when USERs become common.
+	runDir = sandboxRunPath(r.dataRoot, id)
 	if err := os.MkdirAll(runDir, 0o777); err != nil {
-		return "runtime_create_failed", err
+		return "", "", "", err
 	}
 	if err := os.Chmod(runDir, 0o777); err != nil {
-		return "runtime_create_failed", err
+		return "", "", "", err
 	}
-	if err := r.owner.own(runDir); err != nil {
-		return "runtime_create_failed", err
-	}
-	mode := cmd.workspaceMode
+	mode = cmd.workspaceMode
 	if mode != "rw" && mode != "ro" {
 		mode = "rw"
 	}
 	// Recorded before adoption so the file API survives an Agent restart.
 	if err := r.writeWorkspaceRefFile(id, workspaceRef{ID: workspaceID.String(), Mode: mode}); err != nil {
-		return "runtime_create_failed", err
+		return "", "", "", err
 	}
 	// The pin record is written before the trees are fetched: eviction must
 	// never mistake a tree being assembled for this Sandbox for garbage. It
@@ -295,184 +294,12 @@ func (r *Runtime) createContainerSandbox(ctx context.Context, cmd *createSandbox
 		pins.Resources = append(pins.Resources, resource.address)
 	}
 	if err := writeSandboxPins(sandboxPath(r.dataRoot, id), pins); err != nil {
-		return "runtime_create_failed", err
+		return "", "", "", err
 	}
 	// Any create or adopt counts as a use of the image for LRU eviction
 	// (runtime.md §11).
 	touchImageUsage(r.dataRoot, cmd.imageDigest)
-	name := containerName(id)
-
-	if running, exists, _, err := r.d.inspectContainer(ctx, name); err == nil && exists {
-		if running {
-			r.track(id, cmd.generation)
-			return "", nil // adopted after an Agent restart or a lost reply
-		}
-		if err := r.d.removeContainer(ctx, name); err != nil {
-			return "runtime_create_failed", err
-		}
-	}
-	// Resource trees are fetched only when a runtime is actually built. A
-	// resend of the same command after a lost reply adopts the running
-	// container instead of downloading again.
-	resourcePaths, cause, err := r.resourceBinds(ctx, cmd.resources)
-	if err != nil {
-		return cause, err
-	}
-	nanoCPUs := int64(cmd.cpu * 1e9)
-	if nanoCPUs < 1e6 {
-		nanoCPUs = 1e6
-	}
-	binds := []string{
-		workspace + ":" + workspaceMount + ":" + mode,
-		filepath.Join(r.dataRoot, "bin") + ":/.orrery/bin:ro",
-		runDir + ":" + runMount + ":rw",
-	}
-	binds = append(binds, resourcePaths...)
-	hostConfig := map[string]any{
-		"CgroupnsMode": "private",
-		"Init":         false,
-		"Binds":        binds,
-		"NanoCpus":     nanoCPUs,
-		"Memory":       cmd.memory,
-		"PidsLimit":    sandboxPidsLimit,
-	}
-	if requests := cdiDeviceRequest(cmd.gpuUUIDs); requests != nil {
-		hostConfig["DeviceRequests"] = requests
-	}
-	create := map[string]any{
-		"Image":      cmd.imageDigest,
-		"Entrypoint": []string{supervisorBin},
-		"Cmd":        []string{"init"},
-		"WorkingDir": workspaceMount,
-		"Labels": map[string]string{
-			"orrery.sandbox_id": id.String(),
-			"orrery.generation": strconv.FormatInt(cmd.generation, 10),
-			"orrery.managed":    "true",
-			"orrery.node":       r.nodeID,
-		},
-		"HostConfig": hostConfig,
-	}
-	var created struct {
-		ID string `json:"Id"`
-	}
-	if err := r.d.do(ctx, http.MethodPost, r.d.api("/containers/create")+"?name="+name, create, &created); err != nil {
-		return "runtime_create_failed", fmt.Errorf("create container: %w", err)
-	}
-	if err := r.d.do(ctx, http.MethodPost, r.d.api("/containers/"+created.ID+"/start"), nil, nil); err != nil {
-		r.d.removeContainer(context.WithoutCancel(ctx), created.ID) //nolint:errcheck // best effort
-		return "runtime_create_failed", fmt.Errorf("start container: %w", err)
-	}
-	result, err := r.d.execProbe(ctx, created.ID)
-	if err != nil {
-		r.d.removeContainer(context.WithoutCancel(ctx), created.ID) //nolint:errcheck // best effort
-		return "runtime_create_failed", fmt.Errorf("probe: %w", err)
-	}
-	if !limitsMatch(result, nanoCPUs, cmd.memory, len(cmd.gpuUUIDs), mode) {
-		r.d.removeContainer(context.WithoutCancel(ctx), created.ID) //nolint:errcheck // best effort
-		return "runtime_create_failed", fmt.Errorf("probe readback does not match the request: %+v", result)
-	}
-	r.track(id, cmd.generation)
-	return "", nil
-}
-
-func limitsMatch(r supervisor.Result, nanoCPUs, memory int64, gpus int, workspaceMode string) bool {
-	// The projected mount is part of the request: a read-write Attachment must
-	// be writable and a read-only one must not be.
-	workspaceOK := r.WorkspaceWritable == (workspaceMode != "ro")
-	// Docker expresses CPU as quota/period in microseconds with a fixed
-	// 100000 us period.
-	return r.CPUMax == fmt.Sprintf("%d 100000", nanoCPUs/10_000) &&
-		r.MemoryMax == strconv.FormatInt(memory, 10) &&
-		r.PidsMax == strconv.FormatInt(sandboxPidsLimit, 10) &&
-		numberedDeviceCount(r.NvidiaDevices) == gpus &&
-		workspaceOK
-}
-
-func (r *Runtime) stopContainerSandbox(ctx context.Context, sandboxID uuid.UUID) error {
-	if err := r.d.negotiate(ctx); err != nil {
-		return err
-	}
-	name := containerName(sandboxID)
-	resp, err := r.d.request(ctx, http.MethodDelete,
-		r.d.api("/containers/"+name)+"?force=true&v=true", nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode < 300 {
-		r.forget(sandboxID.String())
-		return nil
-	}
-	return fmt.Errorf("remove container: %s", resp.Status)
-}
-
-// scan reports a Sandbox whose runtime died while the Node stayed up.
-func (r *Runtime) scanContainers(ctx context.Context, report func(sandboxID string, generation int64)) {
-	if err := r.d.negotiate(ctx); err != nil {
-		return
-	}
-	known := r.managedSnapshot()
-	for id, gen := range known {
-		sandboxID, err := uuid.Parse(id)
-		if err != nil {
-			continue
-		}
-		running, exists, labels, err := r.d.inspectContainer(ctx, containerName(sandboxID))
-		if err != nil {
-			continue
-		}
-		// Only a Runtime this Node still owns counts as alive. A same-named
-		// container from another identity is not ours (runtime.md §8).
-		if !exists || !running || !containerOwnedBy(labels, r.nodeID) {
-			r.forget(id)
-			report(id, gen)
-		}
-	}
-}
-
-// adopt picks up containers from a previous Agent process. The Control Plane
-// also re-derives every command, so this only avoids false "gone" reports.
-func (r *Runtime) adoptContainers(ctx context.Context, report func(sandboxID string, generation int64)) {
-	if err := r.d.negotiate(ctx); err != nil {
-		return
-	}
-	var containers []struct {
-		ID     string            `json:"Id"`
-		Labels map[string]string `json:"Labels"`
-	}
-	filters := url.QueryEscape(`{"label":["orrery.managed=true"]}`)
-	if err := r.d.do(ctx, http.MethodGet, r.d.api("/containers/json?all=true&filters="+filters), nil, &containers); err != nil {
-		return
-	}
-	for _, c := range containers {
-		if !containerOwnedBy(c.Labels, r.nodeID) {
-			// A previous identity's Runtime is never adopted. Its Workspace
-			// directory stays untouched: declaring it lost may be wrong, and
-			// the data may have no other copy (runtime.md §8).
-			slog.Info("removing a Runtime left by another Node",
-				"sandbox_id", c.Labels["orrery.sandbox_id"], "node", c.Labels["orrery.node"])
-			if err := r.d.removeContainer(ctx, c.ID); err != nil {
-				slog.Warn("remove foreign Runtime", "container_id", c.ID, "error", err)
-			}
-			continue
-		}
-		id := c.Labels["orrery.sandbox_id"]
-		gen, err := strconv.ParseInt(c.Labels["orrery.generation"], 10, 64)
-		if err != nil {
-			continue
-		}
-		sandboxID, err := uuid.Parse(id)
-		if err != nil {
-			continue
-		}
-		running, exists, _, err := r.d.inspectContainer(ctx, containerName(sandboxID))
-		if err != nil || !exists || !running {
-			continue
-		}
-		r.track(sandboxID, gen)
-		report(id, gen)
-	}
+	return workspace, runDir, mode, nil
 }
 
 // reconcileRecords applies runtime.md §8 to the records a previous Agent
@@ -539,7 +366,7 @@ func (r *Runtime) reconcileRecord(ctx context.Context, sandboxID, execID uuid.UU
 					return
 				}
 				if _, err := os.Stat(filepath.Join(dir, "exit")); err != nil {
-					writeRuntimeLost(dir)
+					r.writeRuntimeLost(sandboxID, dir)
 				}
 			}
 		}
@@ -552,33 +379,21 @@ func (r *Runtime) reconcileRecord(ctx context.Context, sandboxID, execID uuid.UU
 // scan streams the rest.
 func (r *Runtime) finalizeLost(sandboxID string) {
 	dirs, _ := filepath.Glob(filepath.Join(r.dataRoot, "sandboxes", sandboxID, "run", "*"))
+	id, _ := uuid.Parse(sandboxID) // a bad id names no cgroup, so nothing is attributed
 	for _, dir := range dirs {
 		if _, err := os.Stat(filepath.Join(dir, "exit")); err == nil {
 			continue
 		}
-		writeRuntimeLost(dir)
+		r.writeRuntimeLost(id, dir)
 	}
 }
 
-func writeRuntimeLost(dir string) {
-	if err := supervisor.WriteExit(dir, supervisor.Exit{
-		Cause: "runtime_lost", FinishedAt: time.Now().UTC(),
-	}); err != nil {
+func (r *Runtime) writeRuntimeLost(sandboxID uuid.UUID, dir string) {
+	exit := supervisor.Exit{Cause: "runtime_lost", FinishedAt: time.Now().UTC()}
+	exit.Cause = hostOOMCause(exit, r.hostOOMRose(sandboxID, dir))
+	if err := supervisor.WriteExit(dir, exit); err != nil {
 		slog.Warn("write runtime_lost record", "dir", dir, "error", err)
 	}
-}
-
-// runtimeAlive reports the container's state. known is false when the daemon
-// cannot be asked; that is not evidence the Runtime is gone.
-func (r *Runtime) containerAlive(ctx context.Context, id uuid.UUID) (alive, known bool) {
-	if err := r.d.negotiate(ctx); err != nil {
-		return false, false
-	}
-	running, exists, _, err := r.d.inspectContainer(ctx, containerName(id))
-	if err != nil {
-		return false, false
-	}
-	return exists && running, true
 }
 
 // ctlSocket is where the Supervisor listens. A container mounts the record
@@ -645,55 +460,6 @@ func readGeneration(dir string) (int64, bool) {
 	return generation, err == nil
 }
 
-// watchEvents reports a Sandbox whose container died without a Stop command
-// (runtime.md §9); the periodic scan is the fallback when the stream breaks.
-func (r *Runtime) watchContainerEvents(ctx context.Context, report func(sandboxID string, generation int64)) {
-	filters := url.QueryEscape(fmt.Sprintf(
-		`{"type":["container"],"event":["die"],"label":["orrery.managed=true","orrery.node=%s"]}`,
-		r.nodeID))
-	for ctx.Err() == nil {
-		if err := r.d.negotiate(ctx); err != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-		resp, err := r.d.request(ctx, http.MethodGet, r.d.api("/events")+"?filters="+filters, nil)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-		dec := json.NewDecoder(resp.Body)
-		for {
-			var event struct {
-				Actor struct {
-					Attributes map[string]string `json:"Attributes"`
-				} `json:"Actor"`
-			}
-			if err := dec.Decode(&event); err != nil {
-				break
-			}
-			id := event.Actor.Attributes["orrery.sandbox_id"]
-			gen, err := strconv.ParseInt(event.Actor.Attributes["orrery.generation"], 10, 64)
-			if err != nil {
-				continue
-			}
-			// A die event from a replaced container must not end the Execs of
-			// the generation running now.
-			if gen, tracked := r.takeIf(id, gen); tracked {
-				report(id, gen)
-			}
-		}
-		resp.Body.Close()
-	}
-}
-
 // takeIf removes a tracked Sandbox only when the event belongs to the
 // generation it is running; a delayed die from a replaced container is
 // ignored. It returns the generation it was running at.
@@ -738,128 +504,7 @@ func (r *Runtime) managedSnapshot() map[string]int64 {
 	return known
 }
 
-func (d *dockerClient) inspectContainer(ctx context.Context, name string) (running, exists bool, labels map[string]string, err error) {
-	resp, err := d.request(ctx, http.MethodGet, d.api("/containers/"+name+"/json"), nil)
-	if err != nil {
-		return false, false, nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
-		return false, false, nil, nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		return false, false, nil, fmt.Errorf("inspect container: %s", resp.Status)
-	}
-	var info struct {
-		State struct {
-			Running bool `json:"Running"`
-		} `json:"State"`
-		Config struct {
-			Labels map[string]string `json:"Labels"`
-		} `json:"Config"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return false, false, nil, err
-	}
-	return info.State.Running, true, info.Config.Labels, nil
-}
-
-func (d *dockerClient) removeContainer(ctx context.Context, idOrName string) error {
-	resp, err := d.request(ctx, http.MethodDelete,
-		d.api("/containers/"+idOrName)+"?force=true&v=true", nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("remove container: %s", resp.Status)
-}
-
-// execProbe runs `supervisor probe` inside the Sandbox and decodes its JSON
-// readback (runtime.md §9). A plain attached exec returns the multiplexed
-// stdout when it is not detached.
-func (d *dockerClient) execProbe(ctx context.Context, containerID string) (supervisor.Result, error) {
-	create := map[string]any{
-		"AttachStdout": true,
-		"AttachStderr": true,
-		"Cmd":          []string{supervisorBin, "probe", workspaceMount},
-	}
-	var created struct {
-		ID string `json:"Id"`
-	}
-	if err := d.do(ctx, http.MethodPost, d.api("/containers/"+containerID+"/exec"), create, &created); err != nil {
-		return supervisor.Result{}, fmt.Errorf("create exec: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	resp, err := d.request(ctx, http.MethodPost, d.api("/exec/"+created.ID+"/start"),
-		map[string]any{"Detach": false, "Tty": false})
-	if err != nil {
-		return supervisor.Result{}, err
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	resp.Body.Close()
-	if err != nil {
-		return supervisor.Result{}, err
-	}
-	var state struct {
-		Running  bool  `json:"Running"`
-		ExitCode int64 `json:"ExitCode"`
-	}
-	if err := d.do(context.WithoutCancel(ctx), http.MethodGet, d.api("/exec/"+created.ID+"/json"), nil, &state); err != nil {
-		return supervisor.Result{}, err
-	}
-	output := demux(raw)
-	if state.Running {
-		return supervisor.Result{}, errors.New("probe did not finish")
-	}
-	if state.ExitCode != 0 {
-		return supervisor.Result{}, fmt.Errorf("probe exited %d: %s", state.ExitCode, output)
-	}
-	var result supervisor.Result
-	if err := json.Unmarshal(output, &result); err != nil {
-		return supervisor.Result{}, fmt.Errorf("decode probe: %w", err)
-	}
-	return result, nil
-}
-
-// ensureImageRef pulls by the pinned reference when it is not local. auth is
-// the X-Registry-Auth value for the image's registry, or "" for Docker Hub.
-func (d *dockerClient) ensureImageRef(ctx context.Context, ref, auth string) error {
-	resp, err := d.request(ctx, http.MethodGet, d.api("/images/"+url.PathEscape(ref)+"/json"), nil)
-	if err == nil {
-		io.Copy(io.Discard, resp.Body) //nolint:errcheck // drain for reuse
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			return nil
-		}
-		if resp.StatusCode != http.StatusNotFound {
-			return fmt.Errorf("inspect image: %s", resp.Status)
-		}
-	}
-	headers := map[string]string{}
-	if auth != "" {
-		headers["X-Registry-Auth"] = auth
-	}
-	query := url.Values{"fromImage": {ref}}
-	resp, err = d.requestHeaders(ctx, http.MethodPost, d.api("/images/create")+"?"+query.Encode(), nil, headers)
-	if err != nil {
-		return fmt.Errorf("pull image: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("pull image: %s: %s", resp.Status, raw)
-	}
-	_, err = io.Copy(io.Discard, resp.Body)
-	return err
-}
-
-// createSandboxSpec is the subset of CreateSandbox the Docker adapter uses.
+// createSandboxSpec is the subset of CreateSandbox the drivers use.
 type createSandboxSpec struct {
 	sandboxID     string
 	generation    int64
@@ -870,6 +515,7 @@ type createSandboxSpec struct {
 	workspaceMode string
 	gpuUUIDs      []string
 	resources     []resourceMount
+	egress        egressMode
 }
 
 // resourceMount is one version to fetch and mount at /resources/<mount>.

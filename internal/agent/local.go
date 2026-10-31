@@ -255,6 +255,8 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 			{Name: nodeproto.CapDiskCapacityQuota, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapArbitraryMounts, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueUnsupported},
+			// No netns, so Egress Rules do not apply (ADR-0026).
+			{Name: nodeproto.CapEgressPolicy, Value: nodeproto.ValueUnsupported},
 		},
 	}
 }
@@ -306,7 +308,7 @@ type localDriver struct {
 // the same Runtime; only the driver differs, and owner maps the Workspace and
 // record directories to the unprivileged user.
 func newLocalRuntime(dataRoot, nodeID string, as localUser, binDir string) *Runtime {
-	rt := newRuntime(runtimeConfig{provider: ProviderLocal}, dataRoot, nodeID)
+	rt := newRuntime(ProviderLocal, dataRoot, nodeID)
 	rt.owner = &rootlessOwner{uid: as.uid, gid: as.gid}
 	rt.driver = &localDriver{
 		r: rt, user: as, binDir: binDir,
@@ -314,6 +316,22 @@ func newLocalRuntime(dataRoot, nodeID string, as localUser, binDir string) *Runt
 		supervisor: filepath.Join(dataRoot, "bin", "supervisor"),
 	}
 	return rt
+}
+
+// rootlessOwner is the host uid/gid a Local Runtime's commands run as. A
+// negative gid leaves the group untouched.
+type rootlessOwner struct {
+	uid int
+	gid int
+}
+
+// own hands path to the Local Runtime user so its commands can write it. The
+// Agent runs as root, so the chown is allowed; a nil owner is a no-op.
+func (o *rootlessOwner) own(path string) error {
+	if o == nil {
+		return nil
+	}
+	return os.Chown(path, o.uid, o.gid)
 }
 
 // localCommand runs one host command and reports its exit code. An error means
@@ -715,6 +733,12 @@ func (d *localDriver) scan(ctx context.Context, report func(string, int64)) {
 // watchEvents is a no-op: systemd has no event stream here, so the periodic
 // scan is the liveness path.
 func (d *localDriver) watchEvents(context.Context, func(string, int64)) {}
+
+func (d *localDriver) startForward(context.Context, uuid.UUID, ...string) error {
+	return errors.New("runtime local has no port forwarder")
+}
+
+func (d *localDriver) close() {}
 
 func (d *localDriver) runtimeAlive(ctx context.Context, sandboxID uuid.UUID) (bool, bool) {
 	active, known, _ := localUnitState(ctx, localPlaceholderService(sandboxID))

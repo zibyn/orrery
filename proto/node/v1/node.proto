@@ -300,6 +300,16 @@ message CreateSandbox {
   // Resource versions to fetch into the Node cache and mount read-only at
   // /resources/<mount> (runtime.md §11). Objects travel through Presign.
   repeated ResourceMount resources = 8;
+  // The Sandbox's stored Egress Mode, the same on every (re)start. The Agent
+  // resolves it with the current Egress Rules at Create (runtime.md §13).
+  EgressMode egress = 9;
+}
+
+// EgressMode is open, none or allowlist; allow is set only for allowlist, with
+// `CIDR[:port]` entries. An empty mode is open.
+message EgressMode {
+  string mode = 1;
+  repeated string allow = 2;
 }
 
 message ResourceMount {
@@ -377,4 +387,13 @@ message HelloAck {
   // Docker config.json auth document for the platform registry (ADR-0014);
   // empty when the deployment has no registry.
   string registry_credential = 2;
+  // The deployment's Egress Rules, passed through as written (defaults.md
+  // "egress"); the Agent applies them at every later Create (runtime.md §13).
+  EgressRules egress_rules = 3;
+}
+
+// EgressRules entries are `CIDR[:port]`.
+message EgressRules {
+  repeated string allow = 1;
+  repeated string deny = 2;
 }

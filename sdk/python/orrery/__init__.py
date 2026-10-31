@@ -2,6 +2,7 @@
 
 from .client import (
     Exec,
+    Egress,
     ExecResult,
     FileEntry,
     Frame,
@@ -16,6 +17,7 @@ from .client import (
 
 __all__ = [
     "Exec",
+    "Egress",
     "ExecResult",
     "FileEntry",
     "Frame",

@@ -18,7 +18,7 @@ usage:
                     [--registry-addr HOST[:PORT]]
                     [--auto-update | --no-auto-update]
   install.sh node   [--version vX.Y.Z] [--server HOST:PORT --packet ore_...] [--ca FILE]
-                    [--trust-registry HOST[:PORT]]... [--runtime docker|podman|local]
+                    [--trust-registry HOST[:PORT]]... [--runtime containerd|local]
                     [--name NAME] [--auto-update | --no-auto-update]
                     [-- extra `orrery-agent run` flags]
 
@@ -607,8 +607,8 @@ next_steps() {
   node_host="$host:$port"
   if [ -f "$etc/ca/ca.crt" ]; then
     ca_flags="--ca ca.crt"
-    # Docker and Podman fetch blobs from the object store after the redirect,
-    # so that host needs the CA as well.
+    # The Agent fetches blobs from the object store after the redirect, so
+    # that host needs the CA as well.
     trust_flags="--trust-registry $registry_addr --trust-registry $s3_host"
   fi
   if [ -n "$bind" ]; then
@@ -664,11 +664,20 @@ node() {
   # Manual runs and the updater service share one lock.
   exec 9>/etc/orrery-agent/.install.lock
   flock -n 9 || die "another install or auto-update is running"
-  case "${runtime:-docker}" in
-    docker) need docker ;;
-    podman) need podman ;;
+  # Docker and Podman Nodes were removed (ADR-0026): a kept unit naming them
+  # would only fail at Agent startup, so stop here with the migration.
+  if [ -z "$runtime" ] && grep -Eq -- '--runtime (docker|podman)' "/etc/systemd/system/orrery-agent.service" 2>/dev/null; then
+    die "this Node runs the removed Docker or Podman Runtime; drain it, install containerd, buildkitd and the CNI plugins, and re-run with --runtime containerd (docs/deploy.md)"
+  fi
+  case "${runtime:-containerd}" in
+    containerd)
+      need ctr nft ip
+      [ -x /opt/cni/bin/bridge ] && [ -x /opt/cni/bin/host-local ] && [ -x /opt/cni/bin/loopback ] ||
+        die "the CNI plugins (bridge, host-local, loopback) must be installed in /opt/cni/bin"
+      ;;
     local) ;;
-    *) die "--runtime is docker, podman or local" ;;
+    docker | podman) die "--runtime $runtime was removed: install containerd, buildkitd and the CNI plugins and use --runtime containerd (docs/deploy.md)" ;;
+    *) die "--runtime is containerd or local" ;;
   esac
 
   local arch bin=/opt/orrery/bin conf=/etc/orrery-agent
@@ -699,14 +708,18 @@ node() {
   fi
   if [ ${#trust_registry[@]} -gt 0 ]; then
     [ -f "$conf/ca.crt" ] || die "--trust-registry needs --ca"
-    # Docker and Podman read per-registry CAs without a daemon restart. The
-    # object store is a redirect target, so it is passed here too.
-    local registry d
-    for registry in "${trust_registry[@]}"; do
-      for d in /etc/docker/certs.d /etc/containers/certs.d; do
-        install -D -m 0644 "$conf/ca.crt" "$d/$registry/ca.crt"
-      done
-    done
+    # The Agent pulls with the host's trust store, which it reads at start;
+    # the object store is a redirect target, so it needs the same CA. One CA
+    # covers every --trust-registry host.
+    if command -v update-ca-certificates >/dev/null; then
+      install -D -m 0644 "$conf/ca.crt" /usr/local/share/ca-certificates/orrery-ca.crt
+      update-ca-certificates >/dev/null
+    elif command -v update-ca-trust >/dev/null; then
+      install -D -m 0644 "$conf/ca.crt" /etc/pki/ca-trust/source/anchors/orrery-ca.crt
+      update-ca-trust extract
+    else
+      die "--trust-registry needs update-ca-certificates or update-ca-trust"
+    fi
   fi
   local ca_flag=()
   [ -f "$conf/ca.crt" ] && ca_flag=(--ca "$conf/ca.crt")
@@ -721,11 +734,11 @@ node() {
     cat > "$unit" <<EOF
 [Unit]
 Description=Orrery Node Agent
-After=network-online.target docker.service podman.socket
+After=network-online.target containerd.service
 Wants=network-online.target
 
 [Service]
-ExecStart=$bin/orrery-agent run --runtime ${runtime:-docker} ${ca_flag[*]} ${extra[*]}
+ExecStart=$bin/orrery-agent run --runtime ${runtime:-containerd} ${ca_flag[*]} ${extra[*]}
 Restart=always
 RestartSec=5
 # Stop signals reach the Agent only, so Exec Supervisors keep running across

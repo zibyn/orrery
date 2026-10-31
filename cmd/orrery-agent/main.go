@@ -59,11 +59,12 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   orrery-agent enroll --server HOST:PORT --packet ore_... [--ca FILE] [--name NAME] [--state FILE]
-  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime docker|podman|local] [--local-user USER] [--docker SOCKET] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
+  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|runsc] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES]
   orrery-agent supervisor init
   orrery-agent supervisor probe [WORKSPACE]
   orrery-agent supervisor run EXEC_ID
-  orrery-agent supervisor forward PORT SOCKET`)
+  orrery-agent supervisor forward PORT SOCKET
+  orrery-agent supervisor dial HOST:PORT`)
 	os.Exit(2)
 }
 
@@ -89,10 +90,13 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.CAPath, "ca", "", "PEM file with the Control Plane CA")
 	fs.StringVar(&opts.Server, "server", "", "override the enrolled node address")
 	fs.StringVar(&opts.State, "state", agent.DefaultStatePath, "identity file")
-	fs.StringVar(&opts.Runtime, "runtime", "docker", "Runtime Provider: docker, podman or local")
-	fs.StringVar(&opts.Docker, "docker", agent.DefaultDockerSock, "Docker Engine socket")
+	fs.StringVar(&opts.Runtime, "runtime", agent.ProviderContainerd, "Runtime Provider: containerd or local")
+	fs.StringVar(&opts.Docker, "docker", "", "removed: Docker Nodes run on containerd now (--runtime containerd, --containerd SOCKET)")
+	fs.StringVar(&opts.Containerd, "containerd", agent.DefaultContainerdSock, "containerd socket (--runtime containerd)")
+	fs.StringVar(&opts.Isolation, "isolation", "", "Isolation Runtime: runc (default) or runsc (--runtime containerd)")
+	fs.StringVar(&opts.SandboxSubnet, "sandbox-subnet", agent.DefaultSandboxSubnet, "this Node's Sandbox subnet, not overlapping other Nodes' (--runtime containerd)")
 	fs.StringVar(&opts.LocalUser, "local-user", "", "unprivileged user every Local Runtime Exec runs as (required with --runtime local)")
-	fs.StringVar(&opts.Buildkit, "buildkit", "", "BuildKit endpoint (default: dockerd's built-in BuildKit via the Docker socket)")
+	fs.StringVar(&opts.Buildkit, "buildkit", "", "BuildKit endpoint, a standalone buildkitd (none by default: snapshot builds are unsupported without it)")
 	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "Workspace and Supervisor data directory")
 	fs.Float64Var(&opts.ReserveCPU, "reserve-cpu", agent.DefaultReserveCPU, "CPU cores kept free for the host")
 	fs.Int64Var(&opts.ReserveMemory, "reserve-memory", agent.DefaultReserveBytes, "memory bytes kept free for the host")
@@ -125,6 +129,11 @@ func supervise(args []string) error {
 			usage()
 		}
 		return supervisor.Forward(args[1], args[2])
+	case "dial":
+		if len(args) != 2 {
+			usage()
+		}
+		return supervisor.Dial(args[1])
 	default:
 		usage()
 		return nil

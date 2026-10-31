@@ -49,8 +49,14 @@ func TestAdmissionQueueAndDeadline(t *testing.T) {
 	before := myQuota(t, admin)
 	setSandboxQuota(t, admin, before.Sandboxes.Used+2)
 
+	// On a GPU Node, GPU-less Sandboxes share only the quarter of the CPU the
+	// per-GPU shares leave (ADR-0015).
+	fill := cores
+	if len(node.GPUs) > 0 {
+		fill = cores / 4
+	}
 	holder := createSandbox(t, admin, map[string]any{
-		"cpu": cores, "memory": 64 << 20, "idle_stop": 0,
+		"cpu": fill, "memory": 64 << 20, "idle_stop": 0,
 	})
 	t.Cleanup(func() { deleteSandbox(t, admin, holder.ID) })
 	waitForAdmitted(t, admin, holder.ID, node.ID)

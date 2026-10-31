@@ -23,7 +23,7 @@ import (
 // The SSH login must reach root (directly or with sudo -n). When the login is
 // root, ORRERY_E2E_LOCAL_USER defaults to nobody; when it is a user, that user
 // is the default. The scenario does not need a GPU, but it reuses the remote
-// host variable the GPU and Podman scenarios already use.
+// host variable the GPU scenarios already use.
 func TestLocalRuntime(t *testing.T) {
 	admin := adminToken(t)
 	host := startLocalHost(t, "e2e-local-runtime")
@@ -40,6 +40,10 @@ func TestLocalRuntime(t *testing.T) {
 	}
 	if values["resource_mount"] != "unsupported" {
 		t.Errorf("resource_mount = %q, want unsupported", values["resource_mount"])
+	}
+	// No netns, so Egress Rules do not apply (ADR-0026).
+	if values["egress_policy"] != "unsupported" {
+		t.Errorf("egress_policy = %q, want unsupported", values["egress_policy"])
 	}
 	for _, name := range []string{"cpu_memory_pid_limits", "workspace_rw_mount", "exec_supervisor"} {
 		if values[name] != "enforced" {

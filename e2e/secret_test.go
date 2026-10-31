@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -186,9 +185,6 @@ func TestSecretInject(t *testing.T) {
 	}
 	var sb sandboxView
 	mustJSON(t, body, &sb)
-	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", "orrery-"+sb.ID).Run()
-	})
 	status, body = call(t, http.MethodGet, "/api/v1/sandboxes/"+sb.ID+"?wait_for=ready", admin, nil)
 	var ready sandboxView
 	mustJSON(t, body, &ready)
@@ -231,12 +227,12 @@ func TestSecretInject(t *testing.T) {
 	}
 
 	// The value is not part of the Runtime's configuration on the Node.
-	out, err := exec.Command("docker", "inspect", "orrery-"+sb.ID).CombinedOutput()
+	out, err := inspectSandboxRuntime(sb.ID)
 	if err != nil {
-		t.Fatalf("docker inspect: %v\n%s", err, out)
+		t.Fatalf("inspect the Sandbox container: %v\n%s", err, out)
 	}
 	if strings.Contains(string(out), "first-value") {
-		t.Fatalf("docker inspect exposes the Secret value:\n%s", out)
+		t.Fatalf("the container record exposes the Secret value:\n%s", out)
 	}
 	// Nor is it stored with the Exec's caller-supplied env.
 	if n := psqlCount(t, fmt.Sprintf(
