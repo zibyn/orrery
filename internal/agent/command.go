@@ -114,6 +114,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				gpuUUIDs:      cmd.GpuUuids,
 				resources:     resourceMounts(cmd.Resources),
 				egress:        egressModeOf(cmd.Egress),
+				linkTarget:    cmd.LinkTarget,
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)
@@ -217,6 +218,19 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		go c.run("tunnel:"+cmd.TunnelId, cmd.CommandId, noGenerationFence, func() error {
 			return serve(c.ctx, cmd.TunnelId)
 		})
+	case *nodev1.ControlMessage_MeshPeers:
+		// Applied inline so successive full sets land in order; a Node
+		// without Mesh ignores it (runtime.md §15).
+		if c.rt.mesh != nil {
+			if err := c.rt.mesh.apply(m.MeshPeers.Peers); err != nil {
+				slog.Warn("apply mesh peers", "error", err)
+			}
+		}
+	case *nodev1.ControlMessage_SandboxLinks:
+		// Inline for the same reason: each set replaces the last whole.
+		if err := c.rt.driver.setLinks(c.ctx, m.SandboxLinks.Links); err != nil {
+			slog.Warn("apply sandbox links", "error", err)
+		}
 	}
 }
 
@@ -266,10 +280,18 @@ func resourceMounts(in []*nodev1.ResourceMount) []resourceMount {
 	return mounts
 }
 
+// observeSandbox reports a phase; `running` carries the address recorded at
+// Create (node-protocol.md).
 func (c *commandRunner) observeSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string) {
+	var address string
+	if phase == nodeproto.SandboxPhaseRunning {
+		if sbID, err := uuid.Parse(id); err == nil {
+			address = recordedAddress(c.rt.dataRoot, sbID)
+		}
+	}
 	c.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{
 		SandboxObserved: &nodev1.SandboxObserved{
-			SandboxId: id, Generation: generation, Phase: string(phase), Cause: cause,
+			SandboxId: id, Generation: generation, Phase: string(phase), Cause: cause, Address: address,
 		},
 	}})
 }

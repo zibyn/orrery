@@ -10,7 +10,12 @@ const (
 	probeMemory     = int64(64 << 20)
 	probeWorkspace  = "/workspace"
 	probeSupervisor = "/.orrery/bin/supervisor"
+	probeLinkPort   = 8080 // the Link self-check target listens here
 )
+
+// probeTargetName is the Link self-check's target probe, named after the
+// source probe so adopt leaves both alone.
+func probeTargetName(probe string) string { return probe + "-target" }
 
 // withSnapshotBuild adds the BuildKit endpoint self-check to a Runtime report.
 // It is independent of the Runtime type (runtime.md §12): a Local Node with a
@@ -32,9 +37,14 @@ func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.Cap
 	return report
 }
 
+// probeChecks are the probe's checks beyond the Supervisor's readback.
+type probeChecks struct {
+	limits, gpuVisible, egress, links, runsc bool
+}
+
 // capabilities is the containerd Node's Runtime report from its probe.
 // kernel_isolation is enforced only under runsc (ADR-0026).
-func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, egressEnforced, runsc bool) nodeproto.CapabilityReport {
+func capabilities(r supervisor.Result, checks probeChecks) nodeproto.CapabilityReport {
 	value := func(ok bool) string {
 		if ok {
 			return nodeproto.ValueEnforced
@@ -48,12 +58,12 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, egressEnforce
 		RuntimeProvider: ProviderContainerd,
 		Entries: []nodeproto.CapabilityEntry{
 			{Name: nodeproto.CapProcessMountNamespace, Value: value(isolated)},
-			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(limitsEnforced)},
+			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(checks.limits)},
 			{Name: nodeproto.CapWorkspaceRWMount, Value: value(r.WorkspaceWritable)},
 			{Name: nodeproto.CapExecSupervisor, Value: nodeproto.ValueEnforced},
 			// Whole-card visibility is enforced by CDI; GPU memory limits stay
 			// unsupported (ADR-0009).
-			{Name: nodeproto.CapGPUDeviceVisibility, Value: value(gpuVisible)},
+			{Name: nodeproto.CapGPUDeviceVisibility, Value: value(checks.gpuVisible)},
 			{Name: nodeproto.CapGPUMemoryLimit, Value: nodeproto.ValueUnsupported},
 			// Disk quota and arbitrary mounts are separate tickets; report them
 			// honestly instead of guessing.
@@ -64,8 +74,9 @@ func capabilities(r supervisor.Result, limitsEnforced, gpuVisible, egressEnforce
 			// unsupported, which keeps the Scheduler from placing a Sandbox
 			// with Resources there.
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
-			{Name: nodeproto.CapKernelIsolation, Value: value(runsc)},
-			{Name: nodeproto.CapEgressPolicy, Value: value(egressEnforced)},
+			{Name: nodeproto.CapKernelIsolation, Value: value(checks.runsc)},
+			{Name: nodeproto.CapEgressPolicy, Value: value(checks.egress)},
+			{Name: nodeproto.CapSandboxLinks, Value: value(checks.links)},
 			// snapshot_build is added by the Agent from the BuildKit endpoint
 			// self-check, independent of the Runtime (runtime.md §12).
 		},

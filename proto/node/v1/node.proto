@@ -88,6 +88,7 @@ message AgentMessage {
     ExecObserved exec_observed = 7;
     // A Snapshot build reached a terminal state (node-protocol.md "构建").
     BuildObserved build_observed = 8;
+    MeshReport mesh_report = 9;
   }
 }
 
@@ -96,6 +97,31 @@ message Hello {
   string agent_version = 2;
   uint32 proto_major = 3;
   uint32 proto_minor = 4;
+  // Set only on a containerd Node whose kernel has WireGuard (runtime.md §15).
+  Mesh mesh = 5;
+}
+
+// Mesh is this Node's place in the Node Mesh (ADR-0027).
+message Mesh {
+  // Base64 WireGuard public key.
+  string public_key = 1;
+  // The Node's --sandbox-subnet, an IPv4 CIDR.
+  string sandbox_subnet = 2;
+  // --mesh-endpoint host:port; empty when the Node only dials out.
+  string endpoint = 3;
+}
+
+// MeshReport carries each peer's latest WireGuard handshake, once per report
+// interval (defaults.md); the Control Plane keeps the connectivity matrix
+// from it (runtime.md §15).
+message MeshReport {
+  repeated MeshPeerHandshake peers = 1;
+}
+
+message MeshPeerHandshake {
+  string node_id = 1;
+  // RFC 3339.
+  string last_handshake_at = 2;
 }
 
 message Heartbeat {
@@ -150,6 +176,8 @@ message SandboxObserved {
   // "running", "gone" or "create_failed".
   string phase = 3;
   string cause = 4;
+  // The Sandbox's IPv4 address from CNI, sent with "running" (minor 5).
+  string address = 5;
 }
 
 message WorkspaceObserved {
@@ -195,7 +223,40 @@ message ControlMessage {
     OpenTunnel open_tunnel = 8;
     PublishWorkspace publish_workspace = 9;
     BuildSnapshot build_snapshot = 10;
+    MeshPeers mesh_peers = 11;
+    SandboxLinks sandbox_links = 12;
   }
+}
+
+// SandboxLinks is every Sandbox Link with an end on this Node and both ends
+// addressed, sent whole whenever it changes (node-protocol.md, runtime.md
+// §13). Agents older than minor 5 are never sent it.
+message SandboxLinks {
+  repeated SandboxLink links = 1;
+}
+
+message SandboxLink {
+  string target_id = 1;
+  string target_address = 2;
+  string source_id = 3;
+  string source_address = 4;
+  // Empty means every TCP and UDP port (api.md §3).
+  repeated uint32 ports = 5;
+}
+
+// MeshPeers is the full peer set for this Node, sent on every Node
+// register, reconnect and delete (node-protocol.md). A peer whose Sandbox
+// subnet overlaps this Node's is left out.
+message MeshPeers {
+  repeated MeshPeer peers = 1;
+}
+
+message MeshPeer {
+  string node_id = 1;
+  string public_key = 2;
+  string sandbox_subnet = 3;
+  // Empty when the peer only dials out.
+  string endpoint = 4;
 }
 
 // PublishWorkspace walks a host Workspace directory and publishes it as a
@@ -303,6 +364,10 @@ message CreateSandbox {
   // The Sandbox's stored Egress Mode, the same on every (re)start. The Agent
   // resolves it with the current Egress Rules at Create (runtime.md §13).
   EgressMode egress = 9;
+  // True when the Sandbox has links, the same on every (re)send. The Agent
+  // records it with the veth and renders the inbound chain, ending in a drop,
+  // at Create before the Sandbox runs (runtime.md §13).
+  bool link_target = 10;
 }
 
 // EgressMode is open, none or allowlist; allow is set only for allowlist, with

@@ -246,6 +246,7 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request, p *pri
 	// A still-connected Agent gets UNAUTHENTICATED and drops its identity
 	// (ADR-0014).
 	s.reconcile.hub.close(id)
+	s.sendMeshPeers(ctx)
 	s.audit(ctx, p, "node.delete", "node", id.String(), nil)
 	dto, err := s.nodeToDTO(ctx, node, time.Now())
 	if err != nil {
@@ -358,6 +359,7 @@ func (s *Server) handleDeclareNodeLost(w http.ResponseWriter, r *http.Request, p
 	// A still-connected Agent must learn it is no longer authorized and clear
 	// its identity (ADR-0014).
 	s.reconcile.hub.close(id)
+	s.sendMeshPeers(ctx)
 	s.audit(ctx, p, "node.declare_lost", "node", id.String(), nil)
 
 	node, err = s.q.GetNode(ctx, id)

@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,13 +16,10 @@ import (
 	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
-// egressTable is the Agent's own bridge-family table; sandboxVeths maps each
-// Sandbox's host-side veth to its chain (runtime.md §13).
+// The Agent's own bridge-family table (runtime.md §13).
 const (
 	egressFamily    = "bridge"
 	egressTableName = "orrery"
-	egressTable     = egressFamily + " " + egressTableName
-	sandboxVeths    = "sandboxes"
 )
 
 // egressMode is a Sandbox's Egress Mode: allow is set only for allowlist.
@@ -132,82 +129,286 @@ func (r *Runtime) egressPolicy(mode egressMode) ([]egressRule, error) {
 
 func egressChain(id uuid.UUID) string { return "sandbox-" + id.String() }
 
-// applyEgress (re)writes the Sandbox's chain and points its veth at it, in
-// one nft transaction.
-func applyEgress(ctx context.Context, id uuid.UUID, veth string, policy []egressRule) error {
-	chain := egressTable + " " + egressChain(id)
-	var script strings.Builder
-	fmt.Fprintf(&script, `table %s {
-	map %s { type ifname : verdict; }
-	chain forward { type filter hook forward priority filter; policy accept; iifname vmap @%s; }
-	chain input { type filter hook input priority filter; policy accept; iifname vmap @%s; }
-}
-add chain %s
-flush chain %s
-add rule %s ct state established,related accept
-add rule %s ether type arp accept
-add rule %s ether type != ip drop
-`, egressTable, sandboxVeths, sandboxVeths, sandboxVeths, chain, chain, chain, chain, chain)
-	for _, rule := range policy {
-		verdict := "drop"
-		if rule.accept {
-			verdict = "accept"
-		}
-		match := "ip daddr " + rule.dest.Prefix.String()
-		if rule.dest.Port != 0 {
-			match += fmt.Sprintf(" meta l4proto { tcp, udp } th dport %d", rule.dest.Port)
-		}
-		fmt.Fprintf(&script, "add rule %s %s %s\n", chain, match, verdict)
-	}
-	fmt.Fprintf(&script, "add element %s %s { %q : jump %s }\n", egressTable, sandboxVeths, veth, egressChain(id))
-	return nft(ctx, script.String(), "-f", "-")
+// MarshalJSON records a resolved entry in network.json, so a render after an
+// Agent restart uses the Rules held at Create (runtime.md §13).
+func (r egressRule) MarshalJSON() ([]byte, error) {
+	return json.Marshal(egressRuleJSON{r.dest, r.accept})
 }
 
-// removeEgress deletes the Sandbox's chain and every veth pointing at it. It
-// does not need the recorded veth, so a probe a crash left behind is removed
-// too.
-func removeEgress(ctx context.Context, id uuid.UUID) error {
-	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, "nft", "-j", "list", "map", egressFamily, egressTableName, sandboxVeths)
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return nil // no table, so no chain either
+func (r *egressRule) UnmarshalJSON(raw []byte) error {
+	var v egressRuleJSON
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
 	}
-	var listing struct {
-		Nftables []struct {
-			Map *struct {
-				Elem []json.RawMessage `json:"elem"`
-			} `json:"map"`
-		} `json:"nftables"`
+	r.dest, r.accept = v.Dest, v.Accept
+	return nil
+}
+
+type egressRuleJSON struct {
+	Dest   nodeproto.EgressEntry `json:"dest"`
+	Accept bool                  `json:"accept"`
+}
+
+// networkState is the local state the Agent-owned nftables tables are
+// rendered from: every local Sandbox's recorded network, the Sandbox
+// subnet, and the latest SandboxLinks.
+type networkState struct {
+	sandboxes map[uuid.UUID]sandboxNetwork
+	subnet    netip.Prefix
+	links     []*nodev1.SandboxLink
+}
+
+// nftTable, nftChain and nftRule are the rendered tables, before nftScript
+// turns them into nft syntax. A chain with a hook is a base chain with policy
+// accept: nat at priority srcnat on postrouting, else filter.
+type nftTable struct {
+	family, name string
+	chains       []nftChain
+}
+
+type nftChain struct {
+	name  string
+	hook  string
+	rules []nftRule
+}
+
+// nftRule matches on every field that is set, then jumps to the chain jump
+// or applies verdict.
+type nftRule struct {
+	iif, oif    string
+	notOif      bool // oifname != oif
+	established bool // ct state established,related
+	arp         bool // ether type arp
+	notIP       bool // ether type != ip
+	saddr       netip.Prefix
+	daddr       netip.Prefix
+	notDaddr    bool   // ip daddr != daddr
+	port        uint16 // TCP or UDP destination port
+	tcpUDP      bool   // TCP or UDP, any port
+	clampMSS    bool   // a TCP SYN's MSS set to the route MTU; with no verdict
+	verdict     string // accept, drop or masquerade
+	jump        string // a chain name
+}
+
+// chainPrelude opens both per-Sandbox chains: replies pass, ARP passes, and
+// every other non-IPv4 frame is dropped (runtime.md §13).
+func chainPrelude() []nftRule {
+	return []nftRule{
+		{established: true, verdict: "accept"},
+		{arp: true, verdict: "accept"},
+		{notIP: true, verdict: "drop"},
 	}
-	if err := json.Unmarshal(out.Bytes(), &listing); err != nil {
-		return fmt.Errorf("decode nft map: %w", err)
-	}
-	var script strings.Builder
-	for _, item := range listing.Nftables {
-		if item.Map == nil {
-			continue
+}
+
+func linkChain(id uuid.UUID) string { return "link-" + id.String() }
+
+// linkEnds is a Link's two addresses as /32 prefixes; one that is empty or
+// not IPv4 is the zero Prefix. ok reports that both are set.
+func linkEnds(link *nodev1.SandboxLink) (target, source netip.Prefix, ok bool) {
+	host := func(raw string) netip.Prefix {
+		if addr, err := netip.ParseAddr(raw); err == nil && addr.Is4() {
+			return netip.PrefixFrom(addr, 32)
 		}
-		for _, raw := range item.Map.Elem {
-			var elem []json.RawMessage
-			var veth string
-			var target struct {
-				Jump struct {
-					Target string `json:"target"`
-				} `json:"jump"`
-			}
-			if json.Unmarshal(raw, &elem) != nil || len(elem) != 2 ||
-				json.Unmarshal(elem[0], &veth) != nil || json.Unmarshal(elem[1], &target) != nil {
+		return netip.Prefix{}
+	}
+	target, source = host(link.TargetAddress), host(link.SourceAddress)
+	return target, source, target.IsValid() && source.IsValid()
+}
+
+// linkRules is match once per linked port, or once for every TCP and UDP
+// port (api.md §3). A port out of range is left out, so it fails closed
+// rather than matching all.
+func linkRules(match nftRule, ports []uint32) []nftRule {
+	if len(ports) == 0 {
+		match.tcpUDP = true
+		return []nftRule{match}
+	}
+	var rules []nftRule
+	for _, port := range ports {
+		if port >= 1 && port <= 65535 {
+			match.port = uint16(port)
+			rules = append(rules, match)
+		}
+	}
+	return rules
+}
+
+// renderNetwork is the whole bridge table orrery: forward and input jump on
+// each Sandbox's host-side veth into its chain, which accepts its Links and
+// then applies its Egress Policy; forward and output jump on a Link target's
+// veth into its inbound chain, and in forward every inbound jump comes first
+// so an open source cannot bypass it (runtime.md §13).
+func renderNetwork(state networkState) []nftTable {
+	ids := make([]uuid.UUID, 0, len(state.sandboxes))
+	for id := range state.sandboxes {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	forward := nftChain{name: "forward", hook: "forward"}
+	input := nftChain{name: "input", hook: "input"}
+	output := nftChain{name: "output", hook: "output"}
+	var egressJumps []nftRule
+	table := nftTable{family: egressFamily, name: egressTableName}
+	for _, id := range ids {
+		network := state.sandboxes[id]
+		jump := nftRule{iif: network.HostVeth, jump: egressChain(id)}
+		egressJumps = append(egressJumps, jump)
+		input.rules = append(input.rules, jump)
+		chain := nftChain{name: egressChain(id), rules: chainPrelude()}
+		var inbound []nftRule
+		isTarget := network.LinkTarget
+		for _, link := range state.links {
+			target, source, ok := linkEnds(link)
+			if !target.IsValid() {
 				continue
 			}
-			if target.Jump.Target == egressChain(id) {
-				fmt.Fprintf(&script, "delete element %s %s { %q }\n", egressTable, sandboxVeths, veth)
+			if link.SourceId == id.String() && ok {
+				chain.rules = append(chain.rules, linkRules(nftRule{daddr: target, verdict: "accept"}, link.Ports)...)
+			}
+			if link.TargetId == id.String() {
+				// A source with no address renders no accept; the chain still ends in a drop.
+				isTarget = true
+				if ok {
+					inbound = append(inbound, linkRules(nftRule{saddr: source, verdict: "accept"}, link.Ports)...)
+				}
 			}
 		}
+		if isTarget {
+			in := nftRule{oif: network.HostVeth, jump: linkChain(id)}
+			forward.rules = append(forward.rules, in)
+			output.rules = append(output.rules, in)
+			rules := append(chainPrelude(), inbound...)
+			table.chains = append(table.chains, nftChain{name: linkChain(id), rules: append(rules, nftRule{verdict: "drop"})})
+		}
+		for _, rule := range network.Policy {
+			verdict := "drop"
+			if rule.accept {
+				verdict = "accept"
+			}
+			chain.rules = append(chain.rules, nftRule{daddr: rule.dest.Prefix, port: rule.dest.Port, verdict: verdict})
+		}
+		table.chains = append(table.chains, chain)
 	}
-	// Adding first makes the delete succeed when the chain is already gone.
-	fmt.Fprintf(&script, "add chain %s %s\ndelete chain %s %s\n", egressTable, egressChain(id), egressTable, egressChain(id))
-	return nft(ctx, script.String(), "-f", "-")
+	forward.rules = append(forward.rules, egressJumps...)
+	table.chains = append([]nftChain{forward, input, output}, table.chains...)
+	tables := []nftTable{table, meshTable(state)}
+	if state.subnet.IsValid() {
+		tables = append(tables, natTable(state.subnet))
+	}
+	return tables
+}
+
+// meshTable is the inet table orrery_mesh: through orrery-wg only established
+// traffic and linked pairs with an end here pass, and the host itself sends
+// nothing into it (runtime.md §15).
+func meshTable(state networkState) nftTable {
+	forward := nftChain{name: "forward", hook: "forward", rules: []nftRule{
+		{iif: meshInterface, clampMSS: true},
+		{oif: meshInterface, clampMSS: true},
+		{iif: meshInterface, established: true, verdict: "accept"},
+		{oif: meshInterface, established: true, verdict: "accept"},
+	}}
+	local := func(id string) bool {
+		parsed, err := uuid.Parse(id)
+		_, ok := state.sandboxes[parsed]
+		return err == nil && ok
+	}
+	for _, link := range state.links {
+		target, source, ok := linkEnds(link)
+		if !ok {
+			continue
+		}
+		pair := nftRule{saddr: source, daddr: target, verdict: "accept"}
+		if local(link.TargetId) {
+			pair.iif = meshInterface
+			forward.rules = append(forward.rules, linkRules(pair, link.Ports)...)
+		} else if local(link.SourceId) {
+			pair.oif = meshInterface
+			forward.rules = append(forward.rules, linkRules(pair, link.Ports)...)
+		}
+	}
+	forward.rules = append(forward.rules, nftRule{iif: meshInterface, verdict: "drop"}, nftRule{oif: meshInterface, verdict: "drop"})
+	output := nftChain{name: "output", hook: "output", rules: []nftRule{{oif: meshInterface, verdict: "drop"}}}
+	return nftTable{family: "inet", name: "orrery_mesh", chains: []nftChain{forward, output}}
+}
+
+// natTable is the ip table orrery_nat: Sandbox traffic leaving the subnet
+// takes the Node's address, except into the Mesh (runtime.md §13).
+func natTable(subnet netip.Prefix) nftTable {
+	return nftTable{family: "ip", name: "orrery_nat", chains: []nftChain{{
+		name: "postrouting", hook: "postrouting",
+		rules: []nftRule{{saddr: subnet, daddr: subnet, notDaddr: true, oif: meshInterface, notOif: true, verdict: "masquerade"}},
+	}}}
+}
+
+// nftScript replaces each table whole in one nft transaction: adding first
+// makes the delete succeed when the table does not exist yet.
+func nftScript(tables []nftTable) string {
+	var script strings.Builder
+	for _, table := range tables {
+		name := table.family + " " + table.name
+		fmt.Fprintf(&script, "add table %s\ndelete table %s\ntable %s {\n", name, name, name)
+		for _, chain := range table.chains {
+			fmt.Fprintf(&script, "\tchain %s {\n", chain.name)
+			switch chain.hook {
+			case "":
+			case "postrouting":
+				script.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
+			default:
+				fmt.Fprintf(&script, "\t\ttype filter hook %s priority filter; policy accept;\n", chain.hook)
+			}
+			for _, rule := range chain.rules {
+				script.WriteString("\t\t" + rule.String() + "\n")
+			}
+			script.WriteString("\t}\n")
+		}
+		script.WriteString("}\n")
+	}
+	return script.String()
+}
+
+func (r nftRule) String() string {
+	var match []string
+	not := func(negate bool) string {
+		if negate {
+			return "!= "
+		}
+		return ""
+	}
+	if r.iif != "" {
+		match = append(match, fmt.Sprintf("iifname %q", r.iif))
+	}
+	if r.oif != "" {
+		match = append(match, fmt.Sprintf("oifname %s%q", not(r.notOif), r.oif))
+	}
+	if r.established {
+		match = append(match, "ct state established,related")
+	}
+	if r.arp {
+		match = append(match, "ether type arp")
+	}
+	if r.notIP {
+		match = append(match, "ether type != ip")
+	}
+	if r.saddr.IsValid() {
+		match = append(match, "ip saddr "+r.saddr.String())
+	}
+	if r.daddr.IsValid() {
+		match = append(match, "ip daddr "+not(r.notDaddr)+r.daddr.String())
+	}
+	if r.port != 0 {
+		match = append(match, fmt.Sprintf("meta l4proto { tcp, udp } th dport %d", r.port))
+	} else if r.tcpUDP {
+		match = append(match, "meta l4proto { tcp, udp }")
+	}
+	if r.clampMSS {
+		return strings.Join(append(match, "tcp flags syn tcp option maxseg size set rt mtu"), " ")
+	}
+	verdict := r.verdict
+	if r.jump != "" {
+		verdict = "jump " + r.jump
+	}
+	return strings.Join(append(match, verdict), " ")
 }
 
 func nft(ctx context.Context, stdin string, args ...string) error {

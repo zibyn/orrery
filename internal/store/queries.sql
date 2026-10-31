@@ -268,7 +268,10 @@ UPDATE nodes
 SET last_seen_at = now(),
     agent_version = $2,
     proto_major = $3,
-    proto_minor = $4
+    proto_minor = $4,
+    mesh_public_key = $5,
+    mesh_endpoint = $6,
+    sandbox_subnet = $7
 WHERE id = $1;
 
 -- name: NodeHeartbeat :exec
@@ -325,9 +328,33 @@ WHERE used_at IS NOT NULL OR expires_at < now();
 INSERT INTO sandboxes (
     id, owner_id, name, labels, runtime, desired_state, state, snapshot_digest,
     cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation,
-    idempotency_key, secret_env_ct, token_ct, token_key_id, egress_mode, egress_allow
-) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15, $16, $17)
+    idempotency_key, secret_env_ct, token_ct, token_key_id, egress_mode, egress_allow,
+    links_from, links_ports
+) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15, $16, $17, $18, $19)
 RETURNING *;
+
+-- ListSandboxLinkEnds is every Sandbox Link whose target is addressed, with
+-- the Node of each end: the rows each Node's SandboxLinks is cut from
+-- (node-protocol.md). A source that is not running, or deleted, has an empty
+-- address, so the target's inbound chain still ends in a drop (api.md §3).
+-- name: ListSandboxLinkEnds :many
+SELECT t.id AS target_id, t.node_id::uuid AS target_node_id, t.address::text AS target_address,
+       src.id::uuid AS source_id, s.node_id AS source_node_id, COALESCE(s.address, '')::text AS source_address,
+       t.links_ports
+FROM sandboxes t
+CROSS JOIN LATERAL unnest(t.links_from) AS src(id)
+LEFT JOIN sandboxes s ON s.id = src.id AND s.deleted_at IS NULL
+WHERE t.deleted_at IS NULL AND t.address IS NOT NULL AND t.node_id IS NOT NULL
+ORDER BY t.id, src.id;
+
+-- ListLinkSourceNodes is the distinct Nodes of a Sandbox's placed Link
+-- sources; a pending source does not constrain placement (api.md §3).
+-- name: ListLinkSourceNodes :many
+SELECT DISTINCT s.node_id::uuid AS node_id
+FROM sandboxes t
+JOIN sandboxes s ON s.id = ANY (t.links_from)
+WHERE t.id = $1 AND s.deleted_at IS NULL AND s.node_id IS NOT NULL
+  AND s.state NOT IN ('pending', 'failed', 'deleted');
 
 -- CreateBuildSandbox is the internal row that carries a Snapshot build's
 -- Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no
@@ -384,7 +411,7 @@ WHERE owner_id = $1 AND kind = 'user'
 
 -- name: StartSandbox :one
 UPDATE sandboxes
-SET desired_state = 'running', state = 'pending', cause = NULL,
+SET desired_state = 'running', state = 'pending', cause = NULL, address = NULL,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state = 'stopped'
 RETURNING *;
@@ -449,7 +476,7 @@ WHERE id = $1 AND desired_state = 'stopped'
 
 -- name: SetSandboxStopped :execrows
 UPDATE sandboxes
-SET state = 'stopped', updated_at = now()
+SET state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping');
 
@@ -466,14 +493,22 @@ SET state = 'ready', cause = NULL, conditions = NULL, last_activity_at = now(), 
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning');
 
+-- SetSandboxAddress records the address the Agent reported with `running`;
+-- an older Agent sends none and the column stays NULL (node-protocol.md).
+-- name: SetSandboxAddress :exec
+UPDATE sandboxes
+SET address = NULLIF(sqlc.arg('address')::text, '')
+WHERE id = $1 AND generation = $2 AND desired_state = 'running'
+  AND state IN ('provisioning', 'ready');
+
 -- name: MarkSandboxFailed :execrows
 UPDATE sandboxes
-SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', updated_at = now()
+SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
 -- name: MarkSandboxRuntimeLost :execrows
 UPDATE sandboxes
-SET state = 'stopped', cause = $3, desired_state = 'stopped', updated_at = now()
+SET state = 'stopped', cause = $3, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning', 'ready');
 
@@ -494,7 +529,7 @@ WHERE id = $1 AND generation = $2 AND state = 'pending' AND desired_state = 'run
 
 -- name: MarkSandboxStopped :execrows
 UPDATE sandboxes
-SET state = 'stopped', conditions = NULL, updated_at = now()
+SET state = 'stopped', conditions = NULL, address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'stopped'
   AND state IN ('pending', 'provisioning', 'ready', 'stopping');
 
@@ -1417,7 +1452,7 @@ WHERE id = $1;
 -- name: FailSandboxesOnNodeLost :execrows
 UPDATE sandboxes
 SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
-    conditions = NULL, updated_at = now()
+    conditions = NULL, address = NULL, updated_at = now()
 WHERE node_id = $1 AND state <> 'deleted';
 
 -- name: DeleteSandboxAttachmentsOnNodeLost :execrows

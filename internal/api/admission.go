@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"time"
 
@@ -186,7 +187,8 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		// Provider (api.md §3). A Node that has not reported Capabilities is
 		// treated as potentially matching, so it is not proof of exhaustion.
 		if sb.Kind != string(SandboxKindBuild) && len(node.Capabilities) > 0 &&
-			(!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) || !egressPlaceable(sb.EgressMode)(node)) {
+			(!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) || !egressPlaceable(sb.EgressMode)(node) ||
+				!linksCapable(sb.LinksFrom)(node)) {
 			known = true
 			continue
 		}
@@ -333,10 +335,11 @@ func nodeSchedulable(node store.Node, now time.Time, workspaceHere bool) bool {
 // reported card count, used for the GPU-less preference, and free is the cards
 // still available for packing.
 type placementNode struct {
-	node   store.Node
-	gpus   int
-	free   []store.Gpu
-	gpuIDs []string
+	node       store.Node
+	gpus       int
+	free       []store.Gpu
+	gpuIDs     []string
+	linkSource bool // a placed Link source runs here
 }
 
 // freeGPUs counts free cards of the requested model; an empty model counts
@@ -354,7 +357,8 @@ func freeGPUs(free []store.Gpu, model *string) int {
 	return n
 }
 
-// orderPlacementNodes sorts feasible Nodes in place (ADR-0015): a GPU request
+// orderPlacementNodes sorts feasible Nodes in place (ADR-0015): a Link target
+// goes first to a Node of its sources (ADR-0027); a GPU request
 // is packed onto the Node left with the fewest free cards of the requested
 // model; a GPU-less request prefers Nodes without cards, then the first
 // feasible one. Ties break by created_at and then id, so placement is
@@ -362,6 +366,9 @@ func freeGPUs(free []store.Gpu, model *string) int {
 func orderPlacementNodes(nodes []placementNode, sb store.Sandbox) {
 	sort.Slice(nodes, func(i, j int) bool {
 		a, b := nodes[i], nodes[j]
+		if a.linkSource != b.linkSource {
+			return a.linkSource
+		}
 		if sb.GpuCount > 0 {
 			if fa, fb := freeGPUs(a.free, sb.GpuModel), freeGPUs(b.free, sb.GpuModel); fa != fb {
 				return fa < fb
@@ -388,13 +395,21 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 	// admission request `unsatisfiable` instead.
 	isBuild := sb.Kind == string(SandboxKindBuild)
 	var resourceMounts int64
+	var linkSourceNodes []uuid.UUID
 	if !isBuild {
 		var err error
 		resourceMounts, err = q.CountSandboxResources(ctx, sb.ID)
 		if err != nil {
 			return false, err
 		}
+		// A Link target waits for its sources' Node (api.md §3).
+		if len(sb.LinksFrom) > 0 {
+			if linkSourceNodes, err = q.ListLinkSourceNodes(ctx, sb.ID); err != nil {
+				return false, err
+			}
+		}
 	}
+	meshLive := func(a, b uuid.UUID) bool { return r.s.mesh.live(a, b, now) }
 	var candidates []placementNode
 	for _, node := range nodes {
 		if sb.NodeID != nil && node.ID != *sb.NodeID {
@@ -422,6 +437,9 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			if !egressPlaceable(sb.EgressMode)(node) {
 				continue
 			}
+			if !linksCapable(sb.LinksFrom)(node) || !linkPlaceable(linkSourceNodes, node.ID, meshLive) {
+				continue
+			}
 		}
 		if !nodeSchedulable(node, now, !isBuild && ws.NodeID != nil) || !r.hub.connected(node.ID) {
 			continue
@@ -434,7 +452,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		if !ok {
 			continue
 		}
-		candidate := placementNode{node: node, gpus: fit.gpuTotal}
+		candidate := placementNode{node: node, gpus: fit.gpuTotal, linkSource: slices.Contains(linkSourceNodes, node.ID)}
 		if sb.GpuCount > 0 {
 			free, err := q.ListNodeFreeGPUs(ctx, node.ID)
 			if err != nil {

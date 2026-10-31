@@ -257,6 +257,7 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueUnsupported},
 			// No netns, so Egress Rules do not apply (ADR-0026).
 			{Name: nodeproto.CapEgressPolicy, Value: nodeproto.ValueUnsupported},
+			{Name: nodeproto.CapSandboxLinks, Value: nodeproto.ValueUnsupported},
 		},
 	}
 }
@@ -737,6 +738,9 @@ func (d *localDriver) watchEvents(context.Context, func(string, int64)) {}
 func (d *localDriver) startForward(context.Context, uuid.UUID, ...string) error {
 	return errors.New("runtime local has no port forwarder")
 }
+
+// setLinks is a no-op: Local has no netns and no Links (runtime.md §15).
+func (d *localDriver) setLinks(context.Context, []*nodev1.SandboxLink) error { return nil }
 
 func (d *localDriver) close() {}
 

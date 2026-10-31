@@ -53,6 +53,8 @@ type Runtime struct {
 	owner *rootlessOwner
 	// buildkit is the Agent-configured BuildKit endpoint; empty means none.
 	buildkit string
+	// mesh is the Node Mesh interface; nil when the Node has none.
+	mesh *mesh
 	// hostCgroup is the host cgroupfs root on a runsc Node, where the Agent
 	// attributes oom_killed (runtime.md §9); empty elsewhere.
 	hostCgroup string
@@ -516,6 +518,7 @@ type createSandboxSpec struct {
 	gpuUUIDs      []string
 	resources     []resourceMount
 	egress        egressMode
+	linkTarget    bool
 }
 
 // resourceMount is one version to fetch and mount at /resources/<mount>.

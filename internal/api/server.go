@@ -27,6 +27,7 @@ type Server struct {
 	logins       *loginLimiter
 	crossOrigin  http.CrossOriginProtection
 	reconcile    *reconciler
+	mesh         *meshMatrix
 	tunnels      *tunnelRegistry
 	activity     *activityTracker
 	oidcMu       sync.Mutex
@@ -45,7 +46,7 @@ func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
 		}
 	}
 	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter(),
-		tunnels: newTunnelRegistry(), activity: newActivityTracker(),
+		tunnels: newTunnelRegistry(), activity: newActivityTracker(), mesh: newMeshMatrix(),
 		snapshotCancels: map[uuid.UUID]context.CancelFunc{}}
 	if cfg.S3.Endpoint != "" {
 		objects, err := objectstore.New(context.Background(), objectstore.Config{

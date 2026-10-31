@@ -329,6 +329,14 @@ func TestOrderPlacementNodes(t *testing.T) {
 			},
 			want: []byte{2, 1},
 		},
+		"a Link target prefers its sources' Node over everything else": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 10, 0, nil),
+				{node: store.Node{ID: uuid.UUID{2}, CreatedAt: at(20)}, gpus: 4, linkSource: true},
+			},
+			want: []byte{2, 1},
+		},
 		"GPU-less request prefers a Node without cards": {
 			sb: store.Sandbox{},
 			nodes: []placementNode{
@@ -526,6 +534,44 @@ func TestAdmissionExhaustedEgress(t *testing.T) {
 	} {
 		if got := admissionExhausted(tt.nodes, nil, sandbox(tt.mode), nil); got != tt.want {
 			t.Errorf("admissionExhausted(mode %q, %d Nodes) = %v, want %v", tt.mode, len(tt.nodes), got, tt.want)
+		}
+	}
+}
+
+// api.md §3: a Sandbox with links only goes to a Node where sandbox_links is
+// enforced, on restart too; one without links is not constrained.
+func TestAdmissionExhaustedLinks(t *testing.T) {
+	const gib = int64(1) << 30
+	hw := mustHardware(t, nodeHardware{
+		CPUCores: 8, MemoryBytes: 32 * gib, DiskFree: 50, DiskTotal: 100,
+	})
+	node := func(links string) store.Node {
+		values := map[string]string{nodeproto.CapSandboxLinks: links}
+		for _, name := range nodeproto.RequiredFor("containerd") {
+			values[name] = nodeproto.ValueEnforced
+		}
+		return store.Node{
+			ID: uuid.New(), Hardware: hw, Capabilities: capabilitySnapshot(t, "containerd", values),
+			ReservedCpu: 1, ReservedMemory: 2 * gib,
+		}
+	}
+	enforced, unsupported := node(nodeproto.ValueEnforced), node(nodeproto.ValueUnsupported)
+	sandbox := func(from ...uuid.UUID) store.Sandbox {
+		return store.Sandbox{Cpu: 1, Memory: gib, Runtime: "container", LinksFrom: from}
+	}
+	source := uuid.New()
+	for _, tt := range []struct {
+		name  string
+		sb    store.Sandbox
+		nodes []store.Node
+		want  bool
+	}{
+		{"no links", sandbox(), []store.Node{unsupported}, false},
+		{"links, no enforcing Node", sandbox(source), []store.Node{unsupported}, true},
+		{"links, one enforcing Node", sandbox(source), []store.Node{unsupported, enforced}, false},
+	} {
+		if got := admissionExhausted(tt.nodes, nil, tt.sb, nil); got != tt.want {
+			t.Errorf("%s: admissionExhausted = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 }

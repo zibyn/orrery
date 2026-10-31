@@ -60,6 +60,22 @@ func Dial(addr string) error {
 	return conn.Close()
 }
 
+// Listen accepts and closes TCP connections until killed: the Link target in
+// the sandbox_links self-check (runtime.md §13).
+func Listen(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return err
+		}
+		conn.Close() //nolint:errcheck // the connect is the whole check
+	}
+}
+
 func forwardConn(conn net.Conn, port int) {
 	defer conn.Close() //nolint:errcheck // connection lifetime
 	upstream, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))

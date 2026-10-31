@@ -10,7 +10,7 @@ import "encoding/json"
 // refused (ADR-0014).
 const (
 	Major uint32 = 1
-	Minor uint32 = 4
+	Minor uint32 = 5
 )
 
 // Capability names are the Runtime Provider facts a Node self-checks
@@ -43,6 +43,9 @@ const (
 	// CapEgressPolicy is enforced only after the registration egress
 	// self-check passes (runtime.md §13).
 	CapEgressPolicy = "egress_policy"
+	// CapSandboxLinks is enforced only after the registration Link
+	// self-check passes (runtime.md §13).
+	CapSandboxLinks = "sandbox_links"
 )
 
 // Required lists the capabilities a container Runtime must enforce before the

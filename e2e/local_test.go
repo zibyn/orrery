@@ -137,7 +137,8 @@ func capabilityValues(node nodeView) map[string]string {
 	return values
 }
 
-// localHost is one root Agent running with --runtime local on a remote host.
+// localHost is one root Agent on a remote host (--runtime local, or containerd
+// for the Node Mesh scenario).
 type localHost struct {
 	target   string
 	dir      string
@@ -152,6 +153,24 @@ type localHost struct {
 
 func startLocalHost(t *testing.T, name string) *localHost {
 	t.Helper()
+	return startRemoteHost(t, name, func(h *localHost) []string {
+		h.user = os.Getenv("ORRERY_E2E_LOCAL_USER")
+		if h.user == "" {
+			if h.sshUser == "root" {
+				h.user = "nobody"
+			} else {
+				h.user = h.sshUser
+			}
+		}
+		return []string{"--runtime", "local", "--local-user", h.user}
+	})
+}
+
+// startRemoteHost enrolls and runs a root Agent on the ORRERY_E2E_GPU_SSH host,
+// tunnelled back to this machine's node listener. runArgs adds the Agent's
+// own `run` flags.
+func startRemoteHost(t *testing.T, name string, runArgs func(h *localHost) []string) *localHost {
+	t.Helper()
 	target := os.Getenv("ORRERY_E2E_GPU_SSH")
 	if target == "" {
 		t.Skip("ORRERY_E2E_GPU_SSH is not set; connect a remote host first")
@@ -165,14 +184,6 @@ func startLocalHost(t *testing.T, name string) *localHost {
 	}
 	h.state = h.dir + "/identity.json"
 	h.sshUser = strings.TrimSpace(h.trySSH(t, "id", "-un"))
-	h.user = os.Getenv("ORRERY_E2E_LOCAL_USER")
-	if h.user == "" {
-		if h.sshUser == "root" {
-			h.user = "nobody"
-		} else {
-			h.user = h.sshUser
-		}
-	}
 	// Create the directory as the SSH user so scp can write the binaries; the
 	// root Agent and the unprivileged Local user only need to traverse it.
 	h.trySSH(t, "mkdir", "-p", h.dir)
@@ -202,8 +213,8 @@ func startLocalHost(t *testing.T, name string) *localHost {
 	args = append(args, h.dir+"/agent", "run",
 		"--server", "127.0.0.1:"+remotePort, "--ca", h.dir+"/ca.crt",
 		"--state", h.state, "--data-root", h.dir+"/data",
-		"--runtime", "local", "--local-user", h.user,
 		"--reserve-cpu", "0")
+	args = append(args, runArgs(h)...)
 	h.agent = exec.Command("ssh", append([]string{target}, args...)...)
 	h.agent.Stdout, h.agent.Stderr = h.agentLog, h.agentLog
 	if err := h.agent.Start(); err != nil {

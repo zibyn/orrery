@@ -328,6 +328,13 @@ type SandboxEgress struct {
 	Allow []string `json:"allow,omitempty"`
 }
 
+// SandboxLinks are the Sandboxes allowed to connect to this one (the
+// target) on Ports; no Ports means every TCP and UDP port.
+type SandboxLinks struct {
+	From  []string `json:"from"`
+	Ports []int32  `json:"ports,omitempty"`
+}
+
 // CreateSandboxRequest is the body of POST /sandboxes.
 type CreateSandboxRequest struct {
 	Name      *string           `json:"name,omitempty"`
@@ -342,6 +349,7 @@ type CreateSandboxRequest struct {
 	GPU       *SandboxGPU       `json:"gpu,omitempty"`
 	IdleStop  *int32            `json:"idle_stop,omitempty"`
 	Egress    *SandboxEgress    `json:"egress,omitempty"`
+	Links     *SandboxLinks     `json:"links,omitempty"`
 }
 
 // Sandbox is one running or pending Sandbox.
@@ -351,6 +359,8 @@ type Sandbox struct {
 	Labels        map[string]string `json:"labels"`
 	Runtime       string            `json:"runtime"`
 	Egress        SandboxEgress     `json:"egress"`
+	Links         *SandboxLinks     `json:"links,omitempty"`
+	Address       string            `json:"address"`
 	State         string            `json:"state"`
 	Cause         *string           `json:"cause"`
 	NodeID        *string           `json:"node_id"`

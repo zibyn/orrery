@@ -681,6 +681,27 @@ func schemas() map[string]any {
 				},
 				"idle_stop": map[string]any{"type": "integer", "minimum": 0, "default": 900, "description": "Seconds; 0 disables idle stop."},
 				"egress":    schemaRef("Egress"),
+				"links":     schemaRef("SandboxLinks"),
+			},
+		},
+		"SandboxLinks": map[string]any{
+			"type":        "object",
+			"description": "Sandbox Links, declared on the target and fixed for its life: the Sandboxes in from may connect to it on ports, outside their Egress Policy. Everything else that connects to the target is dropped.",
+			"required":    []string{"from"},
+			"properties": map[string]any{
+				"from": map[string]any{
+					"type":        "array",
+					"minItems":    1,
+					"maxItems":    maxLinkEntries,
+					"items":       map[string]any{"type": "string", "format": "uuid"},
+					"description": "The caller's own undeleted Sandboxes; none may be runtime local.",
+				},
+				"ports": map[string]any{
+					"type":        "array",
+					"maxItems":    maxLinkEntries,
+					"items":       map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
+					"description": "Omitted means every TCP and UDP port.",
+				},
 			},
 		},
 		"Egress": map[string]any{
@@ -707,6 +728,8 @@ func schemas() map[string]any {
 				"labels":   map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
 				"runtime":  map[string]any{"type": "string", "enum": []string{"container", "local"}},
 				"egress":   schemaRef("Egress"),
+				"links":    schemaRef("SandboxLinks"),
+				"address":  map[string]any{"type": "string", "description": "Current IPv4 address; changes on every start, empty while not running."},
 				"state":    map[string]any{"type": "string", "enum": sandboxStateNames},
 				"cause":    nullableString,
 				"node_id":  nullableString,

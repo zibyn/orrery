@@ -39,6 +39,7 @@ type sandboxCreateInput struct {
 	GPU       *client.SandboxGPU       `json:"gpu"`
 	IdleStop  *int32                   `json:"idle_stop"`
 	Egress    *client.SandboxEgress    `json:"egress"`
+	Links     *client.SandboxLinks     `json:"links"`
 }
 
 func (in *sandboxCreateInput) validate() error {
@@ -65,6 +66,7 @@ func (s *server) sandboxCreate(ctx context.Context, _ *sdk.CallToolRequest, in s
 		GPU:       in.GPU,
 		IdleStop:  in.IdleStop,
 		Egress:    in.Egress,
+		Links:     in.Links,
 	}, "")
 	if err != nil {
 		return fail(err)

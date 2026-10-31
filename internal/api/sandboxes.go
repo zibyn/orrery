@@ -35,6 +35,63 @@ type createSandboxRequest struct {
 	GPU       *sandboxGPURequest       `json:"gpu"`
 	IdleStop  *int32                   `json:"idle_stop"`
 	Egress    *sandboxEgress           `json:"egress"`
+	Links     *sandboxLinks            `json:"links"`
+}
+
+// sandboxLinks is the Sandbox's Links as the target (ADR-0027), as requested
+// and as returned: no ports means every TCP and UDP port.
+type sandboxLinks struct {
+	From  []string `json:"from"`
+	Ports []int32  `json:"ports,omitempty"`
+}
+
+// maxLinkEntries is defaults.md's limit on both `links.from` and
+// `links.ports`.
+const maxLinkEntries = 16
+
+// sandboxLinksRequest validates the requested Links (api.md §3). get reads a
+// source; a missing, foreign or deleted one is the same 400.
+func sandboxLinksRequest(ctx context.Context, req createSandboxRequest, runtime string, owner uuid.UUID,
+	get func(context.Context, uuid.UUID) (store.Sandbox, error)) (from []uuid.UUID, ports []int32, code, detail string, err error) {
+	from, ports = []uuid.UUID{}, []int32{} // the columns are NOT NULL
+	if req.Links == nil {
+		return from, ports, "", "", nil
+	}
+	links := req.Links
+	switch {
+	case len(links.From) == 0:
+		return nil, nil, "invalid_request", "links.from must name at least one Sandbox", nil
+	case len(links.From) > maxLinkEntries:
+		return nil, nil, "invalid_request", fmt.Sprintf("links.from has at most %d entries", maxLinkEntries), nil
+	case len(links.Ports) > maxLinkEntries:
+		return nil, nil, "invalid_request", fmt.Sprintf("links.ports has at most %d entries", maxLinkEntries), nil
+	}
+	for _, port := range links.Ports {
+		if port < 1 || port > 65535 {
+			return nil, nil, "invalid_request", "links.ports entries must be 1-65535", nil
+		}
+	}
+	if runtime == "local" {
+		return nil, nil, "unsupported", "runtime: local cannot have links", nil
+	}
+	for _, raw := range links.From {
+		id, perr := uuid.Parse(raw)
+		if perr != nil {
+			return nil, nil, "invalid_request", "links.from entries must be Sandbox ids", nil
+		}
+		sb, gerr := get(ctx, id)
+		if errors.Is(gerr, pgx.ErrNoRows) || (gerr == nil && (sb.OwnerID != owner || sb.DeletedAt.Valid)) {
+			return nil, nil, "invalid_request", "links.from: no such Sandbox " + raw, nil
+		}
+		if gerr != nil {
+			return nil, nil, "", "", gerr
+		}
+		if sandboxRuntimeValue(sb.Runtime) == "local" {
+			return nil, nil, "unsupported", "links.from: a runtime: local Sandbox cannot be a Link source", nil
+		}
+		from = append(from, id)
+	}
+	return from, append(ports, links.Ports...), "", "", nil
 }
 
 // sandboxEgress is the caller's Egress Mode (ADR-0026), as requested and as
@@ -172,6 +229,8 @@ type sandboxDTO struct {
 	Labels        map[string]string    `json:"labels"`
 	Runtime       string               `json:"runtime"`
 	Egress        sandboxEgress        `json:"egress"`
+	Links         *sandboxLinks        `json:"links,omitempty"`
+	Address       string               `json:"address"`
 	State         string               `json:"state"`
 	Cause         *string              `json:"cause"`
 	NodeID        *string              `json:"node_id"`
@@ -240,6 +299,26 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	}
 	if egressAllow == nil {
 		egressAllow = []string{} // the column is NOT NULL
+	}
+	linksFrom, linksPorts, linksCode, linksDetail, err := sandboxLinksRequest(ctx, req, runtime, p.user.ID, s.q.GetSandbox)
+	if err != nil {
+		s.internal(w, "look up Link source", err)
+		return
+	}
+	if linksCode != "" {
+		writeProblem(w, linksCode, linksDetail)
+		return
+	}
+	if len(linksFrom) > 0 {
+		nodes, err := s.q.ListAllNodes(ctx)
+		if err != nil {
+			s.internal(w, "list Nodes", err)
+			return
+		}
+		if !slices.ContainsFunc(nodes, linksCapable(linksFrom)) {
+			writeProblem(w, "unsupported", "no Node enforces sandbox_links, so a Sandbox with links cannot be placed")
+			return
+		}
 	}
 	if req.CPU == nil || *req.CPU <= 0 {
 		writeProblem(w, "invalid_request", "cpu must be a positive number of cores")
@@ -417,6 +496,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 				IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
 				TokenCt: tokenCt, TokenKeyID: tokenKeyID,
 				EgressMode: egressMode, EgressAllow: egressAllow,
+				LinksFrom: linksFrom, LinksPorts: linksPorts,
 			})
 		})
 	if err != nil {
@@ -988,6 +1068,15 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
 		Conditions: parseSandboxConditions(sb.Conditions).names(),
+	}
+	if sb.Address != nil {
+		dto.Address = *sb.Address
+	}
+	if len(sb.LinksFrom) > 0 {
+		dto.Links = &sandboxLinks{Ports: sb.LinksPorts}
+		for _, id := range sb.LinksFrom {
+			dto.Links.From = append(dto.Links.From, id.String())
+		}
 	}
 	if sb.GpuCount > 0 {
 		dto.GPU = &sandboxGPUDTO{Count: sb.GpuCount, Model: sb.GpuModel}

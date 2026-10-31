@@ -14,7 +14,7 @@ func TestParseCNIResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != (sandboxNetwork{HostVeth: "veth1a2b3c4d", Address: "10.213.0.7"}) {
+	if got.HostVeth != "veth1a2b3c4d" || got.Address != "10.213.0.7" {
 		t.Fatalf("parseCNIResult = %+v", got)
 	}
 	if _, err := parseCNIResult([]byte(`{"interfaces":[{"name":"orrery0"}]}`), "orrery0"); err == nil {
