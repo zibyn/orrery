@@ -43,6 +43,9 @@ const (
 	// CapEgressPolicy is enforced only after the registration egress
 	// self-check passes (runtime.md §13).
 	CapEgressPolicy = "egress_policy"
+	// CapSandboxLinks is enforced only after the registration Link
+	// self-check passes (runtime.md §13).
+	CapSandboxLinks = "sandbox_links"
 )
 
 // Required lists the capabilities a container Runtime must enforce before the

@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/store"
 )
 
@@ -41,6 +42,14 @@ func sandboxLinksByNode(rows []store.ListSandboxLinkEndsRow) map[uuid.UUID][]*no
 // Nodes with a live Mesh path to every source Node.
 func linkPlaceable(sourceNodes []uuid.UUID, node uuid.UUID) bool {
 	return len(sourceNodes) == 0 || (len(sourceNodes) == 1 && sourceNodes[0] == node)
+}
+
+// linksCapable reports whether a Node may run a Sandbox with these Link
+// sources: any at all need sandbox_links enforced (api.md §3).
+func linksCapable(from []uuid.UUID) func(store.Node) bool {
+	return func(node store.Node) bool {
+		return len(from) == 0 || nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapSandboxLinks)
+	}
 }
 
 // sandboxLinks pushes each Node its SandboxLinks when the set changed,

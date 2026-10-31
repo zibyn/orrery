@@ -257,6 +257,7 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueUnsupported},
 			// No netns, so Egress Rules do not apply (ADR-0026).
 			{Name: nodeproto.CapEgressPolicy, Value: nodeproto.ValueUnsupported},
+			{Name: nodeproto.CapSandboxLinks, Value: nodeproto.ValueUnsupported},
 		},
 	}
 }
