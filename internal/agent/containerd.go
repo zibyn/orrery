@@ -66,6 +66,8 @@ func newContainerdRuntime(socket, subnet, isolation, dataRoot, nodeID string) (*
 	rt := newRuntime(ProviderContainerd, dataRoot, nodeID)
 	driver := &containerdDriver{r: rt, client: client, subnet: subnet}
 	if isolation == IsolationRunsc {
+		// The guest has no OOM counter; the Agent reads the host's (§9).
+		rt.hostCgroup = "/sys/fs/cgroup"
 		// Sockets the Supervisor creates (PTY ctl.sock, forwards) must be
 		// visible on the host (runtime.md §9).
 		driver.runscConfig = filepath.Join(dataRoot, "runsc.toml")

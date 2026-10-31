@@ -46,6 +46,8 @@ func (r *Runtime) deliverExecSpec(ctx context.Context, sandboxID, execID uuid.UU
 		}
 		return fmt.Errorf("connect to Supervisor: %w", err)
 	}
+	// The baseline precedes the command: execve waits for the spec (§9).
+	r.writeOOMBaseline(sandboxID, dir)
 	spec := supervisor.Spec{
 		Argv:           cmd.Argv,
 		Env:            env,
@@ -272,6 +274,7 @@ func (r *Runtime) streamExec(ctx context.Context, sandboxID, execID uuid.UUID, d
 
 		exit, ready := readExit(dir)
 		if ready {
+			exit = r.attributeHostOOM(sandboxID, dir, exit)
 			frame := &nodev1.OutputFrame{Seq: seq, Stream: "exit", Cause: exit.Cause}
 			if exit.ExitCode != nil {
 				frame.ExitCode = exit.ExitCode

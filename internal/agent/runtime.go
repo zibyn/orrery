@@ -53,6 +53,9 @@ type Runtime struct {
 	owner *rootlessOwner
 	// buildkit is the Agent-configured BuildKit endpoint; empty means none.
 	buildkit string
+	// hostCgroup is the host cgroupfs root on a runsc Node, where the Agent
+	// attributes oom_killed (runtime.md §9); empty elsewhere.
+	hostCgroup string
 
 	// Execs are launched from the Control stream; the output stream is opened
 	// per Exec against the same connection.
@@ -363,7 +366,7 @@ func (r *Runtime) reconcileRecord(ctx context.Context, sandboxID, execID uuid.UU
 					return
 				}
 				if _, err := os.Stat(filepath.Join(dir, "exit")); err != nil {
-					writeRuntimeLost(dir)
+					r.writeRuntimeLost(sandboxID, dir)
 				}
 			}
 		}
@@ -376,18 +379,19 @@ func (r *Runtime) reconcileRecord(ctx context.Context, sandboxID, execID uuid.UU
 // scan streams the rest.
 func (r *Runtime) finalizeLost(sandboxID string) {
 	dirs, _ := filepath.Glob(filepath.Join(r.dataRoot, "sandboxes", sandboxID, "run", "*"))
+	id, _ := uuid.Parse(sandboxID) // a bad id names no cgroup, so nothing is attributed
 	for _, dir := range dirs {
 		if _, err := os.Stat(filepath.Join(dir, "exit")); err == nil {
 			continue
 		}
-		writeRuntimeLost(dir)
+		r.writeRuntimeLost(id, dir)
 	}
 }
 
-func writeRuntimeLost(dir string) {
-	if err := supervisor.WriteExit(dir, supervisor.Exit{
-		Cause: "runtime_lost", FinishedAt: time.Now().UTC(),
-	}); err != nil {
+func (r *Runtime) writeRuntimeLost(sandboxID uuid.UUID, dir string) {
+	exit := supervisor.Exit{Cause: "runtime_lost", FinishedAt: time.Now().UTC()}
+	exit.Cause = hostOOMCause(exit, r.hostOOMRose(sandboxID, dir))
+	if err := supervisor.WriteExit(dir, exit); err != nil {
 		slog.Warn("write runtime_lost record", "dir", dir, "error", err)
 	}
 }
