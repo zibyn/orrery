@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,13 +16,10 @@ import (
 	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
-// egressTable is the Agent's own bridge-family table; sandboxVeths maps each
-// Sandbox's host-side veth to its chain (runtime.md §13).
+// The Agent's own bridge-family table (runtime.md §13).
 const (
 	egressFamily    = "bridge"
 	egressTableName = "orrery"
-	egressTable     = egressFamily + " " + egressTableName
-	sandboxVeths    = "sandboxes"
 )
 
 // egressMode is a Sandbox's Egress Mode: allow is set only for allowlist.
@@ -132,82 +129,143 @@ func (r *Runtime) egressPolicy(mode egressMode) ([]egressRule, error) {
 
 func egressChain(id uuid.UUID) string { return "sandbox-" + id.String() }
 
-// applyEgress (re)writes the Sandbox's chain and points its veth at it, in
-// one nft transaction.
-func applyEgress(ctx context.Context, id uuid.UUID, veth string, policy []egressRule) error {
-	chain := egressTable + " " + egressChain(id)
-	var script strings.Builder
-	fmt.Fprintf(&script, `table %s {
-	map %s { type ifname : verdict; }
-	chain forward { type filter hook forward priority filter; policy accept; iifname vmap @%s; }
-	chain input { type filter hook input priority filter; policy accept; iifname vmap @%s; }
-}
-add chain %s
-flush chain %s
-add rule %s ct state established,related accept
-add rule %s ether type arp accept
-add rule %s ether type != ip drop
-`, egressTable, sandboxVeths, sandboxVeths, sandboxVeths, chain, chain, chain, chain, chain)
-	for _, rule := range policy {
-		verdict := "drop"
-		if rule.accept {
-			verdict = "accept"
-		}
-		match := "ip daddr " + rule.dest.Prefix.String()
-		if rule.dest.Port != 0 {
-			match += fmt.Sprintf(" meta l4proto { tcp, udp } th dport %d", rule.dest.Port)
-		}
-		fmt.Fprintf(&script, "add rule %s %s %s\n", chain, match, verdict)
-	}
-	fmt.Fprintf(&script, "add element %s %s { %q : jump %s }\n", egressTable, sandboxVeths, veth, egressChain(id))
-	return nft(ctx, script.String(), "-f", "-")
+// MarshalJSON records a resolved entry in network.json, so a render after an
+// Agent restart uses the Rules held at Create (runtime.md §13).
+func (r egressRule) MarshalJSON() ([]byte, error) {
+	return json.Marshal(egressRuleJSON{r.dest, r.accept})
 }
 
-// removeEgress deletes the Sandbox's chain and every veth pointing at it. It
-// does not need the recorded veth, so a probe a crash left behind is removed
-// too.
-func removeEgress(ctx context.Context, id uuid.UUID) error {
-	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, "nft", "-j", "list", "map", egressFamily, egressTableName, sandboxVeths)
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return nil // no table, so no chain either
+func (r *egressRule) UnmarshalJSON(raw []byte) error {
+	var v egressRuleJSON
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
 	}
-	var listing struct {
-		Nftables []struct {
-			Map *struct {
-				Elem []json.RawMessage `json:"elem"`
-			} `json:"map"`
-		} `json:"nftables"`
+	r.dest, r.accept = v.Dest, v.Accept
+	return nil
+}
+
+type egressRuleJSON struct {
+	Dest   nodeproto.EgressEntry `json:"dest"`
+	Accept bool                  `json:"accept"`
+}
+
+// networkState is the local state the Agent-owned nftables tables are
+// rendered from: every local Sandbox's recorded network.
+type networkState struct {
+	sandboxes map[uuid.UUID]sandboxNetwork
+}
+
+// nftTable, nftChain and nftRule are the rendered tables, before nftScript
+// turns them into nft syntax. A chain with a hook is a base chain at priority
+// filter with policy accept.
+type nftTable struct {
+	family, name string
+	chains       []nftChain
+}
+
+type nftChain struct {
+	name  string
+	hook  string
+	rules []nftRule
+}
+
+// nftRule matches on every field that is set. verdict is accept, drop, or the
+// name of a chain to jump to.
+type nftRule struct {
+	iif, oif    string
+	established bool // ct state established,related
+	arp         bool // ether type arp
+	notIP       bool // ether type != ip
+	daddr       netip.Prefix
+	port        uint16 // TCP or UDP destination port
+	verdict     string
+}
+
+// renderNetwork is the whole bridge table orrery: forward and input jump on
+// each Sandbox's host-side veth into its chain, which ends in its Egress
+// Policy (runtime.md §13).
+func renderNetwork(state networkState) []nftTable {
+	ids := make([]uuid.UUID, 0, len(state.sandboxes))
+	for id := range state.sandboxes {
+		ids = append(ids, id)
 	}
-	if err := json.Unmarshal(out.Bytes(), &listing); err != nil {
-		return fmt.Errorf("decode nft map: %w", err)
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	forward := nftChain{name: "forward", hook: "forward"}
+	input := nftChain{name: "input", hook: "input"}
+	table := nftTable{family: egressFamily, name: egressTableName}
+	for _, id := range ids {
+		network := state.sandboxes[id]
+		jump := nftRule{iif: network.HostVeth, verdict: egressChain(id)}
+		forward.rules = append(forward.rules, jump)
+		input.rules = append(input.rules, jump)
+		chain := nftChain{name: egressChain(id), rules: []nftRule{
+			{established: true, verdict: "accept"},
+			{arp: true, verdict: "accept"},
+			{notIP: true, verdict: "drop"},
+		}}
+		for _, rule := range network.Policy {
+			verdict := "drop"
+			if rule.accept {
+				verdict = "accept"
+			}
+			chain.rules = append(chain.rules, nftRule{daddr: rule.dest.Prefix, port: rule.dest.Port, verdict: verdict})
+		}
+		table.chains = append(table.chains, chain)
 	}
+	table.chains = append([]nftChain{forward, input}, table.chains...)
+	return []nftTable{table}
+}
+
+// nftScript replaces each table whole in one nft transaction: adding first
+// makes the delete succeed when the table does not exist yet.
+func nftScript(tables []nftTable) string {
 	var script strings.Builder
-	for _, item := range listing.Nftables {
-		if item.Map == nil {
-			continue
+	for _, table := range tables {
+		name := table.family + " " + table.name
+		fmt.Fprintf(&script, "add table %s\ndelete table %s\ntable %s {\n", name, name, name)
+		for _, chain := range table.chains {
+			fmt.Fprintf(&script, "\tchain %s {\n", chain.name)
+			if chain.hook != "" {
+				fmt.Fprintf(&script, "\t\ttype filter hook %s priority filter; policy accept;\n", chain.hook)
+			}
+			for _, rule := range chain.rules {
+				script.WriteString("\t\t" + rule.String() + "\n")
+			}
+			script.WriteString("\t}\n")
 		}
-		for _, raw := range item.Map.Elem {
-			var elem []json.RawMessage
-			var veth string
-			var target struct {
-				Jump struct {
-					Target string `json:"target"`
-				} `json:"jump"`
-			}
-			if json.Unmarshal(raw, &elem) != nil || len(elem) != 2 ||
-				json.Unmarshal(elem[0], &veth) != nil || json.Unmarshal(elem[1], &target) != nil {
-				continue
-			}
-			if target.Jump.Target == egressChain(id) {
-				fmt.Fprintf(&script, "delete element %s %s { %q }\n", egressTable, sandboxVeths, veth)
-			}
-		}
+		script.WriteString("}\n")
 	}
-	// Adding first makes the delete succeed when the chain is already gone.
-	fmt.Fprintf(&script, "add chain %s %s\ndelete chain %s %s\n", egressTable, egressChain(id), egressTable, egressChain(id))
-	return nft(ctx, script.String(), "-f", "-")
+	return script.String()
+}
+
+func (r nftRule) String() string {
+	var match []string
+	if r.iif != "" {
+		match = append(match, fmt.Sprintf("iifname %q", r.iif))
+	}
+	if r.oif != "" {
+		match = append(match, fmt.Sprintf("oifname %q", r.oif))
+	}
+	if r.established {
+		match = append(match, "ct state established,related")
+	}
+	if r.arp {
+		match = append(match, "ether type arp")
+	}
+	if r.notIP {
+		match = append(match, "ether type != ip")
+	}
+	if r.daddr.IsValid() {
+		match = append(match, "ip daddr "+r.daddr.String())
+	}
+	if r.port != 0 {
+		match = append(match, fmt.Sprintf("meta l4proto { tcp, udp } th dport %d", r.port))
+	}
+	verdict := r.verdict
+	if verdict != "accept" && verdict != "drop" {
+		verdict = "jump " + verdict
+	}
+	return strings.Join(append(match, verdict), " ")
 }
 
 func nft(ctx context.Context, stdin string, args ...string) error {
