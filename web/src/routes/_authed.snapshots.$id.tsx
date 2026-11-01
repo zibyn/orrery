@@ -29,6 +29,7 @@ import {
   snapshotOwnerLabel,
   snapshotVersionsPollInterval,
   versionActions,
+  type VersionAction,
   versionIsCurrent,
 } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
@@ -75,9 +76,9 @@ function SnapshotDetailPage() {
     },
   })
   const versionAction = useMutation({
-    mutationFn: ({ verb, version }: { verb: 'cancel' | 'current' | 'delete'; version: string }) => {
+    mutationFn: ({ verb, version }: { verb: VersionAction; version: string }) => {
       if (verb === 'cancel') return api('POST', `/snapshots/${id}/versions/${version}/cancel`)
-      if (verb === 'current') return api('PUT', `/snapshots/${id}/current`, { version })
+      if (verb === 'setCurrent') return api('PUT', `/snapshots/${id}/current`, { version })
       return api('DELETE', `/snapshots/${id}/versions/${version}`)
     },
     onSuccess: () =>
@@ -301,7 +302,7 @@ function VersionActions({
   actions: ReturnType<typeof versionActions>
   versionId: string
   disabled: boolean
-  onAction: (verb: 'cancel' | 'current' | 'delete') => void
+  onAction: (verb: VersionAction) => void
 }) {
   return (
     <div className="flex justify-end gap-2">
@@ -323,7 +324,7 @@ function VersionActions({
           size="sm"
           disabled={disabled}
           data-testid={`version-set-current-${versionId}`}
-          onClick={() => onAction('current')}
+          onClick={() => onAction('setCurrent')}
         >
           <Pin />
           {m.snapshot_version_set_current()}

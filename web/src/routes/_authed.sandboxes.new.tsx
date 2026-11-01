@@ -56,7 +56,7 @@ function NewSandboxPage() {
 
   const snapshots = useQuery({
     queryKey: ['snapshots'],
-    queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots'),
+    queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots?limit=200'),
   })
   const capacity = useQuery({
     queryKey: ['capacity'],

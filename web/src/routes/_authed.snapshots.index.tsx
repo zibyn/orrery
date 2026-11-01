@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Layers, Plus } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
@@ -26,6 +26,7 @@ function SnapshotsPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user } = Route.useRouteContext()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
@@ -37,7 +38,10 @@ function SnapshotsPage() {
   const create = useMutation({
     mutationFn: (snapshotName: string) =>
       api<Snapshot>('POST', '/snapshots', { name: snapshotName }),
-    onSuccess: (created) => navigate({ to: '/snapshots/$id', params: { id: created.id } }),
+    onSuccess: (created) => {
+      void queryClient.invalidateQueries({ queryKey: ['snapshots'] })
+      void navigate({ to: '/snapshots/$id', params: { id: created.id } })
+    },
     onError: (err) => setError(messageOf(err)),
   })
 
@@ -67,6 +71,7 @@ function SnapshotsPage() {
         actions={
           <Button
             onClick={() => {
+              setName('')
               setError('')
               setOpen(true)
             }}

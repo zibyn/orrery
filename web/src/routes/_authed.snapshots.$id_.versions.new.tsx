@@ -152,7 +152,7 @@ function NewSnapshotVersionPage() {
                       {(field) => (
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center justify-between gap-2">
-                            <Label htmlFor={field.name}>Dockerfile</Label>
+                            <Label htmlFor={field.name}>{m.version_new_dockerfile()}</Label>
                             <label
                               className={cn(
                                 buttonVariants({ variant: 'outline', size: 'sm' }),
@@ -233,7 +233,7 @@ function NewSnapshotVersionPage() {
                               <form.Field name={`secrets[${index}].name`}>
                                 {(field) => (
                                   <select
-                                    aria-label="Secret"
+                                    aria-label={m.version_new_secret()}
                                     className={selectClass}
                                     value={field.state.value}
                                     onChange={(e) => field.handleChange(e.target.value)}
@@ -286,7 +286,7 @@ function NewSnapshotVersionPage() {
                             className="font-mono"
                             value={field.state.value}
                             onChange={(e) => field.handleChange(e.target.value)}
-                            placeholder="registry/image@sha256:…"
+                            placeholder={m.version_new_ref_placeholder()}
                           />
                         </Field>
                       )}
