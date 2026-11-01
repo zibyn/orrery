@@ -92,3 +92,55 @@ test('console-parity: list Snapshots, watch a build change state and read its lo
 
   assertConsoleScope(requests)
 })
+
+test('console: create a Snapshot, reject a duplicate name, then delete it', async ({ page }) => {
+  const requests = watchRequests(page)
+
+  await signIn(page, { returnTo: '/snapshots' })
+  await expect(page).toHaveURL(/\/snapshots$/)
+
+  const snapshotName = `pw-console-snapshot-${Date.now()}`
+  await page.getByRole('button', { name: 'New Snapshot' }).click()
+  await page.getByLabel('Name').fill(snapshotName)
+  await page.getByRole('button', { name: 'Create', exact: true }).click()
+
+  // Creating lands on the new Snapshot's detail page.
+  await expect(page).toHaveURL(/\/snapshots\/[^/?]+$/)
+  await expect(page.getByRole('heading', { name: snapshotName })).toBeVisible()
+  const detailUrl = page.url()
+
+  // A duplicate name shows the server's problem detail in the Drawer.
+  await page.goto('/snapshots')
+  await page.getByRole('button', { name: 'New Snapshot' }).click()
+  await page.getByLabel('Name').fill(snapshotName)
+  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('alert')).not.toBeEmpty()
+  await expect(page).toHaveURL(/\/snapshots$/)
+
+  // Deleting after confirming returns to the list, without the Snapshot.
+  await page.goto(detailUrl)
+  page.once('dialog', (dialog) => void dialog.accept())
+  await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  await expect(page).toHaveURL(/\/snapshots$/)
+  await expect(page.getByRole('heading', { name: 'Snapshots' })).toBeVisible()
+  await expect(page.getByRole('link', { name: snapshotName })).toHaveCount(0)
+
+  assertConsoleScope(requests)
+})
+
+test('console: a Platform Snapshot shows no Delete action', async ({ page }) => {
+  await signIn(page, { returnTo: '/snapshots' })
+
+  const listed = await page.context().request.get(`${origin}/api/v1/snapshots?limit=200`)
+  expect(listed.status()).toBe(200)
+  const platform = (
+    (await listed.json()) as { items: { id: string; owner_id: string | null }[] }
+  ).items.find((item) => item.owner_id === null)
+  test.skip(!platform, 'no Platform Snapshot is configured in this deployment')
+  if (!platform) return
+
+  await page.goto(`/snapshots/${platform.id}`)
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  await expect(page.getByText('Platform', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0)
+})

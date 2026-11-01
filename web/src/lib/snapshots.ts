@@ -41,6 +41,12 @@ export function buildExecPollInterval(state: ExecState | undefined): number | fa
   return state === 'pending' ? LIST_INTERVAL_MS : false
 }
 
+// Platform Snapshots come only from deployment configuration (ADR-0021), so
+// the console shows write controls only on owned Snapshots.
+export function snapshotIsWritable(snapshot: Snapshot | undefined): boolean {
+  return !!snapshot && snapshot.owner_id !== null
+}
+
 export function snapshotOwnerLabel(snapshot: Snapshot, currentUserId: string | undefined): string {
   if (snapshot.owner_id === null) return m.snapshot_owner_platform()
   if (currentUserId && snapshot.owner_id === currentUserId) return m.snapshot_owner_you()

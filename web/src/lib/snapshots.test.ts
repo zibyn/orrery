@@ -7,6 +7,7 @@ import {
   buildLogView,
   isSnapshotVersionTerminal,
   snapshotOwnerLabel,
+  snapshotIsWritable,
   snapshotVersionsPollInterval,
   versionIsCurrent,
 } from './snapshots'
@@ -131,5 +132,16 @@ describe('snapshotOwnerLabel', () => {
 
   it("falls back to the owner id for another user's Snapshot", () => {
     expect(snapshotOwnerLabel(snapshot({ owner_id: 'user-2' }), 'user-1')).toBe('user-2')
+  })
+})
+
+describe('snapshotIsWritable', () => {
+  it('lets the owner write their own Snapshot', () => {
+    expect(snapshotIsWritable(snapshot({ owner_id: 'user-1' }))).toBe(true)
+  })
+
+  it('keeps Platform Snapshots and a missing Snapshot read-only', () => {
+    expect(snapshotIsWritable(snapshot({ owner_id: null }))).toBe(false)
+    expect(snapshotIsWritable(undefined)).toBe(false)
   })
 })
