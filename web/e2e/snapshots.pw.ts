@@ -143,4 +143,114 @@ test('console: a Platform Snapshot shows no Delete action', async ({ page }) => 
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
   await expect(page.getByText('Platform', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0)
+  await expect(page.locator('[data-testid^="version-cancel-"]')).toHaveCount(0)
+  await expect(page.locator('[data-testid^="version-set-current-"]')).toHaveCount(0)
+})
+
+// Creates an owned Snapshot and starts one build per Dockerfile through the
+// API, so these cases do not depend on the console's New version form.
+async function snapshotWithBuilds(
+  page: Page,
+  builds: { dockerfile: string; base?: string }[],
+): Promise<{ snapshotId: string; versionIds: string[] }> {
+  const request = page.context().request
+  const created = await request.post(`${origin}/api/v1/snapshots`, {
+    data: { name: `pw-versions-${Date.now()}` },
+  })
+  expect(created.status()).toBe(201)
+  const snapshotId = ((await created.json()) as { id: string }).id
+  const versionIds: string[] = []
+  for (const build of builds) {
+    const res = await request.post(`${origin}/api/v1/snapshots/${snapshotId}/versions`, {
+      data: { build },
+    })
+    expect(res.status()).toBe(201)
+    versionIds.push(((await res.json()) as { id: string }).id)
+  }
+  return { snapshotId, versionIds }
+}
+
+test('console: cancel a building version', async ({ page }) => {
+  const requests = watchRequests(page)
+  await signIn(page, { returnTo: '/snapshots' })
+  test.skip(!(await snapshotBuildSupported(page)), 'no Node reports snapshot_build=enforced')
+
+  const listed = await page.context().request.get(`${origin}/api/v1/snapshots?limit=200`)
+  const platform = (
+    (await listed.json()) as { items: { name: string; owner_id: string | null }[] }
+  ).items.find((item) => item.owner_id === null)
+  // A slow RUN needs a base image; FROM scratch finishes before it can be cancelled.
+  test.skip(!platform, 'no Platform Snapshot to build a slow version on')
+  if (!platform) return
+
+  const { snapshotId, versionIds } = await snapshotWithBuilds(page, [
+    { dockerfile: 'FROM base\nRUN sleep 120\n', base: platform.name },
+  ])
+  const [version] = versionIds
+  await page.goto(`/snapshots/${snapshotId}`)
+  await expect(page.getByTestId(`version-state-${version}`)).toHaveText('building')
+
+  await page.getByTestId(`version-cancel-${version}`).click()
+  await expect(page.getByTestId(`version-state-${version}`)).toHaveText('cancelled', {
+    timeout: 60_000,
+  })
+  await expect(page.getByTestId(`version-cancel-${version}`)).toHaveCount(0)
+
+  assertConsoleScope(requests)
+})
+
+test('console: set a version as current, and delete only a non-current one', async ({
+  page,
+}) => {
+  const requests = watchRequests(page)
+  await signIn(page, { returnTo: '/snapshots' })
+  test.skip(!(await snapshotBuildSupported(page)), 'no Node reports snapshot_build=enforced')
+
+  const { snapshotId, versionIds } = await snapshotWithBuilds(page, [
+    { dockerfile: 'FROM scratch\n' },
+    { dockerfile: 'FROM scratch\nLABEL second=1\n' },
+  ])
+  const [first, second] = versionIds
+  const setCurrent = async (version: string) => {
+    const res = await page
+      .context()
+      .request.put(`${origin}/api/v1/snapshots/${snapshotId}/current`, { data: { version } })
+    expect(res.status()).toBe(200)
+  }
+
+  await page.goto(`/snapshots/${snapshotId}`)
+  for (const id of versionIds) {
+    await expect(page.getByTestId(`version-state-${id}`)).toHaveText('ready', {
+      timeout: 120_000,
+    })
+  }
+  // The pointer follows whichever build became ready last; pin it to the second.
+  await setCurrent(second)
+  await page.reload()
+  await expect(page.getByTestId(`version-current-${second}`)).toBeVisible()
+  await expect(page.getByTestId(`version-delete-${second}`)).toHaveCount(0)
+  await expect(page.getByTestId(`version-set-current-${second}`)).toHaveCount(0)
+
+  // Set the first version as current; the header and the badge follow.
+  await page.getByTestId(`version-set-current-${first}`).click()
+  await expect(page.getByTestId(`version-current-${first}`)).toBeVisible()
+  await expect(page.getByText(/^current version/)).toContainText(first)
+  await expect(page.getByTestId(`version-delete-${first}`)).toHaveCount(0)
+
+  // Move the pointer back behind the page's back: the server refuses to
+  // delete the current version and the console shows its problem detail.
+  await setCurrent(second)
+  page.once('dialog', (dialog) => void dialog.accept())
+  await page.getByTestId(`version-delete-${second}`).click()
+  await expect(page.getByTestId('version-action-error')).toContainText('current')
+  await expect(page.getByTestId(`version-${second}`)).toBeVisible()
+
+  // Deleting a non-current version after confirming removes it from the table.
+  await page.reload()
+  await expect(page.getByTestId(`version-current-${second}`)).toBeVisible()
+  page.once('dialog', (dialog) => void dialog.accept())
+  await page.getByTestId(`version-delete-${first}`).click()
+  await expect(page.getByTestId(`version-${first}`)).toHaveCount(0)
+
+  assertConsoleScope(requests)
 })
