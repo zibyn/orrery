@@ -41,6 +41,30 @@ export function buildExecPollInterval(state: ExecState | undefined): number | fa
   return state === 'pending' ? LIST_INTERVAL_MS : false
 }
 
+// Platform Snapshots come only from deployment configuration (ADR-0021), so
+// the console shows write controls only on owned Snapshots.
+export function snapshotIsWritable(snapshot: Snapshot | undefined): boolean {
+  return !!snapshot && snapshot.owner_id !== null
+}
+
+export type VersionAction = 'cancel' | 'setCurrent' | 'delete'
+
+// The row actions a version offers on the detail page; the current version
+// cannot be deleted, so the console offers no Delete for it (api.md §2).
+export function versionActions(
+  snapshot: Snapshot | undefined,
+  version: SnapshotVersion,
+): Record<VersionAction, boolean> {
+  const writable = snapshotIsWritable(snapshot)
+  const current = versionIsCurrent(snapshot, version.id)
+  return {
+    cancel: writable && version.state === 'building',
+    setCurrent: writable && version.state === 'ready' && !current,
+    // The server refuses to delete a running build; it must be cancelled first.
+    delete: writable && !current && !(version.source === 'build' && version.state === 'building'),
+  }
+}
+
 export function snapshotOwnerLabel(snapshot: Snapshot, currentUserId: string | undefined): string {
   if (snapshot.owner_id === null) return m.snapshot_owner_platform()
   if (currentUserId && snapshot.owner_id === currentUserId) return m.snapshot_owner_you()

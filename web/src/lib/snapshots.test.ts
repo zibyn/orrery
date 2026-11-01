@@ -7,7 +7,9 @@ import {
   buildLogView,
   isSnapshotVersionTerminal,
   snapshotOwnerLabel,
+  snapshotIsWritable,
   snapshotVersionsPollInterval,
+  versionActions,
   versionIsCurrent,
 } from './snapshots'
 
@@ -131,5 +133,70 @@ describe('snapshotOwnerLabel', () => {
 
   it("falls back to the owner id for another user's Snapshot", () => {
     expect(snapshotOwnerLabel(snapshot({ owner_id: 'user-2' }), 'user-1')).toBe('user-2')
+  })
+})
+
+describe('snapshotIsWritable', () => {
+  it('lets the owner write their own Snapshot', () => {
+    expect(snapshotIsWritable(snapshot({ owner_id: 'user-1' }))).toBe(true)
+  })
+
+  it('keeps Platform Snapshots and a missing Snapshot read-only', () => {
+    expect(snapshotIsWritable(snapshot({ owner_id: null }))).toBe(false)
+    expect(snapshotIsWritable(undefined)).toBe(false)
+  })
+})
+
+describe('versionActions', () => {
+  // [state, current, writable] -> [cancel, setCurrent, delete], for a build-source version
+  const cases: [SnapshotVersionState, boolean, boolean, boolean, boolean, boolean][] = [
+    ['building', false, true, true, false, false],
+    ['building', true, true, true, false, false],
+    ['ready', false, true, false, true, true],
+    ['ready', true, true, false, false, false],
+    ['failed', false, true, false, false, true],
+    ['failed', true, true, false, false, false],
+    ['cancelled', false, true, false, false, true],
+    ['cancelled', true, true, false, false, false],
+    ['building', false, false, false, false, false],
+    ['building', true, false, false, false, false],
+    ['ready', false, false, false, false, false],
+    ['ready', true, false, false, false, false],
+    ['failed', false, false, false, false, false],
+    ['failed', true, false, false, false, false],
+    ['cancelled', false, false, false, false, false],
+    ['cancelled', true, false, false, false, false],
+  ]
+
+  it.each(cases)(
+    'a %s version (current %s, writable %s)',
+    (state, current, writable, cancel, setCurrent, remove) => {
+      const owned = snapshot({
+        owner_id: writable ? 'user-1' : null,
+        current_version_id: current ? 'version-1' : 'version-0',
+      })
+      expect(versionActions(owned, version({ state }))).toEqual({
+        cancel,
+        setCurrent,
+        delete: remove,
+      })
+    },
+  )
+
+  it('offers delete on a building import, which the server cancels', () => {
+    const owned = snapshot({ owner_id: 'user-1', current_version_id: 'version-0' })
+    expect(versionActions(owned, version({ source: 'import', state: 'building' }))).toEqual({
+      cancel: true,
+      setCurrent: false,
+      delete: true,
+    })
+  })
+
+  it('offers nothing while the Snapshot is missing', () => {
+    expect(versionActions(undefined, version({ state: 'ready' }))).toEqual({
+      cancel: false,
+      setCurrent: false,
+      delete: false,
+    })
   })
 })

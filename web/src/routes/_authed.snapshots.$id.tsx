@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
-import { createFileRoute, Link } from '@tanstack/react-router'
-import { Layers, ScrollText } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { Ban, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
@@ -10,7 +10,7 @@ import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
-import { buttonVariants } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Table,
@@ -25,8 +25,11 @@ import { causeLabel, sourceLabel, stateLabel } from '@/lib/labels'
 import {
   buildLogMode,
   isSnapshotVersionTerminal,
+  snapshotIsWritable,
   snapshotOwnerLabel,
   snapshotVersionsPollInterval,
+  versionActions,
+  type VersionAction,
   versionIsCurrent,
 } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
@@ -44,6 +47,8 @@ function SnapshotDetailPage() {
   const { id } = Route.useParams()
   const { user } = Route.useRouteContext()
   const { version: selectedId } = Route.useSearch()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   const versions = useQuery({
     queryKey: ['snapshot-versions', id],
@@ -62,6 +67,26 @@ function SnapshotDetailPage() {
   })
 
   const current = snapshot.data
+
+  const remove = useMutation({
+    mutationFn: () => api<Snapshot>('DELETE', `/snapshots/${id}`),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['snapshots'] })
+      void navigate({ to: '/snapshots' })
+    },
+  })
+  const versionAction = useMutation({
+    mutationFn: ({ verb, version }: { verb: VersionAction; version: string }) => {
+      if (verb === 'cancel') return api('POST', `/snapshots/${id}/versions/${version}/cancel`)
+      if (verb === 'setCurrent') return api('PUT', `/snapshots/${id}/current`, { version })
+      return api('DELETE', `/snapshots/${id}/versions/${version}`)
+    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['snapshot', id] }),
+        queryClient.invalidateQueries({ queryKey: ['snapshot-versions', id] }),
+      ]),
+  })
   const selected = versions.data?.items.find((item) => item.id === selectedId)
   const logMode = selected ? buildLogMode(selected) : 'none'
 
@@ -89,7 +114,44 @@ function SnapshotDetailPage() {
             </>
           ) : undefined
         }
+        actions={
+          current &&
+          snapshotIsWritable(current) && (
+            <>
+              <Link
+                to="/snapshots/$id/versions/new"
+                params={{ id }}
+                className={buttonVariants({ variant: 'outline' })}
+              >
+                <Plus />
+                {m.snapshot_new_version()}
+              </Link>
+              <Button
+                variant="outline"
+                disabled={remove.isPending}
+                onClick={() => {
+                  if (window.confirm(m.snapshot_delete_confirm({ name: current.name }))) remove.mutate()
+                }}
+              >
+                <Trash />
+                {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
+              </Button>
+            </>
+          )
+        }
       />
+
+      {remove.error && (
+        <p className="text-sm text-destructive" role="alert">
+          <Problem error={remove.error} />
+        </p>
+      )}
+
+      {versionAction.error && (
+        <p className="text-sm text-destructive" role="alert" data-testid="version-action-error">
+          <Problem error={versionAction.error} />
+        </p>
+      )}
 
       {snapshot.isPending && (
         <p className="py-8 text-sm text-muted-foreground">{m.snapshot_loading()}</p>
@@ -132,7 +194,8 @@ function SnapshotDetailPage() {
                   <TableHead>{m.snapshot_state()}</TableHead>
                   <TableHead>{m.snapshot_source()}</TableHead>
                   <TableHead>{m.snapshot_created()}</TableHead>
-                  <TableHead className="pr-5 text-right">{m.snapshot_build_log()}</TableHead>
+                  <TableHead className="text-right">{m.snapshot_build_log()}</TableHead>
+                  <TableHead className="pr-5 text-right">{m.snapshot_version_actions()}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -164,7 +227,7 @@ function SnapshotDetailPage() {
                     <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
                       {formatTimestamp(version.created_at)}
                     </TableCell>
-                    <TableCell className="pr-5 text-right">
+                    <TableCell className="text-right">
                       {version.build_exec_id ? (
                         <Link
                           to="/snapshots/$id"
@@ -179,6 +242,14 @@ function SnapshotDetailPage() {
                       ) : (
                         <span className="text-xs text-muted-foreground">—</span>
                       )}
+                    </TableCell>
+                    <TableCell className="pr-5 text-right">
+                      <VersionActions
+                        actions={versionActions(current, version)}
+                        versionId={version.id}
+                        disabled={versionAction.isPending}
+                        onAction={(verb) => versionAction.mutate({ verb, version: version.id })}
+                      />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -217,6 +288,61 @@ function SnapshotDetailPage() {
             )}
           </CardContent>
         </Card>
+      )}
+    </div>
+  )
+}
+
+function VersionActions({
+  actions,
+  versionId,
+  disabled,
+  onAction,
+}: {
+  actions: ReturnType<typeof versionActions>
+  versionId: string
+  disabled: boolean
+  onAction: (verb: VersionAction) => void
+}) {
+  return (
+    <div className="flex justify-end gap-2">
+      {actions.cancel && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={disabled}
+          data-testid={`version-cancel-${versionId}`}
+          onClick={() => onAction('cancel')}
+        >
+          <Ban />
+          {m.common_cancel()}
+        </Button>
+      )}
+      {actions.setCurrent && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={disabled}
+          data-testid={`version-set-current-${versionId}`}
+          onClick={() => onAction('setCurrent')}
+        >
+          <Pin />
+          {m.snapshot_version_set_current()}
+        </Button>
+      )}
+      {actions.delete && (
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={disabled}
+          data-testid={`version-delete-${versionId}`}
+          onClick={() => {
+            if (window.confirm(m.snapshot_version_delete_confirm({ id: versionId }))) onAction('delete')
+          }}
+        >
+          <Trash />
+          {m.common_delete()}
+        </Button>
       )}
     </div>
   )

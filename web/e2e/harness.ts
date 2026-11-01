@@ -45,4 +45,6 @@ export async function signIn(
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
+  // Wait for the Session cookie, so API calls straight after signIn are authenticated.
+  await expect(page).not.toHaveURL(/\/login/)
 }
