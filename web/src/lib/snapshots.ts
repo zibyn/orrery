@@ -47,12 +47,14 @@ export function snapshotIsWritable(snapshot: Snapshot | undefined): boolean {
   return !!snapshot && snapshot.owner_id !== null
 }
 
+export type VersionAction = 'cancel' | 'setCurrent' | 'delete'
+
 // The row actions a version offers on the detail page; the current version
 // cannot be deleted, so the console offers no Delete for it (api.md §2).
 export function versionActions(
   snapshot: Snapshot | undefined,
   version: SnapshotVersion,
-): { cancel: boolean; setCurrent: boolean; delete: boolean } {
+): Record<VersionAction, boolean> {
   const writable = snapshotIsWritable(snapshot)
   const current = versionIsCurrent(snapshot, version.id)
   return {
