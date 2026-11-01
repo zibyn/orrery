@@ -1,17 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { KeyRound, Plus, Trash } from 'lucide-react'
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useState, type FormEvent } from 'react'
 
 import { api, type ListResponse, type Secret } from '@/api'
 import { EmptyState } from '@/components/empty-state'
+import { Field } from '@/components/field'
 import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { Button } from '@/components/ui/button'
 import { Drawer } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { useLocale } from '@/lib/i18n'
 import { messageOf } from '@/lib/labels'
 import { secretNameError } from '@/lib/secrets'
@@ -21,15 +21,6 @@ import { m } from '@/paraglide/messages'
 export const Route = createFileRoute('/_authed/secrets')({
   component: SecretsPage,
 })
-
-function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
-    </div>
-  )
-}
 
 function SecretsPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)

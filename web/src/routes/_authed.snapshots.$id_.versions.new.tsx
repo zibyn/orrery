@@ -2,10 +2,11 @@ import { useForm } from '@tanstack/react-form'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Plus, Upload, X } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 
 import { api, type ListResponse, type Secret, type Snapshot, type SnapshotVersion } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
+import { Field } from '@/components/field'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -14,32 +15,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useLocale } from '@/lib/i18n'
 import { buildSnapshotVersionBody, snapshotVersionSchema } from '@/lib/snapshot-form'
+import { baseSnapshotOptions } from '@/lib/snapshots'
 import { cn, selectClass } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/snapshots/$id_/versions/new')({
   component: NewSnapshotVersionPage,
 })
-
-function Field({
-  label,
-  htmlFor,
-  hint,
-  children,
-}: {
-  label: string
-  htmlFor: string
-  hint?: string
-  children: ReactNode
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  )
-}
 
 function NewSnapshotVersionPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
@@ -202,7 +184,7 @@ function NewSnapshotVersionPage() {
                             onChange={(e) => field.handleChange(e.target.value)}
                           >
                             <option value="">{m.version_new_base_none()}</option>
-                            {snapshots.data?.items.map((item) => (
+                            {baseSnapshotOptions(snapshots.data?.items ?? [], id).map((item) => (
                               <option key={item.id} value={item.name}>
                                 {item.name}
                                 {item.owner_id === null ? m.new_platform_suffix() : ''}
