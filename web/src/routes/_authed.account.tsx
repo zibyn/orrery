@@ -2,10 +2,11 @@ import { useForm } from '@tanstack/react-form'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { KeyRound, Plus } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { z } from 'zod'
 
 import { api, type CreatedToken, type ListResponse, type Token, type User } from '@/api'
+import { Field } from '@/components/field'
 import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
@@ -15,7 +16,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Drawer } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { matchesCurrentSession, readCurrentSessionId, forgetCurrentSession } from '@/lib/current-session'
 import { useLocale } from '@/lib/i18n'
 import { kindLabel, messageOf, scopeLabel } from '@/lib/labels'
@@ -38,15 +38,6 @@ type NewToken = {
   name: string
   scope: (typeof scopeOptions)[number]
   expires_at?: string
-}
-
-function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
-    </div>
-  )
 }
 
 export const Route = createFileRoute('/_authed/account')({

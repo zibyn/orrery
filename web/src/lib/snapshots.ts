@@ -47,6 +47,12 @@ export function snapshotIsWritable(snapshot: Snapshot | undefined): boolean {
   return !!snapshot && snapshot.owner_id !== null
 }
 
+// A build base resolves to the named Snapshot's current version, so the server
+// refuses one without a current version, and a Snapshot cannot base on itself.
+export function baseSnapshotOptions(snapshots: Snapshot[], selfId: string): Snapshot[] {
+  return snapshots.filter((item) => item.id !== selfId && item.current_version_id !== null)
+}
+
 export type VersionAction = 'cancel' | 'setCurrent' | 'delete'
 
 // The row actions a version offers on the detail page; the current version

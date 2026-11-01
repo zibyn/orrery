@@ -1,7 +1,7 @@
 import { useForm } from '@tanstack/react-form'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 
 import {
   api,
@@ -13,14 +13,13 @@ import {
   type Workspace,
 } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
+import { Field } from '@/components/field'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { useLocale } from '@/lib/i18n'
-import { messageOf } from '@/lib/labels'
 import { buildCreateSandboxBody, createSandboxSchema } from '@/lib/sandbox-form'
 import { selectClass } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
@@ -29,30 +28,10 @@ export const Route = createFileRoute('/_authed/sandboxes/new')({
   component: NewSandboxPage,
 })
 
-function Field({
-  label,
-  htmlFor,
-  hint,
-  children,
-}: {
-  label: string
-  htmlFor: string
-  hint?: string
-  children: ReactNode
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  )
-}
-
 function NewSandboxPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const navigate = useNavigate()
-  const [error, setError] = useState('')
+  const [error, setError] = useState<unknown>()
 
   const snapshots = useQuery({
     queryKey: ['snapshots'],
@@ -93,7 +72,7 @@ function NewSandboxPage() {
       idleStop: '900',
     },
     onSubmit: async ({ value }) => {
-      setError('')
+      setError(undefined)
       const parsed = createSandboxSchema.safeParse(value)
       if (!parsed.success) {
         setError(parsed.error.issues[0]?.message ?? m.common_invalid_input())
@@ -107,7 +86,7 @@ function NewSandboxPage() {
         )
         navigate({ to: '/sandboxes/$id', params: { id: created.id } })
       } catch (err) {
-        setError(messageOf(err))
+        setError(err)
       }
     },
   })
@@ -331,9 +310,9 @@ function NewSandboxPage() {
           </CardFooter>
         </Card>
 
-        {(error || loadError) && (
-          <p className="text-sm whitespace-pre-line text-destructive" role="alert">
-            {error || <Problem error={loadError} />}
+        {(error !== undefined || loadError) && (
+          <p className="text-sm text-destructive" role="alert">
+            <Problem error={error ?? loadError} />
           </p>
         )}
       </form>

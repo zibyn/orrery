@@ -7,6 +7,7 @@ import { z } from 'zod'
 
 import { api, type ListResponse, type QuotaUsage, type User } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
+import { Field } from '@/components/field'
 import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
@@ -14,7 +15,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Drawer } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { useLocale } from '@/lib/i18n'
 import { loginTypeLabel } from '@/lib/labels'
 import { selectClass } from '@/lib/utils'
@@ -39,23 +39,6 @@ const createUserSchema = z
     error: () => m.admin_user_password_min(),
     path: ['password'],
   })
-
-function Field({
-  label,
-  htmlFor,
-  children,
-}: {
-  label: string
-  htmlFor: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
-    </div>
-  )
-}
 
 function UsersPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
