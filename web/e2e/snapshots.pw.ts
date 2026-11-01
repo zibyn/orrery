@@ -190,6 +190,8 @@ test('console: cancel a building version', async ({ page }) => {
   const [version] = versionIds
   await page.goto(`/snapshots/${snapshotId}`)
   await expect(page.getByTestId(`version-state-${version}`)).toHaveText('building')
+  // A running build must be cancelled before it can be deleted.
+  await expect(page.getByTestId(`version-delete-${version}`)).toHaveCount(0)
 
   await page.getByTestId(`version-cancel-${version}`).click()
   await expect(page.getByTestId(`version-state-${version}`)).toHaveText('cancelled', {

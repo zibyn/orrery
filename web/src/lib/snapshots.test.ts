@@ -148,9 +148,9 @@ describe('snapshotIsWritable', () => {
 })
 
 describe('versionActions', () => {
-  // [state, current, writable] -> [cancel, setCurrent, delete]
+  // [state, current, writable] -> [cancel, setCurrent, delete], for a build-source version
   const cases: [SnapshotVersionState, boolean, boolean, boolean, boolean, boolean][] = [
-    ['building', false, true, true, false, true],
+    ['building', false, true, true, false, false],
     ['building', true, true, true, false, false],
     ['ready', false, true, false, true, true],
     ['ready', true, true, false, false, false],
@@ -182,6 +182,15 @@ describe('versionActions', () => {
       })
     },
   )
+
+  it('offers delete on a building import, which the server cancels', () => {
+    const owned = snapshot({ owner_id: 'user-1', current_version_id: 'version-0' })
+    expect(versionActions(owned, version({ source: 'import', state: 'building' }))).toEqual({
+      cancel: true,
+      setCurrent: false,
+      delete: true,
+    })
+  })
 
   it('offers nothing while the Snapshot is missing', () => {
     expect(versionActions(undefined, version({ state: 'ready' }))).toEqual({

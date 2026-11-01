@@ -60,7 +60,8 @@ export function versionActions(
   return {
     cancel: writable && version.state === 'building',
     setCurrent: writable && version.state === 'ready' && !current,
-    delete: writable && !current,
+    // The server refuses to delete a running build; it must be cancelled first.
+    delete: writable && !current && !(version.source === 'build' && version.state === 'building'),
   }
 }
 
