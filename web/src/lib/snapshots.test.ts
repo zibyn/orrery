@@ -9,6 +9,7 @@ import {
   snapshotOwnerLabel,
   snapshotIsWritable,
   snapshotVersionsPollInterval,
+  versionActions,
   versionIsCurrent,
 } from './snapshots'
 
@@ -143,5 +144,50 @@ describe('snapshotIsWritable', () => {
   it('keeps Platform Snapshots and a missing Snapshot read-only', () => {
     expect(snapshotIsWritable(snapshot({ owner_id: null }))).toBe(false)
     expect(snapshotIsWritable(undefined)).toBe(false)
+  })
+})
+
+describe('versionActions', () => {
+  // [state, current, writable] -> [cancel, setCurrent, delete]
+  const cases: [SnapshotVersionState, boolean, boolean, boolean, boolean, boolean][] = [
+    ['building', false, true, true, false, true],
+    ['building', true, true, true, false, false],
+    ['ready', false, true, false, true, true],
+    ['ready', true, true, false, false, false],
+    ['failed', false, true, false, false, true],
+    ['failed', true, true, false, false, false],
+    ['cancelled', false, true, false, false, true],
+    ['cancelled', true, true, false, false, false],
+    ['building', false, false, false, false, false],
+    ['building', true, false, false, false, false],
+    ['ready', false, false, false, false, false],
+    ['ready', true, false, false, false, false],
+    ['failed', false, false, false, false, false],
+    ['failed', true, false, false, false, false],
+    ['cancelled', false, false, false, false, false],
+    ['cancelled', true, false, false, false, false],
+  ]
+
+  it.each(cases)(
+    'a %s version (current %s, writable %s)',
+    (state, current, writable, cancel, setCurrent, remove) => {
+      const owned = snapshot({
+        owner_id: writable ? 'user-1' : null,
+        current_version_id: current ? 'version-1' : 'version-0',
+      })
+      expect(versionActions(owned, version({ state }))).toEqual({
+        cancel,
+        setCurrent,
+        delete: remove,
+      })
+    },
+  )
+
+  it('offers nothing while the Snapshot is missing', () => {
+    expect(versionActions(undefined, version({ state: 'ready' }))).toEqual({
+      cancel: false,
+      setCurrent: false,
+      delete: false,
+    })
   })
 })
