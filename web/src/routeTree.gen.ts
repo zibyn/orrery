@@ -26,6 +26,7 @@ import { Route as AuthedSnapshotsIndexRouteImport } from './routes/_authed.snaps
 import { Route as AuthedSnapshotsIdRouteImport } from './routes/_authed.snapshots.$id'
 import { Route as AuthedSandboxesIdExecsRouteImport } from './routes/_authed.sandboxes.$id_.execs'
 import { Route as AuthedSandboxesIdTerminalRouteImport } from './routes/_authed.sandboxes.$id_.terminal'
+import { Route as AuthedSnapshotsIdVersionsNewRouteImport } from './routes/_authed.snapshots.$id_.versions.new'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -112,6 +113,12 @@ const AuthedSandboxesIdTerminalRoute =
     path: '/sandboxes/$id/terminal',
     getParentRoute: () => AuthedRoute,
   } as any)
+const AuthedSnapshotsIdVersionsNewRoute =
+  AuthedSnapshotsIdVersionsNewRouteImport.update({
+    id: '/snapshots/$id_/versions/new',
+    path: '/snapshots/$id/versions/new',
+    getParentRoute: () => AuthedRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -130,6 +137,7 @@ export interface FileRoutesByFullPath {
   '/snapshots/': typeof AuthedSnapshotsIndexRoute
   '/sandboxes/$id/execs': typeof AuthedSandboxesIdExecsRoute
   '/sandboxes/$id/terminal': typeof AuthedSandboxesIdTerminalRoute
+  '/snapshots/$id/versions/new': typeof AuthedSnapshotsIdVersionsNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -148,6 +156,7 @@ export interface FileRoutesByTo {
   '/snapshots': typeof AuthedSnapshotsIndexRoute
   '/sandboxes/$id/execs': typeof AuthedSandboxesIdExecsRoute
   '/sandboxes/$id/terminal': typeof AuthedSandboxesIdTerminalRoute
+  '/snapshots/$id/versions/new': typeof AuthedSnapshotsIdVersionsNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -168,6 +177,7 @@ export interface FileRoutesById {
   '/_authed/snapshots/': typeof AuthedSnapshotsIndexRoute
   '/_authed/sandboxes/$id_/execs': typeof AuthedSandboxesIdExecsRoute
   '/_authed/sandboxes/$id_/terminal': typeof AuthedSandboxesIdTerminalRoute
+  '/_authed/snapshots/$id_/versions/new': typeof AuthedSnapshotsIdVersionsNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -188,6 +198,7 @@ export interface FileRouteTypes {
     | '/snapshots/'
     | '/sandboxes/$id/execs'
     | '/sandboxes/$id/terminal'
+    | '/snapshots/$id/versions/new'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -206,6 +217,7 @@ export interface FileRouteTypes {
     | '/snapshots'
     | '/sandboxes/$id/execs'
     | '/sandboxes/$id/terminal'
+    | '/snapshots/$id/versions/new'
   id:
     | '__root__'
     | '/'
@@ -225,6 +237,7 @@ export interface FileRouteTypes {
     | '/_authed/snapshots/'
     | '/_authed/sandboxes/$id_/execs'
     | '/_authed/sandboxes/$id_/terminal'
+    | '/_authed/snapshots/$id_/versions/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -354,6 +367,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSandboxesIdTerminalRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/snapshots/$id_/versions/new': {
+      id: '/_authed/snapshots/$id_/versions/new'
+      path: '/snapshots/$id/versions/new'
+      fullPath: '/snapshots/$id/versions/new'
+      preLoaderRoute: typeof AuthedSnapshotsIdVersionsNewRouteImport
+      parentRoute: typeof AuthedRoute
+    }
   }
 }
 
@@ -372,6 +392,7 @@ interface AuthedRouteChildren {
   AuthedSnapshotsIndexRoute: typeof AuthedSnapshotsIndexRoute
   AuthedSandboxesIdExecsRoute: typeof AuthedSandboxesIdExecsRoute
   AuthedSandboxesIdTerminalRoute: typeof AuthedSandboxesIdTerminalRoute
+  AuthedSnapshotsIdVersionsNewRoute: typeof AuthedSnapshotsIdVersionsNewRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
@@ -389,6 +410,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSnapshotsIndexRoute: AuthedSnapshotsIndexRoute,
   AuthedSandboxesIdExecsRoute: AuthedSandboxesIdExecsRoute,
   AuthedSandboxesIdTerminalRoute: AuthedSandboxesIdTerminalRoute,
+  AuthedSnapshotsIdVersionsNewRoute: AuthedSnapshotsIdVersionsNewRoute,
 }
 
 const AuthedRouteWithChildren =

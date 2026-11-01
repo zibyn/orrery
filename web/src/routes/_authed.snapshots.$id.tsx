@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { Ban, Layers, Pin, ScrollText, Trash } from 'lucide-react'
+import { Ban, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
@@ -116,16 +116,26 @@ function SnapshotDetailPage() {
         actions={
           current &&
           snapshotIsWritable(current) && (
-            <Button
-              variant="outline"
-              disabled={remove.isPending}
-              onClick={() => {
-                if (window.confirm(m.snapshot_delete_confirm({ name: current.name }))) remove.mutate()
-              }}
-            >
-              <Trash />
-              {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
-            </Button>
+            <>
+              <Link
+                to="/snapshots/$id/versions/new"
+                params={{ id }}
+                className={buttonVariants({ variant: 'outline' })}
+              >
+                <Plus />
+                {m.snapshot_new_version()}
+              </Link>
+              <Button
+                variant="outline"
+                disabled={remove.isPending}
+                onClick={() => {
+                  if (window.confirm(m.snapshot_delete_confirm({ name: current.name }))) remove.mutate()
+                }}
+              >
+                <Trash />
+                {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
+              </Button>
+            </>
           )
         }
       />

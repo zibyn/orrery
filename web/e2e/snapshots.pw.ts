@@ -28,8 +28,8 @@ test('console-parity: list Snapshots, watch a build change state and read its lo
 
   const buildsSupported = await snapshotBuildSupported(page)
 
-  // Create a Snapshot and trigger a build through the API (building is
-  // CLI-only in the console, api.md §8).
+  // Create a Snapshot and trigger a build through the API (the console form
+  // has its own cases below).
   const snapshotName = `pw-snapshot-${Date.now()}`
   const created = await page
     .context()
@@ -145,6 +145,7 @@ test('console: a Platform Snapshot shows no Delete action', async ({ page }) => 
   await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0)
   await expect(page.locator('[data-testid^="version-cancel-"]')).toHaveCount(0)
   await expect(page.locator('[data-testid^="version-set-current-"]')).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'New version' })).toHaveCount(0)
 })
 
 // Creates an owned Snapshot and starts one build per Dockerfile through the
@@ -251,6 +252,97 @@ test('console: set a version as current, and delete only a non-current one', asy
   page.once('dialog', (dialog) => void dialog.accept())
   await page.getByTestId(`version-delete-${first}`).click()
   await expect(page.getByTestId(`version-${first}`)).toHaveCount(0)
+
+  assertConsoleScope(requests)
+})
+
+async function createSnapshotViaApi(page: Page, prefix: string): Promise<string> {
+  const created = await page
+    .context()
+    .request.post(`${origin}/api/v1/snapshots`, { data: { name: `${prefix}-${Date.now()}` } })
+  expect(created.status()).toBe(201)
+  return ((await created.json()) as { id: string }).id
+}
+
+// The build log card shows the live log, the queue notice or the stored result.
+function buildLogShown(page: Page) {
+  return page
+    .getByTestId('build-log-queued')
+    .or(page.locator('.xterm'))
+    .or(page.getByTestId('build-log-result'))
+    .first()
+}
+
+test('console: build a new version and land on its build log, one Idempotency-Key per form', async ({
+  page,
+}) => {
+  const requests = watchRequests(page)
+  await signIn(page, { returnTo: '/snapshots' })
+  const snapshotId = await createSnapshotViaApi(page, 'pw-console-build')
+
+  await page.goto(`/snapshots/${snapshotId}`)
+  await page.getByRole('link', { name: 'New version' }).click()
+  await expect(page).toHaveURL(new RegExp(`/snapshots/${snapshotId}/versions/new$`))
+
+  // The first response is lost on the way back, so the User submits again.
+  // Both submits carry the same key and the server returns the same version.
+  const keys: string[] = []
+  let firstVersionId = ''
+  await page.route(`**/api/v1/snapshots/${snapshotId}/versions`, async (route) => {
+    keys.push((await route.request().headerValue('idempotency-key')) ?? '')
+    const response = await route.fetch()
+    if (keys.length === 1) {
+      firstVersionId = ((await response.json()) as { id: string }).id
+      await route.fulfill({ status: 503, json: { code: 'unavailable', detail: 'lost' } })
+      return
+    }
+    await route.fulfill({ response })
+  })
+
+  await page.getByLabel('Dockerfile').fill('FROM scratch\n')
+  await page.getByRole('button', { name: 'Create version' }).click()
+  await expect(page.getByRole('alert')).not.toBeEmpty()
+  await page.getByRole('button', { name: 'Create version' }).click()
+
+  await expect(page).toHaveURL(new RegExp(`/snapshots/${snapshotId}\\?version=${firstVersionId}`))
+  expect(keys).toHaveLength(2)
+  expect(keys[0]).not.toBe('')
+  expect(keys[1]).toBe(keys[0])
+  await expect(page.getByTestId(`version-state-${firstVersionId}`)).toBeVisible()
+  await expect(buildLogShown(page)).toBeVisible({ timeout: 30_000 })
+
+  assertConsoleScope(requests)
+})
+
+test('console: import rejects an unpinned ref before any request, then lands on the version', async ({
+  page,
+}) => {
+  const requests = watchRequests(page)
+  await signIn(page, { returnTo: '/snapshots' })
+  const snapshotId = await createSnapshotViaApi(page, 'pw-console-import')
+
+  let posts = 0
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith(`/snapshots/${snapshotId}/versions`)) {
+      posts++
+    }
+  })
+
+  await page.goto(`/snapshots/${snapshotId}/versions/new`)
+  await page.getByLabel('Source').selectOption('import')
+  await page.getByLabel('Image ref').fill('docker.io/library/busybox:latest')
+  await page.getByRole('button', { name: 'Create version' }).click()
+  await expect(page.getByRole('alert')).toContainText('@sha256:')
+  expect(posts).toBe(0)
+
+  // The import itself may fail without registry access; landing on the
+  // selected version is what the console owns.
+  await page.getByLabel('Image ref').fill(`docker.io/library/busybox@sha256:${'a'.repeat(64)}`)
+  await page.getByRole('button', { name: 'Create version' }).click()
+  await expect(page).toHaveURL(new RegExp(`/snapshots/${snapshotId}\\?version=`))
+  expect(posts).toBe(1)
+  const versionId = new URL(page.url()).searchParams.get('version')
+  await expect(page.getByTestId(`version-state-${versionId}`)).toBeVisible()
 
   assertConsoleScope(requests)
 })
