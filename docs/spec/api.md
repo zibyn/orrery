@@ -26,7 +26,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `unauthenticated` | 401 | 没有 token、token 无效、过期或已吊销 |
 | `permission_denied` | 403 | token 的 scope 不够；修改平台 Snapshot |
 | `not_found` | 404 | 不存在，或不属于调用方 |
-| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、宣告可达的 Node lost、删除 current 版本、删除被引用的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
+| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、宣告可达的 Node lost、删除 current 版本、删除被引用或构建中（build 来源）的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
 | `precondition_failed` | 412 | `If-Match` 不匹配 |
 | `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
@@ -180,7 +180,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 |---|---|
 | `POST /snapshots` · `GET /snapshots` · `GET /snapshots/{id}` · `DELETE /snapshots/{id}` | |
 | `POST /snapshots/{id}/versions` | `{import: {ref, auth_secret?}}` 或 `{build: {dockerfile, base?, contexts?, secrets?}}`，见下；接受 `Idempotency-Key` |
-| `GET /snapshots/{id}/versions` · `GET /snapshots/{id}/versions/{v}` · `DELETE /snapshots/{id}/versions/{v}` | current 版本或有 Sandbox（含 stopped）引用时删除返回 `409`；否则写墓碑，见下 |
+| `GET /snapshots/{id}/versions` · `GET /snapshots/{id}/versions/{v}` · `DELETE /snapshots/{id}/versions/{v}` | current 版本、有 Sandbox（含 stopped）引用、或 build 来源且仍在 `building`（先 cancel）时删除返回 `409`；否则写墓碑，见下 |
 | `PUT /snapshots/{id}/current` | `{version}`，用于回滚；版本变成 `ready` 时指针自动移过去 |
 | `POST /snapshots/{id}/versions/{v}/cancel` | 取消构建或导入 |
 
