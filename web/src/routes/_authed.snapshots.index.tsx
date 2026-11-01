@@ -1,13 +1,19 @@
-import { useQuery } from '@tanstack/react-query'
-import { createFileRoute, Link } from '@tanstack/react-router'
-import { Layers } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { Layers, Plus } from 'lucide-react'
+import { useState, type FormEvent } from 'react'
 
 import { api, type ListResponse, type Snapshot } from '@/api'
 import { EmptyState } from '@/components/empty-state'
 import { ListCard, ListRow, listTitleClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
+import { Button } from '@/components/ui/button'
+import { Drawer } from '@/components/ui/drawer'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { useLocale } from '@/lib/i18n'
+import { messageOf } from '@/lib/labels'
 import { snapshotOwnerLabel } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
@@ -19,10 +25,30 @@ export const Route = createFileRoute('/_authed/snapshots/')({
 function SnapshotsPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user } = Route.useRouteContext()
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [error, setError] = useState('')
   const snapshots = useQuery({
     queryKey: ['snapshots'],
     queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots?limit=200'),
   })
+
+  const create = useMutation({
+    mutationFn: (snapshotName: string) =>
+      api<Snapshot>('POST', '/snapshots', { name: snapshotName }),
+    onSuccess: (created) => navigate({ to: '/snapshots/$id', params: { id: created.id } }),
+    onError: (err) => setError(messageOf(err)),
+  })
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!name.trim()) {
+      setError(m.snapshots_enter_name())
+      return
+    }
+    create.mutate(name.trim())
+  }
 
   const count = snapshots.data?.items.length
 
@@ -38,7 +64,52 @@ function SnapshotsPage() {
               ? m.snapshots_count_one({ count })
               : m.snapshots_count_other({ count })
         }
+        actions={
+          <Button
+            onClick={() => {
+              setError('')
+              setOpen(true)
+            }}
+          >
+            <Plus />
+            {m.snapshots_new()}
+          </Button>
+        }
       />
+
+      <Drawer
+        open={open}
+        onOpenChange={setOpen}
+        title={m.snapshots_new()}
+        description={m.snapshots_new_description()}
+        footer={
+          <>
+            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+              {m.common_cancel()}
+            </Button>
+            <Button type="submit" form="snapshot-form" disabled={create.isPending}>
+              {create.isPending ? m.snapshots_creating() : m.common_create()}
+            </Button>
+          </>
+        }
+      >
+        <form id="snapshot-form" onSubmit={submit} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="snapshot-name">{m.common_name()}</Label>
+            <Input
+              id="snapshot-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+          {error && (
+            <p className="text-sm whitespace-pre-line text-destructive" role="alert">
+              {error}
+            </p>
+          )}
+        </form>
+      </Drawer>
 
       {snapshots.isPending && (
         <p className="py-8 text-sm text-muted-foreground">{m.snapshots_loading()}</p>

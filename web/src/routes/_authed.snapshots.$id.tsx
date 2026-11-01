@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
-import { createFileRoute, Link } from '@tanstack/react-router'
-import { Layers, ScrollText } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { Layers, ScrollText, Trash } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
@@ -10,7 +10,7 @@ import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
-import { buttonVariants } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Table,
@@ -25,6 +25,7 @@ import { causeLabel, sourceLabel, stateLabel } from '@/lib/labels'
 import {
   buildLogMode,
   isSnapshotVersionTerminal,
+  snapshotIsWritable,
   snapshotOwnerLabel,
   snapshotVersionsPollInterval,
   versionIsCurrent,
@@ -44,6 +45,8 @@ function SnapshotDetailPage() {
   const { id } = Route.useParams()
   const { user } = Route.useRouteContext()
   const { version: selectedId } = Route.useSearch()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   const versions = useQuery({
     queryKey: ['snapshot-versions', id],
@@ -62,6 +65,14 @@ function SnapshotDetailPage() {
   })
 
   const current = snapshot.data
+
+  const remove = useMutation({
+    mutationFn: () => api<Snapshot>('DELETE', `/snapshots/${id}`),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['snapshots'] })
+      void navigate({ to: '/snapshots' })
+    },
+  })
   const selected = versions.data?.items.find((item) => item.id === selectedId)
   const logMode = selected ? buildLogMode(selected) : 'none'
 
@@ -89,7 +100,28 @@ function SnapshotDetailPage() {
             </>
           ) : undefined
         }
+        actions={
+          current &&
+          snapshotIsWritable(current) && (
+            <Button
+              variant="outline"
+              disabled={remove.isPending}
+              onClick={() => {
+                if (window.confirm(m.snapshot_delete_confirm({ name: current.name }))) remove.mutate()
+              }}
+            >
+              <Trash />
+              {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
+            </Button>
+          )
+        }
       />
+
+      {remove.error && (
+        <p className="text-sm text-destructive" role="alert">
+          <Problem error={remove.error} />
+        </p>
+      )}
 
       {snapshot.isPending && (
         <p className="py-8 text-sm text-muted-foreground">{m.snapshot_loading()}</p>
