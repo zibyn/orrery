@@ -116,6 +116,10 @@ export type Snapshot = {
   deleted_at?: string
 }
 
+export type CreateSnapshotVersionRequest =
+  | { import: { ref: string; auth_secret?: string } }
+  | { build: { dockerfile: string; base?: string; secrets?: Record<string, string> } }
+
 export type SnapshotVersionState = 'building' | 'ready' | 'failed' | 'cancelled'
 
 export type SnapshotVersion = {
@@ -264,13 +268,18 @@ async function send(method: string, path: string, init?: RequestInit): Promise<R
   return res
 }
 
-export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function api<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  headers?: Record<string, string>,
+): Promise<T> {
   const res = await send(
     method,
     path,
     body === undefined
-      ? undefined
-      : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      ? { headers }
+      : { headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) },
   )
   if (res.status === 204) return undefined as T
   return (await res.json()) as T

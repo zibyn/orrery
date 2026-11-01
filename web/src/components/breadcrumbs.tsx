@@ -11,12 +11,12 @@ export type Crumb =
       label: ReactNode
       to: '/sandboxes' | '/snapshots' | '/admin/users' | '/admin/nodes' | '/admin/audit'
     }
-  | { label: ReactNode; to: '/sandboxes/$id'; params: { id: string } }
+  | { label: ReactNode; to: '/sandboxes/$id' | '/snapshots/$id'; params: { id: string } }
   | { label: ReactNode }
 
 function CrumbLink({ item }: { item: Crumb }) {
   if (!('to' in item)) return null
-  if (item.to === '/sandboxes/$id') {
+  if (item.to === '/sandboxes/$id' || item.to === '/snapshots/$id') {
     return (
       <Link to={item.to} params={item.params} className="truncate transition-colors hover:text-foreground">
         {item.label}
