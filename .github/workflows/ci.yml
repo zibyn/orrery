@@ -19,6 +19,28 @@ concurrency:
 permissions:
   contents: read
 
+# The bundled runtimes (ADR-0028): the release job packs them and
+# scripts/ci-e2e-node.sh runs the e2e Node on them. Renovate bumps the
+# versions (renovate.json); a bump must update both arches' sha256 in the
+# same PR.
+env:
+  # renovate: datasource=github-releases depName=containerd/containerd extractVersion=^v(?<version>.+)$
+  CONTAINERD_VERSION: 2.2.1
+  CONTAINERD_SHA256_AMD64: f5d8e90ecb6c1c7e33ecddf8cc268a93b9e5b54e0e850320d765511d76624f41
+  CONTAINERD_SHA256_ARM64: dac15a0d412a24be8bfe6a40cec8f51829062725169f1e72ac7d120a891ef5b6
+  # renovate: datasource=github-releases depName=opencontainers/runc extractVersion=^v(?<version>.+)$
+  RUNC_VERSION: 1.5.2
+  RUNC_SHA256_AMD64: 599f6f94ff8c5057241eff0d54c3c74f95c34935b6457b33fe545defc61e9488
+  RUNC_SHA256_ARM64: d10ecae898361832a059be2089bab92d158aec54661b18ed7346ed79628b46b0
+  # renovate: datasource=github-releases depName=moby/buildkit
+  BUILDKIT_VERSION: v0.34.1
+  BUILDKIT_SHA256_AMD64: a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b
+  BUILDKIT_SHA256_ARM64: c8c97b84baf89dfe0ea85063ac24ad88eb909979ea476ce3ef9e8e11e60ebef8
+  # renovate: datasource=github-tags depName=google/gvisor versioning=regex:^release-(?<major>\d{8})\.(?<minor>\d+)$
+  GVISOR_VERSION: release-20261026.0
+  GVISOR_SHA256_AMD64: 096589d2d6078ba4caa26aa0200932f571aa5da9d08a5156b98ab1d93fa54468
+  GVISOR_SHA256_ARM64: 6b03c9d53f46b5ac56fd32522f38f108645e9f80a26a335e86ad1e09dcdaefda
+
 jobs:
   # `check` is the required PR gate and runs on every PR. The e2e suite only
   # runs when the server, agent, CLI, protocol, deployment or the tests
@@ -98,9 +120,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install httpx
-      # The runner is the e2e containerd Node (#170): CNI plugins, containerd
-      # 2.x and a standalone buildkitd, whose address lands in
-      # ORRERY_E2E_BUILDKIT. It runs before the second Docker daemon starts.
+      # The runner is the e2e containerd Node: the Agent's own containerd and
+      # buildkitd, set up as install.sh does (ADR-0028); the runner's
+      # containerd is left alone. It runs before the second Docker daemon starts.
       - run: ./scripts/ci-e2e-node.sh
       # The Compose stack builds on Docker 29 (containerd image store), whose
       # default builder can export the gha cache of deploy/compose.ci.yaml.
@@ -192,26 +214,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      # The bundled runtimes (ADR-0028). Renovate bumps the versions
-      # (renovate.json); a bump must update both arches' sha256 in the same PR.
+      # The bundled runtimes' versions and sha256 are the workflow env.
       - name: Build the Node package and the CLI
-        env:
-          # renovate: datasource=github-releases depName=containerd/containerd extractVersion=^v(?<version>.+)$
-          CONTAINERD_VERSION: 2.2.1
-          CONTAINERD_SHA256_AMD64: f5d8e90ecb6c1c7e33ecddf8cc268a93b9e5b54e0e850320d765511d76624f41
-          CONTAINERD_SHA256_ARM64: dac15a0d412a24be8bfe6a40cec8f51829062725169f1e72ac7d120a891ef5b6
-          # renovate: datasource=github-releases depName=opencontainers/runc extractVersion=^v(?<version>.+)$
-          RUNC_VERSION: 1.5.2
-          RUNC_SHA256_AMD64: 599f6f94ff8c5057241eff0d54c3c74f95c34935b6457b33fe545defc61e9488
-          RUNC_SHA256_ARM64: d10ecae898361832a059be2089bab92d158aec54661b18ed7346ed79628b46b0
-          # renovate: datasource=github-releases depName=moby/buildkit
-          BUILDKIT_VERSION: v0.34.1
-          BUILDKIT_SHA256_AMD64: a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b
-          BUILDKIT_SHA256_ARM64: c8c97b84baf89dfe0ea85063ac24ad88eb909979ea476ce3ef9e8e11e60ebef8
-          # renovate: datasource=github-tags depName=google/gvisor versioning=regex:^release-(?<major>\d{8})\.(?<minor>\d+)$
-          GVISOR_VERSION: release-20261026.0
-          GVISOR_SHA256_AMD64: 096589d2d6078ba4caa26aa0200932f571aa5da9d08a5156b98ab1d93fa54468
-          GVISOR_SHA256_ARM64: 6b03c9d53f46b5ac56fd32522f38f108645e9f80a26a335e86ad1e09dcdaefda
         run: |
           set -euo pipefail
           v="$GITHUB_REF_NAME"

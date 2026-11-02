@@ -202,13 +202,17 @@ func buildUnreferencedImage(t *testing.T, suffix int64) string {
 	tag := fmt.Sprintf("127.0.0.1:15000/e2e-evict:%d", suffix)
 	// The Agent's containerd namespace gets the image by import: buildkitd
 	// has no containerd image store of its own here. The import goes through
-	// ORRERY_E2E_CTR so it lands in the containerd the Agent uses.
+	// ctrCommand so it lands in the containerd the Agent uses.
+	var ctr []string
+	for _, w := range ctrCommand() {
+		ctr = append(ctr, shellQuote(w))
+	}
 	script := fmt.Sprintf(`set -e
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 echo evict-%d > "$d/f"; printf 'FROM scratch\nCOPY f /f\n' > "$d/Dockerfile"
 buildctl --addr %s build --frontend dockerfile.v0 --local context="$d" --local dockerfile="$d" \
   --output type=oci,name=%s,dest="$d/image.tar"
-%s -n orrery images import "$d/image.tar"`, suffix, shellQuote(e2eBuildkit(t)), shellQuote(tag), shellQuote(envOr("ORRERY_E2E_CTR", "ctr")))
+%s -n orrery images import "$d/image.tar"`, suffix, shellQuote(e2eBuildkit(t)), shellQuote(tag), strings.Join(ctr, " "))
 	if out, err := nodeShell(script); err != nil {
 		t.Fatalf("build eviction image: %v\n%s", err, out)
 	}
