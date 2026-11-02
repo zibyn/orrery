@@ -1,21 +1,15 @@
 #!/usr/bin/env bash
 # Turns a GitHub Actions Ubuntu runner into the e2e suite's containerd Node
-# (#170): the runner's containerd (2.x), the CNI plugins in /opt/cni/bin, nft,
-# and a standalone buildkitd. scripts/e2e.sh then runs as root, so every Agent
-# it starts is a root containerd Agent. The versions match the hand-tested
+# (#170): the runner's containerd (2.x) and a standalone buildkitd; the Agent
+# needs no CNI plugins, nft or ip (#205). scripts/e2e.sh then runs as root, so
+# every Agent it starts is a root containerd Agent. The versions match the hand-tested
 # containerd host (docs/research/containerd-cdi-runsc-cni-spike.md).
 set -euo pipefail
 
-CNI_VERSION=v1.9.1
 BUILDKIT_VERSION=v0.34.1
 CONTAINERD_VERSION=2.2.1
 BUILDKIT_DIR=/run/orrery-buildkit
 BUILDKIT_ADDR="unix://$BUILDKIT_DIR/buildkitd.sock"
-
-sudo mkdir -p /opt/cni/bin
-curl -fsSL "https://github.com/containernetworking/plugins/releases/download/$CNI_VERSION/cni-plugins-linux-amd64-$CNI_VERSION.tgz" |
-  sudo tar -xz -C /opt/cni/bin
-command -v nft >/dev/null || sudo apt-get install -y --no-install-recommends nftables
 
 # The Agent speaks the containerd 2.x API. The runner's containerd serves
 # Docker too, so an older one is upgraded in place and both are restarted.
@@ -45,7 +39,7 @@ for _ in $(seq 1 60); do
 done
 sudo buildctl --addr "$BUILDKIT_ADDR" debug workers || { sudo cat "$BUILDKIT_DIR/buildkitd.log"; exit 1; }
 
-# Docker's FORWARD policy is drop. Let Sandbox traffic on the Agent's CNI
+# Docker's FORWARD policy is drop. Let Sandbox traffic on the Agent's
 # bridge (orrery0) through, so Sandboxes reach the internet as they did on
 # the Docker Node; Egress Rules still filter it on the bridge itself.
 sudo iptables -I DOCKER-USER -i orrery0 -j ACCEPT

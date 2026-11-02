@@ -1,6 +1,6 @@
 # ADR-0026: containerd Runtime Provider, Isolation Runtime and platform Egress Rules
 
-- Status: accepted; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31); runsc `oom_killed` consequence added by #173 (2026-10-31); "no implicit entries" excepts Sandbox Links, and CNI masquerade replaced by the Agent's, by ADR-0027
+- Status: accepted; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31); runsc `oom_killed` consequence added by #173 (2026-10-31); "no implicit entries" excepts Sandbox Links, and CNI masquerade replaced by the Agent's, by ADR-0027; CNI replaced by Agent-owned netlink with the same network shape by #205 (2026-11-02)
 - Date: 2026-10-30
 
 ## Context
@@ -16,6 +16,8 @@ Spike #161 checked the premises on containerd 2.2.1, runsc `release-20261026.0` 
 **Isolation Runtime is a Node choice.** Each containerd Node runs exactly one Isolation Runtime, `runc` or `runsc` (gVisor's OCI runtime, through the `io.containerd.runsc.v1` shim), set by Agent configuration. It is reported as Runtime Capability `kernel_isolation` (`enforced` under runsc, `unsupported` on runc). A request cannot select it; a deployment that wants gVisor everywhere enrolls only runsc Nodes.
 
 **The platform owns the Sandbox network.** Each Sandbox gets its own netns and veth on a CNI bridge with host-local IPAM from the Node's Sandbox subnet. Egress is filtered by an Agent-owned `bridge`-family nftables table that matches the host-side veth by `iifname`, outside the reach of code in the Sandbox and identical for runc and runsc: runsc moves the netns's addresses into its own network stack, but its packets still leave through the same veth. An `inet` table is not used, because without `br_netfilter` it sees the bridge rather than the veth, and the Agent does not load `br_netfilter`, which would change filtering for everything else on the host bridge. `ct state established,related` is accepted first, so replies to connections a Sandbox did not initiate still flow. The netns, veth and rules are torn down on `Stop` and built again on `Create`; under runsc a netns cannot be reused after its Sandbox started.
+
+> Note (#205): the Agent no longer calls the CNI plugins, `ip` or `nft`. It builds the same netns, bridge, veth and default route over netlink, allocates addresses itself from the Sandbox subnet, and programs the same nftables tables over netlink. The network shape is unchanged; Nodes no longer need those host binaries.
 
 **Tunnels keep the Supervisor forwarder.** A Tunnel to a Sandbox port is served by `supervisor forward PORT <sock>` inside the Sandbox, on a unix socket in the shared run mount, and the Agent dials that socket, as today. The Agent never enters the Sandbox netns. On runsc Nodes the Agent passes runsc `host-uds=create` for each container through the shim's runtime options, so a socket created inside the Sandbox is visible on the host; the PTY control socket needs the same flag.
 

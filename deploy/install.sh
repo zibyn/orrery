@@ -662,9 +662,7 @@ node() {
   flock -n 9 || die "another install or auto-update is running"
   case "${runtime:-containerd}" in
     containerd)
-      need ctr nft ip
-      [ -x /opt/cni/bin/bridge ] && [ -x /opt/cni/bin/host-local ] && [ -x /opt/cni/bin/loopback ] ||
-        die "the CNI plugins (bridge, host-local, loopback) must be installed in /opt/cni/bin"
+      need ctr
       ;;
     local) ;;
     *) die "--runtime is containerd or local" ;;

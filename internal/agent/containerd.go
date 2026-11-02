@@ -62,6 +62,10 @@ type containerdDriver struct {
 	// probeLink is the sandbox_links self-check's Link, rendered beside links
 	// while it runs. Guarded by networkMu.
 	probeLink *nodev1.SandboxLink
+	// addrs is every address this Agent handed out and has not released, and
+	// lastAddr the latest; see allocateAddress. Guarded by networkMu.
+	addrs    map[netip.Addr]uuid.UUID
+	lastAddr netip.Addr
 }
 
 // runsc reports whether this Node runs Sandboxes under runsc.
@@ -91,6 +95,7 @@ func newContainerdRuntime(socket, subnet, isolation, dataRoot, nodeID string) (*
 			return nil, fmt.Errorf("write runsc options: %w", err)
 		}
 	}
+	sweepOrphanNetworks(dataRoot)
 	rt.driver = driver
 	return rt, nil
 }
@@ -227,7 +232,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err != nil {
 		return cause, err
 	}
-	if _, err = d.setupNetwork(ctx, id, sandboxPath(d.r.dataRoot, id), policy, cmd.linkTarget); err == nil {
+	if _, err = d.setupNetwork(id, sandboxPath(d.r.dataRoot, id), policy, cmd.linkTarget); err == nil {
 		err = d.applyNetwork(ctx)
 	}
 	if err != nil {
@@ -474,7 +479,7 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	// The egress self-check starts at Mode none, without the operator's Rules
 	// (runtime.md §13).
 	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressNone})
-	network, err := d.setupNetwork(ctx, id, dir, none, false)
+	network, err := d.setupNetwork(id, dir, none, false)
 	defer d.teardownNetwork(context.WithoutCancel(ctx), id, dir) //nolint:errcheck // disposable
 	if err == nil {
 		d.setProbe(id, &network)
@@ -523,7 +528,7 @@ func (d *containerdDriver) linksEnforced(ctx context.Context, img containerd.Ima
 	}
 	id := uuid.New()
 	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressNone})
-	network, err := d.setupNetwork(ctx, id, targetDir, none, true)
+	network, err := d.setupNetwork(id, targetDir, none, true)
 	defer d.teardownNetwork(context.WithoutCancel(ctx), id, targetDir) //nolint:errcheck // disposable
 	if err != nil {
 		slog.Warn("link self-check: target network", "error", err)
@@ -587,7 +592,7 @@ func (d *containerdDriver) egressEnforced(ctx context.Context, c containerd.Cont
 	if err != nil {
 		return false
 	}
-	// host-local's default gateway, which the bridge plugin puts on the bridge.
+	// The bridge holds the gateway (runtime.md §13).
 	listener, err := net.Listen("tcp", netip.AddrPortFrom(subnet.Masked().Addr().Next(), 0).String())
 	if err != nil {
 		slog.Warn("egress self-check: listen on the bridge gateway", "error", err)

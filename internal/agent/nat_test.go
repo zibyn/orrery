@@ -2,8 +2,10 @@ package agent
 
 import (
 	"net/netip"
-	"strings"
 	"testing"
+
+	"github.com/google/nftables"
+	"github.com/google/nftables/expr"
 )
 
 // runtime.md §13: the Agent's own `ip orrery_nat` table masquerades Sandbox
@@ -24,24 +26,18 @@ func TestRenderNetworkNAT(t *testing.T) {
 	if chain.hook != "postrouting" {
 		t.Errorf("hook = %q, want postrouting", chain.hook)
 	}
-	script := nftScript([]nftTable{*nat})
-	for _, want := range []string{
-		"type nat hook postrouting priority srcnat; policy accept;",
-		"ip saddr 10.88.0.0/16",
-		"ip daddr != 10.88.0.0/16",
-		`oifname != "orrery-wg"`,
-		"masquerade\n",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("script lacks %q:\n%s", want, script)
-		}
+	rule := chain.rules[0]
+	if rule.saddr != subnet || rule.daddr != subnet || !rule.notDaddr || rule.oif != meshInterface || !rule.notOif || rule.verdict != "masquerade" {
+		t.Errorf("rule = %+v, want ip saddr %s ip daddr != %[2]s oifname != %q masquerade", rule, subnet, meshInterface)
 	}
-}
-
-// The bridge plugin no longer masquerades; orrery_nat does (runtime.md §13).
-func TestBridgeConfHasNoIPMasq(t *testing.T) {
-	conf := (&containerdDriver{subnet: "10.88.0.0/16"}).bridgeConf()
-	if !strings.Contains(string(conf), `"ipMasq":false`) {
-		t.Errorf("bridge conf = %s, want ipMasq false", conf)
+	if got := nftChainOf(&nftables.Table{Family: nftables.TableFamilyIPv4}, chain); got.Type != nftables.ChainTypeNAT || *got.Priority != *nftables.ChainPriorityNATSource {
+		t.Errorf("chain = %+v, want type nat priority srcnat", got)
+	}
+	exprs := rule.exprs(nftables.TableFamilyIPv4)
+	if len(exprs) != 1 {
+		t.Fatalf("exprs = %d rules, want 1", len(exprs))
+	}
+	if _, ok := exprs[0][len(exprs[0])-1].(*expr.Masq); !ok {
+		t.Errorf("rule ends in %T, want masquerade", exprs[0][len(exprs[0])-1])
 	}
 }

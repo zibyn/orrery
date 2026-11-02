@@ -3,7 +3,9 @@ package agent
 import (
 	"encoding/json"
 	"net/netip"
-	"strings"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -352,15 +354,12 @@ func TestRenderNetworkMesh(t *testing.T) {
 			t.Errorf("%s: accepted = %v, want %v", tt.name, got, tt.accept)
 		}
 	}
-	script := nftScript(tables)
-	for _, want := range []string{
-		"table inet orrery_mesh {",
-		`iifname "orrery-wg" tcp flags syn tcp option maxseg size set rt mtu` + "\n",
-		`oifname "orrery-wg" tcp flags syn tcp option maxseg size set rt mtu` + "\n",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("script lacks %q:\n%s", want, script)
-		}
+	mesh := tables[1]
+	if mesh.family != "inet" || mesh.name != "orrery_mesh" {
+		t.Fatalf("second table = %s %s, want inet orrery_mesh", mesh.family, mesh.name)
+	}
+	if clamp := mesh.chains[0].rules[:2]; clamp[0] != (nftRule{iif: meshInterface, clampMSS: true}) || clamp[1] != (nftRule{oif: meshInterface, clampMSS: true}) {
+		t.Errorf("forward opens with %+v, want the MSS clamp both ways through %s", clamp, meshInterface)
 	}
 }
 
@@ -436,5 +435,66 @@ func TestRenderNetworkLinkWithoutPortsIsTCPAndUDPOnly(t *testing.T) {
 		if got := evaluate(t, tables, tt.p); got != tt.accept {
 			t.Errorf("%s: accepted = %v, want %v", tt.name, got, tt.accept)
 		}
+	}
+}
+
+// #205: the Agent allocates Sandbox addresses itself; an address recorded in
+// a Sandbox directory (from before an upgrade too) or held by another
+// Sandbox is never handed out again, nor the gateway or broadcast address.
+func TestAllocateAddress(t *testing.T) {
+	dataRoot := t.TempDir()
+	d := &containerdDriver{r: newRuntime(ProviderContainerd, dataRoot, uuid.NewString()), subnet: "10.213.0.0/29"}
+	recorded := uuid.New()
+	dir := sandboxPath(dataRoot, recorded)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(sandboxNetwork{HostVeth: "veth1a2b3c4d", Address: "10.213.0.3"})
+	if err := os.WriteFile(filepath.Join(dir, "network.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, b, c := uuid.New(), uuid.New(), uuid.New()
+	var got []string
+	for _, id := range []uuid.UUID{a, b, c, uuid.New()} {
+		addr, err := d.allocateAddress(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, addr.String())
+	}
+	// .1 is the gateway, .3 recorded, .7 the broadcast address.
+	if want := []string{"10.213.0.2", "10.213.0.4", "10.213.0.5", "10.213.0.6"}; !slices.Equal(got, want) {
+		t.Fatalf("allocated %v, want %v", got, want)
+	}
+	if _, err := d.allocateAddress(uuid.New()); err == nil {
+		t.Fatal("a full subnet must fail")
+	}
+	d.releaseAddress(b)
+	if addr, err := d.allocateAddress(uuid.New()); err != nil || addr.String() != "10.213.0.4" {
+		t.Fatalf("after a release allocated %v, %v, want 10.213.0.4", addr, err)
+	}
+}
+
+// #205: the host veth name fits IFNAMSIZ.
+func TestHostVethName(t *testing.T) {
+	if name := hostVethName(uuid.MustParse("1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d")); name != "veth1a2b3c4d5e6" {
+		t.Fatalf("hostVethName = %q", name)
+	}
+}
+
+// #205: a netns this Agent marked with no network.json is an orphan of a
+// crash and is swept before any address is handed out; a recorded one stays.
+func TestOrphanNetns(t *testing.T) {
+	dataRoot := t.TempDir()
+	recorded, orphan := uuid.New(), uuid.New()
+	if err := os.MkdirAll(sandboxPath(dataRoot, recorded), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sandboxPath(dataRoot, recorded), "network.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := orphanNetns([]string{recorded.String(), orphan.String(), "not-a-uuid"}, dataRoot)
+	if !slices.Equal(got, []uuid.UUID{orphan}) {
+		t.Fatalf("orphans = %v, want [%v]", got, orphan)
 	}
 }

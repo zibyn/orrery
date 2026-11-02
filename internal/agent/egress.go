@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
-	"os/exec"
 	"slices"
 	"strings"
 
@@ -158,8 +156,8 @@ type networkState struct {
 	links     []*nodev1.SandboxLink
 }
 
-// nftTable, nftChain and nftRule are the rendered tables, before nftScript
-// turns them into nft syntax. A chain with a hook is a base chain with policy
+// nftTable, nftChain and nftRule are the rendered tables, before applyTables
+// turns them into netlink. A chain with a hook is a base chain with policy
 // accept: nat at priority srcnat on postrouting, else filter.
 type nftTable struct {
 	family, name string
@@ -339,83 +337,4 @@ func natTable(subnet netip.Prefix) nftTable {
 		name: "postrouting", hook: "postrouting",
 		rules: []nftRule{{saddr: subnet, daddr: subnet, notDaddr: true, oif: meshInterface, notOif: true, verdict: "masquerade"}},
 	}}}
-}
-
-// nftScript replaces each table whole in one nft transaction: adding first
-// makes the delete succeed when the table does not exist yet.
-func nftScript(tables []nftTable) string {
-	var script strings.Builder
-	for _, table := range tables {
-		name := table.family + " " + table.name
-		fmt.Fprintf(&script, "add table %s\ndelete table %s\ntable %s {\n", name, name, name)
-		for _, chain := range table.chains {
-			fmt.Fprintf(&script, "\tchain %s {\n", chain.name)
-			switch chain.hook {
-			case "":
-			case "postrouting":
-				script.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
-			default:
-				fmt.Fprintf(&script, "\t\ttype filter hook %s priority filter; policy accept;\n", chain.hook)
-			}
-			for _, rule := range chain.rules {
-				script.WriteString("\t\t" + rule.String() + "\n")
-			}
-			script.WriteString("\t}\n")
-		}
-		script.WriteString("}\n")
-	}
-	return script.String()
-}
-
-func (r nftRule) String() string {
-	var match []string
-	not := func(negate bool) string {
-		if negate {
-			return "!= "
-		}
-		return ""
-	}
-	if r.iif != "" {
-		match = append(match, fmt.Sprintf("iifname %q", r.iif))
-	}
-	if r.oif != "" {
-		match = append(match, fmt.Sprintf("oifname %s%q", not(r.notOif), r.oif))
-	}
-	if r.established {
-		match = append(match, "ct state established,related")
-	}
-	if r.arp {
-		match = append(match, "ether type arp")
-	}
-	if r.notIP {
-		match = append(match, "ether type != ip")
-	}
-	if r.saddr.IsValid() {
-		match = append(match, "ip saddr "+r.saddr.String())
-	}
-	if r.daddr.IsValid() {
-		match = append(match, "ip daddr "+not(r.notDaddr)+r.daddr.String())
-	}
-	if r.port != 0 {
-		match = append(match, fmt.Sprintf("meta l4proto { tcp, udp } th dport %d", r.port))
-	} else if r.tcpUDP {
-		match = append(match, "meta l4proto { tcp, udp }")
-	}
-	if r.clampMSS {
-		return strings.Join(append(match, "tcp flags syn tcp option maxseg size set rt mtu"), " ")
-	}
-	verdict := r.verdict
-	if r.jump != "" {
-		verdict = "jump " + r.jump
-	}
-	return strings.Join(append(match, verdict), " ")
-}
-
-func nft(ctx context.Context, stdin string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "nft", args...)
-	cmd.Stdin = strings.NewReader(stdin)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("nft: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }

@@ -151,7 +151,7 @@ type RunOptions struct {
 	CAPath string
 	Server string // overrides the address stored at enroll time
 	State  string
-	// Containerd is the containerd socket and SandboxSubnet the CNI address
+	// Containerd is the containerd socket and SandboxSubnet the address
 	// pool for --runtime containerd (runtime.md §9, §13).
 	Containerd    string
 	SandboxSubnet string

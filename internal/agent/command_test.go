@@ -73,7 +73,7 @@ func TestCreateSandboxPassesLinkTarget(t *testing.T) {
 	}
 }
 
-// node-protocol.md: `running` carries the address CNI gave this Create, read
+// node-protocol.md: `running` carries the address the Agent gave this Create, read
 // from the Sandbox's network.json; other phases, and a Sandbox without one
 // (Local), carry none.
 func TestObserveSandboxAddress(t *testing.T) {

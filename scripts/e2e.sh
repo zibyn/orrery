@@ -112,7 +112,7 @@ export ORRERY_TEST_PURGE_INTERVAL="${ORRERY_TEST_PURGE_INTERVAL:-1s}"
 export ORRERY_APPS_DOMAIN="${ORRERY_APPS_DOMAIN:-apps.test}"
 # The Agents run on containerd (#170): run this script as root (the Agents
 # start as the test process's user), with containerd's socket at its default
-# path, the CNI plugins in /opt/cni/bin, ctr on PATH and, for snapshot builds,
+# path, ctr on PATH and, for snapshot builds,
 # a standalone buildkitd named by ORRERY_E2E_BUILDKIT. ORRERY_E2E_ISOLATION=
 # runsc runs every Agent under runsc.
 # GPU scenarios are skipped unless a GPU host is reachable over SSH:

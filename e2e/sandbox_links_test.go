@@ -150,7 +150,7 @@ func foreignSandbox(t *testing.T, admin string, suffix int64) string {
 //	ORRERY_E2E_GPU_SSH=user@host ORRERY_E2E_MESH_ENDPOINT=host:51820 make e2e -run SandboxLinksAcrossNodes
 //
 // The SSH login must reach root (directly or with sudo -n), and the remote
-// host needs containerd, the CNI plugins and kernel WireGuard. The endpoint
+// host needs containerd and kernel WireGuard. The endpoint
 // defaults to the SSH host on port 51820, which must be reachable over UDP
 // from this machine.
 func TestSandboxLinksAcrossNodes(t *testing.T) {
