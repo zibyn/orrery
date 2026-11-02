@@ -35,12 +35,15 @@ const (
 	HeartbeatInterval = 15 * time.Second
 	DefaultStatePath  = "/var/lib/orrery-agent/identity.json"
 	// DefaultContainerdSock and DefaultSandboxSubnet are the containerd
-	// Provider's defaults (runtime.md §9, defaults.md).
-	DefaultContainerdSock = "/run/containerd/containerd.sock"
-	DefaultSandboxSubnet  = "10.213.0.0/24"
-	DefaultDataRoot       = "/var/lib/orrery"
-	DefaultReserveCPU     = 1.0
-	DefaultReserveBytes   = 2 << 30 // 2 GiB
+	// Provider's defaults (runtime.md §9, defaults.md). The socket is the
+	// Agent's own containerd that install.sh runs (ADR-0028).
+	DefaultContainerdSock = "/run/orrery/containerd/containerd.sock"
+	// DefaultBuildkitAddr is the buildkitd install.sh runs (runtime.md §12).
+	DefaultBuildkitAddr  = "unix:///run/orrery/buildkit/buildkitd.sock"
+	DefaultSandboxSubnet = "10.213.0.0/24"
+	DefaultDataRoot      = "/var/lib/orrery"
+	DefaultReserveCPU    = 1.0
+	DefaultReserveBytes  = 2 << 30 // 2 GiB
 	// DefaultDiskWatermark is the fraction of the disk that must stay free
 	// (defaults.md, Node configuration).
 	DefaultDiskWatermark = 0.10
@@ -167,7 +170,8 @@ type RunOptions struct {
 	// localUser is the resolved LocalUser, filled by Run.
 	localUser *localUser
 	// Buildkit is the standalone buildkitd endpoint. Empty means none, and
-	// snapshot_build is unsupported (runtime.md §12).
+	// snapshot_build is unsupported (runtime.md §12); the flag defaults to
+	// DefaultBuildkitAddr.
 	Buildkit      string
 	DataRoot      string
 	ReserveCPU    float64
