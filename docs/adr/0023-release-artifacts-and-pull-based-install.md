@@ -1,6 +1,6 @@
 # ADR-0023: Release artifacts and a pull-based install script
 
-- Status: accepted; amended in place by #135, #136 and #179 (CI gate runs once, on the pull request); deployment configuration layout amended by ADR-0024; automatic updates removed by ADR-0028 (proposed)
+- Status: accepted; amended in place by #135, #136 and #179 (CI gate runs once, on the pull request); deployment configuration layout amended by ADR-0024; automatic updates removed by ADR-0028
 - Date: 2026-10-19
 
 ## Context

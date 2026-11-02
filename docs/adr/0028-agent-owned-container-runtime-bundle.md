@@ -1,6 +1,6 @@
 # ADR-0028: Agent-owned container runtime bundle
 
-- Status: proposed; accept after the spike in #206 is written up in `docs/research/`
+- Status: accepted (2026-11-02), revised from the spike in #206 (`docs/research/agent-owned-containerd-spike.md`)
 - Date: 2026-11-02
 
 ## Context
