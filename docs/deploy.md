@@ -2,7 +2,7 @@
 
 决策见 ADR-0023，升级顺序和备份责任见 ADR-0014，部署配置见 ADR-0024，所有配置项见 `docs/spec/defaults.md`。
 
-部署是 pull 式：在服务器上从 release tag 取 `deploy/install.sh` 执行，GitHub 不持有服务器凭据。`--version` 可选，缺省时从 GitHub 的最新 release 解析出确切 tag，脚本只从该 tag 下载，不会跟随分支。自动更新是可选功能（`--auto-update`），默认关闭。
+部署是 pull 式：在服务器上从 release tag 取 `deploy/install.sh` 执行，GitHub 不持有服务器凭据。`--version` 可选，缺省时从 GitHub 的最新 release 解析出确切 tag，脚本只从该 tag 下载，不会跟随分支。不提供自动更新（ADR-0028），升级就是重跑 `install.sh`。
 
 ## 前置条件
 
@@ -80,44 +80,9 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 
 端口转发（`access.apps_domain`）走 HTTPS 时需要覆盖 `*.apps` 的通配符证书；生成的证书只覆盖上面两个域名，所以用 `--tls cert` 提供通配符证书，或在 `nginx/orrery.conf` 里为应用域名加 server block。
 
-### 自动更新
+### 自动更新已移除
 
-`--auto-update` 默认关闭。Control Plane 的更新器是一个独立的 Docker Compose 项目 `orrery-updater`，容器里运行该 release 的 `install.sh`；Node 的更新器是 `orrery-update.service`（Node 本来就是 systemd 部署）。`--no-auto-update` 删除它；不传则保持现状。
-
-- Control Plane：`docker compose -p orrery-updater logs -f` 看日志；每 6 小时检查一次，`.env` 里的 `ORRERY_UPDATE_INTERVAL`（秒）可改，改完用 `docker compose -p orrery-updater -f /etc/orrery/updater.yaml up -d --force-recreate` 重建容器。
-- Node：`systemctl status orrery-update` / `journalctl -u orrery-update`；脚本在 `/etc/orrery-agent/updater`。
-- 仍走 PostgreSQL 备份、降级拒绝和健康检查；Control Plane 与手动安装共用 `/etc/orrery/.install.lock`，Node 共用 `/etc/orrery-agent/.install.lock`。
-- 不跨主版本：`v1.x` → `v2.0` 需要手动执行。rc 在 `sort -V` 下的顺序是已知限制；CI 会把带 `-` 的 tag 标为 prerelease，`releases/latest` 会跳过它们。
-- 失败不会自动回滚；更新器按间隔重试。
-- 更新器文件由安装脚本生成，手动 `--auto-update` 会重写它们。Control Plane 的更新容器是独立项目，主栈的 `up -d --remove-orphans` 不会碰它。
-- Control Plane 的更新容器挂载 `/var/run/docker.sock`，在主机上等价于 root；它不发布端口，但这是自动更新能操作主栈的前提。
-- 安全代价：GitHub 账号被攻破等于在所有开启自动更新的主机上执行代码；SHA256SUMS 只覆盖传输损坏，不覆盖账号失窃。
-- Node 也可以开启，但必须等 Control Plane 先升级；独立更新器可能让 Node 先更新，Agent 会被拒绝直到 Control Plane 跟上。
-
-### 首次安装之后
-
-1. 配置平台 Snapshot，否则无法创建 Sandbox。在 `/etc/orrery/config/config.yaml` 里按 digest 写：
-
-   ```yaml
-   platform_snapshots:
-     - name: default
-       ref: docker.io/library/ubuntu:24.04@sha256:...
-       default: true
-   ```
-
-   OIDC、Git provider、端口转发域名等也在同一个文件里配置（`defaults.md`）。改完执行 `docker compose up -d`。
-2. 创建第一个 admin：`cd /etc/orrery && docker compose exec server orrery-server bootstrap`。
-3. 签发 Enrollment Packet（1 小时有效）：脚本结束时会打印用 `POST /sessions` 取 admin token、再 `POST /enrollment-packets` 的命令，走公开入口。
-
-`config.yaml` 首次安装时生成，升级不覆盖；`.env` 只保留 Compose 需要的插值值，应用配置不要再写进 `.env`。
-
-改地址或证书时编辑 `.env`、`config.yaml` 的 `access.url` 和 `nginx/orrery.conf`，然后：
-
-```sh
-cd /etc/orrery && docker compose up -d && docker compose restart nginx
-```
-
-`nginx/orrery.conf` 由脚本首次生成，升级不会覆盖；release 若改变了路径或配置结构，需要按新版本的 `deploy/release/nginx.conf` 手工更新。
+ADR-0028 移除了自动更新（取代 ADR-0023 的 `--auto-update`）。升级就是运维重跑 `install.sh`；现在传 `--auto-update` 或 `--no-auto-update` 会报错。旧版本留下的更新器（Control Plane 的 Compose 项目 `orrery-updater`、Node 的 `orrery-update.service`）在下一次成功运行 `install.sh` 后自动删除。
 
 ## Node
 
@@ -132,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
   --runtime containerd -- --buildkit unix:///run/buildkit/buildkitd.sock
 ```
 
-版本同样可省略（默认最新 release）；要自动跟进加 `--auto-update`，固定版本则从 tag 取脚本并加 `--version vX.Y.Z`。
+版本同样可省略（默认最新 release）；固定版本则从 tag 取脚本并加 `--version vX.Y.Z`。
 
 - 端口是 443 时去掉 `--server` 和 `--trust-registry` 里的端口。
 - 用公共 CA 证书时去掉 `--ca` 和两个 `--trust-registry`。
@@ -158,12 +123,11 @@ Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules
 
 ## 升级与回滚
 
-先 Control Plane，后 Node（ADR-0014）。升级可以重跑同一条命令（版本省略即最新 release），也可以交给 `--auto-update` 更新器：
+先 Control Plane，后 Node（ADR-0014）。升级就是重跑同一条命令（版本省略即最新 release）：
 
-- Control Plane：先拉新镜像，再停 server、`pg_dump` 到 `/var/lib/orrery-server/backups/<时间>-<旧版本>.sql.gz`，然后启动新版本。迁移是单向的，脚本拒绝降级；回滚就是恢复备份（开启自动更新时先停掉更新器，否则下次会自动升回去）：
+- Control Plane：先拉新镜像，再停 server、`pg_dump` 到 `/var/lib/orrery-server/backups/<时间>-<旧版本>.sql.gz`，然后启动新版本。迁移是单向的，脚本拒绝降级；回滚就是恢复备份：
 
   ```sh
-  docker compose -p orrery-updater down   # 开启自动更新时
   cd /etc/orrery && docker compose stop server
   docker compose exec -T postgres dropdb -U orrery orrery
   docker compose exec -T postgres createdb -U orrery orrery
@@ -171,7 +135,7 @@ Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules
   sed -i 's/^ORRERY_VERSION=.*/ORRERY_VERSION=<旧版本>/' .env && docker compose up -d
   ```
 
-- Node：下载、校验、替换二进制后 `systemctl restart`；不带 `--runtime` 或 `--` 参数时保留现有 systemd unit。允许装旧版本，Control Plane 会把它标为 `outdated`。回滚前同样先停掉 `orrery-update.service`。
+- Node：下载、校验、替换二进制后 `systemctl restart`；不带 `--runtime` 或 `--` 参数时保留现有 systemd unit。允许装旧版本，Control Plane 会把它标为 `outdated`。
 
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 
