@@ -210,8 +210,8 @@ jobs:
           BUILDKIT_SHA256_ARM64: c8c97b84baf89dfe0ea85063ac24ad88eb909979ea476ce3ef9e8e11e60ebef8
           # renovate: datasource=github-tags depName=google/gvisor versioning=regex:^release-(?<major>\d{8})\.(?<minor>\d+)$
           GVISOR_VERSION: release-20261026.0
-          GVISOR_SHA256_AMD64: TODO
-          GVISOR_SHA256_ARM64: TODO
+          GVISOR_SHA256_AMD64: 096589d2d6078ba4caa26aa0200932f571aa5da9d08a5156b98ab1d93fa54468
+          GVISOR_SHA256_ARM64: 6b03c9d53f46b5ac56fd32522f38f108645e9f80a26a335e86ad1e09dcdaefda
         run: |
           set -euo pipefail
           v="$GITHUB_REF_NAME"
@@ -244,7 +244,7 @@ jobs:
             case "$arch" in amd64) g=x86_64 ;; arm64) g=aarch64 ;; esac
             fetch "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION#release-}/$g/gvisor.tar.bz2" "$(sum GVISOR)" "$dl/gvisor.tar.bz2"
             tar -C "$b" -xjf "$dl/gvisor.tar.bz2"
-            tar -C "$d" -czf "dist/orrery-node_${v}_linux_${arch}.tar.gz" bin
+            tar -C "$d" --owner=0 --group=0 -czf "dist/orrery-node_${v}_linux_${arch}.tar.gz" bin
           done
           for arch in amd64 arm64; do
             d="$(mktemp -d)"
