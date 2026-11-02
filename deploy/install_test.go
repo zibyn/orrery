@@ -186,3 +186,19 @@ func TestInstallBins(t *testing.T) {
 		}
 	}
 }
+
+// Old deploy.md had operators pass the host's sockets; ADR-0028 leaves
+// install.sh no mode on the host daemons, so a rerun drops them. --buildkit=
+// stays: it turns Snapshot builds off.
+func TestDropHostDaemons(t *testing.T) {
+	got := sh(t, `drop_host_daemons run --containerd /run/containerd/containerd.sock --isolation runsc --buildkit=unix:///run/buildkit/buildkitd.sock --containerd=/x --buildkit unix:///y 2>/dev/null`)
+	if got != "run --isolation runsc" {
+		t.Errorf("drop_host_daemons = %q", got)
+	}
+	if got := sh(t, `drop_host_daemons run --buildkit= --containerd 2>/dev/null`); got != "run --buildkit=" {
+		t.Errorf("drop_host_daemons = %q", got)
+	}
+	if got := sh(t, `drop_host_daemons run --containerd /x 2>&1 >/dev/null`); !strings.Contains(got, "--containerd /x") {
+		t.Errorf("drop_host_daemons does not say what it dropped: %q", got)
+	}
+}

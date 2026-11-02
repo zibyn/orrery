@@ -103,7 +103,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 - 对象存储也要信任，因为 blob 下载会从 registry 307 到它。
 - `--trust-registry` 可重复；Agent 用宿主的系统信任库拉镜像，脚本把 CA 装进去（`update-ca-certificates` 或 `update-ca-trust`），Agent 重启后生效。同样这几个主机也写进捆绑 buildkitd 的 `buildkitd.toml`；之后重跑不带 `--trust-registry` 时沿用上次的主机。
 - `--runtime containerd|local` 之后可用 `--` 追加 `orrery-agent run` 的其它参数，例如 `-- --isolation runsc`、`-- --sandbox-subnet 10.213.1.0/24` 或 `-- --local-user sandbox`。
-- Agent 默认连捆绑的 containerd 和 buildkitd；`-- --buildkit=` 关掉 Snapshot 构建（`snapshot_build` 为 `unsupported`）。`--containerd` 只用于开发和测试。
+- Agent 默认连捆绑的 containerd 和 buildkitd；`-- --buildkit=` 关掉 Snapshot 构建（`snapshot_build` 为 `unsupported`）。脚本没有用宿主 containerd 或 buildkitd 的方式：`--` 后的 `--containerd` 和带值的 `--buildkit` 会被去掉并打印出来。
 
 ### containerd Node 的准备
 
@@ -128,7 +128,7 @@ containerd、buildkitd 和 runsc 不用运维准备：脚本把包里的运行�
 ADR-0028 之前的 Agent 用宿主 containerd 的 `orrery` namespace。迁移是一次性切换：
 
 1. drain 这台 Node，等它上面的 Sandbox 停下。
-2. 用新版本重跑 install.sh（同一条命令）。Node 保留 identity，不重新注册。镜像在私有 containerd 里重新拉；stopped 的 Sandbox 下次启动时在私有 containerd 里重新 `Create`，Workspace 还在宿主上。
+2. 用新版本重跑 install.sh（同一条命令）。以前按本文加的 `-- --containerd ...`、`-- --buildkit unix:///run/buildkit/buildkitd.sock` 可以留着：脚本从参数和保留的 `ExecStart` 里去掉它们并打印去掉了什么，Agent 改连捆绑的 containerd 和 buildkitd。Node 保留 identity，不重新注册。镜像在私有 containerd 里重新拉；stopped 的 Sandbox 下次启动时在私有 containerd 里重新 `Create`，Workspace 还在宿主上。
 3. Node `ready` 后 undrain。
 
 脚本发现宿主 containerd 上还有 `orrery` namespace 时，打印删除它的命令，但不执行，因为那个 containerd 可能还在给 Docker 用。

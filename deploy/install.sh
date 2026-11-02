@@ -639,6 +639,27 @@ WantedBy=multi-user.target
 EOF
 }
 
+# drop_host_daemons WORD... prints the words, space-joined, without
+# --containerd and --buildkit and their values, and says on stderr what it
+# dropped: install.sh has no mode on the host daemons (ADR-0028), but earlier
+# docs had operators pass their sockets. --buildkit= stays: it turns Snapshot
+# builds off.
+drop_host_daemons() {
+  local kept=() dropped=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --buildkit=) kept+=("$1") ;;
+      --containerd=* | --buildkit=*) dropped+=("$1") ;;
+      --containerd | --buildkit) dropped+=("$1 ${2-}"); [ $# -eq 1 ] || shift ;;
+      *) kept+=("$1") ;;
+    esac
+    shift
+  done
+  [ ${#dropped[@]} -eq 0 ] ||
+    echo "install.sh: dropped ${dropped[*]} from orrery-agent run; the Agent uses its own containerd and buildkitd (ADR-0028)" >&2
+  printf '%s' "${kept[*]}"
+}
+
 # install_bins SRC DEST copies every file under SRC to DEST with its mode
 # and prints the path, relative to DEST, of each one that changed. A changed
 # file is replaced by rename, so a running binary is never written in place.
@@ -730,12 +751,9 @@ node() {
 
   # An upgrade without --runtime or extra flags keeps the Agent's flags.
   if [ "$write_unit" = 0 ] && [ -f "$unit" ]; then
-    exec_start="$(sed -n 's/^ExecStart=//p' "$unit")"
+    # shellcheck disable=SC2046 # ExecStart is space-joined words
+    exec_start="$(drop_host_daemons $(sed -n 's/^ExecStart=//p' "$unit"))"
     runtime="$(sed -n 's/.* --runtime \([^ ]*\).*/\1/p' <<<"$exec_start")"
-    case " $exec_start " in
-      *" --containerd"* | *" --buildkit"*)
-        echo "install.sh: warning: orrery-agent.service keeps its --containerd or --buildkit flag; the bundled daemons are the default now (ADR-0028), rerun with --runtime to drop it" >&2 ;;
-    esac
   fi
   runtime="${runtime:-containerd}"
   case "$runtime" in
@@ -809,7 +827,7 @@ node() {
   if buildkitd_toml "${trust_registry[@]}" | write_if_changed "$conf/buildkitd.toml"; then restart_bk=1; fi
   if buildkitd_unit | write_if_changed "$sd/orrery-buildkitd.service"; then restart_bk=1; reload=1; fi
   if grep -qx buildkitd <<<"$changed"; then restart_bk=1; fi
-  [ -n "$exec_start" ] || exec_start="$bin/orrery-agent run --runtime $runtime ${ca_flag[*]} ${extra[*]}"
+  [ -n "$exec_start" ] || exec_start="$(drop_host_daemons "$bin/orrery-agent" run --runtime "$runtime" "${ca_flag[@]}" "${extra[@]}")"
   if agent_unit "$runtime" "$exec_start" | write_if_changed "$unit"; then reload=1; fi
   [ "$reload" = 0 ] || systemctl daemon-reload
 
