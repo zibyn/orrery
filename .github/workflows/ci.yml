@@ -192,7 +192,26 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      # The bundled runtimes (ADR-0028). Renovate bumps the versions
+      # (renovate.json); a bump must update both arches' sha256 in the same PR.
       - name: Build the Node package and the CLI
+        env:
+          # renovate: datasource=github-releases depName=containerd/containerd extractVersion=^v(?<version>.+)$
+          CONTAINERD_VERSION: 2.2.1
+          CONTAINERD_SHA256_AMD64: f5d8e90ecb6c1c7e33ecddf8cc268a93b9e5b54e0e850320d765511d76624f41
+          CONTAINERD_SHA256_ARM64: dac15a0d412a24be8bfe6a40cec8f51829062725169f1e72ac7d120a891ef5b6
+          # renovate: datasource=github-releases depName=opencontainers/runc extractVersion=^v(?<version>.+)$
+          RUNC_VERSION: 1.5.2
+          RUNC_SHA256_AMD64: 599f6f94ff8c5057241eff0d54c3c74f95c34935b6457b33fe545defc61e9488
+          RUNC_SHA256_ARM64: d10ecae898361832a059be2089bab92d158aec54661b18ed7346ed79628b46b0
+          # renovate: datasource=github-releases depName=moby/buildkit
+          BUILDKIT_VERSION: v0.34.1
+          BUILDKIT_SHA256_AMD64: a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b
+          BUILDKIT_SHA256_ARM64: c8c97b84baf89dfe0ea85063ac24ad88eb909979ea476ce3ef9e8e11e60ebef8
+          # renovate: datasource=github-tags depName=google/gvisor versioning=regex:^release-(?<major>\d{8})\.(?<minor>\d+)$
+          GVISOR_VERSION: release-20261026.0
+          GVISOR_SHA256_AMD64: 096589d2d6078ba4caa26aa0200932f571aa5da9d08a5156b98ab1d93fa54468
+          GVISOR_SHA256_ARM64: 6b03c9d53f46b5ac56fd32522f38f108645e9f80a26a335e86ad1e09dcdaefda
         run: |
           set -euo pipefail
           v="$GITHUB_REF_NAME"
@@ -203,11 +222,29 @@ jobs:
               CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$out/$bin" "./cmd/$bin"
             done
           }
-          # The Agent finds the CLI beside its own executable (runtime.md).
+          fetch() { # url sha256 out-file
+            curl -fsSL --retry 3 "$1" -o "$3"
+            echo "$2  $3" | sha256sum -c --quiet - || { echo "::error::$1 does not match its pinned sha256"; exit 1; }
+          }
+          # Everything sits flat in bin/, plus runsc's gvisor-bin/ sidecars,
+          # for install.sh to copy as is to /opt/orrery/bin/. The Agent finds
+          # the CLI beside its own executable (runtime.md).
           for arch in amd64 arm64; do
-            d="$(mktemp -d)"
-            build linux "$arch" "$d" orrery-agent orrery
-            tar -C "$d" -czf "dist/orrery-node_${v}_linux_${arch}.tar.gz" orrery-agent orrery
+            d="$(mktemp -d)" dl="$(mktemp -d)"
+            A="${arch^^}" b="$d/bin"
+            sum() { local n="$1_SHA256_$A"; echo "${!n}"; }
+            mkdir "$b"
+            build linux "$arch" "$b" orrery-agent orrery
+            fetch "https://github.com/containerd/containerd/releases/download/v$CONTAINERD_VERSION/containerd-$CONTAINERD_VERSION-linux-$arch.tar.gz" "$(sum CONTAINERD)" "$dl/containerd.tar.gz"
+            tar -C "$b" --strip-components=1 -xzf "$dl/containerd.tar.gz" bin/containerd bin/containerd-shim-runc-v2
+            fetch "https://github.com/opencontainers/runc/releases/download/v$RUNC_VERSION/runc.$arch" "$(sum RUNC)" "$dl/runc"
+            install -m 0755 "$dl/runc" "$b/runc"
+            fetch "https://github.com/moby/buildkit/releases/download/$BUILDKIT_VERSION/buildkit-$BUILDKIT_VERSION.linux-$arch.tar.gz" "$(sum BUILDKIT)" "$dl/buildkit.tar.gz"
+            tar -C "$b" --strip-components=1 -xzf "$dl/buildkit.tar.gz" bin/buildkitd
+            case "$arch" in amd64) g=x86_64 ;; arm64) g=aarch64 ;; esac
+            fetch "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION#release-}/$g/gvisor.tar.bz2" "$(sum GVISOR)" "$dl/gvisor.tar.bz2"
+            tar -C "$b" -xjf "$dl/gvisor.tar.bz2"
+            tar -C "$d" --owner=0 --group=0 -czf "dist/orrery-node_${v}_linux_${arch}.tar.gz" bin
           done
           for arch in amd64 arm64; do
             d="$(mktemp -d)"
