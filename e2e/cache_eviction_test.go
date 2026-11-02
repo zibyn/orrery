@@ -201,17 +201,23 @@ func buildUnreferencedImage(t *testing.T, suffix int64) string {
 	t.Helper()
 	tag := fmt.Sprintf("127.0.0.1:15000/e2e-evict:%d", suffix)
 	// The Agent's containerd namespace gets the image by import: buildkitd
-	// has no containerd image store of its own here.
+	// has no containerd image store of its own here. The import goes through
+	// ORRERY_E2E_CTR so it lands in the containerd the Agent uses.
 	script := fmt.Sprintf(`set -e
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 echo evict-%d > "$d/f"; printf 'FROM scratch\nCOPY f /f\n' > "$d/Dockerfile"
 buildctl --addr %s build --frontend dockerfile.v0 --local context="$d" --local dockerfile="$d" \
   --output type=oci,name=%s,dest="$d/image.tar"
-ctr -n orrery images import "$d/image.tar"`, suffix, shellQuote(e2eBuildkit(t)), shellQuote(tag))
+%s -n orrery images import "$d/image.tar"`, suffix, shellQuote(e2eBuildkit(t)), shellQuote(tag), shellQuote(envOr("ORRERY_E2E_CTR", "ctr")))
 	if out, err := nodeShell(script); err != nil {
 		t.Fatalf("build eviction image: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { _ = sandboxCommand("images", "rm", tag).Run() })
+	// Without this the eviction assertion passes vacuously if the import
+	// went to some other containerd.
+	if !imageExists(tag) {
+		t.Fatalf("imported %s is not in the Agent's containerd", tag)
+	}
 	return tag
 }
 
