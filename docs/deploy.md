@@ -121,7 +121,7 @@ containerd、buildkitd 和 runsc 不用运维准备：脚本把包里的运行�
 - **Node Mesh**（跨 Node 的 Sandbox Link，ADR-0027）：内核要带 WireGuard（Linux 5.6+ 主线自带，`modprobe wireguard` 能加载即可），不需要 `wireguard-tools`。没有时脚本只警告，Agent 照常运行，但这台 Node 不加入 Mesh。至少一方要用 `-- --mesh-endpoint host:port` 给出其他 Node 能直接访问的地址，并在防火墙放行 `--mesh-port`（默认 `51820`）的 UDP；两台都没有端点的 Node 之间没有通路（`defaults.md`）。
 - **gVisor**（可选，`-- --isolation runsc`）：runsc 已捆绑；data root 不能在 tmpfs 上。runsc Node 不挂 GPU。
 - **GPU**（可选）：NVIDIA 驱动和 NVIDIA Container Toolkit 生成的 CDI spec（`nvidia-ctk cdi generate`）仍在宿主上，只在 runc Node 上生效。
-- **探针镜像**：私有 containerd 的镜像存储一开始是空的，Agent 自检要拉 `docker.io/library/alpine:3.22`。拉不到 Docker Hub 的 Node 停在 `unavailable`，直到导入这个镜像，例如 `docker save docker.io/library/alpine:3.22 | ctr -a /run/orrery/containerd/containerd.sock -n orrery images import -`（`ctr` 不在包里，用宿主上 containerd 2.x 的）。
+- **探针镜像**：私有 containerd 的镜像存储一开始是空的，Agent 自检要拉 `docker.io/library/alpine:3.22`。拉不到 Docker Hub 的 Node 停在 `unavailable`，直到导入这个镜像并重启 Agent（Agent 只在连上 Control Plane 时跑自检），例如 `docker save docker.io/library/alpine:3.22 | ctr -a /run/orrery/containerd/containerd.sock -n orrery images import -` 再 `systemctl restart orrery-agent`（`ctr` 不在包里，用宿主上 containerd 2.x 的）。
 
 ### 从宿主 containerd 迁移
 
@@ -131,7 +131,7 @@ ADR-0028 之前的 Agent 用宿主 containerd 的 `orrery` namespace。迁移是
 2. 用新版本重跑 install.sh（同一条命令）。以前按本文加的 `-- --containerd ...`、`-- --buildkit unix:///run/buildkit/buildkitd.sock` 可以留着：脚本从参数和保留的 `ExecStart` 里去掉它们并打印去掉了什么，Agent 改连捆绑的 containerd 和 buildkitd。Node 保留 identity，不重新注册。镜像在私有 containerd 里重新拉；stopped 的 Sandbox 下次启动时在私有 containerd 里重新 `Create`，Workspace 还在宿主上。
 3. Node `ready` 后 undrain。
 
-脚本发现宿主 containerd 上还有 `orrery` namespace 时，打印删除它的命令，但不执行，因为那个 containerd 可能还在给 Docker 用。
+脚本发现宿主 containerd 上还有 `orrery` namespace 时，打印删除它的命令，但不执行，因为那个 containerd 可能还在给 Docker 用。宿主没有 `ctr` 时脚本跳过这项检查并提示，可手动 `ctr -a /run/containerd/containerd.sock namespaces ls` 查看。
 
 Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules 为空时 Sandbox 的出站完全放开，包括云 metadata 地址和 Control Plane 所在的内网**；`defaults.md` 有一份推荐的 Rules。Local Runtime 不受 Egress Rules 约束。
 

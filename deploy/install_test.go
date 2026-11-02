@@ -125,6 +125,7 @@ func TestBuildkitdUnit(t *testing.T) {
 		"After=orrery-containerd.service",
 		bundlePath,
 		"ExecStart=/opt/orrery/bin/buildkitd --config /etc/orrery-agent/buildkitd.toml --root /var/lib/orrery-agent/buildkit --addr unix:///run/orrery/buildkit/buildkitd.sock --oci-worker=true --containerd-worker=false --oci-worker-net host",
+		"SuccessExitStatus=1",
 	)
 }
 
@@ -201,4 +202,13 @@ func TestDropHostDaemons(t *testing.T) {
 	if got := sh(t, `drop_host_daemons run --containerd /x 2>&1 >/dev/null`); !strings.Contains(got, "--containerd /x") {
 		t.Errorf("drop_host_daemons does not say what it dropped: %q", got)
 	}
+}
+
+// The Agent runs its self-check only on connect, so the import alone leaves
+// the Node unavailable (#208 host check).
+func TestProbeImageNotice(t *testing.T) {
+	wantLines(t, "probe_image_notice", sh(t, "probe_image_notice"),
+		"ctr -a /run/orrery/containerd/containerd.sock -n orrery images import -",
+		"systemctl restart orrery-agent",
+	)
 }
