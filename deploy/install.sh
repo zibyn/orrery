@@ -522,6 +522,10 @@ EOF
 NODE_BIN=/opt/orrery/bin
 NODE_CONF=/etc/orrery-agent
 NODE_STATE=/var/lib/orrery-agent
+NODE_RUN=/run/orrery
+# The Agent's defaults (internal/agent) name the same two sockets.
+NODE_CTRD_SOCK=$NODE_RUN/containerd/containerd.sock
+NODE_BK_ADDR=unix://$NODE_RUN/buildkit/buildkitd.sock
 # The bundle comes first: containerd finds shims, and the shims find runc and
 # runsc, on PATH before its own directory (spike §1.4).
 NODE_PATH="$NODE_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -535,18 +539,18 @@ containerd_toml() {
 # Written by install.sh on every run; edits are lost (ADR-0028).
 version = 3
 root = "$NODE_STATE/containerd"
-state = "/run/orrery/containerd/state"
+state = "$NODE_RUN/containerd/state"
 imports = []
 disabled_plugins = ["io.containerd.grpc.v1.cri", "io.containerd.cri.v1.runtime", "io.containerd.cri.v1.images", "io.containerd.podsandbox.controller.v1.podsandbox", "io.containerd.nri.v1.nri"]
 
 [grpc]
-  address = "/run/orrery/containerd/containerd.sock"
+  address = "$NODE_CTRD_SOCK"
 
 [ttrpc]
-  address = "/run/orrery/containerd/containerd.sock.ttrpc"
+  address = "$NODE_CTRD_SOCK.ttrpc"
 
 [debug]
-  address = "/run/orrery/containerd/debug.sock"
+  address = "$NODE_RUN/containerd/debug.sock"
 
 [plugins."io.containerd.internal.v1.opt"]
   path = "$NODE_STATE/containerd/opt"
@@ -604,9 +608,11 @@ After=orrery-containerd.service
 [Service]
 Environment=PATH=$NODE_PATH
 RuntimeDirectory=orrery/buildkit
-ExecStart=$NODE_BIN/buildkitd --config $NODE_CONF/buildkitd.toml --root $NODE_STATE/buildkit --addr unix:///run/orrery/buildkit/buildkitd.sock --oci-worker=true --containerd-worker=false --oci-worker-net host
+ExecStart=$NODE_BIN/buildkitd --config $NODE_CONF/buildkitd.toml --root $NODE_STATE/buildkit --addr $NODE_BK_ADDR --oci-worker=true --containerd-worker=false --oci-worker-net host
 Restart=always
 RestartSec=5
+# buildkitd v0.34 exits 1 on SIGTERM; a stop is not a failure.
+SuccessExitStatus=1
 
 [Install]
 WantedBy=multi-user.target
@@ -637,6 +643,27 @@ KillMode=process
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+# drop_host_daemons WORD... prints the words, space-joined, without
+# --containerd and --buildkit and their values, and says on stderr what it
+# dropped: install.sh has no mode on the host daemons (ADR-0028), but earlier
+# docs had operators pass their sockets. --buildkit= stays: it turns Snapshot
+# builds off.
+drop_host_daemons() {
+  local kept=() dropped=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --buildkit=) kept+=("$1") ;;
+      --containerd=* | --buildkit=*) dropped+=("$1") ;;
+      --containerd | --buildkit) dropped+=("$1 ${2-}"); [ $# -eq 1 ] || shift ;;
+      *) kept+=("$1") ;;
+    esac
+    shift
+  done
+  [ ${#dropped[@]} -eq 0 ] ||
+    echo "install.sh: dropped ${dropped[*]} from orrery-agent run; the Agent uses its own containerd and buildkitd (ADR-0028)" >&2
+  printf '%s' "${kept[*]}"
 }
 
 # install_bins SRC DEST copies every file under SRC to DEST with its mode
@@ -690,14 +717,16 @@ EOF
 }
 
 probe_image_notice() {
-  cat <<'EOF'
+  cat <<EOF
 
 The Agent's containerd starts with an empty image store, so its self-check
 pulls docker.io/library/alpine:3.22. A Node that cannot reach Docker Hub stays
 unavailable until the image is imported, for example from Docker with a
-containerd 2.x ctr:
+containerd 2.x ctr, and the Agent restarted, since it runs the self-check
+only when it connects:
   docker save docker.io/library/alpine:3.22 |
-    ctr -a /run/orrery/containerd/containerd.sock -n orrery images import -
+    ctr -a $NODE_CTRD_SOCK -n orrery images import -
+  systemctl restart orrery-agent
 EOF
 }
 
@@ -730,12 +759,9 @@ node() {
 
   # An upgrade without --runtime or extra flags keeps the Agent's flags.
   if [ "$write_unit" = 0 ] && [ -f "$unit" ]; then
-    exec_start="$(sed -n 's/^ExecStart=//p' "$unit")"
+    # shellcheck disable=SC2046 # ExecStart is space-joined words
+    exec_start="$(drop_host_daemons $(sed -n 's/^ExecStart=//p' "$unit"))"
     runtime="$(sed -n 's/.* --runtime \([^ ]*\).*/\1/p' <<<"$exec_start")"
-    case " $exec_start " in
-      *" --containerd"* | *" --buildkit"*)
-        echo "install.sh: warning: orrery-agent.service keeps its --containerd or --buildkit flag; the bundled daemons are the default now (ADR-0028), rerun with --runtime to drop it" >&2 ;;
-    esac
   fi
   runtime="${runtime:-containerd}"
   case "$runtime" in
@@ -809,7 +835,7 @@ node() {
   if buildkitd_toml "${trust_registry[@]}" | write_if_changed "$conf/buildkitd.toml"; then restart_bk=1; fi
   if buildkitd_unit | write_if_changed "$sd/orrery-buildkitd.service"; then restart_bk=1; reload=1; fi
   if grep -qx buildkitd <<<"$changed"; then restart_bk=1; fi
-  [ -n "$exec_start" ] || exec_start="$bin/orrery-agent run --runtime $runtime ${ca_flag[*]} ${extra[*]}"
+  [ -n "$exec_start" ] || exec_start="$(drop_host_daemons "$bin/orrery-agent" run --runtime "$runtime" "${ca_flag[@]}" "${extra[@]}")"
   if agent_unit "$runtime" "$exec_start" | write_if_changed "$unit"; then reload=1; fi
   [ "$reload" = 0 ] || systemctl daemon-reload
 
@@ -824,9 +850,12 @@ node() {
   remove_updater node
   if [ "$runtime" = containerd ]; then
     [ "$new_store" = 0 ] || probe_image_notice
-    if [ -S /run/containerd/containerd.sock ] && command -v ctr >/dev/null &&
-      ctr -a /run/containerd/containerd.sock namespaces ls -q 2>/dev/null | grep -qx orrery; then
-      migration_notice
+    if [ -S /run/containerd/containerd.sock ]; then
+      if ! command -v ctr >/dev/null; then
+        echo "install.sh: no ctr, so the host containerd was not checked for an earlier Agent's orrery namespace; check by hand: ctr -a /run/containerd/containerd.sock namespaces ls" >&2
+      elif ctr -a /run/containerd/containerd.sock namespaces ls -q 2>/dev/null | grep -qx orrery; then
+        migration_notice
+      fi
     fi
   fi
   return 0
