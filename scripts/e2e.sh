@@ -110,11 +110,14 @@ export ORRERY_TEST_PURGE_INTERVAL="${ORRERY_TEST_PURGE_INTERVAL:-1s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
 export ORRERY_APPS_DOMAIN="${ORRERY_APPS_DOMAIN:-apps.test}"
-# The Agents run on containerd (#170): run this script as root (the Agents
-# start as the test process's user), with containerd's socket at its default
-# path, ctr on PATH and, for snapshot builds,
-# a standalone buildkitd named by ORRERY_E2E_BUILDKIT. ORRERY_E2E_ISOLATION=
-# runsc runs every Agent under runsc.
+# The Agents run on containerd: run this script as root (the Agents start as
+# the test process's user) on a Node with the Agent's own containerd and
+# buildkitd running at their default sockets under /run/orrery (ADR-0028;
+# scripts/ci-e2e-node.sh sets them up as install.sh does), ctr and buildctl on
+# PATH, and ORRERY_E2E_BUILDKIT=unix:///run/orrery/buildkit/buildkitd.sock for
+# snapshot builds. ORRERY_E2E_CTR replaces `ctr --address <the Agent's
+# socket>` with one executable. ORRERY_E2E_ISOLATION=runsc runs every Agent
+# under runsc.
 # GPU scenarios are skipped unless a GPU host is reachable over SSH:
 #   ORRERY_E2E_GPU_SSH=user@gpu-host ./scripts/e2e.sh -run GPU
 # The test deploys the Agent there and tunnels back to this machine's node

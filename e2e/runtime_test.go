@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -13,11 +14,20 @@ func inspectSandboxRuntime(id string) ([]byte, error) {
 	return sandboxCommand("containers", "info", "orrery-"+id).CombinedOutput()
 }
 
-// sandboxCommand runs ctr in the Agent's containerd namespace. ORRERY_E2E_CTR
-// may name a ctr wrapper, for example one that runs ctr on the Node host over
-// SSH.
+// ctrCommand is ctr against the Agent's own containerd (ADR-0028).
+// ORRERY_E2E_CTR replaces it whole with one executable, for example a wrapper
+// that runs ctr on the Node host over SSH.
+func ctrCommand() []string {
+	if c := os.Getenv("ORRERY_E2E_CTR"); c != "" {
+		return []string{c}
+	}
+	return []string{"ctr", "--address", "/run/orrery/containerd/containerd.sock"}
+}
+
+// sandboxCommand runs ctr in the Agent's containerd namespace.
 func sandboxCommand(args ...string) *exec.Cmd {
-	return exec.Command(envOr("ORRERY_E2E_CTR", "ctr"), append([]string{"-n", "orrery"}, args...)...)
+	argv := append(ctrCommand(), "-n", "orrery")
+	return exec.Command(argv[0], append(argv[1:], args...)...)
 }
 
 func killSandboxRuntime(id string) ([]byte, error) {
