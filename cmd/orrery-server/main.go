@@ -158,6 +158,7 @@ func runBootstrap(args []string, logger *slog.Logger) error {
 		}
 		password = strings.TrimRight(line, "\r\n")
 	case term.IsTerminal(int(os.Stdin.Fd())):
+		fmt.Fprint(os.Stderr, "Password: ")
 		first, err := term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Fprintln(os.Stderr)
 		if err != nil {
