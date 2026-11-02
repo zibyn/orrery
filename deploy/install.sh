@@ -663,6 +663,9 @@ node() {
   case "${runtime:-containerd}" in
     containerd)
       need ctr
+      # The Mesh is optional, so a missing module only warns; modprobe also succeeds for a built-in one.
+      [ -d /sys/module/wireguard ] || modprobe -q wireguard 2>/dev/null ||
+        echo "install.sh: warning: no kernel WireGuard; this Node will not join the Node Mesh" >&2
       ;;
     local) ;;
     *) die "--runtime is containerd or local" ;;
