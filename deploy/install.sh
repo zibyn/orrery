@@ -690,7 +690,7 @@ node() {
   mkdir -p "$bin" "$conf"
   # The Agent finds the CLI beside its own executable (runtime.md).
   for b in orrery-agent orrery; do
-    install -m 0755 "$tmp/$b" "$bin/.$b.new"
+    install -m 0755 "$tmp/bin/$b" "$bin/.$b.new"
     mv -f "$bin/.$b.new" "$bin/$b"
   done
 
