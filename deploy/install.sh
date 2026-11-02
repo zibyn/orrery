@@ -16,13 +16,13 @@ usage:
                     [--public-bind ADDR] [--tls self-signed|cert]
                     [--tls-cert FILE --tls-key FILE] [--ca FILE]
                     [--registry-addr HOST[:PORT]]
-                    [--auto-update | --no-auto-update]
   install.sh node   [--version vX.Y.Z] [--server HOST:PORT --packet ore_...] [--ca FILE]
                     [--trust-registry HOST[:PORT]]... [--runtime containerd|local]
-                    [--name NAME] [--auto-update | --no-auto-update]
+                    [--name NAME]
                     [-- extra `orrery-agent run` flags]
 
---version defaults to the newest published release.
+--version defaults to the newest published release. To upgrade, rerun
+the same command.
 EOF
   exit 2
 }
@@ -129,7 +129,7 @@ create_bucket() {
 }
 
 server() {
-  local version="" host="" port="" tls=self-signed cert="" key="" ca="" access_url="" registry_addr="" s3_url="" bind="" auto_update=""
+  local version="" host="" port="" tls=self-signed cert="" key="" ca="" access_url="" registry_addr="" s3_url="" bind=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) version="$2"; shift 2 ;;
@@ -143,8 +143,7 @@ server() {
       --registry-addr) registry_addr="$2"; shift 2 ;;
       --s3-public-endpoint) s3_url="$2"; shift 2 ;;
       --public-bind) bind="$2"; shift 2 ;;
-      --auto-update) auto_update=1; shift ;;
-      --no-auto-update) auto_update=0; shift ;;
+      --auto-update | --no-auto-update) die "auto-update was removed (ADR-0028); upgrade by rerunning install.sh" ;;
       *) usage ;;
     esac
   done
@@ -154,9 +153,9 @@ server() {
   case "$version" in "" | latest) version="$(latest_version)" ;; esac
   check_version "$version"
   mkdir -p /etc/orrery
-  # Manual runs and the Docker updater share one lock.
+  # Concurrent install.sh runs share one lock.
   exec 9>/etc/orrery/.install.lock
-  flock -n 9 || die "another install or auto-update is running"
+  flock -n 9 || die "another install.sh run is in progress"
 
   local etc=/etc/orrery backups=/var/lib/orrery-server/backups previous=""
   mkdir -p "$etc" "$backups"
@@ -223,8 +222,7 @@ server() {
   done
   [ "$code" = 401 ] || die "the Control Plane did not come up; see: cd $etc && docker compose logs server nginx"
   echo "Control Plane $version is running at https://$host:$port"
-  [ "$auto_update" = 1 ] && install_updater server
-  [ "$auto_update" = 0 ] && remove_updater server
+  remove_updater server
   [ -z "$previous" ] && next_steps "$version"
   return 0
 }
@@ -447,144 +445,27 @@ EOF
   chmod 600 .env
 }
 
-# write_updater_script writes the pull-based updater. The Control Plane runs
-# it in a Docker Compose project; a Node runs it as a systemd service.
-write_updater_script() {
-  cat > "$1" <<'EOF'
-#!/usr/bin/env bash
-# Installed by install.sh --auto-update (ADR-0023). Resolve the newest
-# released tag and run that tag's install script. Major upgrades and
-# downgrades are left to a manual run.
-set -uo pipefail
-REPO=zibyn/orrery
-role="${1:-server}"
-log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
-
-newer() {
-  local cur="$1" new="$2"
-  [ "$cur" = "$new" ] && return 1
-  if [ "${cur%%-*}" = "${new%%-*}" ]; then
-    [[ "$cur" == *-* ]] && [[ "$new" != *-* ]] && return 0
-    return 1
-  fi
-  [ "$(printf '%s\n' "$cur" "$new" | sort -V | head -n1)" = "$cur" ]
-}
-
-update_once() {
-  local current latest effective current_major latest_major
-  case "$role" in
-    server) current="$(sed -n 's/^ORRERY_VERSION=//p' /etc/orrery/.env 2>/dev/null)" ;;
-    node) current="$(cat /etc/orrery-agent/version 2>/dev/null)" ;;
-    *) log "unknown role $role"; return 2 ;;
-  esac
-  [ -n "$current" ] || return 0
-  effective="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-    "https://github.com/$REPO/releases/latest" 2>/dev/null)" || return 0
-  latest="${effective##*/}"
-  [ "$latest" = "$current" ] && return 0
-  [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
-    log "unexpected release tag $latest"
-    return 0
-  }
-  current_major="${current#v}"; current_major="${current_major%%.*}"
-  latest_major="${latest#v}"; latest_major="${latest_major%%.*}"
-  if [ "$current_major" != "$latest_major" ]; then
-    log "$current -> $latest crosses a major version; run install.sh manually"
-    return 0
-  fi
-  newer "$current" "$latest" || return 0
-  log "updating $role $current -> $latest"
-  curl -fsSL "https://raw.githubusercontent.com/$REPO/$latest/deploy/install.sh" |
-    bash -s -- "$role" --version "$latest"
-}
-
-while :; do
-  update_once
-  sleep "${ORRERY_UPDATE_INTERVAL:-21600}"
-done
-EOF
-}
-
-install_server_updater() {
-  local etc=/etc/orrery
-  mkdir -p "$etc"
-  write_updater_script "$etc/updater.sh"
-  chmod 0755 "$etc/updater.sh"
-  # A separate Compose project: the main project's `up -d --remove-orphans`
-  # must not touch the container that is running the update.
-  cat > "$etc/updater.yaml" <<'EOF'
-name: orrery-updater
-services:
-  updater:
-    image: docker:27-cli
-    restart: unless-stopped
-    network_mode: host
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        apk add --no-cache bash curl openssl >/dev/null
-        exec bash /etc/orrery/updater.sh server
-    environment:
-      ORRERY_UPDATE_INTERVAL: "${ORRERY_UPDATE_INTERVAL:-21600}"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /etc/orrery:/etc/orrery
-      - /var/lib/orrery-server/backups:/var/lib/orrery-server/backups
-EOF
-  docker compose -p orrery-updater -f "$etc/updater.yaml" up -d --force-recreate
-  echo "auto-update enabled: docker compose -p orrery-updater"
-}
-
-install_node_updater() {
-  local conf=/etc/orrery-agent
-  mkdir -p "$conf" /etc/systemd/system
-  write_updater_script "$conf/updater"
-  chmod 0755 "$conf/updater"
-  cat > /etc/systemd/system/orrery-update.service <<EOF
-[Unit]
-Description=Orrery auto-update
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=$conf/updater node
-Restart=always
-RestartSec=300
-Environment=ORRERY_UPDATE_INTERVAL=21600
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now orrery-update.service
-  echo "auto-update enabled: orrery-update.service (node)"
-}
-
-install_updater() {
-  case "$1" in
-    server) install_server_updater ;;
-    node) install_node_updater ;;
-    *) die "install_updater: unknown role $1" ;;
-  esac
-}
-
+# remove_updater removes the auto-updater an older install.sh --auto-update
+# left behind (ADR-0023, removed by ADR-0028). It runs last: an old updater
+# running this script stops itself only after the upgrade succeeded.
 remove_updater() {
   case "$1" in
     server)
+      [ -f /etc/orrery/updater.yaml ] || [ -f /etc/orrery/updater.sh ] || return 0
+      echo "removing the old auto-updater (orrery-updater)"
       docker compose -p orrery-updater -f /etc/orrery/updater.yaml \
         down --remove-orphans 2>/dev/null || true
       rm -f /etc/orrery/updater.yaml /etc/orrery/updater.sh
       ;;
     node)
+      [ -f /etc/systemd/system/orrery-update.service ] || [ -f /etc/orrery-agent/updater ] || return 0
+      echo "removing the old auto-updater (orrery-update.service)"
       systemctl disable --now orrery-update.service 2>/dev/null || true
       rm -f /etc/systemd/system/orrery-update.service /etc/orrery-agent/updater
       systemctl daemon-reload 2>/dev/null || true
       ;;
     *) die "remove_updater: unknown role $1" ;;
   esac
-  echo "auto-update disabled"
 }
 
 next_steps() {
@@ -636,7 +517,7 @@ EOF
 }
 
 node() {
-  local version="" server="" packet="" ca="" trust_registry=() runtime="" name="" extra=() write_unit=0 auto_update=""
+  local version="" server="" packet="" ca="" trust_registry=() runtime="" name="" extra=() write_unit=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) version="$2"; shift 2 ;;
@@ -646,8 +527,7 @@ node() {
       --trust-registry) trust_registry+=("$2"); shift 2 ;;
       --runtime) runtime="$2"; write_unit=1; shift 2 ;;
       --name) name="$2"; shift 2 ;;
-      --auto-update) auto_update=1; shift ;;
-      --no-auto-update) auto_update=0; shift ;;
+      --auto-update | --no-auto-update) die "auto-update was removed (ADR-0028); upgrade by rerunning install.sh" ;;
       --) shift; extra=("$@"); write_unit=1; break ;;
       *) usage ;;
     esac
@@ -657,9 +537,9 @@ node() {
   case "$version" in "" | latest) version="$(latest_version)" ;; esac
   check_version "$version"
   mkdir -p /etc/orrery-agent
-  # Manual runs and the updater service share one lock.
+  # Concurrent install.sh runs share one lock.
   exec 9>/etc/orrery-agent/.install.lock
-  flock -n 9 || die "another install or auto-update is running"
+  flock -n 9 || die "another install.sh run is in progress"
   case "${runtime:-containerd}" in
     containerd)
       need ctr
@@ -743,12 +623,11 @@ EOF
   fi
   systemctl enable --quiet orrery-agent
   systemctl restart orrery-agent
-  # The auto-updater reads this after a successful restart.
+  # Records the installed version after a successful restart.
   printf '%s\n' "$version" > "$conf/version"
   chmod 0644 "$conf/version"
   echo "Node Agent $version is running: systemctl status orrery-agent"
-  [ "$auto_update" = 1 ] && install_updater node
-  [ "$auto_update" = 0 ] && remove_updater node
+  remove_updater node
 }
 
 case "${1:-}" in

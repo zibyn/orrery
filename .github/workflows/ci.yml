@@ -215,8 +215,8 @@ jobs:
             tar -C "$d" -czf "dist/orrery_${v}_darwin_${arch}.tar.gz" orrery
           done
           (cd dist && sha256sum -- * > SHA256SUMS)
-      # A hyphen marks a semver prerelease; releases/latest must skip it or
-      # --auto-update would pick up an rc.
+      # A hyphen marks a semver prerelease; releases/latest must skip it, since
+      # install.sh without --version installs releases/latest.
       - name: Publish the release
         run: |
           set -euo pipefail
