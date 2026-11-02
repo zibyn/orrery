@@ -9,7 +9,7 @@
 脚本只检查、不安装：
 
 - Control Plane 主机：root、Docker 与 compose 插件、`openssl`、`curl`、`flock`（util-linux）。
-- Node：root、systemd、`curl`、`tar`、`sha256sum`、`flock`；`--runtime containerd`（默认）另需 rootful containerd 2.x（`ctr`），见下文“containerd Node 的准备”；`local` 不需要这些。
+- Node：root、systemd、`curl`、`tar`、`sha256sum`、`flock`、`cmp`，cgroup v2。containerd、runc、buildkitd 和 runsc 都在 node 包里，不用另装（ADR-0028），见下文“containerd Node 的准备”。
 - 能访问 `github.com`、`raw.githubusercontent.com` 和 `ghcr.io`。
 - 两个域名解析到 Control Plane 主机：公开入口（如 `cp.example.com`）和对象存储（默认 `s3.cp.example.com`）。对象存储需要独立域名，因为 presigned URL 的 SigV4 签的是 `Host` 和完整路径，不能挂在子路径下。
 
@@ -93,8 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
   --server cp.example.com:9443 --packet ore_... \
   --ca ca.crt \
   --trust-registry cp.example.com:9443 \
-  --trust-registry s3.cp.example.com:9443 \
-  --runtime containerd -- --buildkit unix:///run/buildkit/buildkitd.sock
+  --trust-registry s3.cp.example.com:9443
 ```
 
 版本同样可省略（默认最新 release）；固定版本则从 tag 取脚本并加 `--version vX.Y.Z`。
@@ -102,24 +101,41 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 - 端口是 443 时去掉 `--server` 和 `--trust-registry` 里的端口。
 - 用公共 CA 证书时去掉 `--ca` 和两个 `--trust-registry`。
 - 对象存储也要信任，因为 blob 下载会从 registry 307 到它。
-- `--trust-registry` 可重复；Agent 用宿主的系统信任库拉镜像，脚本把 CA 装进去（`update-ca-certificates` 或 `update-ca-trust`），Agent 重启后生效。buildkitd 有自己的 registry 配置，见下文。
-- `--runtime containerd|local` 之后可用 `--` 追加 `orrery-agent run` 的其它参数，例如 `-- --buildkit unix:///run/buildkit/buildkitd.sock`、`-- --isolation runsc`、`-- --sandbox-subnet 10.213.1.0/24` 或 `-- --local-user sandbox`。
-- 不带 `--buildkit` 的 Node 不做 Snapshot 构建（`snapshot_build` 为 `unsupported`）。
+- `--trust-registry` 可重复；Agent 用宿主的系统信任库拉镜像，脚本把 CA 装进去（`update-ca-certificates` 或 `update-ca-trust`），Agent 重启后生效。同样这几个主机也写进捆绑 buildkitd 的 `buildkitd.toml`；之后重跑不带 `--trust-registry` 时沿用上次的主机。
+- `--runtime containerd|local` 之后可用 `--` 追加 `orrery-agent run` 的其它参数，例如 `-- --isolation runsc`、`-- --sandbox-subnet 10.213.1.0/24` 或 `-- --local-user sandbox`。
+- Agent 默认连捆绑的 containerd 和 buildkitd；`-- --buildkit=` 关掉 Snapshot 构建（`snapshot_build` 为 `unsupported`）。`--containerd` 只用于开发和测试。
 
 ### containerd Node 的准备
 
-脚本只检查、不安装。`--runtime containerd` 的 Node 需要：
+containerd、buildkitd 和 runsc 不用运维准备：脚本把包里的运行时装到 `/opt/orrery/bin/`，并起三个 systemd 服务（ADR-0028）：
 
-- **containerd 2.x**，rootful，socket 默认 `/run/containerd/containerd.sock`（`-- --containerd SOCKET` 可改）。Agent 只用自己的 namespace `orrery`，不改 containerd 配置，可以和同一台宿主上的 Docker 共用一个 containerd。
-- **Sandbox 网络**不需要 CNI 插件、`nft` 或 `ip`：Agent 自己经 netlink 建网和下发 nftables 规则。每个 Sandbox 一个 netns，挂在 Agent 自建的网桥 `orrery0` 上，地址取自 `--sandbox-subnet`（默认 `10.213.0.0/24`）。多台 Node 的子网不能重叠，Egress Rules 靠它们区分 Sandbox。宿主防火墙要放行 `orrery0` 的转发：例如 Docker 把 FORWARD 默认策略设成 drop，Sandbox 就出不了网。
+- `orrery-containerd`：Agent 私有的 containerd，socket `/run/orrery/containerd/containerd.sock`，root `/var/lib/orrery-agent/containerd`，配置 `/etc/orrery-agent/containerd.toml`。它不读宿主的 `/etc/containerd/conf.d`、不开 NRI 和 CRI，所以可以和宿主上的 Docker 及其 containerd 并存，互不影响。
+- `orrery-buildkitd`：Snapshot 构建用，socket `/run/orrery/buildkit/buildkitd.sock`，配置 `/etc/orrery-agent/buildkitd.toml`。`--runtime local` 的 Node 也装它（构建与 Runtime 无关），但不装 `orrery-containerd`。
+- `orrery-agent`：`Wants=` 加 `After=orrery-containerd`，containerd 重启时 Agent 自己重连，不跟着重启。
+
+两份配置每次运行都重新生成，手改会被覆盖。重跑时只有 `containerd` 或 `buildkitd` 的二进制、配置或 unit 变了，才重启对应服务；containerd 重启不影响运行中的 Exec。Agent 每次都重启。
+
+宿主仍要准备：
+
+- **Sandbox 网络**不需要 CNI 插件、`nft` 或 `ip`：Agent 自己经 netlink 建网和下发 nftables 规则。每个 Sandbox 一个 netns，挂在 Agent 自建的网桥 `orrery0` 上，地址取自 `--sandbox-subnet`（默认 `10.213.0.0/24`）。多台 Node 的子网不能重叠，Egress Rules 靠它们区分 Sandbox。宿主防火墙要放行 `orrery0` 的转发：例如 Docker 把 FORWARD 默认策略设成 drop，Sandbox 就出不了网，可以 `iptables -I DOCKER-USER -i orrery0 -j ACCEPT` 并放行 `-o orrery0` 的 `RELATED,ESTABLISHED`。
 - **Node Mesh**（跨 Node 的 Sandbox Link，ADR-0027）：内核要带 WireGuard（Linux 5.6+ 主线自带，`modprobe wireguard` 能加载即可），不需要 `wireguard-tools`。没有时脚本只警告，Agent 照常运行，但这台 Node 不加入 Mesh。至少一方要用 `-- --mesh-endpoint host:port` 给出其他 Node 能直接访问的地址，并在防火墙放行 `--mesh-port`（默认 `51820`）的 UDP；两台都没有端点的 Node 之间没有通路（`defaults.md`）。
-- **buildkitd**（做 Snapshot 构建时）：独立、rootful，以 `--buildkit` 传给 Agent，例如 `buildkitd --addr unix:///run/buildkit/buildkitd.sock --oci-worker=true --containerd-worker=false`，并作为 systemd 服务常驻。私有 CA 时在它的 `buildkitd.toml` 里给 registry 和对象存储两个主机都配上 CA：`[registry."cp.example.com:9443"] ca = ["/etc/orrery-agent/ca.crt"]`。
-- **gVisor**（可选，`-- --isolation runsc`）：`runsc` 和 `containerd-shim-runsc-v1` 放在 containerd 的 PATH 上；data root 不能在 tmpfs 上。runsc Node 不挂 GPU。
-- **GPU**（可选）：NVIDIA Container Toolkit 生成的 CDI spec（`nvidia-ctk cdi generate`），只在 runc Node 上生效。
+- **gVisor**（可选，`-- --isolation runsc`）：runsc 已捆绑；data root 不能在 tmpfs 上。runsc Node 不挂 GPU。
+- **GPU**（可选）：NVIDIA 驱动和 NVIDIA Container Toolkit 生成的 CDI spec（`nvidia-ctk cdi generate`）仍在宿主上，只在 runc Node 上生效。
+- **探针镜像**：私有 containerd 的镜像存储一开始是空的，Agent 自检要拉 `docker.io/library/alpine:3.22`。拉不到 Docker Hub 的 Node 停在 `unavailable`，直到导入这个镜像，例如 `docker save docker.io/library/alpine:3.22 | ctr -a /run/orrery/containerd/containerd.sock -n orrery images import -`（`ctr` 不在包里，用宿主上 containerd 2.x 的）。
+
+### 从宿主 containerd 迁移
+
+ADR-0028 之前的 Agent 用宿主 containerd 的 `orrery` namespace。迁移是一次性切换：
+
+1. drain 这台 Node，等它上面的 Sandbox 停下。
+2. 用新版本重跑 install.sh（同一条命令）。Node 保留 identity，不重新注册。镜像在私有 containerd 里重新拉；stopped 的 Sandbox 下次启动时在私有 containerd 里重新 `Create`，Workspace 还在宿主上。
+3. Node `ready` 后 undrain。
+
+脚本发现宿主 containerd 上还有 `orrery` namespace 时，打印删除它的命令，但不执行，因为那个 containerd 可能还在给 Docker 用。
 
 Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules 为空时 Sandbox 的出站完全放开，包括云 metadata 地址和 Control Plane 所在的内网**；`defaults.md` 有一份推荐的 Rules。Local Runtime 不受 Egress Rules 约束。
 
-脚本校验 `SHA256SUMS` 后把 Agent 和 CLI 装到 `/opt/orrery/bin/`，首次运行用 Packet 注册（identity 在 `/var/lib/orrery-agent/`），再以 systemd 服务 `orrery-agent` 运行。服务使用 `KillMode=process`，重启 Agent 不会停掉 Exec。
+脚本校验 `SHA256SUMS` 后把整个包（Agent、CLI 和运行时）装到 `/opt/orrery/bin/`，首次运行用 Packet 注册（identity 在 `/var/lib/orrery-agent/`），再以 systemd 服务 `orrery-agent` 运行。服务使用 `KillMode=process`，重启 Agent 不会停掉 Exec。
 
 ## 升级与回滚
 
@@ -135,7 +151,7 @@ Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules
   sed -i 's/^ORRERY_VERSION=.*/ORRERY_VERSION=<旧版本>/' .env && docker compose up -d
   ```
 
-- Node：下载、校验、替换二进制后 `systemctl restart`；不带 `--runtime` 或 `--` 参数时保留现有 systemd unit。允许装旧版本，Control Plane 会把它标为 `outdated`。
+- Node：下载、校验、替换二进制后重启 `orrery-agent`，`orrery-containerd`、`orrery-buildkitd` 只在变了时重启；不带 `--runtime` 或 `--` 参数时保留 Agent 现有的启动参数。允许装旧版本，Control Plane 会把它标为 `outdated`。
 
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 

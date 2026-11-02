@@ -13,6 +13,8 @@
 | 磁盘水位 | 剩余低于 10% | Node | 低于水位就不接新分配，开始按 LRU 淘汰 Resource 缓存、Agent 的 containerd namespace 里未被本 Node 上任何 Sandbox（含 stopped）引用的镜像和 BuildKit 缓存（`runtime.md` §11）；对应 kubelet 的 `nodefs.available<10%` |
 | 宿主预留 | 1 CPU + 2 GiB | Node | 从总量里扣掉，不参与分配 |
 | 每 GPU 份额 | 可分配量 × 3/4 ÷ 卡数 | Node | CPU 和内存各算一份；剩下的 1/4 给无 GPU 的 Sandbox（ADR-0015） |
+| containerd socket | `/run/orrery/containerd/containerd.sock` | Node | `--containerd`，Agent 私有的 containerd（ADR-0028，`runtime.md` §9）；改它只用于开发和测试 |
+| BuildKit 端点 | `unix:///run/orrery/buildkit/buildkitd.sock` | Node | `--buildkit`，捆绑的 buildkitd（`runtime.md` §12）；`--buildkit=` 关掉 Snapshot 构建 |
 | Sandbox 子网 | `10.213.0.0/24` | Node | `--sandbox-subnet`，containerd Node 的 CNI 地址池（`runtime.md` §13）。多台 Node 必须各用一段、互不重叠，例如都从 `10.213.0.0/16` 里各取一个 `/24`；默认值只适合单 Node。重叠的两台 Node 不会互为 Mesh peer（ADR-0027） |
 | Mesh 端点 | 不设 | Node | `--mesh-endpoint host:port`，其他 Node 能直接访问到的 WireGuard UDP 地址；不设表示这台 Node 只主动发起（`runtime.md` §15） |
 | Mesh 监听端口 | `51820` | Node | `--mesh-port`；设了 `--mesh-endpoint` 时它就是要对其他 Node 开放的 UDP 端口 |
