@@ -29,3 +29,14 @@ func TestSandboxResolvConf(t *testing.T) {
 		})
 	}
 }
+
+// TestBundledDaemonDefaults: the Agent talks to the containerd and buildkitd
+// install.sh bundles, never the host's (ADR-0028, defaults.md).
+func TestBundledDaemonDefaults(t *testing.T) {
+	if DefaultContainerdSock != "/run/orrery/containerd/containerd.sock" {
+		t.Errorf("DefaultContainerdSock = %q", DefaultContainerdSock)
+	}
+	if DefaultBuildkitAddr != "unix:///run/orrery/buildkit/buildkitd.sock" {
+		t.Errorf("DefaultBuildkitAddr = %q", DefaultBuildkitAddr)
+	}
+}
