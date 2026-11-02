@@ -226,29 +226,15 @@ jobs:
               CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$out/$bin" "./cmd/$bin"
             done
           }
-          fetch() { # url sha256 out-file
-            curl -fsSL --retry 3 "$1" -o "$3"
-            echo "$2  $3" | sha256sum -c --quiet - || { echo "::error::$1 does not match its pinned sha256"; exit 1; }
-          }
           # Everything sits flat in bin/, plus runsc's gvisor-bin/ sidecars,
           # for install.sh to copy as is to /opt/orrery/bin/. The Agent finds
           # the CLI beside its own executable (runtime.md).
           for arch in amd64 arm64; do
-            d="$(mktemp -d)" dl="$(mktemp -d)"
-            A="${arch^^}" b="$d/bin"
-            sum() { local n="$1_SHA256_$A"; echo "${!n}"; }
-            mkdir "$b"
-            build linux "$arch" "$b" orrery-agent orrery
-            fetch "https://github.com/containerd/containerd/releases/download/v$CONTAINERD_VERSION/containerd-$CONTAINERD_VERSION-linux-$arch.tar.gz" "$(sum CONTAINERD)" "$dl/containerd.tar.gz"
-            tar -C "$b" --strip-components=1 -xzf "$dl/containerd.tar.gz" bin/containerd bin/containerd-shim-runc-v2
-            fetch "https://github.com/opencontainers/runc/releases/download/v$RUNC_VERSION/runc.$arch" "$(sum RUNC)" "$dl/runc"
-            install -m 0755 "$dl/runc" "$b/runc"
-            fetch "https://github.com/moby/buildkit/releases/download/$BUILDKIT_VERSION/buildkit-$BUILDKIT_VERSION.linux-$arch.tar.gz" "$(sum BUILDKIT)" "$dl/buildkit.tar.gz"
-            tar -C "$b" --strip-components=1 -xzf "$dl/buildkit.tar.gz" bin/buildkitd
-            case "$arch" in amd64) g=x86_64 ;; arm64) g=aarch64 ;; esac
-            fetch "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION#release-}/$g/gvisor.tar.bz2" "$(sum GVISOR)" "$dl/gvisor.tar.bz2"
-            tar -C "$b" -xjf "$dl/gvisor.tar.bz2"
-            tar -C "$d" --owner=0 --group=0 -czf "dist/orrery-node_${v}_linux_${arch}.tar.gz" bin
+            pkg="$(mktemp -d)"
+            mkdir "$pkg/bin"
+            build linux "$arch" "$pkg/bin" orrery-agent orrery
+            ./scripts/fetch-runtimes.sh "$arch" "$pkg/bin"
+            tar -C "$pkg" --owner=0 --group=0 -czf "dist/orrery-node_${v}_linux_${arch}.tar.gz" bin
           done
           for arch in amd64 arm64; do
             d="$(mktemp -d)"
