@@ -213,7 +213,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 
 Git Provider 来自部署配置文件 `config.yaml` 的 `git_providers`（`defaults.md`），client secret 直接写在文件里。OAuth `redirect_uri` 和 `authorize_url` 都以 `access.url`（环境变量覆盖名 `ORRERY_ACCESS_URL`）为基址；它未配置时 Git 关联关闭。
 
-沙箱内的 helper 收到 `404` 时，把 `authorize_url` 写到 stderr，stdout 不输出，退出码为 0，由 git 继续尝试下一个 helper 或报认证失败。
+沙箱内的 helper 收到 `404` 时，把 `authorize_url` 写到 stderr，stdout 不输出，退出码为 0。平台 helper 是 Exec 里唯一的 helper（镜像和仓库里配置的 helper 已被清空），所以 git 随后报认证失败。
 
 **审计**：`GET /audit`，**admin**，过滤 `actor`、`action`、`target`、时间区间。
 

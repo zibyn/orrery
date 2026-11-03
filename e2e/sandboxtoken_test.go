@@ -97,7 +97,8 @@ func TestSandboxTokenScope(t *testing.T) {
 		}
 
 		// An unmatched host passes through: no output, and a not_found round
-		// trip through ORRERY_URL still exits 0 so git can try the next helper.
+		// trip through ORRERY_URL still exits 0, so git reports an
+		// authentication failure rather than a helper error.
 		stdout, stderr := run("sh", "-c",
 			`printf 'protocol=https\nhost=github.com\n\n' | /.orrery/bin/orrery git-credential get`)
 		if stdout != "" {

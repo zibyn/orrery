@@ -149,7 +149,7 @@ func gitUsername(providerType string) string {
 }
 
 // writeGitAuthorizationRequired answers 404 with the console's Git page, which
-// the helper prints to stderr before git tries its next helper (api.md §3).
+// the helper prints to stderr before answering nothing (api.md §3).
 func (s *Server) writeGitAuthorizationRequired(w http.ResponseWriter, detail string) {
 	writeProblemWithExtras(w, "not_found", detail, map[string]any{
 		"authorize_url": s.gitAuthorizeURL(),
