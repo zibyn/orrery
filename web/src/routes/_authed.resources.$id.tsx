@@ -287,20 +287,14 @@ function VersionFiles({ resourceId, versionId }: { resourceId: string; versionId
     staleTime: Infinity, // a version's manifest never changes
   })
   const download = useMutation({
-    mutationFn: async ({ sha256, tab }: { sha256: string; tab: Window | null }) => {
-      try {
-        const { urls } = await api<{ urls: string[] }>('POST', `${base}/downloads`, {
-          sha256: [sha256],
-        })
-        if (!urls[0]) throw new Error(m.resource_download_missing())
-        if (tab) {
-          tab.opener = null // the object store page must not reach the console
-          tab.location.href = urls[0]
-        } else window.location.assign(urls[0])
-      } catch (err) {
-        tab?.close()
-        throw err
-      }
+    mutationFn: async (entry: ManifestEntry) => {
+      const { urls } = await api<{ urls: string[] }>('POST', `${base}/downloads`, {
+        sha256: [entry.sha256],
+        filename: entry.path.split('/').pop(),
+      })
+      if (!urls[0]) throw new Error(m.resource_download_missing())
+      // The URL is served as an attachment, so the console page stays put.
+      window.location.assign(urls[0])
     },
   })
   const entries = manifest.data?.entries ?? []
@@ -360,11 +354,7 @@ function VersionFiles({ resourceId, versionId }: { resourceId: string; versionId
                     variant="ghost"
                     size="xs"
                     disabled={download.isPending}
-                    onClick={() =>
-                      // Open the tab inside the click so popup blockers allow it;
-                      // the presigned URL arrives after the request.
-                      download.mutate({ sha256: entry.sha256!, tab: window.open('', '_blank') })
-                    }
+                    onClick={() => download.mutate(entry)}
                   >
                     <Download />
                     {m.files_download()}

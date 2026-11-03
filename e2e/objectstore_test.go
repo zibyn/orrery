@@ -84,6 +84,23 @@ func TestObjectStoreChecksum(t *testing.T) {
 	if !bytes.Equal(roundTrip, content) {
 		t.Fatalf("GET returned %q, want %q", roundTrip, content)
 	}
+
+	// The console names single-file downloads; the store must echo the name.
+	namedURL, err := store.PresignGetURLAs(ctx, owner, digest, "模型 v1.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, err := http.Get(namedURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named.Body.Close()
+	if named.StatusCode != http.StatusOK {
+		t.Fatalf("named presigned GET: %d", named.StatusCode)
+	}
+	if got, want := named.Header.Get("Content-Disposition"), `attachment; filename*=utf-8''%E6%A8%A1%E5%9E%8B%20v1.bin`; got != want {
+		t.Fatalf("Content-Disposition = %q, want %q", got, want)
+	}
 }
 
 func e2eObjectStore(t *testing.T) *objectstore.Store {

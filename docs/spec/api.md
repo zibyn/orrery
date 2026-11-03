@@ -167,7 +167,7 @@ Paused Node 不接收新的 Workspace 和构建。
 | `POST /resources/{id}/versions` | `{upload_id}`：对每个对象做 `HeadObject`（`ChecksumMode`），全部存在且 sha256 一致就发布 `ready` 的 ResourceVersion 并移动 current 指针，否则 `409` 并列出问题对象 |
 | `GET /resources/{id}/versions` · `GET /resources/{id}/versions/{v}` | |
 | `GET /resources/{id}/versions/{v}/manifest` | 返回规范化的 manifest |
-| `POST /resources/{id}/versions/{v}/downloads` | `{sha256[]}` → 预签名 GET；tar 由 CLI 在本地拼装，Control Plane 不读内容（ADR-0012） |
+| `POST /resources/{id}/versions/{v}/downloads` | `{sha256[], filename?}` → 预签名 GET；`filename` 只能配一个 sha256，是单段名字，对象存储按它返回 `Content-Disposition: attachment`，浏览器存成这个名字而不是 sha256；tar 由 CLI 在本地拼装，Control Plane 不读内容（ADR-0012） |
 | `PUT /resources/{id}/current` | `{version}`，可带 `If-Match` |
 
 manifest 的条目是 `{path, type: file|dir|symlink, size?, sha256?, executable?, target?}`：权限只记可执行位，空目录保留，最多 1,000,000 条。服务端规范化后，规范化 manifest 的 sha256 就是地址。publish 单个文件，得到只含这一个条目的树。
@@ -367,7 +367,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | 终端 | `POST /sandboxes/{id}/execs` 带 `pty`，argv 默认 `["/bin/sh", "-l"]`，可改；然后 `GET /execs/{id}/pty`。不提供非 PTY 的运行表单 |
 | 文件 | §5 的列目录；单文件上传 `PUT files/content`；下载走同源链接，文件用 `files/content`，目录用 `files/archive`；对当前目录或某个文件、目录「发布为 Resource」：`POST /workspaces/{id}/publish`（名字不存在时新建 Resource），之后轮询该版本直到 `ready` 或 `failed`。不做浏览器内 tar 上传、删除、移动、mkdir、编辑 |
 | Workspace | 列表与详情：`GET /workspaces`、`GET /workspaces/{id}`，显示 kind、state、cause、node、挂着它的 Sandbox；`POST /workspaces` 创建持久 Workspace；删除持久 Workspace。文件不经 Workspace 浏览（§5 要求 Sandbox `ready`），详情页只链到挂着它的 Sandbox |
-| Resource | 列表、详情、删除；版本列表（state、cause、size、provenance、expires_at），标出 current，`PUT /resources/{id}/current` 切换，服务端的 `conflict` 原样显示；`ready` 版本的文件：`GET .../versions/{v}/manifest` 列出条目，单文件下载用 `POST .../downloads` 拿预签名 GET。上传（manifest + 分片 PUT）用 `orrery resource push` |
+| Resource | 列表、详情、删除；版本列表（state、cause、size、provenance、expires_at），标出 current，`PUT /resources/{id}/current` 切换，服务端的 `conflict` 原样显示；`ready` 版本的文件：`GET .../versions/{v}/manifest` 列出条目，单文件下载用 `POST .../downloads` 带 `filename`（条目路径的最后一段）拿预签名 GET。上传（manifest + 分片 PUT）用 `orrery resource push` |
 | 端口 | 详情页输入端口号，`POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
 | Snapshot | 列表、创建、删除；版本：构建（dockerfile、base、secrets）、导入、cancel、删除、设为 current；构建日志。构建的 contexts 用 CLI |
 | Secret | 名字列表、覆盖写入、删除 |

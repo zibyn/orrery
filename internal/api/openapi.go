@@ -983,6 +983,10 @@ func schemas() map[string]any {
 			"required": []string{"sha256"},
 			"properties": map[string]any{
 				"sha256": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"filename": map[string]any{
+					"type":        "string",
+					"description": "With exactly one sha256: the URL serves the object as an attachment with this name. One path segment, at most 255 characters.",
+				},
 			},
 		},
 		"ResourceDownloads": map[string]any{

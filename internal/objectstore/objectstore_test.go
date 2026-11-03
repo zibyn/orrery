@@ -108,3 +108,30 @@ func TestManifestPresign(t *testing.T) {
 		t.Fatalf("path = %q, want %q", got, want)
 	}
 }
+
+func TestPresignGetURLAsNamesTheDownload(t *testing.T) {
+	store, err := New(context.Background(), Config{Endpoint: "http://127.0.0.1:19000", Bucket: "orrery", AccessKey: "a", SecretKey: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct{ name, want string }{
+		{"model.bin", `attachment; filename=model.bin`},
+		{"my report.txt", `attachment; filename="my report.txt"`},
+		{"模型.bin", `attachment; filename*=utf-8''%E6%A8%A1%E5%9E%8B.bin`},
+	} {
+		raw, err := store.PresignGetURLAs(context.Background(), "owner", "abc", tt.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := u.Query().Get("response-content-disposition"); got != tt.want {
+			t.Fatalf("%s: disposition = %q, want %q", tt.name, got, tt.want)
+		}
+		if got, want := u.Path, "/orrery/cas/owner/sha256/abc"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -112,6 +113,20 @@ func (s *Store) PresignPutURL(ctx context.Context, ownerID, sha256hex string) (s
 // PresignGetURL signs a download of a CAS object.
 func (s *Store) PresignGetURL(ctx context.Context, ownerID, sha256hex string) (string, error) {
 	return s.presignGet(ctx, CASKey(ownerID, sha256hex))
+}
+
+// PresignGetURLAs signs a download of a CAS object that the store serves as
+// an attachment named filename, so a browser does not save it under the digest.
+func (s *Store) PresignGetURLAs(ctx context.Context, ownerID, sha256hex, filename string) (string, error) {
+	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket:                     aws.String(s.bucket),
+		Key:                        aws.String(CASKey(ownerID, sha256hex)),
+		ResponseContentDisposition: aws.String(mime.FormatMediaType("attachment", map[string]string{"filename": filename})),
+	}, s3.WithPresignExpires(PresignTTL))
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
 }
 
 // PresignManifestGetURL signs a download of a version manifest.
