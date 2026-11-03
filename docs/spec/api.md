@@ -188,11 +188,11 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 - **删除 Snapshot**：写墓碑；被引用的版本保留到最后一个引用消失，然后删掉 registry 里的 manifest。名字只在未删除的 Snapshot 间唯一。
 - **删除 SnapshotVersion**：写墓碑，返回 `202`，此后它不出现在 API 里。purge 删掉 registry 里的 manifest，再删这一行；同一 Snapshot 的其他版本仍用同一 digest 时保留 manifest。删除 manifest 失败时下一轮重试。
 - **平台 Snapshot**：来自部署配置的 `platform_snapshots`（`defaults.md`），出现在每个 User 的 `GET /snapshots` 里；对它增删改返回 `403`。
-- **import**：`ref` 必须是 `ref@sha256:…`，`auth_secret` 是调用方一个 Secret 的名字，值为 docker `config.json`。Control Plane 用 go-containerregistry 把整个 index 流式复制到平台 registry，保留原 digest。Node 只从平台 registry 拉镜像（ADR-0021）。
+- **import**：`ref` 是 `ref:tag`（省略 tag 即 `latest`）或 `ref@sha256:…`。tag 在请求里用调用方凭据解析成 digest，解析失败返回 `invalid_request`，之后只按该 digest 复制，审计记录原始 ref 和解析结果；部署配置的 `platform_snapshots` 仍只认 digest。`auth_secret` 是调用方一个 Secret 的名字，值为 docker `config.json`。Control Plane 用 go-containerregistry 把整个 index 流式复制到平台 registry，保留原 digest。Node 只从平台 registry 拉镜像（ADR-0021）。
 - **build**：
   - `dockerfile` 是文本；没有默认构建上下文。
   - `contexts?: {name: resource[@version]}`，创建时解析为具体版本，作为命名上下文传入。
-  - `base?` 是平台内的 Snapshot 引用（同 Sandbox 的 `snapshot`），以命名上下文 `base` 注入；`FROM` 也可以写外部 `ref@digest`。
+  - `base?` 是平台内的 Snapshot 引用（同 Sandbox 的 `snapshot`），以命名上下文 `base` 注入；`FROM` 也可以写外部镜像 `ref:tag` 或 `ref@sha256:…`，tag 由 BuildKit 在构建时解析，provenance 记录解析出的 digest。
   - `secrets?: {id: secret_name}`，Dockerfile 用 `RUN --mount=type=secret,id=<id>` 读取；带 `secrets` 的构建不用缓存。
   - 构建以 `system` 优先级准入，资源上限和超时见 `defaults.md`，不计入 User Quota；只放到 `snapshot_build` 为 `enforced` 的 Node 上，与 Node 用哪种 Runtime 无关。provenance 记录 BuildKit 实际解析出的 FROM digest 和各 context 的版本地址。执行细节见 `runtime.md` §12。
 

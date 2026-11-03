@@ -59,10 +59,11 @@ describe('snapshotVersionSchema', () => {
     expect(snapshotVersionSchema.safeParse({ ...valid, dockerfile: '  ' }).success).toBe(false)
   })
 
-  it('requires an import ref pinned by @sha256:', () => {
+  it('requires an import ref, by tag or digest', () => {
     const imp = { ...valid, source: 'import' }
     expect(snapshotVersionSchema.safeParse({ ...imp, ref: '' }).success).toBe(false)
-    expect(snapshotVersionSchema.safeParse({ ...imp, ref: 'alpine:3' }).success).toBe(false)
+    expect(snapshotVersionSchema.safeParse({ ...imp, ref: '  ' }).success).toBe(false)
+    expect(snapshotVersionSchema.safeParse({ ...imp, ref: 'alpine:3' }).success).toBe(true)
     expect(snapshotVersionSchema.safeParse({ ...imp, ref: 'alpine@sha256:abc' }).success).toBe(true)
   })
 

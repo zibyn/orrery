@@ -136,7 +136,7 @@ commands:
   secret set [--file PATH] <name>   write a value from stdin or a file
   secret list
   secret rm <name>
-  snapshot import <name> <ref@sha256:…> [--auth-secret NAME]
+  snapshot import <name> <ref:tag|ref@sha256:…> [--auth-secret NAME]
                                     import an image and follow it to a terminal state
   snapshot build <name> -f Dockerfile [--base SNAPSHOT]
                    [--context name=resource[@version] ...] [--secret id=secret ...]

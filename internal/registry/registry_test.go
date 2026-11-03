@@ -1,10 +1,18 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"log"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	ggcrregistry "github.com/google/go-containerregistry/pkg/registry"
+	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/uuid"
 )
 
@@ -84,6 +92,78 @@ func TestRewriteRegistry(t *testing.T) {
 	}
 	if unchanged.String() != external.String() {
 		t.Fatalf("RewriteRegistry changed a foreign ref: %q", unchanged.String())
+	}
+}
+
+func TestParseImportRef(t *testing.T) {
+	for _, tc := range []struct {
+		ref  string
+		ok   bool
+		want string
+	}{
+		{"alpine:3.22", true, "alpine:3.22"},
+		{"alpine", true, "alpine"}, // Identifier() is "latest"
+		{"ghcr.io/acme/app:v1", true, "ghcr.io/acme/app:v1"},
+		{"alpine@" + testDigest, true, "alpine@" + testDigest},
+		{"alpine@sha256:short", false, ""},
+		{"Alpine:3.22", false, ""},
+	} {
+		got, err := ParseImportRef(tc.ref)
+		if tc.ok != (err == nil) {
+			t.Fatalf("ParseImportRef(%q): err = %v, want ok %v", tc.ref, err, tc.ok)
+		}
+		if tc.ok && got.String() != tc.want {
+			t.Fatalf("ParseImportRef(%q) = %q, want %q", tc.ref, got.String(), tc.want)
+		}
+	}
+}
+
+func TestRewriteRegistryKeepsTag(t *testing.T) {
+	tag, err := ParseImportRef("127.0.0.1:15000/snapshots/abc:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := RewriteRegistry(tag, "127.0.0.1:15000", "172.17.0.1:15000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "172.17.0.1:15000/snapshots/abc:v1" {
+		t.Fatalf("RewriteRegistry = %q", got.String())
+	}
+}
+
+func TestResolvePinsTag(t *testing.T) {
+	server := httptest.NewServer(ggcrregistry.New(ggcrregistry.Logger(log.New(io.Discard, "", 0))))
+	defer server.Close()
+	host := strings.TrimPrefix(server.URL, "http://")
+	image, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag, err := name.NewTag(host + "/acme/app:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Write(tag, image); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := image.Digest()
+
+	got, err := Resolve(context.Background(), tag, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != host+"/acme/app@"+want.String() {
+		t.Fatalf("Resolve = %q, want digest %s", got.String(), want)
+	}
+	missing, _ := name.NewTag(host + "/acme/app:nope")
+	if _, err := Resolve(context.Background(), missing, nil); err == nil {
+		t.Fatal("Resolve accepted a missing tag")
+	}
+	// A digest needs no lookup.
+	pinned, _ := ParseSourceRef("ghcr.io/acme/app@" + testDigest)
+	if got, err := Resolve(context.Background(), pinned, nil); err != nil || got != pinned {
+		t.Fatalf("Resolve(digest) = %v, %v", got, err)
 	}
 }
 

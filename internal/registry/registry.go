@@ -49,16 +49,54 @@ func ParseSourceRef(raw string) (name.Digest, error) {
 	return ref, nil
 }
 
+// ParseImportRef validates a user import source: a digest-pinned ref, or a
+// tag (default "latest") that Resolve pins before anything is copied.
+func ParseImportRef(raw string) (name.Reference, error) {
+	raw = strings.TrimSpace(raw)
+	if strings.Contains(raw, "@") {
+		return ParseSourceRef(raw)
+	}
+	tag, err := name.NewTag(raw)
+	if err != nil {
+		return nil, fmt.Errorf("ref must be ref:tag or ref@sha256:…: %w", err)
+	}
+	return tag, nil
+}
+
+// Resolve pins ref to a digest. A tag is read once, here, so the import copies
+// what it named at submit time even if it moves while the copy runs.
+func Resolve(ctx context.Context, ref name.Reference, auth *Credential) (name.Digest, error) {
+	if digest, ok := ref.(name.Digest); ok {
+		return digest, nil
+	}
+	opts := []remote.Option{remote.WithContext(ctx)}
+	if auth != nil {
+		opts = append(opts, remote.WithAuthFromKeychain(auth.Keychain()))
+	}
+	desc, err := remote.Head(ref, opts...)
+	if err != nil {
+		return name.Digest{}, fmt.Errorf("resolve %s: %w", ref, err)
+	}
+	return ref.Context().Digest(desc.Digest.String()), nil
+}
+
 // RewriteRegistry returns ref with its registry host replaced when it is the
 // deployment's Node-reachable address. A Control Plane in a container cannot
 // reach its own 127.0.0.1, but importing an image that is already in the
 // platform registry should still work.
-func RewriteRegistry(ref name.Digest, from, to string) (name.Digest, error) {
+func RewriteRegistry(ref name.Reference, from, to string) (name.Reference, error) {
 	from, to = normalizeHost(from), normalizeHost(to)
 	if from == "" || to == "" || from == to || normalizeHost(ref.Context().RegistryStr()) != from {
 		return ref, nil
 	}
-	return name.NewDigest(to + "/" + ref.Context().RepositoryStr() + "@" + ref.DigestStr())
+	repo, err := name.NewRepository(to + "/" + ref.Context().RepositoryStr())
+	if err != nil {
+		return nil, err
+	}
+	if digest, ok := ref.(name.Digest); ok {
+		return repo.Digest(digest.DigestStr()), nil
+	}
+	return repo.Tag(ref.Identifier()), nil
 }
 
 // ValidPlatformName reports whether a configured platform Snapshot name can

@@ -276,14 +276,14 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		s.createBuild(w, r, p, snap, *req.Build, key)
 		return
 	}
-	source, err := registry.ParseSourceRef(req.Import.Ref)
+	ref, err := registry.ParseImportRef(req.Import.Ref)
 	if err != nil {
 		writeProblem(w, "invalid_request", err.Error())
 		return
 	}
 	// A ref naming the platform registry by its Node-reachable address is
 	// reachable only through the Control Plane's push address.
-	source, err = registry.RewriteRegistry(source, s.cfg.RegistryAddr, s.cfg.RegistryPushAddr)
+	ref, err = registry.RewriteRegistry(ref, s.cfg.RegistryAddr, s.cfg.RegistryPushAddr)
 	if err != nil {
 		writeProblem(w, "invalid_request", "ref is not a valid image reference")
 		return
@@ -295,6 +295,11 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 	sourceAuth, code, detail := s.sourceCredential(ctx, p.user.ID, req.Import.AuthSecret)
 	if code != "" {
 		writeProblem(w, code, detail)
+		return
+	}
+	source, err := registry.Resolve(ctx, ref, sourceAuth)
+	if err != nil {
+		writeProblem(w, "invalid_request", err.Error())
 		return
 	}
 	id, err := uuid.NewV7()
@@ -319,6 +324,7 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 	}
 	s.audit(ctx, p, "snapshot.version.create", "snapshot", snap.ID.String(), map[string]any{
 		"version": version.ID.String(), "source": version.Source, "ref": source.String(),
+		"requested": req.Import.Ref,
 	})
 	go s.runImport(version.ID, snap.ID, registry.Repo(snap.ID, platformName(snap)), source, sourceAuth)
 	writeJSON(w, http.StatusCreated, snapshotVersionToDTO(version))

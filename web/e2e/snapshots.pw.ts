@@ -332,9 +332,8 @@ test('console: import rejects an unpinned ref before any request, then lands on 
 
   await page.goto(`/snapshots/${snapshotId}/versions/new`)
   await page.getByLabel('Source').selectOption('import')
-  await page.getByLabel('Image ref').fill('docker.io/library/busybox:latest')
   await page.getByRole('button', { name: 'Create version' }).click()
-  await expect(page.getByRole('alert')).toContainText('@sha256:')
+  await expect(page.getByRole('alert')).toContainText('Enter an image ref')
   expect(posts).toBe(0)
 
   // The import itself may fail without registry access; landing on the
