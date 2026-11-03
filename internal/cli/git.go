@@ -78,7 +78,8 @@ func runGitCredential(c *client, args []string, stdout, stderr io.Writer) error 
 	cred, err := c.GitCredential(ctx, body)
 	if err != nil {
 		// A missing link is not a helper failure: name the console page on
-		// stderr and let git try the next helper (api.md §3).
+		// stderr and answer nothing. This is the Exec's only helper, so git
+		// then fails authentication (api.md §3).
 		var problem *orreryclient.Error
 		if errors.As(err, &problem) && problem.Status == http.StatusNotFound {
 			if problem.AuthorizeURL != "" {
