@@ -189,7 +189,7 @@ export type ManifestEntry = {
   target?: string
 }
 
-export type ExecState ='pending' | 'running' | 'canceling' | 'finished'
+export type ExecState = 'pending' | 'running' | 'canceling' | 'finished'
 
 export type ExecResult = {
   cause: string

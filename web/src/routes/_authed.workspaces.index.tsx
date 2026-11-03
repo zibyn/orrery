@@ -11,7 +11,7 @@ import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { useLocale } from '@/lib/i18n'
-import { workspaceKindLabel } from '@/lib/labels'
+import { causeLabel, workspaceKindLabel } from '@/lib/labels'
 import { workspacesPollInterval } from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
@@ -104,6 +104,26 @@ function WorkspacesPage() {
                 <>
                   {workspaceKindLabel(workspace.kind)} ·{' '}
                   {m.common_created({ time: formatTimestamp(workspace.created_at) })}
+                  {workspace.cause && <> · {causeLabel(workspace.cause)}</>}
+                  {workspace.node_id && (
+                    <>
+                      {' '}
+                      · {m.sandbox_node()} <span className="font-mono">{workspace.node_id.slice(0, 8)}</span>
+                    </>
+                  )}
+                  {workspace.sandbox_id && (
+                    <>
+                      {' '}
+                      · {m.workspace_sandbox()}{' '}
+                      <Link
+                        to="/sandboxes/$id"
+                        params={{ id: workspace.sandbox_id }}
+                        className="font-mono hover:underline"
+                      >
+                        {workspace.sandbox_id.slice(0, 8)}
+                      </Link>
+                    </>
+                  )}
                 </>
               }
               trailing={<StatusBadge state={workspace.state} />}

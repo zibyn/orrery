@@ -30,7 +30,7 @@ export type Provenance = { source: 'upload' } | { source: 'workspace'; workspace
 
 // Reads the provenance the server writes (publish.go); the Workspace root is
 // stored as "." and shown as "/".
-export function provenanceText(provenance: Record<string, unknown>): Provenance {
+export function parseProvenance(provenance: Record<string, unknown>): Provenance {
   const workspace = provenance.workspace as { id?: unknown; path?: unknown } | undefined
   if (provenance.source === 'workspace' && typeof workspace?.id === 'string') {
     const path = typeof workspace.path === 'string' && workspace.path !== '.' ? workspace.path : ''

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { type ResourceVersion, type Workspace } from '@/api'
 import {
-  provenanceText,
+  parseProvenance,
   resourceVersionPollInterval,
   resourceVersionsPollInterval,
   workspacePollInterval,
@@ -70,15 +70,15 @@ describe('workspace polling', () => {
   })
 })
 
-describe('provenanceText', () => {
+describe('parseProvenance', () => {
   it('names the Workspace path a version was published from', () => {
     expect(
-      provenanceText({ source: 'workspace', workspace: { id: 'ws-1', path: 'out/model' } }),
+      parseProvenance({ source: 'workspace', workspace: { id: 'ws-1', path: 'out/model' } }),
     ).toEqual({ source: 'workspace', workspaceId: 'ws-1', path: 'out/model' })
   })
 
   it('shows the Workspace root as /', () => {
-    expect(provenanceText({ source: 'workspace', workspace: { id: 'ws-1', path: '.' } })).toEqual({
+    expect(parseProvenance({ source: 'workspace', workspace: { id: 'ws-1', path: '.' } })).toEqual({
       source: 'workspace',
       workspaceId: 'ws-1',
       path: '',
@@ -86,7 +86,7 @@ describe('provenanceText', () => {
   })
 
   it('treats anything else as an upload', () => {
-    expect(provenanceText({ source: 'upload' })).toEqual({ source: 'upload' })
-    expect(provenanceText({})).toEqual({ source: 'upload' })
+    expect(parseProvenance({ source: 'upload' })).toEqual({ source: 'upload' })
+    expect(parseProvenance({})).toEqual({ source: 'upload' })
   })
 })

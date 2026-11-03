@@ -442,5 +442,6 @@
   "files_publish_dir": "发布当前目录",
   "files_publish_prompt": "将 {path} 发布为 Resource（名字不存在时会新建）：",
   "files_publish_status": "发布：",
-  "files_publish_open": "打开 Resource"
+  "files_publish_open": "打开 Resource",
+  "resource_download_missing": "服务端没有返回下载地址。"
 }

@@ -28,7 +28,7 @@ import {
 import { formatBytes } from '@/lib/files'
 import { useLocale } from '@/lib/i18n'
 import { causeLabel } from '@/lib/labels'
-import { provenanceText, resourceVersionsPollInterval } from '@/lib/resources'
+import { parseProvenance, resourceVersionsPollInterval } from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
@@ -52,16 +52,18 @@ function ResourceDetailPage() {
 
   const versions = useQuery({
     queryKey: ['resource-versions', id],
-    queryFn: () => api<ListResponse<ResourceVersion>>('GET', `/resources/${id}/versions?limit=200`),
+    queryFn: async () => {
+      const list = await api<ListResponse<ResourceVersion>>('GET', `/resources/${id}/versions?limit=200`)
+      // The current pointer moves when a publish becomes ready, so every
+      // version poll re-reads the Resource too, including the one that sees ready.
+      void queryClient.invalidateQueries({ queryKey: ['resource', id] })
+      return list
+    },
     refetchInterval: (query) => resourceVersionsPollInterval(query.state.data?.items),
   })
   const resource = useQuery({
     queryKey: ['resource', id],
     queryFn: () => api<Resource>('GET', `/resources/${id}`),
-    // The current pointer moves when a publish becomes ready.
-    refetchInterval: versions.data?.items.some((version) => version.state === 'pending')
-      ? 2000
-      : false,
   })
   const current = resource.data
 
@@ -260,7 +262,7 @@ function ResourceDetailPage() {
 }
 
 function ProvenanceCell({ provenance }: { provenance: Record<string, unknown> }) {
-  const source = provenanceText(provenance)
+  const source = parseProvenance(provenance)
   if (source.source === 'upload') return <>{m.resource_source_upload()}</>
   return (
     <span className="inline-flex items-center gap-1">
@@ -290,8 +292,11 @@ function VersionFiles({ resourceId, versionId }: { resourceId: string; versionId
         const { urls } = await api<{ urls: string[] }>('POST', `${base}/downloads`, {
           sha256: [sha256],
         })
-        if (tab) tab.location.href = urls[0]
-        else window.location.assign(urls[0])
+        if (!urls[0]) throw new Error(m.resource_download_missing())
+        if (tab) {
+          tab.opener = null // the object store page must not reach the console
+          tab.location.href = urls[0]
+        } else window.location.assign(urls[0])
       } catch (err) {
         tab?.close()
         throw err

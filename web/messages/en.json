@@ -442,5 +442,6 @@
   "files_publish_dir": "Publish this directory",
   "files_publish_prompt": "Publish {path} as Resource (a missing name is created):",
   "files_publish_status": "Publish:",
-  "files_publish_open": "Open Resource"
+  "files_publish_open": "Open Resource",
+  "resource_download_missing": "The server returned no download URL."
 }
