@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/google/uuid"
@@ -82,8 +83,13 @@ func (s *Server) importPlatformSnapshot(ctx context.Context, configured Platform
 	if err != nil {
 		return err
 	}
+	request, err := json.Marshal(createSnapshotVersionRequest{Import: &snapshotImportRequest{Ref: configured.Ref}})
+	if err != nil {
+		return err
+	}
 	version, err := s.q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
 		ID: id, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding), Source: "import",
+		Request: request,
 	})
 	if err != nil {
 		return err

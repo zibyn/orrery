@@ -93,29 +93,38 @@ test('console-parity: list Snapshots, watch a build change state and read its lo
   assertConsoleScope(requests)
 })
 
-test('console: create a Snapshot, reject a duplicate name, then delete it', async ({ page }) => {
+test('console: create a Snapshot with its first version, reject a duplicate name, then delete it', async ({
+  page,
+}) => {
   const requests = watchRequests(page)
 
   await signIn(page, { returnTo: '/snapshots' })
   await expect(page).toHaveURL(/\/snapshots$/)
 
+  // The import itself may fail without registry access; the console owns
+  // creating the Snapshot and its version in one submit.
   const snapshotName = `pw-console-snapshot-${Date.now()}`
-  await page.getByRole('button', { name: 'New Snapshot' }).click()
+  const ref = `docker.io/library/busybox@sha256:${'a'.repeat(64)}`
+  await page.getByRole('link', { name: 'New Snapshot' }).click()
+  await expect(page).toHaveURL(/\/snapshots\/new$/)
   await page.getByLabel('Name').fill(snapshotName)
-  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  await page.getByLabel('Source').selectOption('import')
+  await page.getByLabel('Image ref').fill(ref)
+  await page.getByRole('button', { name: 'Create version' }).click()
 
-  // Creating lands on the new Snapshot's detail page.
-  await expect(page).toHaveURL(/\/snapshots\/[^/?]+$/)
+  // Creating lands on the new Snapshot's detail page, its version selected.
+  await expect(page).toHaveURL(/\/snapshots\/[^/?]+\?version=/)
   await expect(page.getByRole('heading', { name: snapshotName })).toBeVisible()
-  const detailUrl = page.url()
+  const detailUrl = page.url().split('?')[0]
 
-  // A duplicate name shows the server's problem detail in the Drawer.
-  await page.goto('/snapshots')
-  await page.getByRole('button', { name: 'New Snapshot' }).click()
+  // A duplicate name shows the server's problem detail and stays on the form.
+  await page.goto('/snapshots/new')
   await page.getByLabel('Name').fill(snapshotName)
-  await page.getByRole('button', { name: 'Create', exact: true }).click()
-  await expect(page.getByRole('dialog').getByRole('alert')).not.toBeEmpty()
-  await expect(page).toHaveURL(/\/snapshots$/)
+  await page.getByLabel('Source').selectOption('import')
+  await page.getByLabel('Image ref').fill(ref)
+  await page.getByRole('button', { name: 'Create version' }).click()
+  await expect(page.getByRole('alert')).not.toBeEmpty()
+  await expect(page).toHaveURL(/\/snapshots\/new$/)
 
   // Deleting after confirming returns to the list, without the Snapshot.
   await page.goto(detailUrl)
@@ -316,7 +325,7 @@ test('console: build a new version and land on its build log, one Idempotency-Ke
   assertConsoleScope(requests)
 })
 
-test('console: import rejects an unpinned ref before any request, then lands on the version', async ({
+test('console: import rejects a blank ref before any request, lands on the version, then starts a new one from it', async ({
   page,
 }) => {
   const requests = watchRequests(page)
@@ -344,6 +353,14 @@ test('console: import rejects an unpinned ref before any request, then lands on 
   expect(posts).toBe(1)
   const versionId = new URL(page.url()).searchParams.get('version')
   await expect(page.getByTestId(`version-state-${versionId}`)).toBeVisible()
+
+  // A new version from this one starts with its request filled in.
+  await page.getByTestId(`version-new-from-${versionId}`).click()
+  await expect(page).toHaveURL(new RegExp(`/versions/new\\?from=${versionId}`))
+  await expect(page.getByLabel('Source')).toHaveValue('import')
+  await expect(page.getByLabel('Image ref')).toHaveValue(
+    `docker.io/library/busybox@sha256:${'a'.repeat(64)}`,
+  )
 
   assertConsoleScope(requests)
 })

@@ -118,7 +118,14 @@ export type Snapshot = {
 
 export type CreateSnapshotVersionRequest =
   | { import: { ref: string; auth_secret?: string } }
-  | { build: { dockerfile: string; base?: string; secrets?: Record<string, string> } }
+  | {
+      build: {
+        dockerfile: string
+        base?: string
+        contexts?: Record<string, string>
+        secrets?: Record<string, string>
+      }
+    }
 
 export type SnapshotVersionState = 'building' | 'ready' | 'failed' | 'cancelled'
 
@@ -132,6 +139,8 @@ export type SnapshotVersion = {
   build_sandbox_id?: string
   build_exec_id?: string
   provenance?: Record<string, unknown>
+  // The body this version was created from; absent on older versions.
+  request?: CreateSnapshotVersionRequest
   created_at: string | null
 }
 

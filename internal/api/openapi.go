@@ -577,6 +577,7 @@ func schemas() map[string]any {
 				"build_sandbox_id": nullableString,
 				"build_exec_id":    nullableString,
 				"provenance":       map[string]any{"type": []string{"object", "null"}},
+				"request":          schemaRef("CreateSnapshotVersionRequest"),
 				"created_at":       map[string]any{"type": "string", "format": "date-time"},
 			},
 		},

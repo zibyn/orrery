@@ -265,7 +265,7 @@ type SnapshotVersion struct {
 	Provenance     json.RawMessage
 	IdempotencyKey *string
 	CreatedAt      pgtype.Timestamptz
-	BuildRequest   json.RawMessage
+	Request        json.RawMessage
 	DeletedAt      pgtype.Timestamptz
 }
 

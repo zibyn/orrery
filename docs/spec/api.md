@@ -185,6 +185,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 | `POST /snapshots/{id}/versions/{v}/cancel` | 取消构建或导入 |
 
 - **状态**：`building → ready | failed | cancelled`，导入和构建共用。
+- **request**：SnapshotVersion 带上创建它的请求体 `request`（`{import}` 或 `{build}`，原样保存，Secret 只有名字），用来从某个版本开始填新版本；原样再提交一次即重新构建，tag 导入会重新解析 tag。
 - **删除 Snapshot**：写墓碑；被引用的版本保留到最后一个引用消失，然后删掉 registry 里的 manifest。名字只在未删除的 Snapshot 间唯一。
 - **删除 SnapshotVersion**：写墓碑，返回 `202`，此后它不出现在 API 里。purge 删掉 registry 里的 manifest，再删这一行；同一 Snapshot 的其他版本仍用同一 digest 时保留 manifest。删除 manifest 失败时下一轮重试。
 - **平台 Snapshot**：来自部署配置的 `platform_snapshots`（`defaults.md`），出现在每个 User 的 `GET /snapshots` 里；对它增删改返回 `403`。

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { Ban, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
+import { Ban, Copy, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
@@ -121,6 +121,7 @@ function SnapshotDetailPage() {
               <Link
                 to="/snapshots/$id/versions/new"
                 params={{ id }}
+                search={{ from: current.current_version_id ?? undefined }}
                 className={buttonVariants({ variant: 'outline' })}
               >
                 <Plus />
@@ -246,7 +247,9 @@ function SnapshotDetailPage() {
                     <TableCell className="pr-5 text-right">
                       <VersionActions
                         actions={versionActions(current, version)}
+                        snapshotId={id}
                         versionId={version.id}
+                        newFrom={snapshotIsWritable(current) && version.request !== undefined}
                         disabled={versionAction.isPending}
                         onAction={(verb) => versionAction.mutate({ verb, version: version.id })}
                       />
@@ -295,17 +298,34 @@ function SnapshotDetailPage() {
 
 function VersionActions({
   actions,
+  snapshotId,
   versionId,
+  newFrom,
   disabled,
   onAction,
 }: {
   actions: ReturnType<typeof versionActions>
+  snapshotId: string
   versionId: string
+  // The version kept its request, so a new version can start from it.
+  newFrom: boolean
   disabled: boolean
   onAction: (verb: VersionAction) => void
 }) {
   return (
     <div className="flex justify-end gap-2">
+      {newFrom && (
+        <Link
+          to="/snapshots/$id/versions/new"
+          params={{ id: snapshotId }}
+          search={{ from: versionId }}
+          data-testid={`version-new-from-${versionId}`}
+          className={buttonVariants({ variant: 'outline', size: 'sm' })}
+        >
+          <Copy />
+          {m.snapshot_version_new_from()}
+        </Link>
+      )}
       {actions.cancel && (
         <Button
           variant="outline"

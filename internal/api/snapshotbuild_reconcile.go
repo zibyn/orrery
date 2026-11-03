@@ -105,8 +105,8 @@ func (r *reconciler) failBuild(ctx context.Context, row store.ListBuildRunsRow, 
 // re-derived on every tick, so a reconnect redelivers the same work.
 func (r *reconciler) buildCommand(ctx context.Context, row store.ListBuildRunsRow) (*nodev1.BuildSnapshot, error) {
 	version, sb := row.SnapshotVersion, row.Sandbox
-	var request storedBuildRequest
-	if err := json.Unmarshal(version.BuildRequest, &request); err != nil || request.Dockerfile == "" {
+	var request createSnapshotVersionRequest
+	if err := json.Unmarshal(version.Request, &request); err != nil || request.Build == nil || request.Build.Dockerfile == "" {
 		return nil, fmt.Errorf("build request is missing or malformed: %w", err)
 	}
 	mounts, err := r.s.q.ListSandboxResourceMounts(ctx, sb.ID)
@@ -153,7 +153,7 @@ func (r *reconciler) buildCommand(ctx context.Context, row store.ListBuildRunsRo
 		VersionId:      version.ID.String(),
 		SandboxId:      sb.ID.String(),
 		ExecId:         row.ExecID.String(),
-		Dockerfile:     request.Dockerfile,
+		Dockerfile:     request.Build.Dockerfile,
 		BaseDigest:     sb.SnapshotDigest,
 		Contexts:       contexts,
 		Secrets:        secrets,

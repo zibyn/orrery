@@ -23,14 +23,16 @@ type createSnapshotRequest struct {
 	Name string `json:"name"`
 }
 
+// createSnapshotVersionRequest is also snapshot_versions.request: the version
+// keeps the body it was created from, so a new version can start from it.
 type createSnapshotVersionRequest struct {
-	Import *snapshotImportRequest `json:"import"`
-	Build  *snapshotBuildRequest  `json:"build"`
+	Import *snapshotImportRequest `json:"import,omitempty"`
+	Build  *snapshotBuildRequest  `json:"build,omitempty"`
 }
 
 type snapshotImportRequest struct {
 	Ref        string  `json:"ref"`
-	AuthSecret *string `json:"auth_secret"`
+	AuthSecret *string `json:"auth_secret,omitempty"`
 }
 
 type setSnapshotCurrentRequest struct {
@@ -56,6 +58,7 @@ type snapshotVersionDTO struct {
 	BuildSandboxID *string         `json:"build_sandbox_id,omitempty"`
 	BuildExecID    *string         `json:"build_exec_id,omitempty"`
 	Provenance     json.RawMessage `json:"provenance,omitempty"`
+	Request        json.RawMessage `json:"request,omitempty"`
 	CreatedAt      *time.Time      `json:"created_at"`
 }
 
@@ -91,6 +94,7 @@ func snapshotVersionToDTO(v store.SnapshotVersion) snapshotVersionDTO {
 		BuildSandboxID: uuidPtr(v.BuildSandboxID),
 		BuildExecID:    uuidPtr(v.BuildExecID),
 		Provenance:     v.Provenance,
+		Request:        v.Request,
 		CreatedAt:      timePtr(v.CreatedAt),
 	}
 }
@@ -273,7 +277,7 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if req.Build != nil {
-		s.createBuild(w, r, p, snap, *req.Build, key)
+		s.createBuild(w, r, p, snap, req, key)
 		return
 	}
 	ref, err := registry.ParseImportRef(req.Import.Ref)
@@ -307,11 +311,16 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		s.internal(w, "generate SnapshotVersion id", err)
 		return
 	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		s.internal(w, "encode import request", err)
+		return
+	}
 	version, replayed, err := createIdempotent(key, lookup,
 		func() (store.SnapshotVersion, error) {
 			return s.q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
 				ID: id, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),
-				Source: "import", IdempotencyKey: key,
+				Source: "import", IdempotencyKey: key, Request: data,
 			})
 		})
 	if err != nil {
