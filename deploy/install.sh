@@ -16,13 +16,13 @@ usage:
                     [--public-bind ADDR] [--tls self-signed|cert]
                     [--tls-cert FILE --tls-key FILE] [--ca FILE]
                     [--registry-addr HOST[:PORT]]
-                    [--auto-update | --no-auto-update]
   install.sh node   [--version vX.Y.Z] [--server HOST:PORT --packet ore_...] [--ca FILE]
                     [--trust-registry HOST[:PORT]]... [--runtime containerd|local]
-                    [--name NAME] [--auto-update | --no-auto-update]
+                    [--name NAME]
                     [-- extra `orrery-agent run` flags]
 
---version defaults to the newest published release.
+--version defaults to the newest published release. To upgrade, rerun
+the same command.
 EOF
   exit 2
 }
@@ -129,7 +129,7 @@ create_bucket() {
 }
 
 server() {
-  local version="" host="" port="" tls=self-signed cert="" key="" ca="" access_url="" registry_addr="" s3_url="" bind="" auto_update=""
+  local version="" host="" port="" tls=self-signed cert="" key="" ca="" access_url="" registry_addr="" s3_url="" bind=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) version="$2"; shift 2 ;;
@@ -143,8 +143,7 @@ server() {
       --registry-addr) registry_addr="$2"; shift 2 ;;
       --s3-public-endpoint) s3_url="$2"; shift 2 ;;
       --public-bind) bind="$2"; shift 2 ;;
-      --auto-update) auto_update=1; shift ;;
-      --no-auto-update) auto_update=0; shift ;;
+      --auto-update | --no-auto-update) die "auto-update was removed (ADR-0028); upgrade by rerunning install.sh" ;;
       *) usage ;;
     esac
   done
@@ -154,9 +153,9 @@ server() {
   case "$version" in "" | latest) version="$(latest_version)" ;; esac
   check_version "$version"
   mkdir -p /etc/orrery
-  # Manual runs and the Docker updater share one lock.
+  # Concurrent install.sh runs share one lock.
   exec 9>/etc/orrery/.install.lock
-  flock -n 9 || die "another install or auto-update is running"
+  flock -n 9 || die "another install.sh run is in progress"
 
   local etc=/etc/orrery backups=/var/lib/orrery-server/backups previous=""
   mkdir -p "$etc" "$backups"
@@ -223,8 +222,7 @@ server() {
   done
   [ "$code" = 401 ] || die "the Control Plane did not come up; see: cd $etc && docker compose logs server nginx"
   echo "Control Plane $version is running at https://$host:$port"
-  [ "$auto_update" = 1 ] && install_updater server
-  [ "$auto_update" = 0 ] && remove_updater server
+  remove_updater server
   [ -z "$previous" ] && next_steps "$version"
   return 0
 }
@@ -447,144 +445,27 @@ EOF
   chmod 600 .env
 }
 
-# write_updater_script writes the pull-based updater. The Control Plane runs
-# it in a Docker Compose project; a Node runs it as a systemd service.
-write_updater_script() {
-  cat > "$1" <<'EOF'
-#!/usr/bin/env bash
-# Installed by install.sh --auto-update (ADR-0023). Resolve the newest
-# released tag and run that tag's install script. Major upgrades and
-# downgrades are left to a manual run.
-set -uo pipefail
-REPO=zibyn/orrery
-role="${1:-server}"
-log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
-
-newer() {
-  local cur="$1" new="$2"
-  [ "$cur" = "$new" ] && return 1
-  if [ "${cur%%-*}" = "${new%%-*}" ]; then
-    [[ "$cur" == *-* ]] && [[ "$new" != *-* ]] && return 0
-    return 1
-  fi
-  [ "$(printf '%s\n' "$cur" "$new" | sort -V | head -n1)" = "$cur" ]
-}
-
-update_once() {
-  local current latest effective current_major latest_major
-  case "$role" in
-    server) current="$(sed -n 's/^ORRERY_VERSION=//p' /etc/orrery/.env 2>/dev/null)" ;;
-    node) current="$(cat /etc/orrery-agent/version 2>/dev/null)" ;;
-    *) log "unknown role $role"; return 2 ;;
-  esac
-  [ -n "$current" ] || return 0
-  effective="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-    "https://github.com/$REPO/releases/latest" 2>/dev/null)" || return 0
-  latest="${effective##*/}"
-  [ "$latest" = "$current" ] && return 0
-  [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
-    log "unexpected release tag $latest"
-    return 0
-  }
-  current_major="${current#v}"; current_major="${current_major%%.*}"
-  latest_major="${latest#v}"; latest_major="${latest_major%%.*}"
-  if [ "$current_major" != "$latest_major" ]; then
-    log "$current -> $latest crosses a major version; run install.sh manually"
-    return 0
-  fi
-  newer "$current" "$latest" || return 0
-  log "updating $role $current -> $latest"
-  curl -fsSL "https://raw.githubusercontent.com/$REPO/$latest/deploy/install.sh" |
-    bash -s -- "$role" --version "$latest"
-}
-
-while :; do
-  update_once
-  sleep "${ORRERY_UPDATE_INTERVAL:-21600}"
-done
-EOF
-}
-
-install_server_updater() {
-  local etc=/etc/orrery
-  mkdir -p "$etc"
-  write_updater_script "$etc/updater.sh"
-  chmod 0755 "$etc/updater.sh"
-  # A separate Compose project: the main project's `up -d --remove-orphans`
-  # must not touch the container that is running the update.
-  cat > "$etc/updater.yaml" <<'EOF'
-name: orrery-updater
-services:
-  updater:
-    image: docker:27-cli
-    restart: unless-stopped
-    network_mode: host
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        apk add --no-cache bash curl openssl >/dev/null
-        exec bash /etc/orrery/updater.sh server
-    environment:
-      ORRERY_UPDATE_INTERVAL: "${ORRERY_UPDATE_INTERVAL:-21600}"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /etc/orrery:/etc/orrery
-      - /var/lib/orrery-server/backups:/var/lib/orrery-server/backups
-EOF
-  docker compose -p orrery-updater -f "$etc/updater.yaml" up -d --force-recreate
-  echo "auto-update enabled: docker compose -p orrery-updater"
-}
-
-install_node_updater() {
-  local conf=/etc/orrery-agent
-  mkdir -p "$conf" /etc/systemd/system
-  write_updater_script "$conf/updater"
-  chmod 0755 "$conf/updater"
-  cat > /etc/systemd/system/orrery-update.service <<EOF
-[Unit]
-Description=Orrery auto-update
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=$conf/updater node
-Restart=always
-RestartSec=300
-Environment=ORRERY_UPDATE_INTERVAL=21600
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now orrery-update.service
-  echo "auto-update enabled: orrery-update.service (node)"
-}
-
-install_updater() {
-  case "$1" in
-    server) install_server_updater ;;
-    node) install_node_updater ;;
-    *) die "install_updater: unknown role $1" ;;
-  esac
-}
-
+# remove_updater removes the auto-updater an older install.sh --auto-update
+# left behind (ADR-0023, removed by ADR-0028). It runs last: an old updater
+# running this script stops itself only after the upgrade succeeded.
 remove_updater() {
   case "$1" in
     server)
+      [ -f /etc/orrery/updater.yaml ] || [ -f /etc/orrery/updater.sh ] || return 0
+      echo "removing the old auto-updater (orrery-updater)"
       docker compose -p orrery-updater -f /etc/orrery/updater.yaml \
         down --remove-orphans 2>/dev/null || true
       rm -f /etc/orrery/updater.yaml /etc/orrery/updater.sh
       ;;
     node)
+      [ -f /etc/systemd/system/orrery-update.service ] || [ -f /etc/orrery-agent/updater ] || return 0
+      echo "removing the old auto-updater (orrery-update.service)"
       systemctl disable --now orrery-update.service 2>/dev/null || true
       rm -f /etc/systemd/system/orrery-update.service /etc/orrery-agent/updater
       systemctl daemon-reload 2>/dev/null || true
       ;;
     *) die "remove_updater: unknown role $1" ;;
   esac
-  echo "auto-update disabled"
 }
 
 next_steps() {
@@ -635,8 +516,222 @@ Next steps:
 EOF
 }
 
+# The Node's runtime bundle (ADR-0028). The functions from here to node()
+# only print or copy files, so a script can source install.sh and reuse them
+# without installing a Node (scripts/ci-e2e-node.sh).
+NODE_BIN=/opt/orrery/bin
+NODE_CONF=/etc/orrery-agent
+NODE_STATE=/var/lib/orrery-agent
+NODE_RUN=/run/orrery
+# The Agent's defaults (internal/agent) name the same two sockets.
+NODE_CTRD_SOCK=$NODE_RUN/containerd/containerd.sock
+NODE_BK_ADDR=unix://$NODE_RUN/buildkit/buildkitd.sock
+# The bundle comes first: containerd finds shims, and the shims find runc and
+# runsc, on PATH before its own directory (spike §1.4).
+NODE_PATH="$NODE_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# containerd_toml prints the Agent's containerd config. imports = [] keeps
+# the host's /etc/containerd/conf.d out, and NRI would remove and rebind the
+# host containerd's /var/run/nri/nri.sock (spike §1.2). There are no runtime
+# entries: the Agent names runsc and its options on each container.
+containerd_toml() {
+  cat <<EOF
+# Written by install.sh on every run; edits are lost (ADR-0028).
+version = 3
+root = "$NODE_STATE/containerd"
+state = "$NODE_RUN/containerd/state"
+imports = []
+disabled_plugins = ["io.containerd.grpc.v1.cri", "io.containerd.cri.v1.runtime", "io.containerd.cri.v1.images", "io.containerd.podsandbox.controller.v1.podsandbox", "io.containerd.nri.v1.nri"]
+
+[grpc]
+  address = "$NODE_CTRD_SOCK"
+
+[ttrpc]
+  address = "$NODE_CTRD_SOCK.ttrpc"
+
+[debug]
+  address = "$NODE_RUN/containerd/debug.sock"
+
+[plugins."io.containerd.internal.v1.opt"]
+  path = "$NODE_STATE/containerd/opt"
+EOF
+}
+
+# buildkitd_toml HOST... prints buildkitd's config, trusting the Node's CA
+# for each registry host (the registry and the object store it redirects to).
+buildkitd_toml() {
+  echo "# Written by install.sh on every run; edits are lost (ADR-0028)."
+  local h
+  for h in "$@"; do
+    printf '\n[registry."%s"]\n  ca = ["%s/ca.crt"]\n' "$h" "$NODE_CONF"
+  done
+}
+
+# buildkitd_hosts FILE prints the hosts an earlier buildkitd_toml wrote.
+buildkitd_hosts() {
+  [ ! -f "$1" ] || sed -n 's/^\[registry\."\(.*\)"\]$/\1/p' "$1"
+}
+
+containerd_unit() {
+  cat <<EOF
+[Unit]
+Description=Orrery Agent containerd
+After=network.target local-fs.target
+
+[Service]
+Environment=PATH=$NODE_PATH
+ExecStart=$NODE_BIN/containerd --config $NODE_CONF/containerd.toml
+Type=notify
+# Shims, and the Sandboxes under them, outlive a containerd restart.
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# Builds do not depend on the Runtime, so a Local Node runs buildkitd too
+# (runtime.md §12); its OCI worker does not use containerd.
+buildkitd_unit() {
+  cat <<EOF
+[Unit]
+Description=Orrery Agent buildkitd
+After=orrery-containerd.service
+
+[Service]
+Environment=PATH=$NODE_PATH
+RuntimeDirectory=orrery/buildkit
+ExecStart=$NODE_BIN/buildkitd --config $NODE_CONF/buildkitd.toml --root $NODE_STATE/buildkit --addr $NODE_BK_ADDR --oci-worker=true --containerd-worker=false --oci-worker-net host
+Restart=always
+RestartSec=5
+# buildkitd v0.34 exits 1 on SIGTERM; a stop is not a failure.
+SuccessExitStatus=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# agent_unit RUNTIME EXEC_START prints orrery-agent.service.
+agent_unit() {
+  local deps=network-online.target
+  [ "$1" != containerd ] || deps="$deps orrery-containerd.service"
+  cat <<EOF
+[Unit]
+Description=Orrery Node Agent
+# Wants=, not Requires=: the Agent reconnects across a containerd restart,
+# and Requires= would restart it with containerd and leave it stopped after
+# containerd stops and starts (spike §4.3).
+Wants=$deps
+After=$deps
+
+[Service]
+ExecStart=$2
+Restart=always
+RestartSec=5
+# Stop signals reach the Agent only, so Exec Supervisors keep running across
+# a restart (ADR-0014); the first SIGTERM exits gracefully.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# drop_host_daemons WORD... prints the words, space-joined, without
+# --containerd and --buildkit and their values, and says on stderr what it
+# dropped: install.sh has no mode on the host daemons (ADR-0028), but earlier
+# docs had operators pass their sockets. --buildkit= stays: it turns Snapshot
+# builds off.
+drop_host_daemons() {
+  local kept=() dropped=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --buildkit=) kept+=("$1") ;;
+      --containerd=* | --buildkit=*) dropped+=("$1") ;;
+      --containerd | --buildkit) dropped+=("$1 ${2-}"); [ $# -eq 1 ] || shift ;;
+      *) kept+=("$1") ;;
+    esac
+    shift
+  done
+  [ ${#dropped[@]} -eq 0 ] ||
+    echo "install.sh: dropped ${dropped[*]} from orrery-agent run; the Agent uses its own containerd and buildkitd (ADR-0028)" >&2
+  printf '%s' "${kept[*]}"
+}
+
+# install_bins SRC DEST copies every file under SRC to DEST with its mode
+# and prints the path, relative to DEST, of each one that changed. A changed
+# file is replaced by rename, so a running binary is never written in place.
+install_bins() {
+  local src="$1" dst="$2" rel new
+  while IFS= read -r rel; do
+    rel="${rel#./}"
+    cmp -s "$src/$rel" "$dst/$rel" && continue
+    mkdir -p "$(dirname "$dst/$rel")"
+    new="$(dirname "$dst/$rel")/.$(basename "$rel").new"
+    install -m "$(stat -c %a "$src/$rel")" "$src/$rel" "$new"
+    mv -f "$new" "$dst/$rel"
+    printf '%s\n' "$rel"
+  done < <(cd "$src" && find . -type f)
+}
+
+# write_if_changed DEST writes stdin to DEST, mode 0644, and succeeds only
+# when that changed DEST.
+write_if_changed() {
+  local t
+  t="$(mktemp "$1.XXXXXX")" || die "cannot write $1"
+  cat > "$t" || die "cannot write $1"
+  if cmp -s "$t" "$1"; then rm -f "$t"; return 1; fi
+  { chmod 0644 "$t" && mv -f "$t" "$1"; } || die "cannot write $1"
+}
+
+# start_unit NAME RESTART enables NAME and restarts it when RESTART is 1,
+# otherwise only makes sure it runs.
+start_unit() {
+  systemctl enable --quiet "$1"
+  if [ "$2" = 1 ]; then systemctl restart "$1"; else systemctl start "$1"; fi
+}
+
+# An Agent before ADR-0028 kept its objects in the host containerd's orrery
+# namespace. install.sh never removes it: that containerd may serve Docker.
+migration_notice() {
+  cat <<'EOF'
+
+The host containerd still has the orrery namespace of an earlier Agent, which
+this Agent no longer uses (ADR-0028). install.sh leaves it alone, since that
+containerd may serve Docker. Once the Node is undrained and ready, remove it:
+  c="ctr -a /run/containerd/containerd.sock -n orrery"
+  for t in $($c tasks ls -q); do $c tasks delete -f "$t"; done
+  for x in $($c containers ls -q); do $c containers delete "$x"; done
+  $c images ls -q | xargs -r $c images rm
+  $c leases ls -q | xargs -r $c leases rm
+  ctr -a /run/containerd/containerd.sock namespaces remove orrery
+EOF
+}
+
+probe_image_notice() {
+  cat <<EOF
+
+The Agent's containerd starts with an empty image store, so its self-check
+pulls docker.io/library/alpine:3.22. A Node that cannot reach Docker Hub stays
+unavailable until the image is imported, for example from Docker with a
+containerd 2.x ctr, and the Agent restarted, since it runs the self-check
+only when it connects:
+  docker save docker.io/library/alpine:3.22 |
+    ctr -a $NODE_CTRD_SOCK -n orrery images import -
+  systemctl restart orrery-agent
+EOF
+}
+
 node() {
-  local version="" server="" packet="" ca="" trust_registry=() runtime="" name="" extra=() write_unit=0 auto_update=""
+  local version="" server="" packet="" ca="" trust_registry=() runtime="" name="" extra=() write_unit=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) version="$2"; shift 2 ;;
@@ -646,23 +741,31 @@ node() {
       --trust-registry) trust_registry+=("$2"); shift 2 ;;
       --runtime) runtime="$2"; write_unit=1; shift 2 ;;
       --name) name="$2"; shift 2 ;;
-      --auto-update) auto_update=1; shift ;;
-      --no-auto-update) auto_update=0; shift ;;
+      --auto-update | --no-auto-update) die "auto-update was removed (ADR-0028); upgrade by rerunning install.sh" ;;
       --) shift; extra=("$@"); write_unit=1; break ;;
       *) usage ;;
     esac
   done
   [ "$(id -u)" = 0 ] || die "run as root"
-  need curl tar sha256sum systemctl flock
+  need curl tar sha256sum systemctl flock cmp
   case "$version" in "" | latest) version="$(latest_version)" ;; esac
   check_version "$version"
-  mkdir -p /etc/orrery-agent
-  # Manual runs and the updater service share one lock.
-  exec 9>/etc/orrery-agent/.install.lock
-  flock -n 9 || die "another install or auto-update is running"
-  case "${runtime:-containerd}" in
+  local bin="$NODE_BIN" conf="$NODE_CONF" sd=/etc/systemd/system
+  local state="$NODE_STATE/identity.json" unit=/etc/systemd/system/orrery-agent.service exec_start=""
+  mkdir -p "$conf"
+  # Concurrent install.sh runs share one lock.
+  exec 9>"$conf/.install.lock"
+  flock -n 9 || die "another install.sh run is in progress"
+
+  # An upgrade without --runtime or extra flags keeps the Agent's flags.
+  if [ "$write_unit" = 0 ] && [ -f "$unit" ]; then
+    # shellcheck disable=SC2046 # ExecStart is space-joined words
+    exec_start="$(drop_host_daemons $(sed -n 's/^ExecStart=//p' "$unit"))"
+    runtime="$(sed -n 's/.* --runtime \([^ ]*\).*/\1/p' <<<"$exec_start")"
+  fi
+  runtime="${runtime:-containerd}"
+  case "$runtime" in
     containerd)
-      need ctr
       # The Mesh is optional, so a missing module only warns; modprobe also succeeds for a built-in one.
       [ -d /sys/module/wireguard ] || modprobe -q wireguard 2>/dev/null ||
         echo "install.sh: warning: no kernel WireGuard; this Node will not join the Node Mesh" >&2
@@ -671,15 +774,14 @@ node() {
     *) die "--runtime is containerd or local" ;;
   esac
 
-  local arch bin=/opt/orrery/bin conf=/etc/orrery-agent
-  local state=/var/lib/orrery-agent/identity.json unit=/etc/systemd/system/orrery-agent.service
+  local arch
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;
     aarch64 | arm64) arch=arm64 ;;
     *) die "unsupported architecture $(uname -m)" ;;
   esac
 
-  local tmp pkg="orrery-node_${version}_linux_${arch}.tar.gz"
+  local tmp changed pkg="orrery-node_${version}_linux_${arch}.tar.gz"
   local base="https://github.com/$REPO/releases/download/$version"
   tmp="$(mktemp -d)"
   trap "rm -rf '$tmp'" EXIT
@@ -687,12 +789,10 @@ node() {
   curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
   (cd "$tmp" && grep "  $pkg\$" SHA256SUMS | sha256sum -c --quiet -) || die "$pkg does not match SHA256SUMS"
   tar -C "$tmp" -xzf "$tmp/$pkg"
-  mkdir -p "$bin" "$conf"
-  # The Agent finds the CLI beside its own executable (runtime.md).
-  for b in orrery-agent orrery; do
-    install -m 0755 "$tmp/$b" "$bin/.$b.new"
-    mv -f "$bin/.$b.new" "$bin/$b"
-  done
+  mkdir -p "$bin"
+  # The whole bundle, runtimes included; the Agent finds the CLI beside its
+  # own executable (runtime.md).
+  changed="$(install_bins "$tmp/bin" "$bin")"
 
   if [ -n "$ca" ]; then
     install -m 0644 "$ca" "$conf/ca.crt"
@@ -711,6 +811,9 @@ node() {
     else
       die "--trust-registry needs update-ca-certificates or update-ca-trust"
     fi
+  else
+    # A rerun without --trust-registry keeps the hosts buildkitd trusts.
+    mapfile -t trust_registry < <(buildkitd_hosts "$conf/buildkitd.toml")
   fi
   local ca_flag=()
   [ -f "$conf/ca.crt" ] && ca_flag=(--ca "$conf/ca.crt")
@@ -720,36 +823,46 @@ node() {
     "$bin/orrery-agent" enroll --server "$server" --packet "$packet" "${ca_flag[@]}" ${name:+--name "$name"}
   fi
 
-  # An upgrade without --runtime or extra flags keeps the existing unit.
-  if [ "$write_unit" = 1 ] || [ ! -f "$unit" ]; then
-    cat > "$unit" <<EOF
-[Unit]
-Description=Orrery Node Agent
-After=network-online.target containerd.service
-Wants=network-online.target
-
-[Service]
-ExecStart=$bin/orrery-agent run --runtime ${runtime:-containerd} ${ca_flag[*]} ${extra[*]}
-Restart=always
-RestartSec=5
-# Stop signals reach the Agent only, so Exec Supervisors keep running across
-# a restart (ADR-0014); the first SIGTERM exits gracefully.
-KillMode=process
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
+  # A runtime unit restarts only when its binary, config or unit changed;
+  # shims, runc and runsc are found per container, so they need no restart.
+  local reload=0 restart_ctrd=0 restart_bk=0 new_store=0
+  if [ "$runtime" = containerd ]; then
+    [ -d "$NODE_STATE/containerd" ] || new_store=1
+    if containerd_toml | write_if_changed "$conf/containerd.toml"; then restart_ctrd=1; fi
+    if containerd_unit | write_if_changed "$sd/orrery-containerd.service"; then restart_ctrd=1; reload=1; fi
+    if grep -qx containerd <<<"$changed"; then restart_ctrd=1; fi
   fi
+  if buildkitd_toml "${trust_registry[@]}" | write_if_changed "$conf/buildkitd.toml"; then restart_bk=1; fi
+  if buildkitd_unit | write_if_changed "$sd/orrery-buildkitd.service"; then restart_bk=1; reload=1; fi
+  if grep -qx buildkitd <<<"$changed"; then restart_bk=1; fi
+  [ -n "$exec_start" ] || exec_start="$(drop_host_daemons "$bin/orrery-agent" run --runtime "$runtime" "${ca_flag[@]}" "${extra[@]}")"
+  if agent_unit "$runtime" "$exec_start" | write_if_changed "$unit"; then reload=1; fi
+  [ "$reload" = 0 ] || systemctl daemon-reload
+
+  [ "$runtime" != containerd ] || start_unit orrery-containerd "$restart_ctrd"
+  start_unit orrery-buildkitd "$restart_bk"
   systemctl enable --quiet orrery-agent
   systemctl restart orrery-agent
-  # The auto-updater reads this after a successful restart.
+  # Records the installed version after a successful restart.
   printf '%s\n' "$version" > "$conf/version"
   chmod 0644 "$conf/version"
   echo "Node Agent $version is running: systemctl status orrery-agent"
-  [ "$auto_update" = 1 ] && install_updater node
-  [ "$auto_update" = 0 ] && remove_updater node
+  remove_updater node
+  if [ "$runtime" = containerd ]; then
+    [ "$new_store" = 0 ] || probe_image_notice
+    if [ -S /run/containerd/containerd.sock ]; then
+      if ! command -v ctr >/dev/null; then
+        echo "install.sh: no ctr, so the host containerd was not checked for an earlier Agent's orrery namespace; check by hand: ctr -a /run/containerd/containerd.sock namespaces ls" >&2
+      elif ctr -a /run/containerd/containerd.sock namespaces ls -q 2>/dev/null | grep -qx orrery; then
+        migration_notice
+      fi
+    fi
+  fi
+  return 0
 }
+
+# Sourced, install.sh only defines its functions.
+(return 0 2>/dev/null) && return 0
 
 case "${1:-}" in
   server) shift; server "$@" ;;

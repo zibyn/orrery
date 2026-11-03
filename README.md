@@ -36,7 +36,7 @@
 
 部署是 pull 式的：服务器从 release tag 取 `deploy/install.sh` 执行，GitHub 不持有服务器凭据。详见 [`docs/deploy.md`](docs/deploy.md)（前置条件、TLS、Node 注册、升级与回滚），所有配置项见 [`docs/spec/defaults.md`](docs/spec/defaults.md)。
 
-首次安装后还需要：配置平台 Snapshot、用 `orrery-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。Node 需要 containerd、CNI 插件和（做构建时）buildkitd，见 [`docs/deploy.md`](docs/deploy.md)。
+首次安装后还需要：配置平台 Snapshot、用 `orrery-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。Node 只需要 root、systemd 和 cgroup v2：containerd、runc、buildkitd 和 runsc 都在 node 包里，见 [`docs/deploy.md`](docs/deploy.md)。
 
 ## 客户端
 
@@ -123,7 +123,7 @@ make e2e       # 起 PostgreSQL + Control Plane，跑黑盒 e2e，再清理
 make e2e-console  # 同一部署上跑 Playwright
 ```
 
-`make e2e` 需要 Docker（Control Plane 的 compose 栈）和用到的镜像；测试里的 Agent 是 containerd Node，所以要以 root 运行，并装好 containerd 2.x、`ctr`、`/opt/cni/bin` 下的 CNI 插件，构建场景另需 `ORRERY_E2E_BUILDKIT` 指向一个独立的 buildkitd（CI 的做法见 `scripts/ci-e2e-node.sh`）。它自带 compose 项目，不会碰现有部署。修改 proto 后 `make proto`，修改 SQL 后 `make sqlc`。
+`make e2e` 需要 Docker（Control Plane 的 compose 栈）和用到的镜像；测试里的 Agent 是 containerd Node，所以要以 root 运行，并像生产 Node 一样跑着 Agent 私有的 `orrery-containerd` 和 `orrery-buildkitd`（ADR-0028），PATH 上有 `ctr` 和 `buildctl`，构建场景另需 `ORRERY_E2E_BUILDKIT=unix:///run/orrery/buildkit/buildkitd.sock`（CI 的做法见 `scripts/ci-e2e-node.sh`，它用 install.sh 的配置和 unit 起这两个服务，不动宿主的 containerd）。它自带 compose 项目，不会碰现有部署。修改 proto 后 `make proto`，修改 SQL 后 `make sqlc`。
 
 仓库布局：
 

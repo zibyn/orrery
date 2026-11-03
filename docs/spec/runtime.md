@@ -93,7 +93,7 @@ Agent 只接管它 containerd namespace 里带本 Node `orrery.node=<node_id>` �
 
 ## 9. containerd
 
-Agent 用 containerd 原生 gRPC 客户端（2.x），连 `--containerd` 给出的 socket，所有对象都放在 Agent 自己的 namespace `orrery` 里。只支持 rootful。每台 Node 只跑一种 Isolation Runtime，由 `--isolation runc|runsc` 选定（ADR-0026）：`runc` 用 containerd 默认的 `io.containerd.runc.v2`，`runsc`（gVisor 的 OCI runtime）用 `io.containerd.runsc.v1`。下面的步骤两者相同，runsc 的差别单列在后面。
+Agent 用 containerd 原生 gRPC 客户端（2.x），所有对象都放在 namespace `orrery` 里。只支持 rootful。containerd 是 Agent 私有的（ADR-0028）：node 包捆绑 containerd、runc 和 runsc，install.sh 以 `orrery-containerd` 服务运行它，socket `/run/orrery/containerd/containerd.sock`、root `/var/lib/orrery-agent/containerd`，配置不读宿主的 `conf.d`、关掉 NRI 和 CRI，不碰宿主的 Docker 或 containerd。`--containerd` 默认就是这个 socket，改它只用于开发和测试；用宿主 containerd 不受支持。每台 Node 只跑一种 Isolation Runtime，由 `--isolation runc|runsc` 选定（ADR-0026）：`runc` 用 containerd 默认的 `io.containerd.runc.v2`，`runsc`（gVisor 的 OCI runtime）用 `io.containerd.runsc.v1`。下面的步骤两者相同，runsc 的差别单列在后面。
 
 - **Create**：先用 Node 的 registry 凭据按 digest 拉取镜像并解包（失败时为 `image_pull_failed`）。然后按 §13 建好 netns，再创建容器和 task，配置如下：
   - 标签 `orrery.managed` 和 `orrery.node=<node_id>`（§8）；
@@ -143,9 +143,9 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 
 ## 12. 构建
 
-构建不起容器。Agent 用 BuildKit 的 Go 客户端对一个 BuildKit 端点执行 `Solve`（dockerfile frontend），端点由 Agent 配置 `--buildkit <addr>` 给出（ADR-0021），是宿主上独立的 rootful buildkitd；没有默认值（ADR-0026）。
+构建不起容器。Agent 用 BuildKit 的 Go 客户端对一个 BuildKit 端点执行 `Solve`（dockerfile frontend），端点由 Agent 配置 `--buildkit <addr>` 给出（ADR-0021），是独立的 rootful buildkitd，默认指向 install.sh 以 `orrery-buildkitd` 服务运行的捆绑 buildkitd：`unix:///run/orrery/buildkit/buildkitd.sock`（ADR-0028）。它用 OCI worker（`--containerd-worker=false --oci-worker-net host`），不经 containerd；私有 CA 由 install.sh 写进它的 `buildkitd.toml`。
 
-- **能力**：Node 能否构建与它用哪种 Runtime 无关，containerd 和 Local Node 配了 buildkitd 就能构建。`snapshot_build` 由注册时的自检决定：没配 `--buildkit`、连不上端点或自检失败就报 `unsupported`。
+- **能力**：Node 能否构建与它用哪种 Runtime 无关，containerd 和 Local Node 都跑捆绑的 buildkitd。`snapshot_build` 由注册时的自检决定：`--buildkit` 为空、连不上端点或自检失败就报 `unsupported`。
 - **资源限制**：Agent 仿照 Local Runtime 建一个带 CPU/内存上限的 slice（`orrery-build-<version_id>.slice`，上限见 `defaults.md`），用 frontend 属性 `cgroup-parent` 指向它。实现时要验证 RUN 进程确实落在这个 slice 里；如果没有，改用 Node 级的构建上限。
 - **输入**：没有默认构建上下文。`contexts` 的每一项经 §11 的缓存拼出版本树，经 session 的 `LocalMounts` 作为命名上下文 `context:<name>` 提供；`base` 以 `context:base=docker-image://<registry>/…@<digest>` 注入。Dockerfile 的 `FROM` 也可以写外部 `ref@digest`。
 - **凭据**：拉取 `base` 和推送用的 registry 凭据由 session 的 authprovider 提供。
