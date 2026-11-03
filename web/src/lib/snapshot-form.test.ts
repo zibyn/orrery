@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildSnapshotVersionBody, snapshotVersionSchema } from './snapshot-form'
+import type { CreateSnapshotVersionRequest } from '@/api'
+
+import {
+  buildSnapshotVersionBody,
+  formFieldsFromRequest,
+  snapshotVersionSchema,
+} from './snapshot-form'
 
 const valid = {
   source: 'build',
   dockerfile: 'FROM scratch\n',
   base: '',
+  contexts: {},
   secrets: [] as { id: string; name: string }[],
   ref: '',
   authSecret: '',
@@ -71,5 +78,29 @@ describe('snapshotVersionSchema', () => {
     expect(
       snapshotVersionSchema.safeParse({ ...valid, secrets: [{ id: 'npm', name: '' }] }).success,
     ).toBe(false)
+  })
+})
+
+describe('formFieldsFromRequest', () => {
+  it('starts an empty build without an earlier body', () => {
+    expect(formFieldsFromRequest(undefined)).toMatchObject({ source: 'build', dockerfile: '' })
+  })
+
+  // Resubmitting the filled form must send the earlier body back unchanged.
+  it.each<CreateSnapshotVersionRequest>([
+    { import: { ref: 'python:3.12', auth_secret: 'hub' } },
+    { import: { ref: 'python:3.12' } },
+    {
+      build: {
+        dockerfile: 'FROM base\n',
+        base: 'py312',
+        contexts: { assets: 'weights@018f0000-0000-7000-8000-000000000001' },
+        secrets: { npm: 'npm-token' },
+      },
+    },
+    { build: { dockerfile: 'FROM scratch\n' } },
+  ])('round-trips %j', (request) => {
+    const parsed = snapshotVersionSchema.parse(formFieldsFromRequest(request))
+    expect(buildSnapshotVersionBody(parsed)).toEqual(request)
   })
 })

@@ -273,6 +273,7 @@ type SnapshotVersion struct {
 	BuildSandboxID *string         `json:"build_sandbox_id,omitempty"`
 	BuildExecID    *string         `json:"build_exec_id,omitempty"`
 	Provenance     json.RawMessage `json:"provenance,omitempty"`
+	Request        json.RawMessage `json:"request,omitempty"`
 	CreatedAt      *time.Time      `json:"created_at"`
 }
 

@@ -1174,12 +1174,12 @@ RETURNING *;
 -- name: CreateSnapshotVersion :one
 INSERT INTO snapshot_versions (
     id, snapshot_id, digest, state, cause, source,
-    build_sandbox_id, build_exec_id, provenance, idempotency_key, build_request
+    build_sandbox_id, build_exec_id, provenance, idempotency_key, request
 ) VALUES (
     sqlc.arg('id'), sqlc.arg('snapshot_id'), sqlc.narg('digest'), sqlc.arg('state'),
     sqlc.narg('cause'), sqlc.arg('source'), sqlc.narg('build_sandbox_id'),
     sqlc.narg('build_exec_id'), sqlc.narg('provenance'), sqlc.narg('idempotency_key'),
-    sqlc.narg('build_request')
+    sqlc.narg('request')
 )
 RETURNING *;
 

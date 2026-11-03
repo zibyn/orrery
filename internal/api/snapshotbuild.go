@@ -22,17 +22,14 @@ import (
 // request, creates the internal kind=build Sandbox row, derives the
 // BuildSnapshot command, and applies the Agent's BuildObserved.
 
+// snapshotBuildRequest is stored as given in snapshot_versions.request. The
+// Reconciler sends the Dockerfile on every tick until the build ends, so it
+// must be durable; Secrets hold names only, never values.
 type snapshotBuildRequest struct {
 	Dockerfile string            `json:"dockerfile"`
-	Base       *string           `json:"base"`
-	Contexts   map[string]string `json:"contexts"`
-	Secrets    map[string]string `json:"secrets"`
-}
-
-// storedBuildRequest is snapshot_versions.build_request. The Reconciler sends
-// the Dockerfile on every tick until the build ends, so it must be durable.
-type storedBuildRequest struct {
-	Dockerfile string `json:"dockerfile"`
+	Base       *string           `json:"base,omitempty"`
+	Contexts   map[string]string `json:"contexts,omitempty"`
+	Secrets    map[string]string `json:"secrets,omitempty"`
 }
 
 // buildContext is one named build context resolved from a ResourceVersion.
@@ -166,8 +163,9 @@ func isStageIndex(value string) bool {
 // createBuild validates a POST /snapshots/{id}/versions build request and
 // creates the building version, the kind=build Sandbox row, its Exec and the
 // admission request in one transaction.
-func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principal, snap store.Snapshot, req snapshotBuildRequest, key *string) {
+func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principal, snap store.Snapshot, body createSnapshotVersionRequest, key *string) {
 	ctx := r.Context()
+	req := *body.Build
 	if strings.TrimSpace(req.Dockerfile) == "" {
 		writeProblem(w, "invalid_request", "dockerfile is required")
 		return
@@ -293,7 +291,7 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 			return
 		}
 	}
-	data, err := json.Marshal(storedBuildRequest{Dockerfile: req.Dockerfile})
+	data, err := json.Marshal(body)
 	if err != nil {
 		s.internal(w, "encode build request", err)
 		return
@@ -308,7 +306,7 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 			return q.CreateSnapshotVersion(ctx, store.CreateSnapshotVersionParams{
 				ID: versionID, SnapshotID: snap.ID, State: string(SnapshotVersionBuilding),
 				Source: "build", BuildSandboxID: &sandboxID, BuildExecID: &execID,
-				IdempotencyKey: key, BuildRequest: data,
+				IdempotencyKey: key, Request: data,
 			})
 		})
 	if err != nil {
