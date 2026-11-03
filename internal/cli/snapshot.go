@@ -259,7 +259,7 @@ func runSnapshotImport(c *client, args []string) error {
 		}
 	}
 	if len(positional) != 2 {
-		return fmt.Errorf("usage: orrery snapshot import <name> <ref@sha256:…> [--auth-secret NAME]")
+		return fmt.Errorf("usage: orrery snapshot import <name> <ref:tag|ref@sha256:…> [--auth-secret NAME]")
 	}
 	name, ref := positional[0], positional[1]
 	snapshotID, err := ensureSnapshot(c, name)

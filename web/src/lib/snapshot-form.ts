@@ -18,10 +18,10 @@ const buildSchema = z.object({
   secrets: z.array(secretRow),
 })
 
-// The server's `invalid` stays authoritative; this only catches unpinned refs early.
+// The server's `invalid` stays authoritative; it resolves a tag to its digest.
 const importSchema = z.object({
   source: z.literal('import'),
-  ref: z.string().trim().includes('@sha256:', { error: () => m.snapshot_form_ref_sha256() }),
+  ref: z.string().trim().min(1, { error: () => m.snapshot_form_ref_required() }),
   authSecret: z.string(),
 })
 

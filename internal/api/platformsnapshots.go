@@ -33,13 +33,18 @@ func (s *Server) importPlatformSnapshots(ctx context.Context) {
 }
 
 func (s *Server) importPlatformSnapshot(ctx context.Context, configured PlatformSnapshot) error {
-	source, err := registry.ParseSourceRef(configured.Ref)
+	pinned, err := registry.ParseSourceRef(configured.Ref)
 	if err != nil {
 		return err
 	}
 	// A configuration that names the platform registry by its Node-reachable
 	// address must still be readable from the Control Plane.
-	source, err = registry.RewriteRegistry(source, s.cfg.RegistryAddr, s.cfg.RegistryPushAddr)
+	rewritten, err := registry.RewriteRegistry(pinned, s.cfg.RegistryAddr, s.cfg.RegistryPushAddr)
+	if err != nil {
+		return err
+	}
+	// Configuration is digest-only, so this never reaches the network.
+	source, err := registry.Resolve(ctx, rewritten, nil)
 	if err != nil {
 		return err
 	}

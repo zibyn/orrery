@@ -596,7 +596,7 @@ func schemas() map[string]any {
 					"type":     "object",
 					"required": []string{"ref"},
 					"properties": map[string]any{
-						"ref":         map[string]any{"type": "string", "description": "ref@sha256:…; the whole index is copied preserving its digest."},
+						"ref":         map[string]any{"type": "string", "description": "ref:tag or ref@sha256:…; a tag is resolved to its digest on submit, then the whole index is copied preserving that digest."},
 						"auth_secret": map[string]any{"type": "string", "description": "Name of the caller's Secret holding a Docker config.json for the source."},
 					},
 				},
