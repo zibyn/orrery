@@ -9,7 +9,7 @@ import { m } from '@/paraglide/messages'
 export type Crumb =
   | {
       label: ReactNode
-      to: '/sandboxes' | '/snapshots' | '/admin/users' | '/admin/nodes' | '/admin/audit'
+      to: '/sandboxes' | '/snapshots' | '/workspaces' | '/resources' | '/admin/users' | '/admin/nodes' | '/admin/audit'
     }
   | { label: ReactNode; to: '/sandboxes/$id' | '/snapshots/$id'; params: { id: string } }
   | { label: ReactNode }

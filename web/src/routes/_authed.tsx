@@ -3,9 +3,11 @@ import { createFileRoute, Link, Outlet, redirect } from '@tanstack/react-router'
 import {
   Boxes,
   GitBranch,
+  HardDrive,
   KeyRound,
   Layers,
   LogOut,
+  Package,
   ScrollText,
   Server,
   Terminal,
@@ -48,6 +50,8 @@ const NAV = [
     items: [
       { to: '/sandboxes', label: () => m.nav_sandboxes(), icon: Boxes },
       { to: '/snapshots', label: () => m.nav_snapshots(), icon: Layers },
+      { to: '/workspaces', label: () => m.nav_workspaces(), icon: HardDrive },
+      { to: '/resources', label: () => m.nav_resources(), icon: Package },
     ],
   },
   {

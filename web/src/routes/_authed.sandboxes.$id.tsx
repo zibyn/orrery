@@ -226,7 +226,7 @@ function SandboxDetailPage() {
 
       {current?.state === 'ready' && (
         <div className="grid gap-4 lg:grid-cols-2">
-          <SandboxFiles sandboxId={id} />
+          <SandboxFiles sandboxId={id} workspaceId={current.workspace?.id} />
           <SandboxPorts sandboxId={id} />
         </div>
       )}

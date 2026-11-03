@@ -157,7 +157,39 @@ export type Workspace = {
   deleted_at: string | null
 }
 
-export type ExecState = 'pending' | 'running' | 'canceling' | 'finished'
+export type Resource = {
+  id: string
+  name: string
+  current_version_id: string | null
+  created_at: string
+  deleted_at: string | null
+}
+
+export type ResourceVersionState = 'pending' | 'ready' | 'failed' | 'unavailable'
+
+export type ResourceVersion = {
+  id: string
+  resource_id: string
+  address: string | null
+  size: number
+  state: ResourceVersionState
+  cause: string | null
+  // {source: 'upload'} or {source: 'workspace', workspace: {id, path}}.
+  provenance: Record<string, unknown>
+  created_at: string
+  expires_at: string | null
+}
+
+export type ManifestEntry = {
+  path: string
+  type: 'file' | 'dir' | 'symlink'
+  size?: number
+  sha256?: string
+  executable?: boolean
+  target?: string
+}
+
+export type ExecState ='pending' | 'running' | 'canceling' | 'finished'
 
 export type ExecResult = {
   cause: string

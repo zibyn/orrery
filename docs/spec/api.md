@@ -365,7 +365,9 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、workspace（默认临时；或从 `GET /workspaces` 选一个持久的，并选 rw/ro）、idle_stop。resources、secrets、labels 用 CLI |
 | Exec | `GET /sandboxes/{id}/execs`、`output?follow=true` 跟随、`POST /execs/{id}/cancel` |
 | 终端 | `POST /sandboxes/{id}/execs` 带 `pty`，argv 默认 `["/bin/sh", "-l"]`，可改；然后 `GET /execs/{id}/pty`。不提供非 PTY 的运行表单 |
-| 文件 | §5 的列目录；单文件上传 `PUT files/content`；下载走同源链接，文件用 `files/content`，目录用 `files/archive`。不做浏览器内 tar 上传、删除、移动、mkdir、编辑 |
+| 文件 | §5 的列目录；单文件上传 `PUT files/content`；下载走同源链接，文件用 `files/content`，目录用 `files/archive`；对当前目录或某个文件、目录「发布为 Resource」：`POST /workspaces/{id}/publish`（名字不存在时新建 Resource），之后轮询该版本直到 `ready` 或 `failed`。不做浏览器内 tar 上传、删除、移动、mkdir、编辑 |
+| Workspace | 列表与详情：`GET /workspaces`、`GET /workspaces/{id}`，显示 kind、state、cause、node、挂着它的 Sandbox；`POST /workspaces` 创建持久 Workspace；删除持久 Workspace。文件不经 Workspace 浏览（§5 要求 Sandbox `ready`），详情页只链到挂着它的 Sandbox |
+| Resource | 列表、详情、删除；版本列表（state、cause、size、provenance、expires_at），标出 current，`PUT /resources/{id}/current` 切换，服务端的 `conflict` 原样显示；`ready` 版本的文件：`GET .../versions/{v}/manifest` 列出条目，单文件下载用 `POST .../downloads` 拿预签名 GET。上传（manifest + 分片 PUT）用 `orrery resource push` |
 | 端口 | 详情页输入端口号，`POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
 | Snapshot | 列表、创建、删除；版本：构建（dockerfile、base、secrets）、导入、cancel、删除、设为 current；构建日志。构建的 contexts 用 CLI |
 | Secret | 名字列表、覆盖写入、删除 |
