@@ -105,6 +105,12 @@ export function workspaceModeLabel(mode: string): string {
   return mode
 }
 
+export function workspaceKindLabel(kind: string): string {
+  if (kind === 'persistent') return m.workspace_kind_persistent()
+  if (kind === 'ephemeral') return m.workspace_kind_ephemeral()
+  return kind
+}
+
 export function sourceLabel(source: string): string {
   if (source === 'build') return m.snapshot_source_build()
   if (source === 'import') return m.snapshot_source_import()

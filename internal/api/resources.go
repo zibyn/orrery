@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -677,10 +678,21 @@ func (s *Server) handleCreateResourceDownloads(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var request struct {
-		SHA256 []string `json:"sha256"`
+		SHA256   []string `json:"sha256"`
+		Filename *string  `json:"filename"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
+	}
+	if request.Filename != nil {
+		if len(request.SHA256) != 1 {
+			writeProblem(w, "invalid_request", "filename needs exactly one sha256")
+			return
+		}
+		if !validDownloadFilename(*request.Filename) {
+			writeProblem(w, "invalid_request", "filename must be a single trimmed path segment of at most 255 characters without control characters")
+			return
+		}
 	}
 	digests, err := s.q.ListResourceVersionObjects(r.Context(), version.ID)
 	if err != nil {
@@ -697,7 +709,12 @@ func (s *Server) handleCreateResourceDownloads(w http.ResponseWriter, r *http.Re
 			writeProblem(w, "invalid_request", fmt.Sprintf("%q is not part of this version", digest))
 			return
 		}
-		url, err := s.objects.PresignGetURL(r.Context(), resource.OwnerID.String(), digest)
+		var url string
+		if request.Filename != nil {
+			url, err = s.objects.PresignGetURLAs(r.Context(), resource.OwnerID.String(), digest, *request.Filename)
+		} else {
+			url, err = s.objects.PresignGetURL(r.Context(), resource.OwnerID.String(), digest)
+		}
 		if err != nil {
 			s.internal(w, "presign download", err)
 			return
@@ -793,4 +810,13 @@ func ifMatch(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return strings.Trim(value, `"`), true
+}
+
+// validDownloadFilename accepts a name the store can send back in
+// Content-Disposition: one path segment, no control characters.
+func validDownloadFilename(name string) bool {
+	if !validDisplayName(name) || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	return !strings.ContainsFunc(name, unicode.IsControl)
 }

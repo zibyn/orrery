@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Download, File, Folder, Upload } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { ArrowUp, Download, File, Folder, PackagePlus, Upload } from 'lucide-react'
 import { useRef, useState } from 'react'
 
-import { api, apiRaw, type FileEntry } from '@/api'
+import { api, apiRaw, type FileEntry, type ResourceVersion } from '@/api'
 import { Problem } from '@/components/problem'
+import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -14,11 +16,19 @@ import {
   joinPath,
   parentPath,
 } from '@/lib/files'
-import { messageOf } from '@/lib/labels'
+import { causeLabel, messageOf } from '@/lib/labels'
+import { resourceVersionPollInterval } from '@/lib/resources'
 import { formatLocalDateTime } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
-export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
+export function SandboxFiles({
+  sandboxId,
+  workspaceId,
+}: {
+  sandboxId: string
+  // Absent when the Sandbox has no Workspace to publish from.
+  workspaceId?: string
+}) {
   const [path, setPath] = useState('')
   const [uploadError, setUploadError] = useState('')
   const queryClient = useQueryClient()
@@ -39,6 +49,22 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
     onError: (err) => setUploadError(messageOf(err)),
   })
 
+  // Publishing walks the Workspace on its Node; the version starts pending
+  // and moves the Resource's current pointer once ready (api.md §3).
+  const publish = useMutation({
+    mutationFn: ({ target, resource }: { target: string; resource: string }) =>
+      api<ResourceVersion>(
+        'POST',
+        `/workspaces/${workspaceId}/publish`,
+        { path: target || '.', resource },
+        { 'Idempotency-Key': crypto.randomUUID() },
+      ),
+  })
+  const startPublish = (target: string, name: string) => {
+    const resource = window.prompt(m.files_publish_prompt({ path: `/${target}` }), name)?.trim()
+    if (resource) publish.mutate({ target, resource })
+  }
+
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3">
@@ -46,7 +72,19 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
           <CardTitle>{m.files_title()}</CardTitle>
           <CardDescription className="font-mono">/{path}</CardDescription>
         </div>
-        <div>
+        <div className="flex gap-2">
+          {workspaceId && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={publish.isPending}
+              data-testid="files-publish-dir"
+              onClick={() => startPublish(path, path.split('/').pop() ?? '')}
+            >
+              <PackagePlus />
+              {m.files_publish_dir()}
+            </Button>
+          )}
           <input
             ref={inputRef}
             type="file"
@@ -99,6 +137,13 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
           </p>
         )}
 
+        {publish.error && (
+          <p className="text-destructive" role="alert">
+            <Problem error={publish.error} />
+          </p>
+        )}
+        {publish.data && <PublishStatus version={publish.data} />}
+
         {listing.data && (
           <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
             {listing.data.items.length === 0 && (
@@ -144,6 +189,18 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
                       {formatLocalDateTime(entry.mod_time)}
                     </span>
                   </div>
+                  {workspaceId && (entry.type === 'file' || entry.type === 'dir') && (
+                    <button
+                      type="button"
+                      disabled={publish.isPending}
+                      data-testid={`file-publish-${entry.name}`}
+                      onClick={() => startPublish(entryPath, entry.name)}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      <PackagePlus className="size-3.5" />
+                      {m.files_publish()}
+                    </button>
+                  )}
                   {href && (
                     <a
                       href={href}
@@ -161,5 +218,35 @@ export function SandboxFiles({ sandboxId }: { sandboxId: string }) {
         )}
       </CardContent>
     </Card>
+  )
+}
+
+function PublishStatus({ version: accepted }: { version: ResourceVersion }) {
+  const version = useQuery({
+    queryKey: ['resource-version', accepted.resource_id, accepted.id],
+    queryFn: () =>
+      api<ResourceVersion>('GET', `/resources/${accepted.resource_id}/versions/${accepted.id}`),
+    initialData: accepted,
+    refetchInterval: (query) => resourceVersionPollInterval(query.state.data?.state),
+  })
+  const current = version.data
+  return (
+    <p className="flex flex-wrap items-center gap-2 text-xs" data-testid="publish-status">
+      <span className="text-muted-foreground">{m.files_publish_status()}</span>
+      <StatusBadge state={current.state} data-testid="publish-state" />
+      {current.cause && <span className="text-muted-foreground">{causeLabel(current.cause)}</span>}
+      <Link
+        to="/resources/$id"
+        params={{ id: current.resource_id }}
+        className="text-foreground hover:underline"
+      >
+        {m.files_publish_open()}
+      </Link>
+      {version.error && (
+        <span className="text-destructive" role="alert">
+          <Problem error={version.error} />
+        </span>
+      )}
+    </p>
   )
 }
