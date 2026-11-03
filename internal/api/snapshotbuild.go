@@ -144,13 +144,11 @@ func validBuildBase(image string, contexts, stages map[string]bool, hasBase bool
 	case "scratch":
 		return nil
 	}
-	if strings.Contains(image, "@sha256:") {
-		if _, err := registry.ParseSourceRef(image); err != nil {
-			return fmt.Errorf("FROM %q is not a valid digest reference: %w", image, err)
-		}
-		return nil
+	// BuildKit resolves a tag; provenance records the digest it got.
+	if _, err := registry.ParseImportRef(image); err != nil {
+		return fmt.Errorf("FROM %q must be a named context, an earlier stage, or an image ref (ref:tag or ref@sha256:…): %w", image, err)
 	}
-	return fmt.Errorf("FROM %q must be a named context, an earlier stage, or a digest-pinned image (ref@sha256:…)", image)
+	return nil
 }
 
 func isStageIndex(value string) bool {
