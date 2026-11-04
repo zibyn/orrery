@@ -265,3 +265,29 @@ _Avoid_: GPU index, device ordinal
 **User Quota**:
 A User-specific upper bound on the GPUs and concurrent Sandboxes they may have accepted or allocated.
 _Avoid_: priority, billing limit
+
+## Chinese console terms
+
+The console's Chinese locale (`web/messages/zh.json`) uses these names for the terms above. Acronyms and proper names (CLI, SDK, API, MCP, GPU, CPU, SSO, Git, Dockerfile, ID) and anything typed verbatim (commands, Dockerfile syntax) stay in English.
+
+| Term | 中文 |
+| --- | --- |
+| Sandbox | 沙箱 |
+| Snapshot | 快照 (an environment template, never a saved Workspace state) |
+| SnapshotVersion | 快照版本 |
+| Platform Snapshot | 平台快照 |
+| Workspace | 工作区 |
+| Resource | 资源 (only for the persisted Resource; compute sizing is 规格, capacity is 容量) |
+| Secret | 密钥 |
+| Node | 节点 |
+| Node Agent | 节点代理 |
+| Exec | 执行 (a list of them is 执行记录) |
+| API Token | 令牌 |
+| Session | 会话 |
+| Runtime | 运行时 |
+| Control Plane | 控制面 |
+| Enrollment Packet | 注册包 |
+| Git Account Link | Git 账号 |
+| User Quota | 配额 |
+| Audit Record | 审计记录 |
+| image ref / tag / digest / registry | 镜像地址 / 标签 / 摘要 / 镜像仓库 |
