@@ -4,7 +4,7 @@ import { Layers, Plus } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot } from '@/api'
 import { EmptyState } from '@/components/empty-state'
-import { ListCard, ListRow, listTitleClass } from '@/components/list'
+import { ListCard, ListRow, rowLinkClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { buttonVariants } from '@/components/ui/button'
@@ -75,7 +75,7 @@ function SnapshotsPage() {
                 <Link
                   to="/snapshots/$id"
                   params={{ id: snapshot.id }}
-                  className={`${listTitleClass} hover:underline`}
+                  className={rowLinkClass}
                 >
                   {snapshot.name}
                 </Link>
@@ -91,9 +91,11 @@ function SnapshotsPage() {
                   <span className="text-[11px] text-muted-foreground">
                     {m.snapshots_current_version()}
                   </span>
-                  <span className="max-w-48 truncate font-mono text-xs">
-                    {snapshot.current_version_id ?? '—'}
-                  </span>
+                  {snapshot.current_version_id ? (
+                    <span className="font-mono text-xs">{snapshot.current_version_id.slice(0, 8)}</span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">{m.snapshot_no_current()}</span>
+                  )}
                 </div>
               }
             />

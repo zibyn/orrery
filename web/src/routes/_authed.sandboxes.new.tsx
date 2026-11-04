@@ -25,12 +25,18 @@ import { selectClass } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/new')({
+  // Snapshot and Workspace pages link here with their own value prefilled.
+  validateSearch: (search: Record<string, unknown>): { snapshot?: string; workspace?: string } => ({
+    snapshot: typeof search.snapshot === 'string' ? search.snapshot : undefined,
+    workspace: typeof search.workspace === 'string' ? search.workspace : undefined,
+  }),
   component: NewSandboxPage,
 })
 
 function NewSandboxPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const navigate = useNavigate()
+  const prefill = Route.useSearch()
   const [error, setError] = useState<unknown>()
 
   const snapshots = useQuery({
@@ -62,12 +68,12 @@ function NewSandboxPage() {
   const form = useForm({
     defaultValues: {
       name: '',
-      snapshot: '',
+      snapshot: prefill.snapshot ?? '',
       cpu: '1',
       memoryMiB: '512',
       gpuCount: '0',
       gpuModel: '',
-      workspaceId: '',
+      workspaceId: prefill.workspace ?? '',
       workspaceMode: 'rw' as 'rw' | 'ro',
       idleStop: '900',
     },
@@ -137,7 +143,7 @@ function NewSandboxPage() {
 
             <form.Field name="snapshot">
               {(field) => (
-                <Field label="Snapshot" htmlFor={field.name}>
+                <Field label={m.label_snapshot()} htmlFor={field.name}>
                   <select
                     id={field.name}
                     className={selectClass}
@@ -152,6 +158,25 @@ function NewSandboxPage() {
                       </option>
                     ))}
                   </select>
+                </Field>
+              )}
+            </form.Field>
+
+            <form.Field name="idleStop">
+              {(field) => (
+                <Field
+                  label={m.new_idle_stop()}
+                  htmlFor={field.name}
+                  hint={m.new_idle_stop_hint()}
+                >
+                  <Input
+                    id={field.name}
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={field.state.value}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                  />
                 </Field>
               )}
             </form.Field>
@@ -235,13 +260,13 @@ function NewSandboxPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Workspace</CardTitle>
+            <CardTitle>{m.label_workspace()}</CardTitle>
             <CardDescription>{m.new_workspace_description()}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <form.Field name="workspaceId">
               {(field) => (
-                <Field label="Workspace" htmlFor={field.name}>
+                <Field label={m.label_workspace()} htmlFor={field.name}>
                   <select
                     id={field.name}
                     className={selectClass}
@@ -281,24 +306,6 @@ function NewSandboxPage() {
               }
             </form.Subscribe>
 
-            <form.Field name="idleStop">
-              {(field) => (
-                <Field
-                  label={m.new_idle_stop()}
-                  htmlFor={field.name}
-                  hint={m.new_idle_stop_hint()}
-                >
-                  <Input
-                    id={field.name}
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={field.state.value}
-                    onChange={(e) => field.handleChange(e.target.value)}
-                  />
-                </Field>
-              )}
-            </form.Field>
           </CardContent>
           <CardFooter className="justify-end">
             <Button type="button" variant="ghost" onClick={() => navigate({ to: '/sandboxes' })}>

@@ -18,7 +18,7 @@ test('admin creates a User, sets quota, resets the password, and audits it', asy
   const initialPassword = 'initial-password-123'
   const resetPassword = 'reset-password-1234'
 
-  await page.getByRole('button', { name: 'New User' }).click()
+  await page.getByRole('button', { name: 'New user' }).click()
   await page.getByLabel('Name', { exact: true }).fill(name)
   await page.getByLabel('Email (optional)').fill(`${name}@example.com`)
   await page.getByLabel('Password (at least 12 characters)').fill(initialPassword)
@@ -27,7 +27,7 @@ test('admin creates a User, sets quota, resets the password, and audits it', asy
       (response) =>
         response.url().endsWith('/api/v1/users') && response.request().method() === 'POST',
     ),
-    page.getByRole('button', { name: 'Create User' }).click(),
+    page.getByRole('button', { name: 'Create user' }).click(),
   ])
   expect(createdResponse.status()).toBe(201)
   const created = (await createdResponse.json()) as { id: string }
@@ -38,11 +38,14 @@ test('admin creates a User, sets quota, resets the password, and audits it', asy
   await row.getByRole('button', { name: 'Edit' }).click()
   await page.getByLabel(`GPU quota for ${name}`).fill('2')
   await page.getByLabel(`Sandbox quota for ${name}`).fill('3')
-  await page.getByRole('button', { name: 'Set quota' }).click()
-  await expect(row.getByText('Limits 2 GPUs / 3 Sandboxes')).toBeVisible()
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(row.getByText('Quota 2 GPUs / 3 Sandboxes')).toBeVisible()
 
+  // Saving closes the drawer; the password is reset from a fresh one.
+  await row.getByRole('button', { name: 'Edit' }).click()
   await page.getByLabel(`New password for ${name}`).fill(resetPassword)
   await page.getByRole('button', { name: 'Reset password' }).click()
+  await expect(page.getByRole('status')).toHaveText('Password reset')
   await expect(page.getByLabel(`New password for ${name}`)).toHaveValue('')
   await page.getByRole('button', { name: 'Close' }).click()
 

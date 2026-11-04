@@ -7,7 +7,10 @@ import { api, apiRaw, type FileEntry, type ResourceVersion } from '@/api'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Drawer } from '@/components/ui/drawer'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   downloadHref,
   fileContentPath,
@@ -60,18 +63,17 @@ export function SandboxFiles({
         { 'Idempotency-Key': crypto.randomUUID() },
       ),
   })
+  // The path being published and the Resource name typed for it.
+  const [publishing, setPublishing] = useState<{ target: string; resource: string } | null>(null)
   const startPublish = (target: string, name: string) => {
-    const resource = window.prompt(m.files_publish_prompt({ path: `/${target}` }), name)?.trim()
-    if (resource) publish.mutate({ target, resource })
+    publish.reset()
+    setPublishing({ target, resource: name })
   }
 
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <CardTitle>{m.files_title()}</CardTitle>
-          <CardDescription className="font-mono">/{path}</CardDescription>
-        </div>
+        <CardTitle>{m.files_title()}</CardTitle>
         <div className="flex gap-2">
           {workspaceId && (
             <Button
@@ -143,6 +145,51 @@ export function SandboxFiles({
           </p>
         )}
         {publish.data && <PublishStatus version={publish.data} />}
+
+        <Drawer
+          open={publishing !== null}
+          onOpenChange={(open) => !open && setPublishing(null)}
+          title={m.files_publish_title()}
+          description={m.files_publish_description({ path: `/${publishing?.target ?? ''}` })}
+          footer={
+            <>
+              <Button type="button" variant="ghost" onClick={() => setPublishing(null)}>
+                {m.common_cancel()}
+              </Button>
+              <Button
+                type="submit"
+                form="publish-form"
+                disabled={!publishing?.resource.trim() || publish.isPending}
+              >
+                <PackagePlus />
+                {m.files_publish()}
+              </Button>
+            </>
+          }
+        >
+          <form
+            id="publish-form"
+            className="flex flex-col gap-1.5"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const resource = publishing?.resource.trim()
+              if (!publishing || !resource) return
+              publish.mutate({ target: publishing.target, resource })
+              setPublishing(null)
+            }}
+          >
+            <Label htmlFor="publish-resource">{m.files_publish_name()}</Label>
+            <Input
+              id="publish-resource"
+              autoFocus
+              autoComplete="off"
+              value={publishing?.resource ?? ''}
+              onChange={(event) =>
+                setPublishing((current) => current && { ...current, resource: event.target.value })
+              }
+            />
+          </form>
+        </Drawer>
 
         {listing.data && (
           <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">

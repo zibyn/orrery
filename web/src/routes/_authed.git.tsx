@@ -4,10 +4,12 @@ import { GitBranch, Link2, Unlink } from 'lucide-react'
 
 import { api, type GitLink, type GitProvider, type ListResponse } from '@/api'
 import { EmptyState } from '@/components/empty-state'
+import { ConfirmButton } from '@/components/confirm-button'
 import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { buttonVariants } from '@/components/ui/button'
 import { useLocale } from '@/lib/i18n'
 import { m } from '@/paraglide/messages'
 
@@ -77,15 +79,21 @@ function GitPage() {
               }
               trailing={
                 linked.has(provider.id) ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={unlink.isPending}
-                    onClick={() => unlink.mutate(provider.id)}
-                  >
-                    <Unlink />
-                    {m.git_unlink()}
-                  </Button>
+                  <>
+                    <Badge variant="success">{m.git_linked()}</Badge>
+                    <ConfirmButton
+                      variant="outline"
+                      size="sm"
+                      title={m.git_unlink_title({ provider: provider.id })}
+                      description={m.git_unlink_description({ provider: provider.host })}
+                      confirmLabel={m.git_unlink()}
+                      disabled={unlink.isPending}
+                      onConfirm={() => unlink.mutate(provider.id)}
+                    >
+                      <Unlink />
+                      {m.git_unlink()}
+                    </ConfirmButton>
+                  </>
                 ) : (
                   <a
                     className={buttonVariants({ size: 'sm' })}

@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { Ban, Copy, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
+import { Ban, Box, Copy, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
 import { BuildLog } from '@/components/build-log'
 import { EmptyState } from '@/components/empty-state'
+import { ConfirmButton } from '@/components/confirm-button'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
@@ -109,34 +110,51 @@ function SnapshotDetailPage() {
               <span aria-hidden="true">·</span>
               <span>
                 {m.snapshots_current_version()}{' '}
-                <span className="font-mono">{current.current_version_id ?? '—'}</span>
+                {current.current_version_id ? (
+                  <span className="font-mono">{current.current_version_id}</span>
+                ) : (
+                  m.snapshot_no_current()
+                )}
               </span>
             </>
           ) : undefined
         }
         actions={
-          current &&
-          snapshotIsWritable(current) && (
+          current && (
             <>
-              <Link
-                to="/snapshots/$id/versions/new"
-                params={{ id }}
-                search={{ from: current.current_version_id ?? undefined }}
-                className={buttonVariants({ variant: 'outline' })}
-              >
-                <Plus />
-                {m.snapshot_new_version()}
-              </Link>
-              <Button
-                variant="outline"
-                disabled={remove.isPending}
-                onClick={() => {
-                  if (window.confirm(m.snapshot_delete_confirm({ name: current.name }))) remove.mutate()
-                }}
-              >
-                <Trash />
-                {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
-              </Button>
+              {current.current_version_id && (
+                <Link
+                  to="/sandboxes/new"
+                  search={{ snapshot: current.name }}
+                  className={buttonVariants()}
+                >
+                  <Box />
+                  {m.snapshot_new_sandbox()}
+                </Link>
+              )}
+              {snapshotIsWritable(current) && (
+                <>
+                  <Link
+                    to="/snapshots/$id/versions/new"
+                    params={{ id }}
+                    search={{ from: current.current_version_id ?? undefined }}
+                    className={buttonVariants({ variant: 'outline' })}
+                  >
+                    <Plus />
+                    {m.snapshot_new_version()}
+                  </Link>
+                  <ConfirmButton
+                    variant="outline"
+                    title={m.snapshot_delete_confirm({ name: current.name })}
+                    description={m.common_irreversible()}
+                    disabled={remove.isPending}
+                    onConfirm={() => remove.mutate()}
+                  >
+                    <Trash />
+                    {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
+                  </ConfirmButton>
+                </>
+              )}
             </>
           )
         }
@@ -351,18 +369,17 @@ function VersionActions({
         </Button>
       )}
       {actions.delete && (
-        <Button
-          variant="ghost"
+        <ConfirmButton
           size="sm"
+          testId={`version-delete-${versionId}`}
+          title={m.snapshot_version_delete_confirm({ id: versionId.slice(0, 8) })}
+          description={m.common_irreversible()}
           disabled={disabled}
-          data-testid={`version-delete-${versionId}`}
-          onClick={() => {
-            if (window.confirm(m.snapshot_version_delete_confirm({ id: versionId }))) onAction('delete')
-          }}
+          onConfirm={() => onAction('delete')}
         >
           <Trash />
           {m.common_delete()}
-        </Button>
+        </ConfirmButton>
       )}
     </div>
   )

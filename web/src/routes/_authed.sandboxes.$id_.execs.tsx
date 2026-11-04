@@ -4,7 +4,7 @@ import { Terminal } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Terminal as XTerminal } from '@xterm/xterm'
 
-import { api, type Exec, type ExecResultFrame, type ListResponse } from '@/api'
+import { api, type Exec, type ExecResultFrame, type ListResponse, type Sandbox } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
@@ -16,6 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { execListPollInterval, followExecOutput, formatExecResult } from '@/lib/exec-stream'
 import { useLocale } from '@/lib/i18n'
 import { messageOf, stateLabel } from '@/lib/labels'
+import { formatLocalDateTime } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
@@ -32,6 +33,11 @@ function ExecsPage() {
   const { exec: selectedId } = Route.useSearch()
   const queryClient = useQueryClient()
 
+  // Shares the detail page's cache, so the breadcrumb shows the name.
+  const sandbox = useQuery({
+    queryKey: ['sandbox', id],
+    queryFn: () => api<Sandbox>('GET', `/sandboxes/${id}`),
+  })
   const execs = useQuery({
     queryKey: ['execs', id],
     queryFn: () => api<ListResponse<Exec>>('GET', `/sandboxes/${id}/execs`),
@@ -56,7 +62,7 @@ function ExecsPage() {
           <Breadcrumbs
             items={[
               { label: m.nav_sandboxes(), to: '/sandboxes' },
-              { label: id, to: '/sandboxes/$id', params: { id } },
+              { label: sandbox.data?.name ?? id, to: '/sandboxes/$id', params: { id } },
               { label: m.execs_title() },
             ]}
           />
@@ -119,7 +125,7 @@ function ExecsPage() {
                           {exec.argv.join(' ')}
                         </span>
                         <span className="truncate text-[11px] text-muted-foreground">
-                          {exec.id} · {exec.accepted_at}
+                          {formatLocalDateTime(exec.accepted_at)}
                         </span>
                       </Link>
                       <div className="flex shrink-0 flex-col items-end gap-1.5">

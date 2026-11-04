@@ -5,6 +5,7 @@ import { Pause, Play, Server, Trash } from 'lucide-react'
 import { api, type CapacityNode, type ListResponse, type Node } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
 import { EmptyState } from '@/components/empty-state'
+import { ConfirmButton } from '@/components/confirm-button'
 import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
@@ -100,9 +101,9 @@ function NodesPage() {
               }
               description={
                 <div className="flex flex-col gap-1.5">
-                  <span className="font-mono">{row.id}</span>
+                  <span className="font-mono" title={row.id}>{row.id.slice(0, 8)}</span>
                   {row.gpus.length === 0 ? (
-                    <span>—</span>
+                    <span>{m.nodes_no_gpu()}</span>
                   ) : (
                     row.gpus.map((gpu) => (
                       <div key={gpu.model} className="flex items-center gap-2">
@@ -146,19 +147,16 @@ function NodesPage() {
                       {m.nodes_pause()}
                     </Button>
                   )}
-                  <Button
-                    variant="ghost"
+                  <ConfirmButton
                     size="sm"
+                    title={m.nodes_delete_confirm({ name: row.name })}
+                    description={m.common_irreversible()}
                     disabled={action.isPending || remove.isPending}
-                    onClick={() => {
-                      if (window.confirm(m.nodes_delete_confirm({ name: row.name }))) {
-                        remove.mutate(row.id)
-                      }
-                    }}
+                    onConfirm={() => remove.mutate(row.id)}
                   >
                     <Trash />
                     {m.common_delete()}
-                  </Button>
+                  </ConfirmButton>
                 </>
               }
             />

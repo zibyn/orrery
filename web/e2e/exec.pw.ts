@@ -53,6 +53,7 @@ test('console-parity: follow an Exec log, use a PTY terminal and delete the Sand
 
   await page.goto(`/sandboxes/${sandboxId}`)
   await page.getByRole('button', { name: 'Delete' }).click()
+  await page.getByTestId('confirm-action').click()
   await expect(page).toHaveURL(/\/sandboxes$/)
   await expect(page.getByRole('link', { name })).toHaveCount(0, { timeout: 120_000 })
 

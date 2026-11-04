@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { KeyRound, Plus, Trash } from 'lucide-react'
+import { KeyRound, Pencil, Plus, Trash } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { api, type ListResponse, type Secret } from '@/api'
+import { ConfirmButton } from '@/components/confirm-button'
 import { EmptyState } from '@/components/empty-state'
 import { Field } from '@/components/field'
 import { ListCard, ListRow } from '@/components/list'
@@ -30,6 +31,8 @@ function SecretsPage() {
   const [error, setError] = useState('')
   const [removeError, setRemoveError] = useState('')
   const [open, setOpen] = useState(false)
+  // Set when the drawer replaces an existing Secret: the name is fixed.
+  const [replacing, setReplacing] = useState(false)
 
   const secrets = useQuery({
     queryKey: ['secrets'],
@@ -75,18 +78,21 @@ function SecretsPage() {
     save.mutate({ name: name.trim(), value })
   }
 
+  const openDrawer = (secretName = '') => {
+    setName(secretName)
+    setValue('')
+    setError('')
+    setReplacing(secretName !== '')
+    setOpen(true)
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title={m.secrets_title()}
         description={m.secrets_description()}
         actions={
-          <Button
-            onClick={() => {
-              setError('')
-              setOpen(true)
-            }}
-          >
+          <Button onClick={() => openDrawer()}>
             <Plus />
             {m.secrets_add()}
           </Button>
@@ -96,8 +102,8 @@ function SecretsPage() {
       <Drawer
         open={open}
         onOpenChange={setOpen}
-        title={m.secrets_add_title()}
-        description={m.secrets_add_description()}
+        title={replacing ? m.secrets_replace_title({ name }) : m.secrets_add_title()}
+        description={replacing ? m.secrets_replace_description() : m.secrets_add_description()}
         footer={
           <>
             <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
@@ -117,6 +123,9 @@ function SecretsPage() {
               onChange={(e) => setName(e.target.value)}
               placeholder="GITHUB_TOKEN"
               autoComplete="off"
+              readOnly={replacing}
+              className={replacing ? 'bg-muted text-muted-foreground' : undefined}
+              autoFocus={!replacing}
             />
           </Field>
           <Field label={m.secrets_value()} htmlFor="secret-value">
@@ -124,6 +133,7 @@ function SecretsPage() {
               id="secret-value"
               type="password"
               value={value}
+              autoFocus={replacing}
               onChange={(e) => setValue(e.target.value)}
               autoComplete="new-password"
             />
@@ -167,15 +177,22 @@ function SecretsPage() {
               title={<span className="truncate font-mono text-sm font-medium">{secret.name}</span>}
               description={m.secrets_updated({ time: formatTimestamp(secret.updated_at) })}
               trailing={
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate(secret.name)}
-                >
-                  <Trash />
-                  {m.common_delete()}
-                </Button>
+                <>
+                  <Button variant="outline" size="sm" onClick={() => openDrawer(secret.name)}>
+                    <Pencil />
+                    {m.secrets_replace()}
+                  </Button>
+                  <ConfirmButton
+                    size="sm"
+                    title={m.secret_delete_title({ name: secret.name })}
+                    description={m.secret_delete_description()}
+                    disabled={remove.isPending}
+                    onConfirm={() => remove.mutate(secret.name)}
+                  >
+                    <Trash />
+                    {m.common_delete()}
+                  </ConfirmButton>
+                </>
               }
             />
           ))}

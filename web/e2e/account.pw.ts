@@ -32,6 +32,7 @@ test('admin creates a token, uses it, revokes it and it stops working', async ({
 
   const row = page.getByRole('listitem').filter({ hasText: name })
   await row.getByRole('button', { name: 'Revoke' }).click()
+  await page.getByTestId('confirm-action').click()
   await expect(row).toHaveCount(0)
 
   const second = await api.get('/api/v1/users/me/tokens', {

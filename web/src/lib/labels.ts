@@ -95,10 +95,6 @@ export function scopeLabel(scope: string): string {
   return scope
 }
 
-export function kindLabel(kind: string): string {
-  return kind === 'session' ? m.kind_session() : m.kind_token()
-}
-
 export function workspaceModeLabel(mode: string): string {
   if (mode === 'rw') return m.workspace_mode_rw()
   if (mode === 'ro') return m.workspace_mode_ro()
@@ -135,4 +131,11 @@ export function problemOf(error: unknown): { title: string; detail?: string } {
 export function messageOf(error: unknown): string {
   const { title, detail } = problemOf(error)
   return detail ? `${title}\n${detail}` : title
+}
+
+// Idle stop is stored in seconds; whole minutes read better (900 → 15 min).
+export function idleStopLabel(seconds: number): string {
+  if (seconds === 0) return m.common_off()
+  if (seconds % 60 === 0) return m.sandbox_idle_minutes({ minutes: seconds / 60 })
+  return m.sandbox_idle_seconds({ seconds })
 }

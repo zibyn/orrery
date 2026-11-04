@@ -128,8 +128,8 @@ test('console: create a Snapshot with its first version, reject a duplicate name
 
   // Deleting after confirming returns to the list, without the Snapshot.
   await page.goto(detailUrl)
-  page.once('dialog', (dialog) => void dialog.accept())
   await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  await page.getByTestId('confirm-action').click()
   await expect(page).toHaveURL(/\/snapshots$/)
   await expect(page.getByRole('heading', { name: 'Snapshots' })).toBeVisible()
   await expect(page.getByRole('link', { name: snapshotName })).toHaveCount(0)
@@ -252,16 +252,16 @@ test('console: set a version as current, and delete only a non-current one', asy
   // Move the pointer back behind the page's back: the server refuses to
   // delete the current version and the console shows its problem detail.
   await setCurrent(second)
-  page.once('dialog', (dialog) => void dialog.accept())
   await page.getByTestId(`version-delete-${second}`).click()
+  await page.getByTestId('confirm-action').click()
   await expect(page.getByTestId('version-action-error')).toContainText('current')
   await expect(page.getByTestId(`version-${second}`)).toBeVisible()
 
   // Deleting a non-current version after confirming removes it from the table.
   await page.reload()
   await expect(page.getByTestId(`version-current-${second}`)).toBeVisible()
-  page.once('dialog', (dialog) => void dialog.accept())
   await page.getByTestId(`version-delete-${first}`).click()
+  await page.getByTestId('confirm-action').click()
   await expect(page.getByTestId(`version-${first}`)).toHaveCount(0)
 
   assertConsoleScope(requests)

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { Filter, ScrollText } from 'lucide-react'
+import { Filter } from 'lucide-react'
 import { useState, type ChangeEvent } from 'react'
 
 import { api, type AuditRecord, type ListResponse } from '@/api'
@@ -82,7 +82,7 @@ function AuditPage() {
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="audit-target">{m.audit_target()}</Label>
-              <Input id="audit-target" placeholder="target id" {...field('target')} />
+              <Input id="audit-target" placeholder={m.audit_target_placeholder()} {...field('target')} />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="audit-from">{m.audit_from()}</Label>
@@ -120,7 +120,6 @@ function AuditPage() {
             <ListRow
               key={record.id}
               data-testid="audit-row"
-              icon={<ScrollText />}
               title={
                 <>
                   <span className="font-mono text-xs">{record.action}</span>
@@ -135,9 +134,11 @@ function AuditPage() {
                     {record.actor_name ?? '—'} · {record.target_type}{' '}
                     <span className="font-mono">{record.target_id}</span>
                   </span>
-                  <pre className="mt-1 max-w-full overflow-x-auto font-mono">
-                    {JSON.stringify(record.detail)}
-                  </pre>
+                  {![undefined, null, '{}'].includes(JSON.stringify(record.detail)) && (
+                    <pre className="mt-1 max-w-full overflow-x-auto font-mono">
+                      {JSON.stringify(record.detail)}
+                    </pre>
+                  )}
                 </>
               }
             />

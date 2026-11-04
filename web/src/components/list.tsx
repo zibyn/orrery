@@ -5,6 +5,8 @@ import { cn } from '@/lib/utils'
 // One list surface for the console: pages differ in what a row holds, not in
 // the card, row padding or hover treatment.
 export const listTitleClass = 'truncate text-sm font-medium'
+// A title link that makes the whole row clickable; trailing controls stay on top.
+export const rowLinkClass = `${listTitleClass} after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring/50 focus-visible:after:ring-inset`
 
 export function ListCard({ className, ...props }: React.ComponentProps<'ul'>) {
   return (
@@ -38,7 +40,7 @@ export function ListRow({
     <li
       data-slot="list-row"
       className={cn(
-        'flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 transition-colors',
+        'relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 transition-colors',
         selected ? 'bg-accent' : 'hover:bg-muted/40',
         className,
       )}
@@ -54,7 +56,7 @@ export function ListRow({
         {description && <div className="text-xs text-muted-foreground">{description}</div>}
       </div>
       {trailing && (
-        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <div className="relative ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
           {trailing}
         </div>
       )}

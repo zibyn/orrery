@@ -5,7 +5,7 @@ import { useState } from 'react'
 
 import { api, type ListResponse, type Sandbox, type User } from '@/api'
 import { EmptyState } from '@/components/empty-state'
-import { ListCard, ListRow, listTitleClass } from '@/components/list'
+import { ListCard, ListRow, rowLinkClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
@@ -59,7 +59,7 @@ function SandboxesPage() {
         actions={
           <>
             {user.is_admin && (
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <label className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground">
                 {m.sandboxes_owner()}
                 <select
                   className={`${selectClass} w-auto min-w-32`}
@@ -115,7 +115,7 @@ function SandboxesPage() {
                 <Link
                   to="/sandboxes/$id"
                   params={{ id: sandbox.id }}
-                  className={`${listTitleClass} hover:underline`}
+                  className={rowLinkClass}
                 >
                   {sandbox.name}
                 </Link>
@@ -125,9 +125,8 @@ function SandboxesPage() {
                   {sandbox.cpu} CPU · {(sandbox.memory / 1024 / 1024).toFixed(0)} MiB
                   {sandbox.gpu ? ` · ${sandbox.gpu.count} GPU` : ''}
                   {sandbox.workspace
-                    ? ` · workspace ${workspaceModeLabel(sandbox.workspace.mode)}`
+                    ? ` · ${m.sandboxes_meta_workspace({ mode: workspaceModeLabel(sandbox.workspace.mode) })}`
                     : ''}
-                  {sandbox.node_id ? ` · ${sandbox.node_id}` : ''}
                 </>
               }
               trailing={

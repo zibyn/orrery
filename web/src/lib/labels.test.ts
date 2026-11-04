@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ApiError } from '@/api'
 import { overwriteGetLocale } from '@/paraglide/runtime'
 
-import { causeLabel, problemOf, stateLabel } from './labels'
+import { causeLabel, idleStopLabel, problemOf, stateLabel } from './labels'
 
 afterEach(() => {
   overwriteGetLocale(() => 'en')
@@ -50,5 +50,14 @@ describe('problemOf', () => {
   it('falls back to the code when it is not in the catalog', () => {
     overwriteGetLocale(() => 'zh')
     expect(problemOf(new ApiError(418, 'teapot', ''))).toEqual({ title: 'teapot' })
+  })
+})
+
+describe('idleStopLabel', () => {
+  it('reads 0 as off, whole minutes as minutes, the rest as seconds', () => {
+    overwriteGetLocale(() => 'en')
+    expect(idleStopLabel(0)).toBe('off')
+    expect(idleStopLabel(900)).toBe('after 15 min idle')
+    expect(idleStopLabel(90)).toBe('after 90 s idle')
   })
 })

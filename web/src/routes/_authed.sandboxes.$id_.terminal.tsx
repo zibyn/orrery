@@ -1,10 +1,10 @@
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { ScrollText } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { Terminal as XTerminal } from '@xterm/xterm'
 
-import { api, type CreateExecRequest, type Exec, type PtyExitFrame } from '@/api'
+import { api, type CreateExecRequest, type Exec, type PtyExitFrame, type Sandbox } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
@@ -41,6 +41,11 @@ function TerminalPage() {
   const [exit, setExit] = useState('')
   const [error, setError] = useState('')
   const socketRef = useRef<WebSocket | null>(null)
+  // Shares the detail page's cache, so the breadcrumb shows the name.
+  const sandbox = useQuery({
+    queryKey: ['sandbox', id],
+    queryFn: () => api<Sandbox>('GET', `/sandboxes/${id}`),
+  })
 
   const create = useMutation({
     mutationFn: () => {
@@ -160,7 +165,7 @@ function TerminalPage() {
           <Breadcrumbs
             items={[
               { label: m.nav_sandboxes(), to: '/sandboxes' },
-              { label: id, to: '/sandboxes/$id', params: { id } },
+              { label: sandbox.data?.name ?? id, to: '/sandboxes/$id', params: { id } },
               { label: m.terminal_title() },
             ]}
           />

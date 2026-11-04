@@ -7,6 +7,7 @@ import { z } from 'zod'
 
 import { api, type ListResponse, type QuotaUsage, type User } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
+import { ConfirmButton } from '@/components/confirm-button'
 import { Field } from '@/components/field'
 import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
@@ -279,18 +280,24 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['users'] })
 
-  const update = useMutation({
-    mutationFn: () =>
-      api<User>('PATCH', `/users/${user.id}`, { login_type: loginType, is_admin: isAdmin }),
-    onSuccess: invalidate,
-  })
-  const quota = useMutation({
-    mutationFn: () =>
-      api<User>('PUT', `/users/${user.id}/quota`, {
-        gpus: Number(gpus),
-        sandboxes: Number(sandboxes),
-      }),
-    onSuccess: invalidate,
+  // One save for everything above the password: only what changed is sent.
+  const save = useMutation({
+    mutationFn: async () => {
+      if (loginType !== user.login_type || isAdmin !== user.is_admin) {
+        await api<User>('PATCH', `/users/${user.id}`, { login_type: loginType, is_admin: isAdmin })
+      }
+      if (Number(gpus) !== user.quota.gpus || Number(sandboxes) !== user.quota.sandboxes) {
+        await api<User>('PUT', `/users/${user.id}/quota`, {
+          gpus: Number(gpus),
+          sandboxes: Number(sandboxes),
+        })
+      }
+    },
+    onSuccess: async () => {
+      await invalidate()
+      setEditOpen(false)
+    },
+    onError: invalidate,
   })
   const reset = useMutation({
     mutationFn: () => api<User>('PUT', `/users/${user.id}/password`, { password }),
@@ -304,7 +311,23 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
     onSuccess: invalidate,
   })
 
-  const error = update.error ?? quota.error ?? reset.error
+  const openEditor = () => {
+    // Start from the saved values, not from an abandoned earlier edit.
+    setLoginType(user.login_type)
+    setIsAdmin(user.is_admin)
+    setGpus(String(user.quota.gpus))
+    setSandboxes(String(user.quota.sandboxes))
+    setPassword('')
+    save.reset()
+    reset.reset()
+    setEditOpen(true)
+  }
+
+  const quotaValid =
+    Number.isInteger(Number(gpus)) &&
+    Number(gpus) >= 0 &&
+    Number.isInteger(Number(sandboxes)) &&
+    Number(sandboxes) >= 0
 
   return (
     <>
@@ -326,7 +349,7 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
         }
         description={
           <>
-            {user.email ?? m.users_no_email()} · <span className="font-mono">{user.id}</span> ·{' '}
+            {user.email ?? m.users_no_email()} · {loginTypeLabel(user.login_type)} ·{' '}
             {m.users_limits({ gpus: user.quota.gpus, sandboxes: user.quota.sandboxes })}
             {remove.error && (
               <span className="block text-destructive" role="alert">
@@ -336,23 +359,31 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
           </>
         }
         trailing={
-          <>
-            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
-              <Pencil />
-              {m.common_edit()}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={isSelf || remove.isPending}
-              onClick={() => {
-                if (window.confirm(m.users_delete_confirm({ name: user.name }))) remove.mutate()
-              }}
-            >
-              <Trash />
-              {m.common_delete()}
-            </Button>
-          </>
+          !user.deleted_at && (
+            <>
+              <Button variant="outline" size="sm" onClick={openEditor}>
+                <Pencil />
+                {m.common_edit()}
+              </Button>
+              {isSelf ? (
+                <Button variant="ghost" size="sm" disabled title={m.users_cannot_delete_self()}>
+                  <Trash />
+                  {m.common_delete()}
+                </Button>
+              ) : (
+                <ConfirmButton
+                  size="sm"
+                  title={m.users_delete_confirm({ name: user.name })}
+                  description={m.common_irreversible()}
+                  disabled={remove.isPending}
+                  onConfirm={() => remove.mutate()}
+                >
+                  <Trash />
+                  {m.common_delete()}
+                </ConfirmButton>
+              )}
+            </>
+          )
         }
       />
 
@@ -362,114 +393,128 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
         title={m.users_edit_title({ name: user.name })}
         description={m.users_edit_description()}
       >
-        <div className="flex flex-col gap-5">
-          <div className="flex flex-col gap-3">
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-xs text-muted-foreground">{m.users_login_type()}</span>
-              <select
-                className={selectClass}
-                aria-label={m.users_login_type_for({ name: user.name })}
-                value={loginType}
-                onChange={(e) => setLoginType(e.target.value as LoginType)}
-              >
-                {LOGIN_TYPES.map((type) => (
-                  <option key={type} value={type}>
-                    {loginTypeLabel(type)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                className="size-4 accent-brand"
-                aria-label={m.users_administrator_for({ name: user.name })}
-                checked={isAdmin}
-                onChange={(e) => setIsAdmin(e.target.checked)}
-              />
-              {m.users_admin_label()}
-            </label>
-            <Button
-              className="self-start"
-              variant="outline"
-              size="sm"
-              disabled={update.isPending}
-              onClick={() => update.mutate()}
-            >
-              {m.users_save_login()}
-            </Button>
-          </div>
+        <div className="flex flex-col gap-6">
+          <form
+            id={`edit-user-${user.id}`}
+            className="flex flex-col gap-6"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (quotaValid) save.mutate()
+            }}
+          >
+            <fieldset className="flex flex-col gap-3">
+              <legend className="mb-3 text-sm font-medium">{m.users_section_access()}</legend>
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-xs text-muted-foreground">{m.users_login_type()}</span>
+                <select
+                  className={selectClass}
+                  aria-label={m.users_login_type_for({ name: user.name })}
+                  value={loginType}
+                  onChange={(e) => setLoginType(e.target.value as LoginType)}
+                >
+                  {LOGIN_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {loginTypeLabel(type)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex w-fit items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-brand"
+                  aria-label={m.users_administrator_for({ name: user.name })}
+                  checked={isAdmin}
+                  disabled={isSelf}
+                  onChange={(e) => setIsAdmin(e.target.checked)}
+                />
+                {m.users_admin_label()}
+              </label>
+            </fieldset>
 
-          <div className="flex flex-col gap-3 border-t border-border pt-5">
-            <div className="grid grid-cols-2 gap-3">
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-xs text-muted-foreground">{m.users_gpu_quota()}</span>
-                <Input
-                  type="number"
-                  min="0"
-                  aria-label={m.users_gpu_quota_for({ name: user.name })}
-                  value={gpus}
-                  onChange={(e) => setGpus(e.target.value)}
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-xs text-muted-foreground">{m.users_sandbox_quota()}</span>
-                <Input
-                  type="number"
-                  min="0"
-                  aria-label={m.users_sandbox_quota_for({ name: user.name })}
-                  value={sandboxes}
-                  onChange={(e) => setSandboxes(e.target.value)}
-                />
-              </label>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={
-                  quota.isPending ||
-                  !Number.isFinite(Number(gpus)) ||
-                  !Number.isFinite(Number(sandboxes))
-                }
-                onClick={() => quota.mutate()}
-              >
-                {m.users_set_quota()}
+            <fieldset className="flex flex-col gap-3">
+              <legend className="mb-3 text-sm font-medium">{m.users_section_quota()}</legend>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1.5 text-sm">
+                  <span className="text-xs text-muted-foreground">{m.users_gpu_quota()}</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    aria-label={m.users_gpu_quota_for({ name: user.name })}
+                    value={gpus}
+                    onChange={(e) => setGpus(e.target.value)}
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5 text-sm">
+                  <span className="text-xs text-muted-foreground">{m.users_sandbox_quota()}</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    aria-label={m.users_sandbox_quota_for({ name: user.name })}
+                    value={sandboxes}
+                    onChange={(e) => setSandboxes(e.target.value)}
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            {save.error && (
+              <p className="text-sm text-destructive" role="alert" data-testid="user-row-error">
+                <Problem error={save.error} />
+              </p>
+            )}
+            <div>
+              <Button type="submit" disabled={save.isPending || !quotaValid}>
+                {m.users_save()}
               </Button>
-              <span className="text-xs text-muted-foreground">
-                {m.users_limits({ gpus: user.quota.gpus, sandboxes: user.quota.sandboxes })}
-              </span>
             </div>
-          </div>
+          </form>
 
           {user.login_type === 'password' && (
-            <div className="flex flex-col gap-3 border-t border-border pt-5">
+            <form
+              className="flex flex-col gap-3 border-t border-border pt-6"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (password.length >= 12) reset.mutate()
+              }}
+            >
+              <span className="text-sm font-medium">{m.users_reset_password()}</span>
               <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-xs text-muted-foreground">{m.users_new_password()}</span>
+                <span className="text-xs text-muted-foreground">{m.users_password_label()}</span>
                 <Input
                   type="password"
                   autoComplete="new-password"
                   aria-label={m.users_new_password_for({ name: user.name })}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => {
+                    setPassword(e.target.value)
+                    reset.reset()
+                  }}
                 />
               </label>
-              <Button
-                className="self-start"
-                variant="outline"
-                size="sm"
-                disabled={password.length < 12 || reset.isPending}
-                onClick={() => reset.mutate()}
-              >
-                {m.users_reset_password()}
-              </Button>
-            </div>
-          )}
-
-          {error && (
-            <p className="text-sm text-destructive" role="alert" data-testid="user-row-error">
-              <Problem error={error} />
-            </p>
+              <div className="flex items-center gap-3">
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="sm"
+                  disabled={password.length < 12 || reset.isPending}
+                >
+                  {m.users_reset_password()}
+                </Button>
+                {reset.isSuccess && (
+                  <span className="text-xs text-success" role="status">
+                    {m.users_password_reset_done()}
+                  </span>
+                )}
+              </div>
+              {reset.error && (
+                <p className="text-sm text-destructive" role="alert">
+                  <Problem error={reset.error} />
+                </p>
+              )}
+            </form>
           )}
         </div>
       </Drawer>

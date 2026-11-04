@@ -1,14 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { Trash } from 'lucide-react'
+import { Plus, Trash } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { api, type Workspace } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
+import { ConfirmButton } from '@/components/confirm-button'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { useLocale } from '@/lib/i18n'
 import { causeLabel, conditionLabel, workspaceKindLabel } from '@/lib/labels'
@@ -60,17 +61,31 @@ function WorkspaceDetailPage() {
         }
         title={<span className="font-mono">{id}</span>}
         actions={
-          deletable && (
-            <Button
-              variant="outline"
-              disabled={remove.isPending}
-              onClick={() => {
-                if (window.confirm(m.workspace_delete_confirm({ id }))) remove.mutate()
-              }}
-            >
-              <Trash />
-              {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
-            </Button>
+          current && (
+            <>
+              {current.kind === 'persistent' && current.state === 'ready' && !current.sandbox_id && (
+                <Link
+                  to="/sandboxes/new"
+                  search={{ workspace: id }}
+                  className={buttonVariants({ variant: 'outline' })}
+                >
+                  <Plus />
+                  {m.workspace_new_sandbox()}
+                </Link>
+              )}
+              {deletable && (
+                <ConfirmButton
+                  variant="outline"
+                  title={m.workspace_delete_confirm({ id: id.slice(0, 8) })}
+                  description={m.common_irreversible()}
+                  disabled={remove.isPending}
+                  onConfirm={() => remove.mutate()}
+                >
+                  <Trash />
+                  {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
+                </ConfirmButton>
+              )}
+            </>
           )
         }
       />

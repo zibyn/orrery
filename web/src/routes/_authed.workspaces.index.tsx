@@ -5,7 +5,7 @@ import { useState } from 'react'
 
 import { api, type ListResponse, type Workspace } from '@/api'
 import { EmptyState } from '@/components/empty-state'
-import { ListCard, ListRow, listTitleClass } from '@/components/list'
+import { ListCard, ListRow, rowLinkClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
@@ -95,7 +95,7 @@ function WorkspacesPage() {
                 <Link
                   to="/workspaces/$id"
                   params={{ id: workspace.id }}
-                  className={`${listTitleClass} font-mono hover:underline`}
+                  className={`${rowLinkClass} font-mono`}
                 >
                   {workspace.id}
                 </Link>
@@ -118,7 +118,7 @@ function WorkspacesPage() {
                       <Link
                         to="/sandboxes/$id"
                         params={{ id: workspace.sandbox_id }}
-                        className="font-mono hover:underline"
+                        className="relative font-mono hover:underline"
                       >
                         {workspace.sandbox_id.slice(0, 8)}
                       </Link>

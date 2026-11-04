@@ -18,6 +18,7 @@ test('admin signs in, creates a ready Sandbox and deletes it', async ({ page }) 
   await expect(page.getByTestId('sandbox-state')).toHaveText('ready', { timeout: 240_000 })
 
   await page.getByRole('button', { name: 'Delete' }).click()
+  await page.getByTestId('confirm-action').click()
   await expect(page).toHaveURL(/\/sandboxes$/)
   await expect(page.getByRole('link', { name })).toHaveCount(0, { timeout: 120_000 })
 
@@ -29,12 +30,12 @@ test('the console switches between English and Chinese', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'New Sandbox' })).toBeVisible()
 
   await page.getByRole('group', { name: 'Language' }).getByRole('button', { name: '中文' }).click()
-  await expect(page.getByRole('link', { name: '新建 Sandbox' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '新建沙箱' })).toBeVisible()
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh')
 
   // The stored choice survives a reload.
   await page.reload()
-  await expect(page.getByRole('link', { name: '新建 Sandbox' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '新建沙箱' })).toBeVisible()
 
   await page.getByRole('button', { name: 'English' }).click()
   await expect(page.getByRole('link', { name: 'New Sandbox' })).toBeVisible()

@@ -1,11 +1,12 @@
 import { useForm } from '@tanstack/react-form'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { KeyRound, Plus } from 'lucide-react'
+import { KeyRound, Monitor, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { z } from 'zod'
 
 import { api, type CreatedToken, type ListResponse, type Token, type User } from '@/api'
+import { ConfirmButton } from '@/components/confirm-button'
 import { Field } from '@/components/field'
 import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
@@ -18,7 +19,7 @@ import { Drawer } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { matchesCurrentSession, readCurrentSessionId, forgetCurrentSession } from '@/lib/current-session'
 import { useLocale } from '@/lib/i18n'
-import { kindLabel, messageOf, scopeLabel } from '@/lib/labels'
+import { messageOf, scopeLabel } from '@/lib/labels'
 import { expiresAtFromInput, formatTimestamp, scopeOptions } from '@/lib/tokens'
 import { selectClass } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
@@ -68,12 +69,27 @@ function AccountPage() {
 
   const revokeToken = useMutation({
     mutationFn: (id: string) => api<Token>('DELETE', `/users/me/tokens/${id}`),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
+      if (id === currentId) {
+        forgetCurrentSession()
+        window.location.assign('/login')
+        return
+      }
       setTokenError('')
       void queryClient.invalidateQueries({ queryKey: ['tokens'] })
     },
     onError: (err) => setTokenError(messageOf(err)),
   })
+
+  const apiTokens = (tokens.data?.items ?? []).filter((token) => token.kind === 'token')
+  // The browser in use first, then the most recent sign-ins.
+  const sessions = (tokens.data?.items ?? [])
+    .filter((token) => token.kind === 'session')
+    .sort(
+      (a, b) =>
+        Number(matchesCurrentSession(b, currentId)) - Number(matchesCurrentSession(a, currentId)) ||
+        b.created_at.localeCompare(a.created_at),
+    )
 
   const changePassword = useMutation({
     mutationFn: (body: { old: string; new: string }) =>
@@ -240,63 +256,108 @@ function AccountPage() {
         </form>
       </Drawer>
 
-      <section className="flex flex-col gap-3">
-        <div>
-          <h2 className="text-sm font-semibold tracking-tight">{m.account_my_tokens()}</h2>
-          <p className="text-xs text-muted-foreground">{m.account_my_tokens_description()}</p>
-        </div>
+      {tokens.isPending && <p className="text-sm text-muted-foreground">{m.common_loading()}</p>}
+      {tokens.error && (
+        <p className="text-sm text-destructive" role="alert">
+          {m.account_tokens_load_error()}: <Problem error={tokens.error} />
+        </p>
+      )}
+      {tokenError && !tokenOpen && (
+        <p className="text-sm whitespace-pre-line text-destructive" role="alert">
+          {tokenError}
+        </p>
+      )}
 
-        {tokens.isPending && (
-          <p className="text-sm text-muted-foreground">{m.common_loading()}</p>
-        )}
-        {tokens.error && (
-          <p className="text-sm text-destructive" role="alert">
-            {m.account_tokens_load_error()}: <Problem error={tokens.error} />
-          </p>
-        )}
-        {tokens.data?.items.length === 0 && (
-          <p className="text-sm text-muted-foreground">{m.account_no_tokens()}</p>
-        )}
+      {tokens.data && (
+        <section className="flex flex-col gap-3">
+          <div>
+            <h2 className="text-sm font-semibold tracking-tight">{m.account_tokens()}</h2>
+            <p className="text-xs text-muted-foreground">{m.account_tokens_description()}</p>
+          </div>
+          {apiTokens.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{m.account_no_api_tokens()}</p>
+          ) : (
+            <ListCard>
+              {apiTokens.map((token) => (
+                <ListRow
+                  key={token.id}
+                  icon={<KeyRound />}
+                  title={<span className="truncate text-sm font-medium">{token.name}</span>}
+                  description={m.account_token_meta({
+                    scope: scopeLabel(token.scope),
+                    expires: token.expires_at ? formatTimestamp(token.expires_at) : m.account_never(),
+                    lastUsed: formatTimestamp(token.last_used_at),
+                  })}
+                  trailing={
+                    <ConfirmButton
+                      size="sm"
+                      title={m.token_revoke_title({ name: token.name })}
+                      description={m.token_revoke_description()}
+                      confirmLabel={m.account_revoke()}
+                      disabled={revokeToken.isPending}
+                      onConfirm={() => revokeToken.mutate(token.id)}
+                    >
+                      {m.account_revoke()}
+                    </ConfirmButton>
+                  }
+                />
+              ))}
+            </ListCard>
+          )}
+        </section>
+      )}
 
-        {tokens.data && tokens.data.items.length > 0 && (
+      {tokens.data && sessions.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <div>
+            <h2 className="text-sm font-semibold tracking-tight">{m.account_sessions()}</h2>
+            <p className="text-xs text-muted-foreground">{m.account_sessions_description()}</p>
+          </div>
           <ListCard>
-            {tokens.data.items.map((token) => (
-              <ListRow
-                key={token.id}
-                icon={<KeyRound />}
-                title={
-                  <>
-                    <span className="truncate text-sm font-medium">{token.name}</span>
-                    <Badge variant={token.kind === 'session' ? 'secondary' : 'outline'}>
-                      {kindLabel(token.kind)}
-                    </Badge>
-                    {matchesCurrentSession(token, currentId) && (
-                      <Badge variant="success" data-testid="current-session">
-                        {m.common_current()}
-                      </Badge>
-                    )}
-                  </>
-                }
-                description={m.account_token_meta({
-                  scope: scopeLabel(token.scope),
-                  expires: formatTimestamp(token.expires_at),
-                  lastUsed: formatTimestamp(token.last_used_at),
-                })}
-                trailing={
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={revokeToken.isPending}
-                    onClick={() => revokeToken.mutate(token.id)}
-                  >
-                    {m.account_revoke()}
-                  </Button>
-                }
-              />
-            ))}
+            {sessions.map((session) => {
+              const isCurrent = matchesCurrentSession(session, currentId)
+              return (
+                <ListRow
+                  key={session.id}
+                  icon={<Monitor />}
+                  title={
+                    <>
+                      <span className="truncate text-sm font-medium">
+                        {isCurrent ? m.account_this_browser() : m.account_other_browser()}
+                      </span>
+                      {isCurrent && (
+                        <Badge variant="success" data-testid="current-session">
+                          {m.common_current()}
+                        </Badge>
+                      )}
+                    </>
+                  }
+                  description={m.account_session_meta({
+                    created: formatTimestamp(session.created_at),
+                    expires: session.expires_at ? formatTimestamp(session.expires_at) : m.account_never(),
+                  })}
+                  trailing={
+                    <ConfirmButton
+                      size="sm"
+                      title={m.session_revoke_title()}
+                      description={
+                        isCurrent
+                          ? m.session_revoke_current_description()
+                          : m.session_revoke_description()
+                      }
+                      confirmLabel={m.account_sign_out_session()}
+                      disabled={revokeToken.isPending}
+                      onConfirm={() => revokeToken.mutate(session.id)}
+                    >
+                      {m.account_sign_out_session()}
+                    </ConfirmButton>
+                  }
+                />
+              )
+            })}
           </ListCard>
-        )}
-      </section>
+        </section>
+      )}
 
       {user.login_type === 'password' && (
         <Card>
@@ -306,7 +367,7 @@ function AccountPage() {
           </CardHeader>
           <CardContent>
             <form
-              className="flex flex-wrap items-end gap-3"
+              className="grid items-start gap-4 sm:grid-cols-2"
               onSubmit={(e) => {
                 e.preventDefault()
                 passwordForm.handleSubmit()
@@ -327,7 +388,11 @@ function AccountPage() {
               </passwordForm.Field>
               <passwordForm.Field name="new">
                 {(field) => (
-                  <Field label={m.account_new_password()} htmlFor={field.name}>
+                  <Field
+                    label={m.account_new_password()}
+                    htmlFor={field.name}
+                    hint={m.account_password_hint()}
+                  >
                     <Input
                       id={field.name}
                       type="password"
@@ -338,9 +403,11 @@ function AccountPage() {
                   </Field>
                 )}
               </passwordForm.Field>
-              <Button type="submit" disabled={changePassword.isPending}>
-                {changePassword.isPending ? m.account_changing() : m.account_change_password()}
-              </Button>
+              <div className="sm:col-span-2">
+                <Button type="submit" disabled={changePassword.isPending}>
+                  {changePassword.isPending ? m.account_changing() : m.account_change_password()}
+                </Button>
+              </div>
             </form>
             {passwordError && (
               <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">

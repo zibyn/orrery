@@ -11,6 +11,7 @@ import {
 } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
 import { EmptyState } from '@/components/empty-state'
+import { ConfirmButton } from '@/components/confirm-button'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
@@ -108,16 +109,16 @@ function ResourceDetailPage() {
         actions={
           current &&
           !current.deleted_at && (
-            <Button
+            <ConfirmButton
               variant="outline"
+              title={m.resource_delete_confirm({ name: current.name })}
+              description={m.common_irreversible()}
               disabled={remove.isPending}
-              onClick={() => {
-                if (window.confirm(m.resource_delete_confirm({ name: current.name }))) remove.mutate()
-              }}
+              onConfirm={() => remove.mutate()}
             >
               <Trash />
               {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
-            </Button>
+            </ConfirmButton>
           )
         }
       />
