@@ -14,9 +14,9 @@ export function LocaleSwitch({ className }: { className?: string }) {
   return (
     <ToggleGroup
       aria-label={m.locale_switch_label()}
-      variant="outline"
+      variant="segmented"
       size="sm"
-      spacing={0}
+      spacing={0.5}
       className={className}
       value={[locale]}
       // Pressing the active language again would empty the group; keep it.

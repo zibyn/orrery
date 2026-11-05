@@ -11,6 +11,11 @@ const toggleVariants = cva(
       variant: {
         default: "bg-transparent",
         outline: "border border-input bg-transparent hover:bg-muted",
+        // Project addition (customization.md: add a variant): a segmented
+        // control styled like TabsTrigger, so the pressed item stands out on
+        // tinted surfaces such as the sidebar.
+        segmented:
+          "rounded-md border border-transparent text-foreground/60 hover:bg-transparent hover:text-foreground aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm dark:text-muted-foreground dark:aria-pressed:border-input dark:aria-pressed:bg-input/30",
       },
       size: {
         default:
