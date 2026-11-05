@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/mail"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -385,6 +386,10 @@ func (s *Server) auditAs(ctx context.Context, actorUserID, actorTokenID *uuid.UU
 	if err != nil || string(raw) == "null" {
 		raw = []byte("{}")
 	}
+	// The mutation already committed; a client that disconnected meanwhile
+	// must not cancel its Audit Record. The timeout bounds a stuck database.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	err = s.q.InsertAudit(ctx, store.InsertAuditParams{
 		ActorUserID:   actorUserID,
 		ActorTokenID:  actorTokenID,
