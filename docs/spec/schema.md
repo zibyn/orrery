@@ -6,7 +6,8 @@ PostgreSQL 是权威状态。本文列出表、关键列和约束；迁移 SQL �
 
 - 状态列用 `text` 加 `CHECK`，不用 PG enum。
 - Exec 的状态是从时间戳派生的 generated column（ADR-0015）。
-- 逻辑删除就是 `deleting`/`deleted` 状态加 `deleted_at`；物理清理由 Reconciler 或 purge 完成。
+- 逻辑删除就是 `deleting`/`deleted` 状态加 `deleted_at`；物理清理由 Reconciler 或 purge 完成。两者不是同一事实：Sandbox 的 `deleted_at` 在删除请求时写入并立即释放名字，`state` 要等拆除完成才到 `deleted`。
+- 部分索引的谓词必须与查询的过滤条件逐字一致，规划器才会用它：查"活的行"用 `state <> 'deleted'` 的查询，配 `WHERE state <> 'deleted'` 的索引（迁移 000026），不能指望 `WHERE deleted_at IS NULL` 的索引。
 - 外键一律 `ON DELETE RESTRICT`：只要还有引用，行就删不掉。
 - Idempotency Key 不建通用表。每张可创建资源的表各有一个可空列 `idempotency_key`，对 (owner_id, key) 建部分唯一索引，purge 在 24 小时后把它置空。`PUT /secrets/{name}` 由调用方命名、天然幂等（新建 201、覆盖 200），不参与该规则。
 - 凭据只存哈希（API Token、Session、Node Token、Enrollment Packet）或密文（Secret、Git token、Sandbox Token）。密文旁边带 `key_id`（ADR-0017），加密方式见 `defaults.md` 的 `encryption_keys`。Sandbox Token 存密文的原因见 ADR-0016。
