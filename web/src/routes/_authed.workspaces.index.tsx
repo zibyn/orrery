@@ -4,12 +4,22 @@ import { HardDrive, Plus } from 'lucide-react'
 import { useState } from 'react'
 
 import { api, type ListResponse, type Workspace } from '@/api'
-import { EmptyState } from '@/components/empty-state'
-import { ListCard, ListRow, rowLinkClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { causeLabel, workspaceKindLabel } from '@/lib/labels'
 import { workspacesPollInterval } from '@/lib/resources'
@@ -56,80 +66,86 @@ function WorkspacesPage() {
         }
         actions={
           <Button disabled={create.isPending} onClick={() => create.mutate()}>
-            <Plus />
+            <Plus data-icon="inline-start" />
             {m.workspaces_new()}
           </Button>
         }
       />
 
       {create.error && (
-        <p className="text-sm text-destructive" role="alert">
-          <Problem error={create.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            <Problem error={create.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {workspaces.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.common_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.common_loading()}
+        </div>
       )}
       {workspaces.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.workspaces_load_error()}: <Problem error={workspaces.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.workspaces_load_error()}: <Problem error={workspaces.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {workspaces.data?.items.length === 0 && (
-        <EmptyState
-          icon={<HardDrive />}
-          title={m.workspaces_empty_title()}
-          description={m.workspaces_empty_description()}
-        />
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <HardDrive />
+            </EmptyMedia>
+            <EmptyTitle>{m.workspaces_empty_title()}</EmptyTitle>
+            <EmptyDescription>{m.workspaces_empty_description()}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
 
       {workspaces.data && workspaces.data.items.length > 0 && (
-        <ListCard>
+        <ItemGroup>
           {workspaces.data.items.map((workspace) => (
-            <ListRow
-              key={workspace.id}
-              data-testid={`workspace-${workspace.id}`}
-              icon={<HardDrive />}
-              title={
-                <Link
-                  to="/workspaces/$id"
-                  params={{ id: workspace.id }}
-                  className={`${rowLinkClass} font-mono`}
-                >
-                  {workspace.id}
-                </Link>
-              }
-              description={
-                <>
-                  {workspaceKindLabel(workspace.kind)} ·{' '}
-                  {m.common_created({ time: formatTimestamp(workspace.created_at) })}
-                  {workspace.cause && <> · {causeLabel(workspace.cause)}</>}
-                  {workspace.node_id && (
-                    <>
-                      {' '}
-                      · {m.sandbox_node()} <span className="font-mono">{workspace.node_id.slice(0, 8)}</span>
-                    </>
-                  )}
-                  {workspace.sandbox_id && (
-                    <>
-                      {' '}
-                      · {m.workspace_sandbox()}{' '}
-                      <Link
-                        to="/sandboxes/$id"
-                        params={{ id: workspace.sandbox_id }}
-                        className="relative font-mono hover:underline"
-                      >
-                        {workspace.sandbox_id.slice(0, 8)}
-                      </Link>
-                    </>
-                  )}
-                </>
-              }
-              trailing={<StatusBadge state={workspace.state} />}
-            />
+            // The row itself is the link, so the listitem role goes on a wrapper.
+            <div key={workspace.id} role="listitem">
+              <Item
+                variant="outline"
+                data-testid={`workspace-${workspace.id}`}
+                render={<Link to="/workspaces/$id" params={{ id: workspace.id }} />}
+              >
+                <ItemMedia variant="icon">
+                  <HardDrive />
+                </ItemMedia>
+                <ItemContent>
+                  <ItemTitle className="font-mono">{workspace.id}</ItemTitle>
+                  <ItemDescription>
+                    {workspaceKindLabel(workspace.kind)} ·{' '}
+                    {m.common_created({ time: formatTimestamp(workspace.created_at) })}
+                    {workspace.cause && <> · {causeLabel(workspace.cause)}</>}
+                    {workspace.node_id && (
+                      <>
+                        {' '}
+                        · {m.sandbox_node()} <span className="font-mono">{workspace.node_id.slice(0, 8)}</span>
+                      </>
+                    )}
+                    {workspace.sandbox_id && (
+                      <>
+                        {' '}
+                        · {m.workspace_sandbox()}{' '}
+                        <span className="font-mono">{workspace.sandbox_id.slice(0, 8)}</span>
+                      </>
+                    )}
+                  </ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                  <StatusBadge state={workspace.state} />
+                </ItemActions>
+              </Item>
+            </div>
           ))}
-        </ListCard>
+        </ItemGroup>
       )}
     </div>
   )

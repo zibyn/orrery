@@ -1,16 +1,44 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { GitBranch, Link2, Unlink } from 'lucide-react'
+import { useState } from 'react'
 
 import { api, type GitLink, type GitProvider, type ListResponse } from '@/api'
-import { EmptyState } from '@/components/empty-state'
-import { ConfirmButton } from '@/components/confirm-button'
-import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
-import { buttonVariants } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 // The console lists the deployment's Git providers and lets the caller link or
@@ -21,6 +49,8 @@ export const Route = createFileRoute('/_authed/git')({
 })
 
 function GitPage() {
+  // The provider whose unlink is being confirmed.
+  const [confirming, setConfirming] = useState<string | null>(null)
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const queryClient = useQueryClient()
   const providers = useQuery({
@@ -44,69 +74,100 @@ function GitPage() {
       <PageHeader title={m.git_title()} description={m.git_description()} />
 
       {(providers.isPending || links.isPending) && (
-        <p className="py-8 text-sm text-muted-foreground">{m.git_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.git_loading()}
+        </div>
       )}
       {(providers.error ?? links.error) && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.git_load_error()}: <Problem error={providers.error ?? links.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.git_load_error()}: <Problem error={providers.error ?? links.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {unlink.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.git_unlink_error()}: <Problem error={unlink.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.git_unlink_error()}: <Problem error={unlink.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {providers.data?.items.length === 0 && (
-        <EmptyState
-          icon={<GitBranch />}
-          title={m.git_empty_title()}
-          description={m.git_empty_description()}
-        />
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <GitBranch />
+            </EmptyMedia>
+            <EmptyTitle>{m.git_empty_title()}</EmptyTitle>
+            <EmptyDescription>{m.git_empty_description()}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
 
       {providers.data && providers.data.items.length > 0 && (
-        <ListCard>
+        <ItemGroup className="gap-2">
           {providers.data.items.map((provider) => (
-            <ListRow
-              key={provider.id}
-              icon={<GitBranch />}
-              title={<span className="truncate text-sm font-medium">{provider.id}</span>}
-              description={
-                <>
+            <Item key={provider.id} variant="outline" role="listitem">
+              <ItemMedia variant="icon">
+                <GitBranch />
+              </ItemMedia>
+              <ItemContent>
+                <ItemTitle>{provider.id}</ItemTitle>
+                <ItemDescription>
                   {provider.type} · {provider.host}
-                </>
-              }
-              trailing={
-                linked.has(provider.id) ? (
+                </ItemDescription>
+              </ItemContent>
+              <ItemActions>
+                {linked.has(provider.id) ? (
                   <>
                     <Badge variant="success">{m.git_linked()}</Badge>
-                    <ConfirmButton
-                      variant="outline"
-                      size="sm"
-                      title={m.git_unlink_title({ provider: provider.id })}
-                      description={m.git_unlink_description({ provider: provider.host })}
-                      confirmLabel={m.git_unlink()}
-                      disabled={unlink.isPending}
-                      onConfirm={() => unlink.mutate(provider.id)}
-                    >
-                      <Unlink />
-                      {m.git_unlink()}
-                    </ConfirmButton>
+                    <AlertDialog open={confirming === provider.id} onOpenChange={(next) => setConfirming(next ? provider.id : null)}>
+                      <AlertDialogTrigger
+                        render={<Button variant="outline" size="sm" disabled={unlink.isPending} />}
+                      >
+                        <Unlink data-icon="inline-start" />
+                        {m.git_unlink()}
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>
+                            {m.git_unlink_title({ provider: provider.id })}
+                          </AlertDialogTitle>
+                          <AlertDialogDescription>
+                            {m.git_unlink_description({ provider: provider.host })}
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                          <AlertDialogAction
+                            variant="destructive"
+                            data-testid="confirm-action"
+                            onClick={() => {
+                              setConfirming(null)
+                              unlink.mutate(provider.id)
+                            }}
+                          >
+                            {m.git_unlink()}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </>
                 ) : (
                   <a
-                    className={buttonVariants({ size: 'sm' })}
                     href={`/api/v1/git-providers/${encodeURIComponent(provider.id)}/authorize`}
+                    className={cn(buttonVariants({ size: 'sm' }))}
                   >
-                    <Link2 />
+                    <Link2 data-icon="inline-start" />
                     {m.git_link()}
                   </a>
-                )
-              }
-            />
+                )}
+              </ItemActions>
+            </Item>
           ))}
-        </ListCard>
+        </ItemGroup>
       )}
     </div>
   )

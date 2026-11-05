@@ -1,8 +1,8 @@
 import { locales, type Locale } from '@/paraglide/runtime'
 import { m } from '@/paraglide/messages'
 
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useLocale } from '@/lib/i18n'
-import { cn } from '@/lib/utils'
 
 const LABELS: Record<Locale, string> = { en: 'English', zh: '中文' }
 
@@ -12,30 +12,21 @@ export function LocaleSwitch({ className }: { className?: string }) {
   const { locale, setLocale } = useLocale()
 
   return (
-    <div
-      role="group"
+    <ToggleGroup
       aria-label={m.locale_switch_label()}
-      className={cn(
-        'inline-flex items-center gap-0.5 rounded-md border border-border bg-muted/40 p-0.5',
-        className,
-      )}
+      variant="outline"
+      size="sm"
+      spacing={0}
+      className={className}
+      value={[locale]}
+      // Pressing the active language again would empty the group; keep it.
+      onValueChange={(value) => value[0] && setLocale(value[0] as Locale)}
     >
       {locales.map((item) => (
-        <button
-          key={item}
-          type="button"
-          aria-pressed={item === locale}
-          onClick={() => setLocale(item)}
-          className={cn(
-            'rounded px-2 py-1 text-[11px] font-medium transition-colors',
-            item === locale
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
+        <ToggleGroupItem key={item} value={item}>
           {LABELS[item]}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   )
 }

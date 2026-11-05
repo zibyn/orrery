@@ -1,13 +1,20 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 
 import { api, type Snapshot, type SnapshotVersion } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
 import { PageHeader } from '@/components/page-header'
 import { SnapshotVersionForm } from '@/components/snapshot-version-form'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { useLocale } from '@/lib/i18n'
 import { buildSnapshotVersionBody, formFieldsFromRequest } from '@/lib/snapshot-form'
 import { m } from '@/paraglide/messages'
@@ -31,9 +38,17 @@ function NewSnapshotPage() {
     <div className="flex max-w-3xl flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs
-            items={[{ label: m.nav_snapshots(), to: '/snapshots' }, { label: m.snapshots_new() }]}
-          />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/snapshots" />}>{m.nav_snapshots()}</BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{m.snapshots_new()}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={m.snapshots_new()}
         description={m.snapshots_new_description()}
@@ -41,8 +56,8 @@ function NewSnapshotPage() {
       <SnapshotVersionForm
         initial={formFieldsFromRequest(undefined)}
         above={
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="snapshot-name">{m.common_name()}</Label>
+          <Field>
+            <FieldLabel htmlFor="snapshot-name">{m.common_name()}</FieldLabel>
             <Input
               id="snapshot-name"
               value={created?.name ?? name}
@@ -50,7 +65,7 @@ function NewSnapshotPage() {
               onChange={(e) => setName(e.target.value)}
               autoComplete="off"
             />
-          </div>
+          </Field>
         }
         onCancel={() => navigate({ to: '/snapshots' })}
         onSubmit={async (values) => {

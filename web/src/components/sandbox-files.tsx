@@ -6,11 +6,30 @@ import { useRef, useState } from 'react'
 import { api, apiRaw, type FileEntry, type ResourceVersion } from '@/api'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Drawer } from '@/components/ui/drawer'
+import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+import { Spinner } from '@/components/ui/spinner'
 import {
   downloadHref,
   fileContentPath,
@@ -22,6 +41,7 @@ import {
 import { causeLabel, messageOf } from '@/lib/labels'
 import { resourceVersionPollInterval } from '@/lib/resources'
 import { formatLocalDateTime } from '@/lib/tokens'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export function SandboxFiles({
@@ -83,7 +103,7 @@ export function SandboxFiles({
               data-testid="files-publish-dir"
               onClick={() => startPublish(path, path.split('/').pop() ?? '')}
             >
-              <PackagePlus />
+              <PackagePlus data-icon="inline-start" />
               {m.files_publish_dir()}
             </Button>
           )}
@@ -106,7 +126,7 @@ export function SandboxFiles({
             disabled={upload.isPending}
             onClick={() => inputRef.current?.click()}
           >
-            <Upload />
+            <Upload data-icon="inline-start" />
             {upload.isPending ? m.files_uploading() : m.files_upload()}
           </Button>
         </div>
@@ -119,42 +139,75 @@ export function SandboxFiles({
             disabled={!path}
             onClick={() => setPath(parentPath(path))}
           >
-            <ArrowUp />
+            <ArrowUp data-icon="inline-start" />
             {m.files_up()}
           </Button>
           <span className="truncate font-mono text-xs text-muted-foreground">/{path}</span>
         </div>
 
         {listing.isPending && (
-          <p className="text-muted-foreground">{m.common_loading()}</p>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
+            {m.common_loading()}
+          </div>
         )}
         {listing.error && (
-          <p className="text-destructive" role="alert">
-            <Problem error={listing.error} />
-          </p>
+          <Alert variant="destructive">
+            <AlertDescription>
+              <Problem error={listing.error} />
+            </AlertDescription>
+          </Alert>
         )}
         {uploadError && (
-          <p className="whitespace-pre-line text-destructive" role="alert">
-            {uploadError}
-          </p>
+          <Alert variant="destructive">
+            <AlertDescription className="whitespace-pre-line">{uploadError}</AlertDescription>
+          </Alert>
         )}
 
         {publish.error && (
-          <p className="text-destructive" role="alert">
-            <Problem error={publish.error} />
-          </p>
+          <Alert variant="destructive">
+            <AlertDescription>
+              <Problem error={publish.error} />
+            </AlertDescription>
+          </Alert>
         )}
         {publish.data && publish.variables && (
           <PublishStatus version={publish.data} name={publish.variables.resource} />
         )}
 
-        <Drawer
-          open={publishing !== null}
-          onOpenChange={(open) => !open && setPublishing(null)}
-          title={m.files_publish_title()}
-          description={m.files_publish_description({ path: `/${publishing?.target ?? ''}` })}
-          footer={
-            <>
+        <Sheet open={publishing !== null} onOpenChange={(open) => !open && setPublishing(null)}>
+          <SheetContent>
+            <SheetHeader>
+              <SheetTitle>{m.files_publish_title()}</SheetTitle>
+              <SheetDescription>
+                {m.files_publish_description({ path: `/${publishing?.target ?? ''}` })}
+              </SheetDescription>
+            </SheetHeader>
+            <form
+              id="publish-form"
+              className="flex-1 overflow-y-auto px-4"
+              onSubmit={(event) => {
+                event.preventDefault()
+                const resource = publishing?.resource.trim()
+                if (!publishing || !resource) return
+                publish.mutate({ target: publishing.target, resource })
+                setPublishing(null)
+              }}
+            >
+              <Field>
+                <FieldLabel htmlFor="publish-resource">{m.files_publish_name()}</FieldLabel>
+                <Input
+                  id="publish-resource"
+                  autoFocus
+                  autoComplete="off"
+                  value={publishing?.resource ?? ''}
+                  onChange={(event) =>
+                    setPublishing((current) => current && { ...current, resource: event.target.value })
+                  }
+                />
+              </Field>
+            </form>
+            <SheetFooter className="flex-row justify-end">
               <Button type="button" variant="ghost" onClick={() => setPublishing(null)}>
                 {m.common_cancel()}
               </Button>
@@ -163,43 +216,22 @@ export function SandboxFiles({
                 form="publish-form"
                 disabled={!publishing?.resource.trim() || publish.isPending}
               >
-                <PackagePlus />
+                <PackagePlus data-icon="inline-start" />
                 {m.files_publish()}
               </Button>
-            </>
-          }
-        >
-          <form
-            id="publish-form"
-            className="flex flex-col gap-1.5"
-            onSubmit={(event) => {
-              event.preventDefault()
-              const resource = publishing?.resource.trim()
-              if (!publishing || !resource) return
-              publish.mutate({ target: publishing.target, resource })
-              setPublishing(null)
-            }}
-          >
-            <Label htmlFor="publish-resource">{m.files_publish_name()}</Label>
-            <Input
-              id="publish-resource"
-              autoFocus
-              autoComplete="off"
-              value={publishing?.resource ?? ''}
-              onChange={(event) =>
-                setPublishing((current) => current && { ...current, resource: event.target.value })
-              }
-            />
-          </form>
-        </Drawer>
+            </SheetFooter>
+          </SheetContent>
+        </Sheet>
 
-        {listing.data && (
-          <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
-            {listing.data.items.length === 0 && (
-              <li className="px-3 py-6 text-center text-xs text-muted-foreground">
-                {m.files_empty()}
-              </li>
-            )}
+        {listing.data?.items.length === 0 && (
+          <Empty className="border py-6">
+            <EmptyHeader>
+              <EmptyDescription>{m.files_empty()}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+        {listing.data && listing.data.items.length > 0 && (
+          <ItemGroup className="gap-1">
             {listing.data.items.map((entry) => {
               const entryPath = entry.path || joinPath(path, entry.name)
               // Only files have a content download; directories are archived,
@@ -211,59 +243,63 @@ export function SandboxFiles({
                     ? downloadHref('dir', sandboxId, entryPath)
                     : null
               return (
-                <li
+                <Item
                   key={entryPath}
-                  className="flex min-w-0 items-center gap-2.5 px-3 py-2"
+                  role="listitem"
+                  variant="outline"
+                  size="sm"
                   data-testid={`file-${entry.name}`}
                 >
-                  {entry.type === 'dir' ? (
-                    <Folder className="size-4 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <File className="size-4 shrink-0 text-muted-foreground" />
-                  )}
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    {entry.type === 'dir' ? (
-                      <button
-                        type="button"
-                        className="self-start truncate text-left text-sm font-medium hover:underline"
-                        onClick={() => setPath(entryPath)}
-                      >
-                        {entry.name}/
-                      </button>
-                    ) : (
-                      <span className="truncate text-sm font-medium">{entry.name}</span>
-                    )}
-                    <span className="text-xs text-muted-foreground">
+                  <ItemMedia variant="icon" className="text-muted-foreground">
+                    {entry.type === 'dir' ? <Folder /> : <File />}
+                  </ItemMedia>
+                  <ItemContent className="min-w-0">
+                    <ItemTitle>
+                      {entry.type === 'dir' ? (
+                        <button
+                          type="button"
+                          className="truncate text-left hover:underline"
+                          onClick={() => setPath(entryPath)}
+                        >
+                          {entry.name}/
+                        </button>
+                      ) : (
+                        <span className="truncate">{entry.name}</span>
+                      )}
+                    </ItemTitle>
+                    <ItemDescription className="text-xs">
                       {entry.type === 'dir' ? m.files_directory() : formatBytes(entry.size)} ·{' '}
                       {formatLocalDateTime(entry.mod_time)}
-                    </span>
-                  </div>
-                  {workspaceId && (entry.type === 'file' || entry.type === 'dir') && (
-                    <button
-                      type="button"
-                      disabled={publish.isPending}
-                      data-testid={`file-publish-${entry.name}`}
-                      onClick={() => startPublish(entryPath, entry.name)}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-                    >
-                      <PackagePlus className="size-3.5" />
-                      {m.files_publish()}
-                    </button>
-                  )}
-                  {href && (
-                    <a
-                      href={href}
-                      download={entry.name}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                    >
-                      <Download className="size-3.5" />
-                      {m.files_download()}
-                    </a>
-                  )}
-                </li>
+                    </ItemDescription>
+                  </ItemContent>
+                  <ItemActions>
+                    {workspaceId && (entry.type === 'file' || entry.type === 'dir') && (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        disabled={publish.isPending}
+                        data-testid={`file-publish-${entry.name}`}
+                        onClick={() => startPublish(entryPath, entry.name)}
+                      >
+                        <PackagePlus data-icon="inline-start" />
+                        {m.files_publish()}
+                      </Button>
+                    )}
+                    {href && (
+                      <a
+                        href={href}
+                        download={entry.name}
+                        className={cn(buttonVariants({ variant: 'ghost', size: 'xs' }))}
+                      >
+                        <Download data-icon="inline-start" />
+                        {m.files_download()}
+                      </a>
+                    )}
+                  </ItemActions>
+                </Item>
               )
             })}
-          </ul>
+          </ItemGroup>
         )}
       </CardContent>
     </Card>

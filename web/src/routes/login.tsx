@@ -7,12 +7,20 @@ import { api, ApiError, type Token } from '@/api'
 import { LocaleSwitch } from '@/components/locale-switch'
 import { Logo } from '@/components/logo'
 import { Button, buttonVariants } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Field,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldSeparator,
+} from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { rememberCurrentSession } from '@/lib/current-session'
 import { useLocale } from '@/lib/i18n'
 import { messageOf } from '@/lib/labels'
 import { safeReturn } from '@/lib/return-path'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 const loginSchema = z.object({
@@ -74,71 +82,70 @@ function LoginPage() {
       <div className="relative w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
           <Logo />
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <h1 className="text-lg font-semibold tracking-tight">Orrery</h1>
             <p className="text-sm text-muted-foreground">{m.login_subtitle()}</p>
           </div>
         </div>
 
-        <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
-          <form
-            className="flex flex-col gap-4"
-            onSubmit={(e) => {
-              e.preventDefault()
-              form.handleSubmit()
-            }}
-          >
-            <form.Field name="username">
-              {(field) => (
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor={field.name}>{m.login_username()}</Label>
-                  <Input
-                    id={field.name}
-                    value={field.state.value}
-                    onChange={(e) => field.handleChange(e.target.value)}
-                    autoComplete="username"
-                    autoFocus
-                  />
-                </div>
-              )}
-            </form.Field>
-            <form.Field name="password">
-              {(field) => (
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor={field.name}>{m.login_password()}</Label>
-                  <Input
-                    id={field.name}
-                    type="password"
-                    value={field.state.value}
-                    onChange={(e) => field.handleChange(e.target.value)}
-                    autoComplete="current-password"
-                  />
-                </div>
-              )}
-            </form.Field>
-            {error && (
-              <p className="text-sm whitespace-pre-line text-destructive" role="alert">
-                {error}
-              </p>
-            )}
-            <Button type="submit" className="w-full" disabled={form.state.isSubmitting}>
-              {m.login_sign_in()}
-            </Button>
-          </form>
-
-          <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
-            <span className="h-px flex-1 bg-border" />
-            {m.login_or()}
-            <span className="h-px flex-1 bg-border" />
-          </div>
-
-          <a
-            href={`/api/v1/oidc/login?return=${encodeURIComponent(safeReturn(returnTo))}`}
-            className={buttonVariants({ variant: 'outline', className: 'w-full' })}
-          >
-            {m.login_sso()}
-          </a>
-        </div>
+        <Card>
+          <CardContent>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                form.handleSubmit()
+              }}
+            >
+              <FieldGroup>
+                <form.Field name="username">
+                  {(field) => (
+                    <Field>
+                      <FieldLabel htmlFor={field.name}>{m.login_username()}</FieldLabel>
+                      <Input
+                        id={field.name}
+                        value={field.state.value}
+                        onChange={(e) => field.handleChange(e.target.value)}
+                        autoComplete="username"
+                        autoFocus
+                      />
+                    </Field>
+                  )}
+                </form.Field>
+                <form.Field name="password">
+                  {(field) => (
+                    <Field>
+                      <FieldLabel htmlFor={field.name}>{m.login_password()}</FieldLabel>
+                      <Input
+                        id={field.name}
+                        type="password"
+                        value={field.state.value}
+                        onChange={(e) => field.handleChange(e.target.value)}
+                        autoComplete="current-password"
+                      />
+                    </Field>
+                  )}
+                </form.Field>
+                <FieldError className="whitespace-pre-line">{error}</FieldError>
+                <Field>
+                  <Button type="submit" disabled={form.state.isSubmitting}>
+                    {m.login_sign_in()}
+                  </Button>
+                </Field>
+                <FieldSeparator className="*:data-[slot=field-separator-content]:bg-card">
+                  {m.login_or()}
+                </FieldSeparator>
+                <Field>
+                  <a
+                    href={`/api/v1/oidc/login?return=${encodeURIComponent(safeReturn(returnTo))}`}
+                    className={cn(buttonVariants({ variant: 'outline' }))}
+                  >
+                    {m.login_sso()}
+                  </a>
+                </Field>
+              </FieldGroup>
+            </form>
+          </CardContent>
+        </Card>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">{m.login_tagline()}</p>
       </div>

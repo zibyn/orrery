@@ -1,18 +1,37 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Play, ScrollText, Square, Terminal, Trash } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 
 import { api, type ListResponse, type Sandbox, type Snapshot } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
-import { ConfirmButton } from '@/components/confirm-button'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { SandboxFiles } from '@/components/sandbox-files'
 import { SandboxPorts } from '@/components/sandbox-ports'
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import {
   causeLabel,
@@ -24,6 +43,7 @@ import {
 import { sandboxPollInterval } from '@/lib/sandbox'
 import { snapshotForRef } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/$id')({
@@ -40,6 +60,7 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function SandboxDetailPage() {
+  const [confirmOpen, setConfirmOpen] = useState(false)
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { id } = Route.useParams()
   const navigate = useNavigate()
@@ -79,12 +100,17 @@ function SandboxDetailPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs
-            items={[
-              { label: m.nav_sandboxes(), to: '/sandboxes' },
-              { label: current?.name ?? id },
-            ]}
-          />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/sandboxes" />}>{m.nav_sandboxes()}</BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{current?.name ?? id}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={current?.name ?? id}
         meta={
@@ -105,23 +131,23 @@ function SandboxDetailPage() {
               <Link
                 to="/sandboxes/$id/execs"
                 params={{ id }}
-                className={buttonVariants({ variant: 'outline' })}
+                className={cn(buttonVariants({ variant: 'outline' }))}
               >
-                <ScrollText />
+                <ScrollText data-icon="inline-start" />
                 {m.sandbox_execs()}
               </Link>
               {current.state === 'ready' ? (
                 <Link
                   to="/sandboxes/$id/terminal"
                   params={{ id }}
-                  className={buttonVariants({ variant: 'outline' })}
+                  className={cn(buttonVariants({ variant: 'outline' }))}
                 >
-                  <Terminal />
+                  <Terminal data-icon="inline-start" />
                   {m.sandbox_terminal()}
                 </Link>
               ) : (
                 <Button variant="outline" disabled title={m.sandbox_terminal_not_ready()}>
-                  <Terminal />
+                  <Terminal data-icon="inline-start" />
                   {m.sandbox_terminal()}
                 </Button>
               )}
@@ -131,7 +157,7 @@ function SandboxDetailPage() {
                   disabled={action.isPending || remove.isPending}
                   onClick={() => action.mutate('start')}
                 >
-                  <Play />
+                  <Play data-icon="inline-start" />
                   {m.sandbox_start()}
                 </Button>
               ) : (
@@ -140,32 +166,54 @@ function SandboxDetailPage() {
                   disabled={busy || action.isPending || remove.isPending}
                   onClick={() => action.mutate('stop')}
                 >
-                  <Square />
+                  <Square data-icon="inline-start" />
                   {m.sandbox_stop()}
                 </Button>
               )}
-              <ConfirmButton
-                variant="destructive"
-                title={m.sandbox_delete_title({ name: current.name })}
-                description={m.sandbox_delete_description()}
-                disabled={busy || remove.isPending}
-                onConfirm={() => remove.mutate()}
-              >
-                <Trash />
-                {m.sandbox_delete()}
-              </ConfirmButton>
+              <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+                <AlertDialogTrigger
+                  render={<Button variant="destructive" disabled={busy || remove.isPending} />}
+                >
+                  <Trash data-icon="inline-start" />
+                  {m.sandbox_delete()}
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>{m.sandbox_delete_title({ name: current.name })}</AlertDialogTitle>
+                    <AlertDialogDescription>{m.sandbox_delete_description()}</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                    <AlertDialogAction
+                      variant="destructive"
+                      data-testid="confirm-action"
+                      onClick={() => {
+                        setConfirmOpen(false)
+                        remove.mutate()
+                      }}
+                    >
+                      {m.common_delete()}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </>
           ) : undefined
         }
       />
 
       {sandbox.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.sandbox_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.sandbox_loading()}
+        </div>
       )}
       {error && (
-        <p className="text-sm text-destructive" role="alert">
-          <Problem error={error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            <Problem error={error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {current && (

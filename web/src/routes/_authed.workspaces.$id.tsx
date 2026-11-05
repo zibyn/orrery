@@ -1,20 +1,40 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Plus, Trash } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 
 import { api, type Workspace } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
-import { ConfirmButton } from '@/components/confirm-button'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { buttonVariants } from '@/components/ui/button'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { causeLabel, conditionLabel, workspaceKindLabel } from '@/lib/labels'
 import { workspacePollInterval } from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/workspaces/$id')({
@@ -31,6 +51,7 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function WorkspaceDetailPage() {
+  const [confirmOpen, setConfirmOpen] = useState(false)
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { id } = Route.useParams()
   const navigate = useNavigate()
@@ -57,7 +78,17 @@ function WorkspaceDetailPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs items={[{ label: m.nav_workspaces(), to: '/workspaces' }, { label: id }]} />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/workspaces" />}>{m.nav_workspaces()}</BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{id}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={<span className="font-mono">{id}</span>}
         actions={
@@ -67,23 +98,40 @@ function WorkspaceDetailPage() {
                 <Link
                   to="/sandboxes/new"
                   search={{ workspace: id }}
-                  className={buttonVariants({ variant: 'outline' })}
+                  className={cn(buttonVariants({ variant: 'outline' }))}
                 >
-                  <Plus />
+                  <Plus data-icon="inline-start" />
                   {m.workspace_new_sandbox()}
                 </Link>
               )}
               {deletable && (
-                <ConfirmButton
-                  variant="outline"
-                  title={m.workspace_delete_confirm({ id: id.slice(0, 8) })}
-                  description={m.common_irreversible()}
-                  disabled={remove.isPending}
-                  onConfirm={() => remove.mutate()}
-                >
-                  <Trash />
-                  {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
-                </ConfirmButton>
+                <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+                  <AlertDialogTrigger render={<Button variant="outline" disabled={remove.isPending} />}>
+                    <Trash data-icon="inline-start" />
+                    {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        {m.workspace_delete_confirm({ id: id.slice(0, 8) })}
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>{m.common_irreversible()}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                      <AlertDialogAction
+                        variant="destructive"
+                        data-testid="confirm-action"
+                        onClick={() => {
+                          setConfirmOpen(false)
+                          remove.mutate()
+                        }}
+                      >
+                        {m.common_delete()}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               )}
             </>
           )
@@ -91,17 +139,24 @@ function WorkspaceDetailPage() {
       />
 
       {remove.error && (
-        <p className="text-sm text-destructive" role="alert">
-          <Problem error={remove.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            <Problem error={remove.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {workspace.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.common_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.common_loading()}
+        </div>
       )}
       {workspace.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.workspace_load_error()}: <Problem error={workspace.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.workspace_load_error()}: <Problem error={workspace.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {current && (

@@ -6,22 +6,49 @@ import { useState } from 'react'
 import { z } from 'zod'
 
 import { api, type CreatedToken, type ListResponse, type Token, type User } from '@/api'
-import { ConfirmButton } from '@/components/confirm-button'
-import { Field } from '@/components/field'
-import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { TokenReveal } from '@/components/token-reveal'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Drawer } from '@/components/ui/drawer'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+import { Spinner } from '@/components/ui/spinner'
 import { matchesCurrentSession, readCurrentSessionId, forgetCurrentSession } from '@/lib/current-session'
 import { useLocale } from '@/lib/i18n'
 import { messageOf, scopeLabel } from '@/lib/labels'
 import { expiresAtFromInput, formatTimestamp, scopeOptions } from '@/lib/tokens'
-import { selectClass } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 const tokenSchema = z.object({
@@ -56,6 +83,8 @@ function AccountPage() {
   const [tokenOpen, setTokenOpen] = useState(false)
   const [tokenError, setTokenError] = useState('')
   const [passwordError, setPasswordError] = useState('')
+  // The token or session whose revoke is being confirmed.
+  const [confirming, setConfirming] = useState<string | null>(null)
 
   const tokens = useQuery({
     queryKey: ['tokens'],
@@ -162,7 +191,7 @@ function AccountPage() {
               setTokenOpen(true)
             }}
           >
-            <Plus />
+            <Plus data-icon="inline-start" />
             {m.account_create_token()}
           </Button>
         }
@@ -180,92 +209,99 @@ function AccountPage() {
         </Card>
       )}
 
-      <Drawer
-        open={tokenOpen}
-        onOpenChange={setTokenOpen}
-        title={m.account_create_token()}
-        description={m.account_create_token_description()}
-        footer={
-          <>
-            <Button type="button" variant="ghost" onClick={() => setTokenOpen(false)}>
-              {m.common_cancel()}
-            </Button>
+      <Sheet open={tokenOpen} onOpenChange={setTokenOpen}>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>{m.account_create_token()}</SheetTitle>
+            <SheetDescription>{m.account_create_token_description()}</SheetDescription>
+          </SheetHeader>
+          <form
+            id="create-token-form"
+            className="flex-1 overflow-y-auto px-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              createForm.handleSubmit()
+            }}
+          >
+            <FieldGroup>
+              <createForm.Field name="name">
+                {(field) => (
+                  <Field>
+                    <FieldLabel htmlFor={field.name}>{m.common_name()}</FieldLabel>
+                    <Input
+                      id={field.name}
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value)}
+                      placeholder="laptop-cli"
+                      autoComplete="off"
+                    />
+                  </Field>
+                )}
+              </createForm.Field>
+              <createForm.Field name="scope">
+                {(field) => (
+                  <Field>
+                    <FieldLabel htmlFor={field.name}>{m.account_scope()}</FieldLabel>
+                    <NativeSelect
+                      id={field.name}
+                      className="w-full"
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value as NewToken['scope'])}
+                    >
+                      {scopeOptions.map((scope) => (
+                        <NativeSelectOption key={scope} value={scope}>
+                          {scopeLabel(scope)}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </Field>
+                )}
+              </createForm.Field>
+              <createForm.Field name="expires_at">
+                {(field) => (
+                  <Field>
+                    <FieldLabel htmlFor={field.name}>{m.account_expires()}</FieldLabel>
+                    <Input
+                      id={field.name}
+                      type="datetime-local"
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value)}
+                    />
+                  </Field>
+                )}
+              </createForm.Field>
+              <FieldError className="whitespace-pre-line">{tokenError}</FieldError>
+            </FieldGroup>
+          </form>
+          <SheetFooter>
             <Button type="submit" form="create-token-form" disabled={createToken.isPending}>
-              <Plus />
+              <Plus data-icon="inline-start" />
               {createToken.isPending ? m.account_creating() : m.common_create()}
             </Button>
-          </>
-        }
-      >
-        <form
-          id="create-token-form"
-          className="flex flex-col gap-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            createForm.handleSubmit()
-          }}
-        >
-          <createForm.Field name="name">
-            {(field) => (
-              <Field label={m.common_name()} htmlFor={field.name}>
-                <Input
-                  id={field.name}
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value)}
-                  placeholder="laptop-cli"
-                  autoComplete="off"
-                />
-              </Field>
-            )}
-          </createForm.Field>
-          <createForm.Field name="scope">
-            {(field) => (
-              <Field label={m.account_scope()} htmlFor={field.name}>
-                <select
-                  id={field.name}
-                  className={selectClass}
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value as NewToken['scope'])}
-                >
-                  {scopeOptions.map((scope) => (
-                    <option key={scope} value={scope}>
-                      {scopeLabel(scope)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
-          </createForm.Field>
-          <createForm.Field name="expires_at">
-            {(field) => (
-              <Field label={m.account_expires()} htmlFor={field.name}>
-                <Input
-                  id={field.name}
-                  type="datetime-local"
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value)}
-                />
-              </Field>
-            )}
-          </createForm.Field>
-          {tokenError && (
-            <p className="text-sm whitespace-pre-line text-destructive" role="alert">
-              {tokenError}
-            </p>
-          )}
-        </form>
-      </Drawer>
+            <Button type="button" variant="outline" onClick={() => setTokenOpen(false)}>
+              {m.common_cancel()}
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
-      {tokens.isPending && <p className="text-sm text-muted-foreground">{m.common_loading()}</p>}
+      {tokens.isPending && (
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.common_loading()}
+        </div>
+      )}
       {tokens.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.account_tokens_load_error()}: <Problem error={tokens.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.account_tokens_load_error()}: <Problem error={tokens.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {tokenError && !tokenOpen && (
-        <p className="text-sm whitespace-pre-line text-destructive" role="alert">
-          {tokenError}
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription className="whitespace-pre-line">{tokenError}</AlertDescription>
+        </Alert>
       )}
 
       {tokens.data && (
@@ -277,32 +313,55 @@ function AccountPage() {
           {apiTokens.length === 0 ? (
             <p className="text-sm text-muted-foreground">{m.account_no_api_tokens()}</p>
           ) : (
-            <ListCard>
+            <ItemGroup className="gap-2">
               {apiTokens.map((token) => (
-                <ListRow
-                  key={token.id}
-                  icon={<KeyRound />}
-                  title={<span className="truncate text-sm font-medium">{token.name}</span>}
-                  description={m.account_token_meta({
-                    scope: scopeLabel(token.scope),
-                    expires: token.expires_at ? formatTimestamp(token.expires_at) : m.account_never(),
-                    lastUsed: formatTimestamp(token.last_used_at),
-                  })}
-                  trailing={
-                    <ConfirmButton
-                      size="sm"
-                      title={m.token_revoke_title({ name: token.name })}
-                      description={m.token_revoke_description()}
-                      confirmLabel={m.account_revoke()}
-                      disabled={revokeToken.isPending}
-                      onConfirm={() => revokeToken.mutate(token.id)}
-                    >
-                      {m.account_revoke()}
-                    </ConfirmButton>
-                  }
-                />
+                <Item key={token.id} variant="outline" role="listitem">
+                  <ItemMedia variant="icon">
+                    <KeyRound />
+                  </ItemMedia>
+                  <ItemContent>
+                    <ItemTitle>{token.name}</ItemTitle>
+                    <ItemDescription>
+                      {m.account_token_meta({
+                        scope: scopeLabel(token.scope),
+                        expires: token.expires_at
+                          ? formatTimestamp(token.expires_at)
+                          : m.account_never(),
+                        lastUsed: formatTimestamp(token.last_used_at),
+                      })}
+                    </ItemDescription>
+                  </ItemContent>
+                  <ItemActions>
+                    <AlertDialog open={confirming === token.id} onOpenChange={(next) => setConfirming(next ? token.id : null)}>
+                      <AlertDialogTrigger
+                        render={<Button variant="ghost" size="sm" disabled={revokeToken.isPending} />}
+                      >
+                        {m.account_revoke()}
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>{m.token_revoke_title({ name: token.name })}</AlertDialogTitle>
+                          <AlertDialogDescription>{m.token_revoke_description()}</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                          <AlertDialogAction
+                            variant="destructive"
+                            data-testid="confirm-action"
+                            onClick={() => {
+                              setConfirming(null)
+                              revokeToken.mutate(token.id)
+                            }}
+                          >
+                            {m.account_revoke()}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </ItemActions>
+                </Item>
               ))}
-            </ListCard>
+            </ItemGroup>
           )}
         </section>
       )}
@@ -313,49 +372,68 @@ function AccountPage() {
             <h2 className="text-sm font-semibold tracking-tight">{m.account_sessions()}</h2>
             <p className="text-xs text-muted-foreground">{m.account_sessions_description()}</p>
           </div>
-          <ListCard>
+          <ItemGroup className="gap-2">
             {sessions.map((session) => {
               const isCurrent = matchesCurrentSession(session, currentId)
               return (
-                <ListRow
-                  key={session.id}
-                  icon={<Monitor />}
-                  title={
-                    <>
-                      <span className="truncate text-sm font-medium">
-                        {isCurrent ? m.account_this_browser() : m.account_other_browser()}
-                      </span>
+                <Item key={session.id} variant="outline" role="listitem">
+                  <ItemMedia variant="icon">
+                    <Monitor />
+                  </ItemMedia>
+                  <ItemContent>
+                    <ItemTitle>
+                      {isCurrent ? m.account_this_browser() : m.account_other_browser()}
                       {isCurrent && (
                         <Badge variant="success" data-testid="current-session">
                           {m.common_current()}
                         </Badge>
                       )}
-                    </>
-                  }
-                  description={m.account_session_meta({
-                    created: formatTimestamp(session.created_at),
-                    expires: session.expires_at ? formatTimestamp(session.expires_at) : m.account_never(),
-                  })}
-                  trailing={
-                    <ConfirmButton
-                      size="sm"
-                      title={m.session_revoke_title()}
-                      description={
-                        isCurrent
-                          ? m.session_revoke_current_description()
-                          : m.session_revoke_description()
-                      }
-                      confirmLabel={m.account_sign_out_session()}
-                      disabled={revokeToken.isPending}
-                      onConfirm={() => revokeToken.mutate(session.id)}
-                    >
-                      {m.account_sign_out_session()}
-                    </ConfirmButton>
-                  }
-                />
+                    </ItemTitle>
+                    <ItemDescription>
+                      {m.account_session_meta({
+                        created: formatTimestamp(session.created_at),
+                        expires: session.expires_at
+                          ? formatTimestamp(session.expires_at)
+                          : m.account_never(),
+                      })}
+                    </ItemDescription>
+                  </ItemContent>
+                  <ItemActions>
+                    <AlertDialog open={confirming === session.id} onOpenChange={(next) => setConfirming(next ? session.id : null)}>
+                      <AlertDialogTrigger
+                        render={<Button variant="ghost" size="sm" disabled={revokeToken.isPending} />}
+                      >
+                        {m.account_sign_out_session()}
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>{m.session_revoke_title()}</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            {isCurrent
+                              ? m.session_revoke_current_description()
+                              : m.session_revoke_description()}
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                          <AlertDialogAction
+                            variant="destructive"
+                            data-testid="confirm-action"
+                            onClick={() => {
+                              setConfirming(null)
+                              revokeToken.mutate(session.id)
+                            }}
+                          >
+                            {m.account_sign_out_session()}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </ItemActions>
+                </Item>
               )
             })}
-          </ListCard>
+          </ItemGroup>
         </section>
       )}
 
@@ -367,53 +445,49 @@ function AccountPage() {
           </CardHeader>
           <CardContent>
             <form
-              className="grid items-start gap-4 sm:grid-cols-2"
               onSubmit={(e) => {
                 e.preventDefault()
                 passwordForm.handleSubmit()
               }}
             >
-              <passwordForm.Field name="old">
-                {(field) => (
-                  <Field label={m.account_current_password()} htmlFor={field.name}>
-                    <Input
-                      id={field.name}
-                      type="password"
-                      value={field.state.value}
-                      onChange={(e) => field.handleChange(e.target.value)}
-                      autoComplete="current-password"
-                    />
-                  </Field>
-                )}
-              </passwordForm.Field>
-              <passwordForm.Field name="new">
-                {(field) => (
-                  <Field
-                    label={m.account_new_password()}
-                    htmlFor={field.name}
-                    hint={m.account_password_hint()}
-                  >
-                    <Input
-                      id={field.name}
-                      type="password"
-                      value={field.state.value}
-                      onChange={(e) => field.handleChange(e.target.value)}
-                      autoComplete="new-password"
-                    />
-                  </Field>
-                )}
-              </passwordForm.Field>
-              <div className="sm:col-span-2">
-                <Button type="submit" disabled={changePassword.isPending}>
-                  {changePassword.isPending ? m.account_changing() : m.account_change_password()}
-                </Button>
-              </div>
+              <FieldGroup className="grid items-start sm:grid-cols-2">
+                <passwordForm.Field name="old">
+                  {(field) => (
+                    <Field>
+                      <FieldLabel htmlFor={field.name}>{m.account_current_password()}</FieldLabel>
+                      <Input
+                        id={field.name}
+                        type="password"
+                        value={field.state.value}
+                        onChange={(e) => field.handleChange(e.target.value)}
+                        autoComplete="current-password"
+                      />
+                    </Field>
+                  )}
+                </passwordForm.Field>
+                <passwordForm.Field name="new">
+                  {(field) => (
+                    <Field>
+                      <FieldLabel htmlFor={field.name}>{m.account_new_password()}</FieldLabel>
+                      <Input
+                        id={field.name}
+                        type="password"
+                        value={field.state.value}
+                        onChange={(e) => field.handleChange(e.target.value)}
+                        autoComplete="new-password"
+                      />
+                      <FieldDescription>{m.account_password_hint()}</FieldDescription>
+                    </Field>
+                  )}
+                </passwordForm.Field>
+                <Field orientation="horizontal" className="sm:col-span-2">
+                  <Button type="submit" disabled={changePassword.isPending}>
+                    {changePassword.isPending ? m.account_changing() : m.account_change_password()}
+                  </Button>
+                </Field>
+                <FieldError className="whitespace-pre-line sm:col-span-2">{passwordError}</FieldError>
+              </FieldGroup>
             </form>
-            {passwordError && (
-              <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">
-                {passwordError}
-              </p>
-            )}
           </CardContent>
         </Card>
       )}

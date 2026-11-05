@@ -3,14 +3,25 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Layers, Plus } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot } from '@/api'
-import { EmptyState } from '@/components/empty-state'
-import { ListCard, ListRow, rowLinkClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { buttonVariants } from '@/components/ui/button'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { snapshotOwnerLabel } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/snapshots/')({
@@ -40,55 +51,64 @@ function SnapshotsPage() {
               : m.snapshots_count_other({ count })
         }
         actions={
-          <Link to="/snapshots/new" className={buttonVariants()}>
-            <Plus />
+          <Link
+            to="/snapshots/new"
+            className={cn(buttonVariants())}
+          >
+            <Plus data-icon="inline-start" />
             {m.snapshots_new()}
           </Link>
         }
       />
 
       {snapshots.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.snapshots_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.snapshots_loading()}
+        </div>
       )}
       {snapshots.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.snapshots_load_error()}: <Problem error={snapshots.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.snapshots_load_error()}: <Problem error={snapshots.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {snapshots.data?.items.length === 0 && (
-        <EmptyState
-          icon={<Layers />}
-          title={m.snapshots_empty_title()}
-          description={m.snapshots_empty_description()}
-        />
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Layers />
+            </EmptyMedia>
+            <EmptyTitle>{m.snapshots_empty_title()}</EmptyTitle>
+            <EmptyDescription>{m.snapshots_empty_description()}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
 
       {snapshots.data && snapshots.data.items.length > 0 && (
-        <ListCard>
+        <ItemGroup>
           {snapshots.data.items.map((snapshot) => (
-            <ListRow
-              key={snapshot.id}
-              data-testid={`snapshot-${snapshot.id}`}
-              icon={<Layers />}
-              title={
-                <Link
-                  to="/snapshots/$id"
-                  params={{ id: snapshot.id }}
-                  className={rowLinkClass}
-                >
-                  {snapshot.name}
-                </Link>
-              }
-              description={
-                <>
-                  {snapshotOwnerLabel(snapshot, user.id)} ·{' '}
-                  {m.common_created({ time: formatTimestamp(snapshot.created_at) })}
-                </>
-              }
-              trailing={
-                <div className="hidden min-w-0 flex-col items-end gap-0.5 sm:flex">
-                  <span className="text-[11px] text-muted-foreground">
+            // The row itself is the link, so the listitem role goes on a wrapper.
+            <div key={snapshot.id} role="listitem">
+              <Item
+                variant="outline"
+                data-testid={`snapshot-${snapshot.id}`}
+                render={<Link to="/snapshots/$id" params={{ id: snapshot.id }} />}
+              >
+                <ItemMedia variant="icon">
+                  <Layers />
+                </ItemMedia>
+                <ItemContent>
+                  <ItemTitle>{snapshot.name}</ItemTitle>
+                  <ItemDescription>
+                    {snapshotOwnerLabel(snapshot, user.id)} ·{' '}
+                    {m.common_created({ time: formatTimestamp(snapshot.created_at) })}
+                  </ItemDescription>
+                </ItemContent>
+                <ItemActions className="hidden flex-col items-end gap-0.5 sm:flex">
+                  <span className="text-xs text-muted-foreground">
                     {m.snapshots_current_version()}
                   </span>
                   {snapshot.current_version_id ? (
@@ -96,11 +116,11 @@ function SnapshotsPage() {
                   ) : (
                     <span className="text-xs text-muted-foreground">{m.snapshot_no_current()}</span>
                   )}
-                </div>
-              }
-            />
+                </ItemActions>
+              </Item>
+            </div>
           ))}
-        </ListCard>
+        </ItemGroup>
       )}
     </div>
   )

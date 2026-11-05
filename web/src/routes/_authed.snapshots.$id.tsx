@@ -1,18 +1,38 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Ban, Box, Copy, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
+import { useState } from 'react'
 
 import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
 import { BuildLog } from '@/components/build-log'
-import { EmptyState } from '@/components/empty-state'
-import { ConfirmButton } from '@/components/confirm-button'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { Spinner } from '@/components/ui/spinner'
 import {
   Table,
   TableBody,
@@ -34,6 +54,7 @@ import {
   versionIsCurrent,
 } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/snapshots/$id')({
@@ -44,6 +65,7 @@ export const Route = createFileRoute('/_authed/snapshots/$id')({
 })
 
 function SnapshotDetailPage() {
+  const [confirmOpen, setConfirmOpen] = useState(false)
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { id } = Route.useParams()
   const { user } = Route.useRouteContext()
@@ -95,12 +117,17 @@ function SnapshotDetailPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs
-            items={[
-              { label: m.nav_snapshots(), to: '/snapshots' },
-              { label: current?.name ?? id },
-            ]}
-          />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/snapshots" />}>{m.nav_snapshots()}</BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{current?.name ?? id}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={current?.name ?? id}
         meta={
@@ -126,9 +153,9 @@ function SnapshotDetailPage() {
                 <Link
                   to="/sandboxes/new"
                   search={{ snapshot: current.name }}
-                  className={buttonVariants()}
+                  className={cn(buttonVariants())}
                 >
-                  <Box />
+                  <Box data-icon="inline-start" />
                   {m.snapshot_new_sandbox()}
                 </Link>
               )}
@@ -138,22 +165,46 @@ function SnapshotDetailPage() {
                     to="/snapshots/$id/versions/new"
                     params={{ id }}
                     search={{ from: current.current_version_id ?? undefined }}
-                    className={buttonVariants({ variant: 'outline' })}
+                    className={cn(buttonVariants({ variant: 'outline' }))}
                   >
-                    <Plus />
+                    <Plus data-icon="inline-start" />
                     {m.snapshot_new_version()}
                   </Link>
-                  <ConfirmButton
-                    variant="outline"
-                    testId="snapshot-delete"
-                    title={m.snapshot_delete_confirm({ name: current.name })}
-                    description={m.common_irreversible()}
-                    disabled={remove.isPending}
-                    onConfirm={() => remove.mutate()}
-                  >
-                    <Trash />
-                    {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
-                  </ConfirmButton>
+                  <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+                    <AlertDialogTrigger
+                      render={
+                        <Button
+                          variant="outline"
+                          disabled={remove.isPending}
+                          data-testid="snapshot-delete"
+                        />
+                      }
+                    >
+                      <Trash data-icon="inline-start" />
+                      {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          {m.snapshot_delete_confirm({ name: current.name })}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>{m.common_irreversible()}</AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                        <AlertDialogAction
+                          variant="destructive"
+                          data-testid="confirm-action"
+                          onClick={() => {
+                            setConfirmOpen(false)
+                            remove.mutate()
+                          }}
+                        >
+                          {m.common_delete()}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </>
               )}
             </>
@@ -162,29 +213,40 @@ function SnapshotDetailPage() {
       />
 
       {remove.error && (
-        <p className="text-sm text-destructive" role="alert">
-          <Problem error={remove.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            <Problem error={remove.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {versionAction.error && (
-        <p className="text-sm text-destructive" role="alert" data-testid="version-action-error">
-          <Problem error={versionAction.error} />
-        </p>
+        <Alert variant="destructive" data-testid="version-action-error">
+          <AlertDescription>
+            <Problem error={versionAction.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {snapshot.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.snapshot_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.snapshot_loading()}
+        </div>
       )}
       {snapshot.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.snapshot_load_error()}: <Problem error={snapshot.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.snapshot_load_error()}: <Problem error={snapshot.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {versions.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.snapshot_versions_load_error()}: <Problem error={versions.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.snapshot_versions_load_error()}: <Problem error={versions.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       <Card>
@@ -194,17 +256,21 @@ function SnapshotDetailPage() {
         </CardHeader>
         <CardContent className="px-0 pb-0">
           {versions.isPending && (
-            <p className="px-5 pb-4 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2 px-5 pb-4 text-sm text-muted-foreground">
+              <Spinner />
               {m.snapshot_versions_loading()}
-            </p>
+            </div>
           )}
           {versions.data?.items.length === 0 && (
-            <EmptyState
-              icon={<Layers />}
-              title={m.snapshot_versions_empty_title()}
-              description={m.snapshot_versions_empty_description()}
-              className="mx-5 mb-5 border-0 bg-muted/20"
-            />
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <Layers />
+                </EmptyMedia>
+                <EmptyTitle>{m.snapshot_versions_empty_title()}</EmptyTitle>
+                <EmptyDescription>{m.snapshot_versions_empty_description()}</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           )}
           {versions.data && versions.data.items.length > 0 && (
             <Table>
@@ -254,9 +320,9 @@ function SnapshotDetailPage() {
                           params={{ id }}
                           search={{ version: version.id }}
                           data-testid={`build-log-link-${version.id}`}
-                          className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                          className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
                         >
-                          <ScrollText />
+                          <ScrollText data-icon="inline-start" />
                           {m.snapshot_build_log()}
                         </Link>
                       ) : (
@@ -331,6 +397,7 @@ function VersionActions({
   disabled: boolean
   onAction: (verb: VersionAction) => void
 }) {
+  const [confirmOpen, setConfirmOpen] = useState(false)
   return (
     <div className="flex justify-end gap-2">
       {newFrom && (
@@ -339,9 +406,9 @@ function VersionActions({
           params={{ id: snapshotId }}
           search={{ from: versionId }}
           data-testid={`version-new-from-${versionId}`}
-          className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
         >
-          <Copy />
+          <Copy data-icon="inline-start" />
           {m.snapshot_version_new_from()}
         </Link>
       )}
@@ -353,7 +420,7 @@ function VersionActions({
           data-testid={`version-cancel-${versionId}`}
           onClick={() => onAction('cancel')}
         >
-          <Ban />
+          <Ban data-icon="inline-start" />
           {m.common_cancel()}
         </Button>
       )}
@@ -365,22 +432,47 @@ function VersionActions({
           data-testid={`version-set-current-${versionId}`}
           onClick={() => onAction('setCurrent')}
         >
-          <Pin />
+          <Pin data-icon="inline-start" />
           {m.snapshot_version_set_current()}
         </Button>
       )}
       {actions.delete && (
-        <ConfirmButton
-          size="sm"
-          testId={`version-delete-${versionId}`}
-          title={m.snapshot_version_delete_confirm({ id: versionId.slice(0, 8) })}
-          description={m.common_irreversible()}
-          disabled={disabled}
-          onConfirm={() => onAction('delete')}
-        >
-          <Trash />
-          {m.common_delete()}
-        </ConfirmButton>
+        <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+          <AlertDialogTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={disabled}
+                data-testid={`version-delete-${versionId}`}
+              />
+            }
+          >
+            <Trash data-icon="inline-start" />
+            {m.common_delete()}
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {m.snapshot_version_delete_confirm({ id: versionId.slice(0, 8) })}
+              </AlertDialogTitle>
+              <AlertDialogDescription>{m.common_irreversible()}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                data-testid="confirm-action"
+                onClick={() => {
+                  setConfirmOpen(false)
+                  onAction('delete')
+                }}
+              >
+                {m.common_delete()}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
     </div>
   )

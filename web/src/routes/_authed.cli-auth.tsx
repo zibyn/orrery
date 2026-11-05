@@ -6,7 +6,9 @@ import { api, type CreatedToken } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { TokenReveal } from '@/components/token-reveal'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Card, CardContent } from '@/components/ui/card'
+import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/components/ui/item'
 import { useLocale } from '@/lib/i18n'
 import { m } from '@/paraglide/messages'
 
@@ -35,9 +37,11 @@ function CliAuthError({ error }: { error: unknown }) {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-3 py-6">
       <PageHeader title={m.cli_title()} />
-      <p className="text-sm text-destructive" role="alert">
-        {m.cli_create_error()}: <Problem error={error} />
-      </p>
+      <Alert variant="destructive">
+        <AlertDescription>
+          {m.cli_create_error()}: <Problem error={error} />
+        </AlertDescription>
+      </Alert>
     </div>
   )
 }
@@ -51,19 +55,15 @@ function CliAuthPage() {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-3 py-6">
         <PageHeader title={m.cli_title()} description={m.cli_token_created()} />
-        <Card>
-          <CardContent className="flex items-center gap-3 py-6">
-            <span className="flex size-9 items-center justify-center rounded-lg border border-success/30 bg-success/10 text-success">
-              <CircleCheck className="size-4" />
-            </span>
-            <div>
-              <p className="text-sm font-medium">{m.cli_signed_in()}</p>
-              <p className="text-xs text-muted-foreground">
-                {m.cli_paste_hint()}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+        <Item variant="outline">
+          <ItemMedia variant="icon" className="text-success">
+            <CircleCheck />
+          </ItemMedia>
+          <ItemContent>
+            <ItemTitle>{m.cli_signed_in()}</ItemTitle>
+            <ItemDescription>{m.cli_paste_hint()}</ItemDescription>
+          </ItemContent>
+        </Item>
       </div>
     )
   }

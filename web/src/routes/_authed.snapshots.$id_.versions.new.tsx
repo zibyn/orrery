@@ -1,12 +1,20 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 
 import { api, type Snapshot, type SnapshotVersion } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { SnapshotVersionForm } from '@/components/snapshot-version-form'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { useLocale } from '@/lib/i18n'
 import { buildSnapshotVersionBody, formFieldsFromRequest } from '@/lib/snapshot-form'
 import { m } from '@/paraglide/messages'
@@ -44,13 +52,23 @@ function NewSnapshotVersionPage() {
     <div className="flex max-w-3xl flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs
-            items={[
-              { label: m.nav_snapshots(), to: '/snapshots' },
-              { label: name, to: '/snapshots/$id', params: { id } },
-              { label: m.snapshot_new_version() },
-            ]}
-          />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/snapshots" />}>{m.nav_snapshots()}</BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/snapshots/$id" params={{ id }} />}>
+                  {name}
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{m.snapshot_new_version()}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={m.snapshot_new_version()}
         description={
@@ -59,9 +77,11 @@ function NewSnapshotVersionPage() {
       />
 
       {loadError && (
-        <p className="text-sm text-destructive" role="alert">
-          <Problem error={loadError} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            <Problem error={loadError} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {(from === undefined || source.data) && (

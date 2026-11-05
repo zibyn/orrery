@@ -4,16 +4,28 @@ import { Box, ChevronRight, Plus } from 'lucide-react'
 import { useState } from 'react'
 
 import { api, type ListResponse, type Sandbox, type User } from '@/api'
-import { EmptyState } from '@/components/empty-state'
-import { ListCard, ListRow, rowLinkClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { buttonVariants } from '@/components/ui/button'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { Field, FieldLabel } from '@/components/ui/field'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { workspaceModeLabel } from '@/lib/labels'
 import { sandboxListPollInterval } from '@/lib/sandbox'
-import { selectClass } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/')({
@@ -59,24 +71,30 @@ function SandboxesPage() {
         actions={
           <>
             {user.is_admin && (
-              <label className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground">
-                {m.sandboxes_owner()}
-                <select
-                  className={`${selectClass} w-auto min-w-32`}
+              <Field orientation="horizontal" className="w-auto">
+                <FieldLabel htmlFor="sandbox-owner" className="whitespace-nowrap">
+                  {m.sandboxes_owner()}
+                </FieldLabel>
+                <NativeSelect
+                  id="sandbox-owner"
+                  className="min-w-32"
                   value={owner}
                   onChange={(e) => setOwner(e.target.value)}
                 >
-                  <option value="">{m.sandboxes_owner_me({ name: user.name })}</option>
+                  <NativeSelectOption value="">{m.sandboxes_owner_me({ name: user.name })}</NativeSelectOption>
                   {users.data?.items.map((item) => (
-                    <option key={item.id} value={item.id}>
+                    <NativeSelectOption key={item.id} value={item.id}>
                       {item.name}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </select>
-              </label>
+                </NativeSelect>
+              </Field>
             )}
-            <Link to="/sandboxes/new" className={buttonVariants()}>
-              <Plus />
+            <Link
+              to="/sandboxes/new"
+              className={cn(buttonVariants())}
+            >
+              <Plus data-icon="inline-start" />
               {m.sandboxes_new()}
             </Link>
           </>
@@ -84,63 +102,68 @@ function SandboxesPage() {
       />
 
       {sandboxes.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.sandboxes_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.sandboxes_loading()}
+        </div>
       )}
       {sandboxes.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.sandboxes_load_error()}: <Problem error={sandboxes.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.sandboxes_load_error()}: <Problem error={sandboxes.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {users.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.users_load_error()}: <Problem error={users.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.users_load_error()}: <Problem error={users.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {sandboxes.data?.items.length === 0 && (
-        <EmptyState
-          icon={<Box />}
-          title={m.sandboxes_empty_title()}
-          description={m.sandboxes_empty_description()}
-        />
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Box />
+            </EmptyMedia>
+            <EmptyTitle>{m.sandboxes_empty_title()}</EmptyTitle>
+            <EmptyDescription>{m.sandboxes_empty_description()}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
 
       {sandboxes.data && sandboxes.data.items.length > 0 && (
-        <ListCard>
+        <ItemGroup>
           {sandboxes.data.items.map((sandbox) => (
-            <ListRow
-              key={sandbox.id}
-              icon={<Box />}
-              title={
-                <Link
-                  to="/sandboxes/$id"
-                  params={{ id: sandbox.id }}
-                  className={rowLinkClass}
-                >
-                  {sandbox.name}
-                </Link>
-              }
-              description={
-                <>
-                  {sandbox.cpu} CPU · {(sandbox.memory / 1024 / 1024).toFixed(0)} MiB
-                  {sandbox.gpu ? ` · ${sandbox.gpu.count} GPU` : ''}
-                  {sandbox.workspace
-                    ? ` · ${m.sandboxes_meta_workspace({ mode: workspaceModeLabel(sandbox.workspace.mode) })}`
-                    : ''}
-                </>
-              }
-              trailing={
-                <>
-                  <StatusBadge
-                    state={sandbox.state}
-                    data-testid={`sandbox-state-${sandbox.id}`}
-                  />
-                  <ChevronRight className="size-4 shrink-0 text-muted-foreground/50" />
-                </>
-              }
-            />
+            // The listitem wraps the row so the row itself keeps its link role.
+            <div key={sandbox.id} role="listitem">
+              <Item
+                variant="outline"
+                render={<Link to="/sandboxes/$id" params={{ id: sandbox.id }} />}
+              >
+                <ItemMedia variant="icon">
+                  <Box />
+                </ItemMedia>
+                <ItemContent>
+                  <ItemTitle>{sandbox.name}</ItemTitle>
+                  <ItemDescription>
+                    {sandbox.cpu} CPU · {(sandbox.memory / 1024 / 1024).toFixed(0)} MiB
+                    {sandbox.gpu ? ` · ${sandbox.gpu.count} GPU` : ''}
+                    {sandbox.workspace
+                      ? ` · ${m.sandboxes_meta_workspace({ mode: workspaceModeLabel(sandbox.workspace.mode) })}`
+                      : ''}
+                  </ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                  <StatusBadge state={sandbox.state} data-testid={`sandbox-state-${sandbox.id}`} />
+                  <ChevronRight className="text-muted-foreground/50" />
+                </ItemActions>
+              </Item>
+            </div>
           ))}
-        </ListCard>
+        </ItemGroup>
       )}
     </div>
   )

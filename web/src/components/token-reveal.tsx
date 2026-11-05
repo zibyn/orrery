@@ -2,6 +2,7 @@ import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupText } from '@/components/ui/input-group'
 import { m } from '@/paraglide/messages'
 
 // The one-time plaintext display shared by /cli-auth and the account page
@@ -29,23 +30,28 @@ export function TokenReveal({
   return (
     <div className="flex flex-col gap-3">
       {hint && <p className="text-sm text-muted-foreground">{hint}</p>}
-      <pre
-        data-testid="token-plaintext"
-        className="overflow-x-auto rounded-lg border border-border bg-muted/60 p-3 font-mono text-xs break-all whitespace-pre-wrap"
-      >
-        {token}
-      </pre>
-      <div className="flex gap-2">
-        <Button onClick={copy} variant={copied ? 'outline' : 'default'}>
-          {copied ? <Check /> : <Copy />}
-          {copied ? m.token_copied() : m.token_copy()}
-        </Button>
-        {onDone && (
+      {/* Text, not an input value: the token wraps in full and e2e reads its textContent. */}
+      <InputGroup className="h-auto">
+        <InputGroupText
+          data-testid="token-plaintext"
+          className="min-w-0 flex-1 px-2.5 py-2 font-mono text-xs break-all text-foreground select-all"
+        >
+          {token}
+        </InputGroupText>
+        <InputGroupAddon align="inline-end">
+          <InputGroupButton onClick={copy}>
+            {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+            {copied ? m.token_copied() : m.token_copy()}
+          </InputGroupButton>
+        </InputGroupAddon>
+      </InputGroup>
+      {onDone && (
+        <div className="flex gap-2">
           <Button variant="outline" onClick={onDone}>
             {m.token_done()}
           </Button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }

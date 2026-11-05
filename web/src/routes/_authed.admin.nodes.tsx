@@ -1,16 +1,49 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { Pause, Play, Server, Trash } from 'lucide-react'
+import { useState } from 'react'
 
 import { api, type CapacityNode, type ListResponse, type Node } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
-import { EmptyState } from '@/components/empty-state'
-import { ConfirmButton } from '@/components/confirm-button'
-import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { Spinner } from '@/components/ui/spinner'
 import { mergeNodeCapacity, nodeListPollInterval } from '@/lib/nodes'
 import { useLocale } from '@/lib/i18n'
 import { m } from '@/paraglide/messages'
@@ -22,6 +55,8 @@ export const Route = createFileRoute('/_authed/admin/nodes')({
 function NodesPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const queryClient = useQueryClient()
+  // The Node whose delete is being confirmed.
+  const [confirming, setConfirming] = useState<string | null>(null)
 
   const nodes = useQuery({
     queryKey: ['nodes'],
@@ -56,7 +91,15 @@ function NodesPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs items={[{ label: m.nav_group_admin() }, { label: m.nodes_title() }]} />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>{m.nav_group_admin()}</BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{m.nodes_title()}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={m.nodes_title()}
         description={m.nodes_description()}
@@ -70,44 +113,54 @@ function NodesPage() {
       />
 
       {(nodes.isPending || capacity.isPending) && (
-        <p className="py-8 text-sm text-muted-foreground">{m.nodes_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.nodes_loading()}
+        </div>
       )}
       {error && (
-        <p className="text-sm text-destructive" role="alert" data-testid="node-error">
-          <Problem error={error} />
-        </p>
+        <Alert variant="destructive" data-testid="node-error">
+          <AlertDescription>
+            <Problem error={error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {nodes.data && rows.length === 0 && (
-        <EmptyState
-          icon={<Server />}
-          title={m.nodes_empty_title()}
-          description={m.nodes_empty_description()}
-        />
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Server />
+            </EmptyMedia>
+            <EmptyTitle>{m.nodes_empty_title()}</EmptyTitle>
+            <EmptyDescription>{m.nodes_empty_description()}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
 
       {rows.length > 0 && (
-        <ListCard>
+        <ItemGroup className="gap-2">
           {rows.map((row) => (
-            <ListRow
-              key={row.id}
-              data-testid="node-row"
-              icon={<Server />}
-              title={
-                <>
-                  <span className="truncate text-sm font-medium">{row.name}</span>
+            <Item key={row.id} variant="outline" role="listitem" data-testid="node-row">
+              <ItemMedia variant="icon">
+                <Server />
+              </ItemMedia>
+              <ItemContent>
+                <ItemTitle>
+                  {row.name}
                   <StatusBadge state={row.status} />
-                </>
-              }
-              description={
-                <div className="flex flex-col gap-1.5">
-                  <span className="font-mono" title={row.id}>{row.id.slice(0, 8)}</span>
+                </ItemTitle>
+                <ItemDescription className="font-mono" title={row.id}>
+                  {row.id.slice(0, 8)}
+                </ItemDescription>
+                <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
                   {row.gpus.length === 0 ? (
                     <span>{m.nodes_no_gpu()}</span>
                   ) : (
                     row.gpus.map((gpu) => (
                       <div key={gpu.model} className="flex items-center gap-2">
                         <span className="w-28 truncate">{gpu.model}</span>
+                        {/* No Progress component installed; a plain bar. */}
                         <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
                           <span
                             className="block h-full rounded-full bg-brand"
@@ -116,52 +169,73 @@ function NodesPage() {
                             }}
                           />
                         </span>
-                        <span className="font-mono text-muted-foreground">
+                        <span className="font-mono">
                           {gpu.allocated}/{gpu.total}
                         </span>
                       </div>
                     ))
                   )}
                 </div>
-              }
-              trailing={
-                <>
-                  {row.paused ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={action.isPending || remove.isPending || row.status === 'lost'}
-                      onClick={() => action.mutate({ id: row.id, verb: 'resume' })}
-                    >
-                      <Play />
-                      {m.nodes_resume()}
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={action.isPending || remove.isPending || row.paused === null}
-                      onClick={() => action.mutate({ id: row.id, verb: 'pause' })}
-                    >
-                      <Pause />
-                      {m.nodes_pause()}
-                    </Button>
-                  )}
-                  <ConfirmButton
+              </ItemContent>
+              <ItemActions>
+                {row.paused ? (
+                  <Button
+                    variant="outline"
                     size="sm"
-                    title={m.nodes_delete_confirm({ name: row.name })}
-                    description={m.common_irreversible()}
-                    disabled={action.isPending || remove.isPending}
-                    onConfirm={() => remove.mutate(row.id)}
+                    disabled={action.isPending || remove.isPending || row.status === 'lost'}
+                    onClick={() => action.mutate({ id: row.id, verb: 'resume' })}
                   >
-                    <Trash />
+                    <Play data-icon="inline-start" />
+                    {m.nodes_resume()}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={action.isPending || remove.isPending || row.paused === null}
+                    onClick={() => action.mutate({ id: row.id, verb: 'pause' })}
+                  >
+                    <Pause data-icon="inline-start" />
+                    {m.nodes_pause()}
+                  </Button>
+                )}
+                <AlertDialog open={confirming === row.id} onOpenChange={(next) => setConfirming(next ? row.id : null)}>
+                  <AlertDialogTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={action.isPending || remove.isPending}
+                      />
+                    }
+                  >
+                    <Trash data-icon="inline-start" />
                     {m.common_delete()}
-                  </ConfirmButton>
-                </>
-              }
-            />
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>{m.nodes_delete_confirm({ name: row.name })}</AlertDialogTitle>
+                      <AlertDialogDescription>{m.common_irreversible()}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                      <AlertDialogAction
+                        variant="destructive"
+                        data-testid="confirm-action"
+                        onClick={() => {
+                          setConfirming(null)
+                          remove.mutate(row.id)
+                        }}
+                      >
+                        {m.common_delete()}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </ItemActions>
+            </Item>
           ))}
-        </ListCard>
+        </ItemGroup>
       )}
     </div>
   )

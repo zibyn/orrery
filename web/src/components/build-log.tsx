@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { CircleCheck, Hourglass, LoaderCircle } from 'lucide-react'
+import { CircleCheck, Hourglass } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
 
 import { api, type Exec, type ExecOutputFrame, type ExecResultFrame } from '@/api'
 import { TerminalView } from '@/components/terminal'
+import { Spinner } from '@/components/ui/spinner'
 import {
   followExecOutput,
   formatExecResult,
@@ -105,7 +106,7 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
         {shownResult ? (
           <CircleCheck className="size-3.5 text-success" />
         ) : loading || view === 'loading' ? (
-          <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" />
+          <Spinner className="size-3.5 text-muted-foreground" />
         ) : null}
         <span className={shownResult ? 'text-foreground' : 'text-muted-foreground'}>
           {shownResult

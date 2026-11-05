@@ -5,17 +5,25 @@ import { useEffect, useRef, useState } from 'react'
 import type { Terminal as XTerminal } from '@xterm/xterm'
 
 import { api, type CreateExecRequest, type Exec, type PtyExitFrame, type Sandbox } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { consoleWebSocketUrl, formatExecResult, parseArgv } from '@/lib/exec-stream'
 import { useLocale } from '@/lib/i18n'
 import { messageOf } from '@/lib/labels'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/$id_/terminal')({
@@ -162,13 +170,23 @@ function TerminalPage() {
     <div className="flex flex-col gap-4">
       <PageHeader
         above={
-          <Breadcrumbs
-            items={[
-              { label: m.nav_sandboxes(), to: '/sandboxes' },
-              { label: sandbox.data?.name ?? id, to: '/sandboxes/$id', params: { id } },
-              { label: m.terminal_title() },
-            ]}
-          />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/sandboxes" />}>{m.nav_sandboxes()}</BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/sandboxes/$id" params={{ id }} />}>
+                  {sandbox.data?.name ?? id}
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{m.terminal_title()}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={m.terminal_title()}
         actions={
@@ -176,9 +194,9 @@ function TerminalPage() {
             to="/sandboxes/$id/execs"
             params={{ id }}
             search={execId ? { exec: execId } : {}}
-            className={buttonVariants({ variant: 'outline' })}
+            className={cn(buttonVariants({ variant: 'outline' }))}
           >
-            <ScrollText />
+            <ScrollText data-icon="inline-start" />
             {m.terminal_view_execs()}
           </Link>
         }
@@ -207,32 +225,31 @@ function TerminalPage() {
         <Card>
           <CardContent>
             <form
-              className="flex flex-wrap items-end gap-3"
               onSubmit={(event) => {
                 event.preventDefault()
                 if (parseArgv(argvText).length > 0) create.mutate()
               }}
             >
-              <div className="flex min-w-64 flex-1 flex-col gap-1.5">
-                <Label htmlFor="terminal-argv">{m.terminal_command()}</Label>
-                <Input
-                  id="terminal-argv"
-                  className="font-mono"
-                  value={argvText}
-                  onChange={(event) => setArgvText(event.target.value)}
-                  placeholder={DEFAULT_ARGV}
-                />
-                <p className="text-xs text-muted-foreground">{m.terminal_runs_in()}</p>
-              </div>
-              <Button type="submit" disabled={create.isPending || parseArgv(argvText).length === 0}>
-                {m.terminal_open()}
-              </Button>
+              <FieldGroup>
+                <div className="flex flex-wrap items-end gap-3">
+                  <Field className="min-w-64 flex-1">
+                    <FieldLabel htmlFor="terminal-argv">{m.terminal_command()}</FieldLabel>
+                    <Input
+                      id="terminal-argv"
+                      className="font-mono"
+                      value={argvText}
+                      onChange={(event) => setArgvText(event.target.value)}
+                      placeholder={DEFAULT_ARGV}
+                    />
+                    <FieldDescription>{m.terminal_runs_in()}</FieldDescription>
+                  </Field>
+                  <Button type="submit" disabled={create.isPending || parseArgv(argvText).length === 0}>
+                    {m.terminal_open()}
+                  </Button>
+                </div>
+                {error && <FieldError className="whitespace-pre-line">{error}</FieldError>}
+              </FieldGroup>
             </form>
-            {error && (
-              <p className="mt-3 text-sm whitespace-pre-line text-destructive" role="alert">
-                {error}
-              </p>
-            )}
           </CardContent>
         </Card>
       )}

@@ -3,10 +3,20 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Package } from 'lucide-react'
 
 import { api, type ListResponse, type Resource } from '@/api'
-import { EmptyState } from '@/components/empty-state'
-import { ListCard, ListRow, rowLinkClass } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
@@ -39,42 +49,52 @@ function ResourcesPage() {
       />
 
       {resources.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.common_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.common_loading()}
+        </div>
       )}
       {resources.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.resources_load_error()}: <Problem error={resources.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.resources_load_error()}: <Problem error={resources.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {resources.data?.items.length === 0 && (
-        <EmptyState
-          icon={<Package />}
-          title={m.resources_empty_title()}
-          description={m.resources_empty_description()}
-        />
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Package />
+            </EmptyMedia>
+            <EmptyTitle>{m.resources_empty_title()}</EmptyTitle>
+            <EmptyDescription>{m.resources_empty_description()}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
 
       {resources.data && resources.data.items.length > 0 && (
-        <ListCard>
+        <ItemGroup>
           {resources.data.items.map((resource) => (
-            <ListRow
-              key={resource.id}
-              data-testid={`resource-${resource.id}`}
-              icon={<Package />}
-              title={
-                <Link
-                  to="/resources/$id"
-                  params={{ id: resource.id }}
-                  className={rowLinkClass}
-                >
-                  {resource.name}
-                </Link>
-              }
-              description={m.common_created({ time: formatTimestamp(resource.created_at) })}
-              trailing={
-                <div className="hidden min-w-0 flex-col items-end gap-0.5 sm:flex">
-                  <span className="text-[11px] text-muted-foreground">
+            // The row itself is the link, so the listitem role goes on a wrapper.
+            <div key={resource.id} role="listitem">
+              <Item
+                variant="outline"
+                data-testid={`resource-${resource.id}`}
+                render={<Link to="/resources/$id" params={{ id: resource.id }} />}
+              >
+                <ItemMedia variant="icon">
+                  <Package />
+                </ItemMedia>
+                <ItemContent>
+                  <ItemTitle>{resource.name}</ItemTitle>
+                  <ItemDescription>
+                    {m.common_created({ time: formatTimestamp(resource.created_at) })}
+                  </ItemDescription>
+                </ItemContent>
+                <ItemActions className="hidden flex-col items-end gap-0.5 sm:flex">
+                  <span className="text-xs text-muted-foreground">
                     {m.resources_current_version()}
                   </span>
                   {resource.current_version_id ? (
@@ -82,11 +102,11 @@ function ResourcesPage() {
                   ) : (
                     <span className="text-xs text-muted-foreground">{m.snapshot_no_current()}</span>
                   )}
-                </div>
-              }
-            />
+                </ItemActions>
+              </Item>
+            </div>
           ))}
-        </ListCard>
+        </ItemGroup>
       )}
     </div>
   )

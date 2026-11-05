@@ -4,8 +4,8 @@ import { useState } from 'react'
 import { api, type PortTicket } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { messageOf } from '@/lib/labels'
 import { m } from '@/paraglide/messages'
 
@@ -52,39 +52,37 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
         <CardTitle>{m.ports_title()}</CardTitle>
         <CardDescription>{m.ports_description()}</CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-end gap-2">
-          <div className="flex w-36 flex-col gap-1.5">
-            <Label htmlFor="sandbox-port">{m.ports_port()}</Label>
-            <Input
-              id="sandbox-port"
-              type="number"
-              min="1"
-              max="65535"
-              value={port}
-              onChange={(event) => {
-                setPort(event.target.value)
-                setError('')
-                setLocked(false)
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !locked) {
-                  event.preventDefault()
-                  void open()
-                }
-              }}
-            />
+      <CardContent>
+        <FieldGroup className="gap-3">
+          <div className="flex items-end gap-2">
+            <Field className="w-36">
+              <FieldLabel htmlFor="sandbox-port">{m.ports_port()}</FieldLabel>
+              <Input
+                id="sandbox-port"
+                type="number"
+                min="1"
+                max="65535"
+                value={port}
+                onChange={(event) => {
+                  setPort(event.target.value)
+                  setError('')
+                  setLocked(false)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !locked) {
+                    event.preventDefault()
+                    void open()
+                  }
+                }}
+              />
+            </Field>
+            <Button type="button" disabled={locked || opening || !port} onClick={() => void open()}>
+              <ExternalLink data-icon="inline-start" />
+              {m.ports_open()}
+            </Button>
           </div>
-          <Button type="button" disabled={locked || opening || !port} onClick={() => void open()}>
-            <ExternalLink />
-            {m.ports_open()}
-          </Button>
-        </div>
-        {error && (
-          <p className="text-sm whitespace-pre-line text-destructive" role="alert">
-            {error}
-          </p>
-        )}
+          {error && <FieldError className="whitespace-pre-line">{error}</FieldError>}
+        </FieldGroup>
       </CardContent>
     </Card>
   )

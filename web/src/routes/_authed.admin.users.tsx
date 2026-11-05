@@ -6,19 +6,61 @@ import { useState } from 'react'
 import { z } from 'zod'
 
 import { api, type ListResponse, type QuotaUsage, type User } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
-import { ConfirmButton } from '@/components/confirm-button'
-import { Field } from '@/components/field'
-import { ListCard, ListRow } from '@/components/list'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
-import { Drawer } from '@/components/ui/drawer'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Field,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Separator } from '@/components/ui/separator'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { loginTypeLabel } from '@/lib/labels'
-import { selectClass } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/admin/users')({
@@ -106,7 +148,15 @@ function UsersPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs items={[{ label: m.nav_group_admin() }, { label: m.users_title() }]} />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>{m.nav_group_admin()}</BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{m.users_title()}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={m.users_title()}
         description={m.users_description()}
@@ -129,141 +179,152 @@ function UsersPage() {
               setCreateOpen(true)
             }}
           >
-            <Plus />
+            <Plus data-icon="inline-start" />
             {m.users_new_title()}
           </Button>
         }
       />
 
-      <Drawer
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        title={m.users_new_title()}
-        description={m.users_new_description()}
-        footer={
-          <>
-            <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>
-              {m.common_cancel()}
-            </Button>
+      <Sheet open={createOpen} onOpenChange={setCreateOpen}>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>{m.users_new_title()}</SheetTitle>
+            <SheetDescription>{m.users_new_description()}</SheetDescription>
+          </SheetHeader>
+          <form
+            id="create-user-form"
+            className="flex-1 overflow-y-auto px-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              form.handleSubmit()
+            }}
+          >
+            <FieldGroup>
+              <form.Field name="name">
+                {(field) => (
+                  <Field>
+                    <FieldLabel htmlFor="new-user-name">{m.common_name()}</FieldLabel>
+                    <Input
+                      id="new-user-name"
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value)}
+                    />
+                  </Field>
+                )}
+              </form.Field>
+              <form.Field name="email">
+                {(field) => (
+                  <Field>
+                    <FieldLabel htmlFor="new-user-email">{m.users_email_optional()}</FieldLabel>
+                    <Input
+                      id="new-user-email"
+                      type="email"
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value)}
+                    />
+                  </Field>
+                )}
+              </form.Field>
+
+              <form.Field name="login_type">
+                {(field) => (
+                  <Field>
+                    <FieldLabel htmlFor="new-user-login-type">{m.users_login_type()}</FieldLabel>
+                    <NativeSelect
+                      id="new-user-login-type"
+                      className="w-full"
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value as LoginType)}
+                    >
+                      {LOGIN_TYPES.map((type) => (
+                        <NativeSelectOption key={type} value={type}>
+                          {loginTypeLabel(type)}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </Field>
+                )}
+              </form.Field>
+
+              <form.Subscribe selector={(state) => state.values.login_type}>
+                {(loginType) =>
+                  loginType === 'password' ? (
+                    <form.Field name="password">
+                      {(field) => (
+                        <Field>
+                          <FieldLabel htmlFor="new-user-password">
+                            {m.users_password_label()}
+                          </FieldLabel>
+                          <Input
+                            id="new-user-password"
+                            type="password"
+                            autoComplete="new-password"
+                            value={field.state.value}
+                            onChange={(e) => field.handleChange(e.target.value)}
+                          />
+                        </Field>
+                      )}
+                    </form.Field>
+                  ) : null
+                }
+              </form.Subscribe>
+
+              <form.Field name="is_admin">
+                {(field) => (
+                  <Field orientation="horizontal">
+                    <Checkbox
+                      id="new-user-is-admin"
+                      checked={field.state.value}
+                      onCheckedChange={(checked) => field.handleChange(checked)}
+                    />
+                    <FieldLabel htmlFor="new-user-is-admin">{m.user_administrator()}</FieldLabel>
+                  </Field>
+                )}
+              </form.Field>
+
+              {(createError || create.error) && (
+                <FieldError data-testid="create-user-error">
+                  {createError || <Problem error={create.error} />}
+                </FieldError>
+              )}
+            </FieldGroup>
+          </form>
+          <SheetFooter>
             <Button
               type="submit"
               form="create-user-form"
               disabled={form.state.isSubmitting || create.isPending}
             >
-              <Plus />
+              <Plus data-icon="inline-start" />
               {m.users_create()}
             </Button>
-          </>
-        }
-      >
-        <form
-          id="create-user-form"
-          className="flex flex-col gap-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            form.handleSubmit()
-          }}
-        >
-          <form.Field name="name">
-            {(field) => (
-              <Field label={m.common_name()} htmlFor="new-user-name">
-                <Input
-                  id="new-user-name"
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value)}
-                />
-              </Field>
-            )}
-          </form.Field>
-          <form.Field name="email">
-            {(field) => (
-              <Field label={m.users_email_optional()} htmlFor="new-user-email">
-                <Input
-                  id="new-user-email"
-                  type="email"
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value)}
-                />
-              </Field>
-            )}
-          </form.Field>
-
-          <form.Field name="login_type">
-            {(field) => (
-              <Field label={m.users_login_type()} htmlFor="new-user-login-type">
-                <select
-                  id="new-user-login-type"
-                  className={selectClass}
-                  value={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.value as LoginType)}
-                >
-                  {LOGIN_TYPES.map((type) => (
-                    <option key={type} value={type}>
-                      {loginTypeLabel(type)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
-          </form.Field>
-
-          <form.Subscribe selector={(state) => state.values.login_type}>
-            {(loginType) =>
-              loginType === 'password' ? (
-                <form.Field name="password">
-                  {(field) => (
-                    <Field label={m.users_password_label()} htmlFor="new-user-password">
-                      <Input
-                        id="new-user-password"
-                        type="password"
-                        autoComplete="new-password"
-                        value={field.state.value}
-                        onChange={(e) => field.handleChange(e.target.value)}
-                      />
-                    </Field>
-                  )}
-                </form.Field>
-              ) : null
-            }
-          </form.Subscribe>
-
-          <form.Field name="is_admin">
-            {(field) => (
-              <label className="flex w-fit items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="size-4 accent-brand"
-                  checked={field.state.value}
-                  onChange={(e) => field.handleChange(e.target.checked)}
-                />
-                {m.user_administrator()}
-              </label>
-            )}
-          </form.Field>
-
-          {(createError || create.error) && (
-            <p className="text-sm text-destructive" role="alert" data-testid="create-user-error">
-              {createError || <Problem error={create.error} />}
-            </p>
-          )}
-        </form>
-      </Drawer>
+            <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
+              {m.common_cancel()}
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
       {users.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.users_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.users_loading()}
+        </div>
       )}
       {users.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.users_load_error()}: <Problem error={users.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.users_load_error()}: <Problem error={users.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {users.data && users.data.items.length > 0 && (
-        <ListCard>
+        <ItemGroup className="gap-2">
           {users.data.items.map((user) => (
             <UserRow key={user.id} user={user} isSelf={user.id === me.id} />
           ))}
-        </ListCard>
+        </ItemGroup>
       )}
     </div>
   )
@@ -277,6 +338,7 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
   const [gpus, setGpus] = useState(String(user.quota.gpus))
   const [sandboxes, setSandboxes] = useState(String(user.quota.sandboxes))
   const [password, setPassword] = useState('')
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['users'] })
 
@@ -329,195 +391,224 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
     Number.isInteger(Number(sandboxes)) &&
     Number(sandboxes) >= 0
 
+  const idPrefix = `edit-user-${user.id}`
+
   return (
     <>
-      <ListRow
-        data-testid="user-row"
-        icon={<span aria-hidden="true">{user.name.slice(0, 1).toUpperCase()}</span>}
-        title={
-          <>
-            <span className="truncate text-sm font-medium">{user.name}</span>
+      <Item variant="outline" role="listitem" data-testid="user-row">
+        <ItemMedia variant="icon">
+          <span aria-hidden="true">{user.name.slice(0, 1).toUpperCase()}</span>
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle>
+            {user.name}
             {user.is_admin && (
               <Badge variant="secondary">
-                <ShieldCheck />
+                <ShieldCheck data-icon="inline-start" />
                 {m.users_badge_admin()}
               </Badge>
             )}
             {isSelf && <Badge variant="outline">{m.users_badge_you()}</Badge>}
             {user.deleted_at && <Badge variant="destructive">{m.users_badge_deleted()}</Badge>}
-          </>
-        }
-        description={
-          <>
+          </ItemTitle>
+          <ItemDescription>
             {user.email ?? m.users_no_email()} · {loginTypeLabel(user.login_type)} ·{' '}
             {m.users_limits({ gpus: user.quota.gpus, sandboxes: user.quota.sandboxes })}
-            {remove.error && (
-              <span className="block text-destructive" role="alert">
-                <Problem error={remove.error} />
-              </span>
-            )}
-          </>
-        }
-        trailing={
-          !user.deleted_at && (
-            <>
-              <Button variant="outline" size="sm" onClick={openEditor}>
-                <Pencil />
-                {m.common_edit()}
+          </ItemDescription>
+          {remove.error && (
+            <FieldError>
+              <Problem error={remove.error} />
+            </FieldError>
+          )}
+        </ItemContent>
+        {!user.deleted_at && (
+          <ItemActions>
+            <Button variant="outline" size="sm" onClick={openEditor}>
+              <Pencil data-icon="inline-start" />
+              {m.common_edit()}
+            </Button>
+            {isSelf ? (
+              <Button variant="ghost" size="sm" disabled title={m.users_cannot_delete_self()}>
+                <Trash data-icon="inline-start" />
+                {m.common_delete()}
               </Button>
-              {isSelf ? (
-                <Button variant="ghost" size="sm" disabled title={m.users_cannot_delete_self()}>
-                  <Trash />
-                  {m.common_delete()}
-                </Button>
-              ) : (
-                <ConfirmButton
-                  size="sm"
-                  title={m.users_delete_confirm({ name: user.name })}
-                  description={m.common_irreversible()}
-                  disabled={remove.isPending}
-                  onConfirm={() => remove.mutate()}
+            ) : (
+              <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+                <AlertDialogTrigger
+                  render={<Button variant="ghost" size="sm" disabled={remove.isPending} />}
                 >
-                  <Trash />
+                  <Trash data-icon="inline-start" />
                   {m.common_delete()}
-                </ConfirmButton>
-              )}
-            </>
-          )
-        }
-      />
-
-      <Drawer
-        open={editOpen}
-        onOpenChange={setEditOpen}
-        title={m.users_edit_title({ name: user.name })}
-        description={m.users_edit_description()}
-      >
-        <div className="flex flex-col gap-6">
-          <form
-            id={`edit-user-${user.id}`}
-            className="flex flex-col gap-6"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (quotaValid) save.mutate()
-            }}
-          >
-            <fieldset className="flex flex-col gap-3">
-              <legend className="mb-3 text-sm font-medium">{m.users_section_access()}</legend>
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-xs text-muted-foreground">{m.users_login_type()}</span>
-                <select
-                  className={selectClass}
-                  aria-label={m.users_login_type_for({ name: user.name })}
-                  value={loginType}
-                  onChange={(e) => setLoginType(e.target.value as LoginType)}
-                >
-                  {LOGIN_TYPES.map((type) => (
-                    <option key={type} value={type}>
-                      {loginTypeLabel(type)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex w-fit items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="size-4 accent-brand"
-                  aria-label={m.users_administrator_for({ name: user.name })}
-                  checked={isAdmin}
-                  disabled={isSelf}
-                  onChange={(e) => setIsAdmin(e.target.checked)}
-                />
-                {m.users_admin_label()}
-              </label>
-            </fieldset>
-
-            <fieldset className="flex flex-col gap-3">
-              <legend className="mb-3 text-sm font-medium">{m.users_section_quota()}</legend>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-xs text-muted-foreground">{m.users_gpu_quota()}</span>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="1"
-                    aria-label={m.users_gpu_quota_for({ name: user.name })}
-                    value={gpus}
-                    onChange={(e) => setGpus(e.target.value)}
-                  />
-                </label>
-                <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-xs text-muted-foreground">{m.users_sandbox_quota()}</span>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="1"
-                    aria-label={m.users_sandbox_quota_for({ name: user.name })}
-                    value={sandboxes}
-                    onChange={(e) => setSandboxes(e.target.value)}
-                  />
-                </label>
-              </div>
-            </fieldset>
-
-            {save.error && (
-              <p className="text-sm text-destructive" role="alert" data-testid="user-row-error">
-                <Problem error={save.error} />
-              </p>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>{m.users_delete_confirm({ name: user.name })}</AlertDialogTitle>
+                    <AlertDialogDescription>{m.common_irreversible()}</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                    <AlertDialogAction
+                      variant="destructive"
+                      data-testid="confirm-action"
+                      onClick={() => {
+                        setConfirmOpen(false)
+                        remove.mutate()
+                      }}
+                    >
+                      {m.common_delete()}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             )}
-            <div>
-              <Button type="submit" disabled={save.isPending || !quotaValid}>
-                {m.users_save()}
-              </Button>
-            </div>
-          </form>
+          </ItemActions>
+        )}
+      </Item>
 
-          {user.login_type === 'password' && (
+      <Sheet open={editOpen} onOpenChange={setEditOpen}>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>{m.users_edit_title({ name: user.name })}</SheetTitle>
+            <SheetDescription>{m.users_edit_description()}</SheetDescription>
+          </SheetHeader>
+          <div className="flex flex-1 flex-col gap-6 overflow-y-auto px-4 pb-4">
             <form
-              className="flex flex-col gap-3 border-t border-border pt-6"
+              id={idPrefix}
               onSubmit={(e) => {
                 e.preventDefault()
-                if (password.length >= 12) reset.mutate()
+                if (quotaValid) save.mutate()
               }}
             >
-              <span className="text-sm font-medium">{m.users_reset_password()}</span>
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-xs text-muted-foreground">{m.users_password_label()}</span>
-                <Input
-                  type="password"
-                  autoComplete="new-password"
-                  aria-label={m.users_new_password_for({ name: user.name })}
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value)
-                    reset.reset()
-                  }}
-                />
-              </label>
-              <div className="flex items-center gap-3">
-                <Button
-                  type="submit"
-                  variant="outline"
-                  size="sm"
-                  disabled={password.length < 12 || reset.isPending}
-                >
-                  {m.users_reset_password()}
-                </Button>
-                {reset.isSuccess && (
-                  <span className="text-xs text-success" role="status">
-                    {m.users_password_reset_done()}
-                  </span>
+              <FieldGroup>
+                <FieldSet>
+                  <FieldLegend variant="label">{m.users_section_access()}</FieldLegend>
+                  <Field>
+                    <FieldLabel htmlFor={`${idPrefix}-login-type`}>{m.users_login_type()}</FieldLabel>
+                    <NativeSelect
+                      id={`${idPrefix}-login-type`}
+                      className="w-full"
+                      aria-label={m.users_login_type_for({ name: user.name })}
+                      value={loginType}
+                      onChange={(e) => setLoginType(e.target.value as LoginType)}
+                    >
+                      {LOGIN_TYPES.map((type) => (
+                        <NativeSelectOption key={type} value={type}>
+                          {loginTypeLabel(type)}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </Field>
+                  <Field orientation="horizontal" data-disabled={isSelf || undefined}>
+                    <Checkbox
+                      id={`${idPrefix}-is-admin`}
+                      aria-label={m.users_administrator_for({ name: user.name })}
+                      checked={isAdmin}
+                      disabled={isSelf}
+                      onCheckedChange={(checked) => setIsAdmin(checked)}
+                    />
+                    <FieldLabel htmlFor={`${idPrefix}-is-admin`}>{m.users_admin_label()}</FieldLabel>
+                  </Field>
+                </FieldSet>
+
+                <FieldSet>
+                  <FieldLegend variant="label">{m.users_section_quota()}</FieldLegend>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field>
+                      <FieldLabel htmlFor={`${idPrefix}-gpus`}>{m.users_gpu_quota()}</FieldLabel>
+                      <Input
+                        id={`${idPrefix}-gpus`}
+                        type="number"
+                        min="0"
+                        step="1"
+                        aria-label={m.users_gpu_quota_for({ name: user.name })}
+                        value={gpus}
+                        onChange={(e) => setGpus(e.target.value)}
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor={`${idPrefix}-sandboxes`}>
+                        {m.users_sandbox_quota()}
+                      </FieldLabel>
+                      <Input
+                        id={`${idPrefix}-sandboxes`}
+                        type="number"
+                        min="0"
+                        step="1"
+                        aria-label={m.users_sandbox_quota_for({ name: user.name })}
+                        value={sandboxes}
+                        onChange={(e) => setSandboxes(e.target.value)}
+                      />
+                    </Field>
+                  </div>
+                </FieldSet>
+
+                {save.error && (
+                  <FieldError data-testid="user-row-error">
+                    <Problem error={save.error} />
+                  </FieldError>
                 )}
-              </div>
-              {reset.error && (
-                <p className="text-sm text-destructive" role="alert">
-                  <Problem error={reset.error} />
-                </p>
-              )}
+                <Field orientation="horizontal">
+                  <Button type="submit" disabled={save.isPending || !quotaValid}>
+                    {m.users_save()}
+                  </Button>
+                </Field>
+              </FieldGroup>
             </form>
-          )}
-        </div>
-      </Drawer>
+
+            {user.login_type === 'password' && (
+              <>
+                <Separator />
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    if (password.length >= 12) reset.mutate()
+                  }}
+                >
+                  <FieldSet>
+                    <FieldLegend variant="label">{m.users_reset_password()}</FieldLegend>
+                    <Field>
+                      <FieldLabel htmlFor={`${idPrefix}-password`}>
+                        {m.users_password_label()}
+                      </FieldLabel>
+                      <Input
+                        id={`${idPrefix}-password`}
+                        type="password"
+                        autoComplete="new-password"
+                        aria-label={m.users_new_password_for({ name: user.name })}
+                        value={password}
+                        onChange={(e) => {
+                          setPassword(e.target.value)
+                          reset.reset()
+                        }}
+                      />
+                    </Field>
+                    <Field orientation="horizontal">
+                      <Button
+                        type="submit"
+                        variant="outline"
+                        size="sm"
+                        disabled={password.length < 12 || reset.isPending}
+                      >
+                        {m.users_reset_password()}
+                      </Button>
+                      {reset.isSuccess && (
+                        <span className="text-xs text-success" role="status">
+                          {m.users_password_reset_done()}
+                        </span>
+                      )}
+                    </Field>
+                    {reset.error && (
+                      <FieldError>
+                        <Problem error={reset.error} />
+                      </FieldError>
+                    )}
+                  </FieldSet>
+                </form>
+              </>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </>
   )
 }

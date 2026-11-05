@@ -1,4 +1,6 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
 
 /* Design tokens follow the shadcn base-nova set. The console has no theme
    switch: light and dark both follow the OS (api.md §8). */
@@ -117,7 +119,7 @@
 
 @layer base {
   * {
-    @apply border-border;
+    @apply border-border outline-ring/50;
   }
 
   html {

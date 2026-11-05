@@ -5,14 +5,31 @@ import { useEffect, useState } from 'react'
 import type { Terminal as XTerminal } from '@xterm/xterm'
 
 import { api, type Exec, type ExecResultFrame, type ListResponse, type Sandbox } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
-import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemTitle,
+} from '@/components/ui/item'
+import { Spinner } from '@/components/ui/spinner'
 import { execListPollInterval, followExecOutput, formatExecResult } from '@/lib/exec-stream'
 import { useLocale } from '@/lib/i18n'
 import { messageOf, stateLabel } from '@/lib/labels'
@@ -59,42 +76,61 @@ function ExecsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs
-            items={[
-              { label: m.nav_sandboxes(), to: '/sandboxes' },
-              { label: sandbox.data?.name ?? id, to: '/sandboxes/$id', params: { id } },
-              { label: m.execs_title() },
-            ]}
-          />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/sandboxes" />}>{m.nav_sandboxes()}</BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/sandboxes/$id" params={{ id }} />}>
+                  {sandbox.data?.name ?? id}
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{m.execs_title()}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={m.execs_title()}
         actions={
           <Link
             to="/sandboxes/$id/terminal"
             params={{ id }}
-            className={buttonVariants({ variant: 'outline' })}
+            className={cn(buttonVariants({ variant: 'outline' }))}
           >
-            <Terminal />
+            <Terminal data-icon="inline-start" />
             {m.execs_open_terminal()}
           </Link>
         }
       />
 
       {execs.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.execs_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.execs_loading()}
+        </div>
       )}
       {execs.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.execs_load_error()}: <Problem error={execs.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.execs_load_error()}: <Problem error={execs.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       {execs.data?.items.length === 0 && (
-        <EmptyState
-          icon={<Terminal />}
-          title={m.execs_empty_title()}
-          description={m.execs_empty_description()}
-        />
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Terminal />
+            </EmptyMedia>
+            <EmptyTitle>{m.execs_empty_title()}</EmptyTitle>
+            <EmptyDescription>{m.execs_empty_description()}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
 
       {execs.data && execs.data.items.length > 0 && (
@@ -104,52 +140,48 @@ function ExecsPage() {
               <CardTitle>{m.execs_recent()}</CardTitle>
               <CardDescription>{m.execs_recent_description()}</CardDescription>
             </CardHeader>
-            <CardContent className="px-0 pb-0">
-              <ul className="divide-y divide-border border-t border-border">
+            <CardContent>
+              <ItemGroup className="gap-1">
                 {execs.data.items.map((exec) => (
-                  <li key={exec.id}>
-                    <div
-                      className={cn(
-                        'flex items-start gap-2 px-4 py-3 transition-colors',
-                        selectedId === exec.id ? 'bg-accent' : 'hover:bg-muted/40',
-                      )}
-                    >
+                  <Item
+                    key={exec.id}
+                    role="listitem"
+                    size="sm"
+                    className={cn('items-start', selectedId === exec.id ? 'bg-accent' : 'hover:bg-muted/40')}
+                  >
+                    {/* Two links per row (select, attach), so the row itself is not a link. */}
+                    <ItemContent className="min-w-0">
                       <Link
                         to="/sandboxes/$id/execs"
                         params={{ id }}
                         search={{ exec: exec.id }}
                         aria-current={selectedId === exec.id ? 'true' : undefined}
-                        className="flex min-w-0 flex-1 flex-col gap-1"
+                        className="flex min-w-0 flex-col gap-1"
                       >
-                        <span className="truncate font-mono text-xs font-medium">
-                          {exec.argv.join(' ')}
-                        </span>
-                        <span className="truncate text-[11px] text-muted-foreground">
+                        <ItemTitle className="font-mono text-xs">{exec.argv.join(' ')}</ItemTitle>
+                        <ItemDescription className="truncate text-xs">
                           {formatLocalDateTime(exec.accepted_at)}
-                        </span>
+                        </ItemDescription>
                       </Link>
-                      <div className="flex shrink-0 flex-col items-end gap-1.5">
-                        <StatusBadge
-                          state={exec.state}
-                          data-testid={`exec-state-${exec.id}`}
-                        />
-                        {/* A finished Exec has nothing left to attach to. */}
-                        {exec.state !== 'finished' && (
-                          <Link
-                            to="/sandboxes/$id/terminal"
-                            params={{ id }}
-                            search={{ exec: exec.id }}
-                            data-testid={`exec-attach-${exec.id}`}
-                            className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                          >
-                            {m.execs_attach()}
-                          </Link>
-                        )}
-                      </div>
-                    </div>
-                  </li>
+                    </ItemContent>
+                    <ItemActions className="flex-col items-end gap-1.5">
+                      <StatusBadge state={exec.state} data-testid={`exec-state-${exec.id}`} />
+                      {/* A finished Exec has nothing left to attach to. */}
+                      {exec.state !== 'finished' && (
+                        <Link
+                          to="/sandboxes/$id/terminal"
+                          params={{ id }}
+                          search={{ exec: exec.id }}
+                          data-testid={`exec-attach-${exec.id}`}
+                          className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+                        >
+                          {m.execs_attach()}
+                        </Link>
+                      )}
+                    </ItemActions>
+                  </Item>
                 ))}
-              </ul>
+              </ItemGroup>
             </CardContent>
           </Card>
 
@@ -180,9 +212,9 @@ function ExecsPage() {
                 </CardHeader>
                 <CardContent>
                   {cancelError && (
-                    <p className="mb-2 text-sm whitespace-pre-line text-destructive" role="alert">
-                      {cancelError}
-                    </p>
+                    <Alert variant="destructive" className="mb-2">
+                      <AlertDescription className="whitespace-pre-line">{cancelError}</AlertDescription>
+                    </Alert>
                   )}
                   <ExecLog exec={selected} />
                 </CardContent>
@@ -190,12 +222,15 @@ function ExecsPage() {
             )}
 
             {!selected && !selectedId && (
-              <EmptyState
-                icon={<Terminal />}
-                title={m.execs_no_selected_title()}
-                description={m.execs_no_selected_description()}
-                className="h-full"
-              />
+              <Empty className="h-full border">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Terminal />
+                  </EmptyMedia>
+                  <EmptyTitle>{m.execs_no_selected_title()}</EmptyTitle>
+                  <EmptyDescription>{m.execs_no_selected_description()}</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
             )}
           </div>
         </div>

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Download, File, Folder, FolderOpen, Link2, Package, Pin, Trash } from 'lucide-react'
+import { useState } from 'react'
 
 import {
   api,
@@ -9,15 +10,43 @@ import {
   type Resource,
   type ResourceVersion,
 } from '@/api'
-import { Breadcrumbs } from '@/components/breadcrumbs'
-import { EmptyState } from '@/components/empty-state'
-import { ConfirmButton } from '@/components/confirm-button'
 import { PageHeader } from '@/components/page-header'
 import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
+import { Spinner } from '@/components/ui/spinner'
 import {
   Table,
   TableBody,
@@ -31,6 +60,7 @@ import { useLocale } from '@/lib/i18n'
 import { causeLabel } from '@/lib/labels'
 import { parseProvenance, resourceVersionsPollInterval } from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 // The manifest may hold up to 1,000,000 entries (api.md §3).
@@ -45,6 +75,7 @@ export const Route = createFileRoute('/_authed/resources/$id')({
 })
 
 function ResourceDetailPage() {
+  const [confirmOpen, setConfirmOpen] = useState(false)
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { id } = Route.useParams()
   const { version: selectedId } = Route.useSearch()
@@ -90,12 +121,17 @@ function ResourceDetailPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         above={
-          <Breadcrumbs
-            items={[
-              { label: m.nav_resources(), to: '/resources' },
-              { label: current?.name ?? id },
-            ]}
-          />
+          <Breadcrumb aria-label={m.common_breadcrumb()}>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/resources" />}>{m.nav_resources()}</BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{current?.name ?? id}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         }
         title={current?.name ?? id}
         meta={
@@ -109,42 +145,68 @@ function ResourceDetailPage() {
         actions={
           current &&
           !current.deleted_at && (
-            <ConfirmButton
-              variant="outline"
-              title={m.resource_delete_confirm({ name: current.name })}
-              description={m.common_irreversible()}
-              disabled={remove.isPending}
-              onConfirm={() => remove.mutate()}
-            >
-              <Trash />
-              {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
-            </ConfirmButton>
+            <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+              <AlertDialogTrigger render={<Button variant="outline" disabled={remove.isPending} />}>
+                <Trash data-icon="inline-start" />
+                {remove.isPending ? m.snapshot_deleting() : m.common_delete()}
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{m.resource_delete_confirm({ name: current.name })}</AlertDialogTitle>
+                  <AlertDialogDescription>{m.common_irreversible()}</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                  <AlertDialogAction
+                    variant="destructive"
+                    data-testid="confirm-action"
+                    onClick={() => {
+                      setConfirmOpen(false)
+                      remove.mutate()
+                    }}
+                  >
+                    {m.common_delete()}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           )
         }
       />
 
       {remove.error && (
-        <p className="text-sm text-destructive" role="alert">
-          <Problem error={remove.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            <Problem error={remove.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {setCurrent.error && (
-        <p className="text-sm text-destructive" role="alert" data-testid="version-action-error">
-          <Problem error={setCurrent.error} />
-        </p>
+        <Alert variant="destructive" data-testid="version-action-error">
+          <AlertDescription>
+            <Problem error={setCurrent.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {resource.isPending && (
-        <p className="py-8 text-sm text-muted-foreground">{m.common_loading()}</p>
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Spinner />
+          {m.common_loading()}
+        </div>
       )}
       {resource.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.resource_load_error()}: <Problem error={resource.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.resource_load_error()}: <Problem error={resource.error} />
+          </AlertDescription>
+        </Alert>
       )}
       {versions.error && (
-        <p className="text-sm text-destructive" role="alert">
-          {m.snapshot_versions_load_error()}: <Problem error={versions.error} />
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>
+            {m.snapshot_versions_load_error()}: <Problem error={versions.error} />
+          </AlertDescription>
+        </Alert>
       )}
 
       <Card>
@@ -154,15 +216,21 @@ function ResourceDetailPage() {
         </CardHeader>
         <CardContent className="px-0 pb-0">
           {versions.isPending && (
-            <p className="px-5 pb-4 text-sm text-muted-foreground">{m.common_loading()}</p>
+            <div className="flex items-center gap-2 px-5 pb-4 text-sm text-muted-foreground">
+              <Spinner />
+              {m.common_loading()}
+            </div>
           )}
           {versions.data?.items.length === 0 && (
-            <EmptyState
-              icon={<Package />}
-              title={m.snapshot_versions_empty_title()}
-              description={m.resource_versions_empty_description()}
-              className="mx-5 mb-5 border-0 bg-muted/20"
-            />
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <Package />
+                </EmptyMedia>
+                <EmptyTitle>{m.snapshot_versions_empty_title()}</EmptyTitle>
+                <EmptyDescription>{m.resource_versions_empty_description()}</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           )}
           {versions.data && versions.data.items.length > 0 && (
             <Table>
@@ -225,9 +293,9 @@ function ResourceDetailPage() {
                               params={{ id }}
                               search={{ version: version.id }}
                               data-testid={`version-files-${version.id}`}
-                              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                              className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
                             >
-                              <FolderOpen />
+                              <FolderOpen data-icon="inline-start" />
                               {m.files_title()}
                             </Link>
                           )}
@@ -239,7 +307,7 @@ function ResourceDetailPage() {
                               data-testid={`version-set-current-${version.id}`}
                               onClick={() => setCurrent.mutate(version.id)}
                             >
-                              <Pin />
+                              <Pin data-icon="inline-start" />
                               {m.snapshot_version_set_current()}
                             </Button>
                           )}
@@ -307,63 +375,76 @@ function VersionFiles({ resourceId, versionId }: { resourceId: string; versionId
         <CardDescription className="font-mono">{versionId}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {manifest.isPending && <p className="text-muted-foreground">{m.common_loading()}</p>}
+        {manifest.isPending && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
+            {m.common_loading()}
+          </div>
+        )}
         {manifest.error && (
-          <p className="text-destructive" role="alert">
-            <Problem error={manifest.error} />
-          </p>
+          <Alert variant="destructive">
+            <AlertDescription>
+              <Problem error={manifest.error} />
+            </AlertDescription>
+          </Alert>
         )}
         {download.error && (
-          <p className="text-destructive" role="alert">
-            <Problem error={download.error} />
-          </p>
+          <Alert variant="destructive">
+            <AlertDescription>
+              <Problem error={download.error} />
+            </AlertDescription>
+          </Alert>
         )}
-        {manifest.data && (
-          <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
-            {entries.length === 0 && (
-              <li className="px-3 py-6 text-center text-xs text-muted-foreground">
-                {m.files_empty()}
-              </li>
-            )}
+        {manifest.data && entries.length === 0 && (
+          <Empty className="border">
+            <EmptyHeader>
+              <EmptyTitle>{m.files_empty()}</EmptyTitle>
+            </EmptyHeader>
+          </Empty>
+        )}
+        {entries.length > 0 && (
+          <ItemGroup className="gap-2">
             {entries.slice(0, MANIFEST_SHOWN).map((entry) => (
-              <li
+              <Item
                 key={entry.path}
-                className="flex min-w-0 items-center gap-2.5 px-3 py-2"
+                variant="outline"
+                size="sm"
+                role="listitem"
                 data-testid={`manifest-${entry.path}`}
               >
-                {entry.type === 'dir' ? (
-                  <Folder className="size-4 shrink-0 text-muted-foreground" />
-                ) : (
-                  <File className="size-4 shrink-0 text-muted-foreground" />
-                )}
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate font-mono text-sm">
+                <ItemMedia variant="icon">
+                  {entry.type === 'dir' ? <Folder /> : <File />}
+                </ItemMedia>
+                <ItemContent className="min-w-0">
+                  <ItemTitle className="font-mono">
                     {entry.path}
                     {entry.type === 'dir' ? '/' : ''}
                     {entry.type === 'symlink' ? ` → ${entry.target ?? ''}` : ''}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
+                  </ItemTitle>
+                  <ItemDescription>
                     {entry.type === 'file'
                       ? formatBytes(entry.size ?? 0) + (entry.executable ? ' · +x' : '')
                       : entry.type === 'dir'
                         ? m.files_directory()
                         : m.resource_symlink()}
-                  </span>
-                </div>
+                  </ItemDescription>
+                </ItemContent>
                 {entry.type === 'file' && entry.sha256 && (
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    disabled={download.isPending}
-                    onClick={() => download.mutate(entry)}
-                  >
-                    <Download />
-                    {m.files_download()}
-                  </Button>
+                  <ItemActions>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      disabled={download.isPending}
+                      onClick={() => download.mutate(entry)}
+                    >
+                      <Download data-icon="inline-start" />
+                      {m.files_download()}
+                    </Button>
+                  </ItemActions>
                 )}
-              </li>
+              </Item>
             ))}
-          </ul>
+          </ItemGroup>
         )}
         {entries.length > MANIFEST_SHOWN && (
           <p className="text-xs text-muted-foreground">
