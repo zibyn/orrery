@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { type Snapshot, type SnapshotVersion, type SnapshotVersionState } from '@/api'
 import {
   baseSnapshotOptions,
+  snapshotForRef,
   buildExecPollInterval,
   buildLogMode,
   buildLogView,
@@ -209,5 +210,27 @@ describe('versionActions', () => {
       setCurrent: false,
       delete: false,
     })
+  })
+})
+
+describe('snapshotForRef', () => {
+  const platform = { id: 'p', name: 'default', owner_id: null } as Snapshot
+  const own = { id: '01a1a8d2-dfec-7a63-80b8-810708dc52de', name: 'python-ml', owner_id: 'u' } as Snapshot
+
+  it('maps a platform ref to the platform Snapshot by name', () => {
+    expect(snapshotForRef('127.0.0.1:15000/platform/default@sha256:abc', [own, platform])).toEqual({
+      snapshot: platform,
+      label: 'default',
+      digest: 'sha256:abc',
+    })
+  })
+
+  it('maps an owned ref to its Snapshot by id', () => {
+    const ref = `reg:5000/snapshots/${own.id}@sha256:def`
+    expect(snapshotForRef(ref, [platform, own]).snapshot).toBe(own)
+  })
+
+  it('falls back to the raw ref when it has neither form', () => {
+    expect(snapshotForRef('python:3.12', [])).toEqual({ label: 'python:3.12' })
   })
 })

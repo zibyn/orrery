@@ -436,7 +436,7 @@
   "workspace_files_hint": "To browse files, open a ready Sandbox that has this Workspace attached.",
   "files_publish": "Publish",
   "files_publish_dir": "Publish this directory",
-  "files_publish_status": "Publish:",
+  "files_publish_status": "Publishing {name}:",
   "files_publish_open": "Open Resource",
   "resource_download_missing": "The server returned no download URL.",
   "account_never": "never",
@@ -488,5 +488,6 @@
   "files_publish_title": "Publish as Resource",
   "files_publish_description": "Publishes {path} as a new version of the Resource. A name that doesn't exist yet creates the Resource.",
   "files_publish_name": "Resource name",
-  "nodes_no_gpu": "No GPUs"
+  "nodes_no_gpu": "No GPUs",
+  "sandbox_stopped_hint": "Start the Sandbox to browse its files and open ports."
 }

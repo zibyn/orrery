@@ -145,6 +145,7 @@ function SnapshotDetailPage() {
                   </Link>
                   <ConfirmButton
                     variant="outline"
+                    testId="snapshot-delete"
                     title={m.snapshot_delete_confirm({ name: current.name })}
                     description={m.common_irreversible()}
                     disabled={remove.isPending}

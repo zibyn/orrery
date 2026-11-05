@@ -144,7 +144,9 @@ export function SandboxFiles({
             <Problem error={publish.error} />
           </p>
         )}
-        {publish.data && <PublishStatus version={publish.data} />}
+        {publish.data && publish.variables && (
+          <PublishStatus version={publish.data} name={publish.variables.resource} />
+        )}
 
         <Drawer
           open={publishing !== null}
@@ -268,7 +270,7 @@ export function SandboxFiles({
   )
 }
 
-function PublishStatus({ version: accepted }: { version: ResourceVersion }) {
+function PublishStatus({ version: accepted, name }: { version: ResourceVersion; name: string }) {
   const version = useQuery({
     queryKey: ['resource-version', accepted.resource_id, accepted.id],
     queryFn: () =>
@@ -279,7 +281,7 @@ function PublishStatus({ version: accepted }: { version: ResourceVersion }) {
   const current = version.data
   return (
     <p className="flex flex-wrap items-center gap-2 text-xs" data-testid="publish-status">
-      <span className="text-muted-foreground">{m.files_publish_status()}</span>
+      <span className="text-muted-foreground">{m.files_publish_status({ name })}</span>
       <StatusBadge state={current.state} data-testid="publish-state" />
       {current.cause && <span className="text-muted-foreground">{causeLabel(current.cause)}</span>}
       <Link

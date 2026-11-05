@@ -128,7 +128,8 @@ test('console: create a Snapshot with its first version, reject a duplicate name
 
   // Deleting after confirming returns to the list, without the Snapshot.
   await page.goto(detailUrl)
-  await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  // The failed import's row has its own Delete; target the Snapshot's.
+  await page.getByTestId('snapshot-delete').click()
   await page.getByTestId('confirm-action').click()
   await expect(page).toHaveURL(/\/snapshots$/)
   await expect(page.getByRole('heading', { name: 'Snapshots' })).toBeVisible()

@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Play, ScrollText, Square, Terminal, Trash } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import { api, type Sandbox } from '@/api'
+import { api, type ListResponse, type Sandbox, type Snapshot } from '@/api'
 import { Breadcrumbs } from '@/components/breadcrumbs'
 import { ConfirmButton } from '@/components/confirm-button'
 import { PageHeader } from '@/components/page-header'
@@ -22,6 +22,7 @@ import {
   workspaceModeLabel,
 } from '@/lib/labels'
 import { sandboxPollInterval } from '@/lib/sandbox'
+import { snapshotForRef } from '@/lib/snapshots'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
@@ -48,6 +49,11 @@ function SandboxDetailPage() {
     queryKey: ['sandbox', id],
     queryFn: () => api<Sandbox>('GET', `/sandboxes/${id}`),
     refetchInterval: (query) => sandboxPollInterval(query.state.data?.state),
+  })
+
+  const snapshots = useQuery({
+    queryKey: ['snapshots'],
+    queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots?limit=200'),
   })
 
   const action = useMutation({
@@ -214,18 +220,16 @@ function SandboxDetailPage() {
                   </span>
                 </Detail>
               )}
-              <div className="col-span-2">
-                <Detail label={m.label_snapshot()}>
-                  <span className="font-mono text-xs break-all">{current.snapshot}</span>
-                </Detail>
-              </div>
+              <SnapshotDetail refName={current.snapshot} snapshots={snapshots.data?.items ?? []} />
             </dl>
           </CardContent>
         </Card>
       )}
 
       {current && current.state !== 'ready' && !busy && (
-        <p className="text-sm text-muted-foreground">{m.sandbox_ready_hint()}</p>
+        <p className="text-sm text-muted-foreground">
+          {current.state === 'stopped' ? m.sandbox_stopped_hint() : m.sandbox_ready_hint()}
+        </p>
       )}
 
       {current?.state === 'ready' && (
@@ -235,5 +239,27 @@ function SandboxDetailPage() {
         </div>
       )}
     </div>
+  )
+}
+
+function SnapshotDetail({ refName, snapshots }: { refName: string; snapshots: Snapshot[] }) {
+  const { snapshot, label, digest } = snapshotForRef(refName, snapshots)
+  return (
+    <Detail label={m.label_snapshot()}>
+      <span title={refName}>
+        {snapshot ? (
+          <Link to="/snapshots/$id" params={{ id: snapshot.id }} className="hover:underline">
+            {label}
+          </Link>
+        ) : (
+          <span className="break-all">{label}</span>
+        )}
+        {digest && (
+          <span className="ml-1.5 font-mono text-xs text-muted-foreground">
+            {digest.slice(0, 19)}
+          </span>
+        )}
+      </span>
+    </Detail>
   )
 }

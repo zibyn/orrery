@@ -76,3 +76,18 @@ export function snapshotOwnerLabel(snapshot: Snapshot, currentUserId: string | u
   if (currentUserId && snapshot.owner_id === currentUserId) return m.snapshot_owner_you()
   return snapshot.owner_id
 }
+
+// A Sandbox reports the resolved image ref (<registry>/platform/<name>@<digest>
+// or <registry>/snapshots/<id>@<digest>); find the Snapshot it came from.
+export function snapshotForRef(
+  ref: string,
+  snapshots: Snapshot[],
+): { snapshot?: Snapshot; label: string; digest?: string } {
+  const match = /\/(platform\/([^/@]+)|snapshots\/([0-9a-f-]{36}))(?:@(sha256:[0-9a-f]+))?$/.exec(ref)
+  if (!match) return { label: ref }
+  const [, , platformName, snapshotId, digest] = match
+  const snapshot = snapshots.find((item) =>
+    platformName ? item.owner_id === null && item.name === platformName : item.id === snapshotId,
+  )
+  return { snapshot, label: snapshot?.name ?? platformName ?? snapshotId, digest }
+}

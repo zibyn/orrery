@@ -133,15 +133,18 @@ function ExecsPage() {
                           state={exec.state}
                           data-testid={`exec-state-${exec.id}`}
                         />
-                        <Link
-                          to="/sandboxes/$id/terminal"
-                          params={{ id }}
-                          search={{ exec: exec.id }}
-                          data-testid={`exec-attach-${exec.id}`}
-                          className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                        >
-                          {m.execs_attach()}
-                        </Link>
+                        {/* A finished Exec has nothing left to attach to. */}
+                        {exec.state !== 'finished' && (
+                          <Link
+                            to="/sandboxes/$id/terminal"
+                            params={{ id }}
+                            search={{ exec: exec.id }}
+                            data-testid={`exec-attach-${exec.id}`}
+                            className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                          >
+                            {m.execs_attach()}
+                          </Link>
+                        )}
                       </div>
                     </div>
                   </li>

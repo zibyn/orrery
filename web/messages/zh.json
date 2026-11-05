@@ -436,7 +436,7 @@
   "workspace_files_hint": "要浏览文件，请打开挂载了这个工作区且已就绪的沙箱。",
   "files_publish": "发布",
   "files_publish_dir": "发布当前目录",
-  "files_publish_status": "发布：",
+  "files_publish_status": "发布 {name}：",
   "files_publish_open": "打开资源",
   "resource_download_missing": "服务端没有返回下载地址。",
   "account_never": "从不",
@@ -488,5 +488,6 @@
   "files_publish_title": "发布为资源",
   "files_publish_description": "把 {path} 发布为资源的新版本。名称不存在时会新建资源。",
   "files_publish_name": "资源名称",
-  "nodes_no_gpu": "无 GPU"
+  "nodes_no_gpu": "无 GPU",
+  "sandbox_stopped_hint": "启动沙箱后，可以在这里浏览文件、打开端口。"
 }
