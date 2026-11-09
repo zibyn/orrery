@@ -72,45 +72,6 @@ func (q *Queries) AppendExecChunk(ctx context.Context, arg AppendExecChunkParams
 	return err
 }
 
-const bindUserOIDCIdentity = `-- name: BindUserOIDCIdentity :one
-UPDATE users
-SET oidc_issuer = $2, oidc_subject = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL AND login_type = 'oidc'
-  AND oidc_issuer IS NULL AND oidc_subject IS NULL
-RETURNING id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at
-`
-
-type BindUserOIDCIdentityParams struct {
-	ID          uuid.UUID
-	OidcIssuer  *string
-	OidcSubject *string
-}
-
-// BindUserOIDCIdentity links an identity only to an unlinked OIDC User, so a
-// concurrent login that bound first is never overwritten (ADR-0020).
-func (q *Queries) BindUserOIDCIdentity(ctx context.Context, arg BindUserOIDCIdentityParams) (User, error) {
-	row := q.db.QueryRow(ctx, bindUserOIDCIdentity, arg.ID, arg.OidcIssuer, arg.OidcSubject)
-	var i User
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Email,
-		&i.IsAdmin,
-		&i.LoginType,
-		&i.PasswordHash,
-		&i.OidcIssuer,
-		&i.OidcSubject,
-		&i.GpuQuota,
-		&i.SandboxQuota,
-		&i.IdempotencyKey,
-		&i.CreatedBy,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeletedAt,
-	)
-	return i, err
-}
-
 const bootstrapAdmin = `-- name: BootstrapAdmin :one
 INSERT INTO users (
     id, name, email, is_admin, login_type, password_hash,
@@ -794,11 +755,7 @@ const createOIDCUser = `-- name: CreateOIDCUser :one
 INSERT INTO users (
     id, name, email, is_admin, login_type, oidc_issuer, oidc_subject,
     gpu_quota, sandbox_quota
-) VALUES (
-    $1, $2, $3,
-    NOT EXISTS (SELECT 1 FROM users),
-    'oidc', $4, $5, $6, $7
-)
+) VALUES ($1, $2, $3, $4, 'oidc', $5, $6, $7, $8)
 RETURNING id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at
 `
 
@@ -806,19 +763,21 @@ type CreateOIDCUserParams struct {
 	ID           uuid.UUID
 	Name         string
 	Email        *string
+	IsAdmin      bool
 	OidcIssuer   *string
 	OidcSubject  *string
 	GpuQuota     int32
 	SandboxQuota int32
 }
 
-// CreateOIDCUser creates an OIDC User; the first User in the table is the
-// admin, even when allow_signups is off (ADR-0020).
+// CreateOIDCUser creates the User of a first Polaris login; is_admin comes
+// from the access token's entitlements (ADR-0029).
 func (q *Queries) CreateOIDCUser(ctx context.Context, arg CreateOIDCUserParams) (User, error) {
 	row := q.db.QueryRow(ctx, createOIDCUser,
 		arg.ID,
 		arg.Name,
 		arg.Email,
+		arg.IsAdmin,
 		arg.OidcIssuer,
 		arg.OidcSubject,
 		arg.GpuQuota,
@@ -858,7 +817,7 @@ WHERE u.id = $8
   AND u.password_hash = $9
   AND u.deleted_at IS NULL
 FOR SHARE
-RETURNING id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at
+RETURNING id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at, sid
 `
 
 type CreatePasswordTokenParams struct {
@@ -902,6 +861,7 @@ func (q *Queries) CreatePasswordToken(ctx context.Context, arg CreatePasswordTok
 		&i.LastUsedAt,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.Sid,
 	)
 	return i, err
 }
@@ -1248,9 +1208,9 @@ func (q *Queries) CreateSnapshotVersion(ctx context.Context, arg CreateSnapshotV
 const createToken = `-- name: CreateToken :one
 
 INSERT INTO api_tokens (
-    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at
+    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key, sid
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at, sid
 `
 
 type CreateTokenParams struct {
@@ -1262,6 +1222,7 @@ type CreateTokenParams struct {
 	Scope          string
 	ExpiresAt      pgtype.Timestamptz
 	IdempotencyKey *string
+	Sid            *string
 }
 
 // API tokens
@@ -1275,6 +1236,7 @@ func (q *Queries) CreateToken(ctx context.Context, arg CreateTokenParams) (ApiTo
 		arg.Scope,
 		arg.ExpiresAt,
 		arg.IdempotencyKey,
+		arg.Sid,
 	)
 	var i ApiToken
 	err := row.Scan(
@@ -1288,6 +1250,7 @@ func (q *Queries) CreateToken(ctx context.Context, arg CreateTokenParams) (ApiTo
 		&i.LastUsedAt,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.Sid,
 	)
 	return i, err
 }
@@ -2889,7 +2852,7 @@ func (q *Queries) GetSnapshotVersionByIdempotencyKey(ctx context.Context, arg Ge
 }
 
 const getToken = `-- name: GetToken :one
-SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at FROM api_tokens WHERE id = $1
+SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at, sid FROM api_tokens WHERE id = $1
 `
 
 func (q *Queries) GetToken(ctx context.Context, id uuid.UUID) (ApiToken, error) {
@@ -2906,12 +2869,13 @@ func (q *Queries) GetToken(ctx context.Context, id uuid.UUID) (ApiToken, error) 
 		&i.LastUsedAt,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.Sid,
 	)
 	return i, err
 }
 
 const getTokenByIdempotencyKey = `-- name: GetTokenByIdempotencyKey :one
-SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at FROM api_tokens WHERE user_id = $1 AND idempotency_key = $2
+SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at, sid FROM api_tokens WHERE user_id = $1 AND idempotency_key = $2
 `
 
 type GetTokenByIdempotencyKeyParams struct {
@@ -2933,6 +2897,7 @@ func (q *Queries) GetTokenByIdempotencyKey(ctx context.Context, arg GetTokenById
 		&i.LastUsedAt,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.Sid,
 	)
 	return i, err
 }
@@ -3003,33 +2968,6 @@ SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_s
 
 func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 	row := q.db.QueryRow(ctx, getUser, id)
-	var i User
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Email,
-		&i.IsAdmin,
-		&i.LoginType,
-		&i.PasswordHash,
-		&i.OidcIssuer,
-		&i.OidcSubject,
-		&i.GpuQuota,
-		&i.SandboxQuota,
-		&i.IdempotencyKey,
-		&i.CreatedBy,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeletedAt,
-	)
-	return i, err
-}
-
-const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at FROM users WHERE email = $1 AND deleted_at IS NULL
-`
-
-func (q *Queries) GetUserByEmail(ctx context.Context, email *string) (User, error) {
-	row := q.db.QueryRow(ctx, getUserByEmail, email)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -5064,7 +5002,7 @@ func (q *Queries) ListSweepableCASObjects(ctx context.Context, arg ListSweepable
 }
 
 const listTokens = `-- name: ListTokens :many
-SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at FROM api_tokens
+SELECT id, user_id, kind, name, secret_hash, scope, expires_at, last_used_at, idempotency_key, created_at, sid FROM api_tokens
 WHERE user_id = $1
   AND ($2::uuid IS NULL OR id > $2)
 ORDER BY id
@@ -5097,6 +5035,7 @@ func (q *Queries) ListTokens(ctx context.Context, arg ListTokensParams) ([]ApiTo
 			&i.LastUsedAt,
 			&i.IdempotencyKey,
 			&i.CreatedAt,
+			&i.Sid,
 		); err != nil {
 			return nil, err
 		}
@@ -6563,6 +6502,49 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+	)
+	return i, err
+}
+
+const syncOIDCUser = `-- name: SyncOIDCUser :one
+UPDATE users
+SET name = $2, email = $3, is_admin = $4, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at
+`
+
+type SyncOIDCUserParams struct {
+	ID      uuid.UUID
+	Name    string
+	Email   *string
+	IsAdmin bool
+}
+
+// SyncOIDCUser copies a returning login's claims onto its User (ADR-0029).
+func (q *Queries) SyncOIDCUser(ctx context.Context, arg SyncOIDCUserParams) (User, error) {
+	row := q.db.QueryRow(ctx, syncOIDCUser,
+		arg.ID,
+		arg.Name,
+		arg.Email,
+		arg.IsAdmin,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.IsAdmin,
+		&i.LoginType,
+		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
+		&i.GpuQuota,
+		&i.SandboxQuota,
+		&i.IdempotencyKey,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }

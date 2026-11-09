@@ -17,29 +17,20 @@ SELECT * FROM users WHERE name = $1 AND deleted_at IS NULL;
 SELECT * FROM users
 WHERE oidc_issuer = $1 AND oidc_subject = $2 AND deleted_at IS NULL;
 
--- name: GetUserByEmail :one
-SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
-
--- BindUserOIDCIdentity links an identity only to an unlinked OIDC User, so a
--- concurrent login that bound first is never overwritten (ADR-0020).
--- name: BindUserOIDCIdentity :one
-UPDATE users
-SET oidc_issuer = $2, oidc_subject = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL AND login_type = 'oidc'
-  AND oidc_issuer IS NULL AND oidc_subject IS NULL
-RETURNING *;
-
--- CreateOIDCUser creates an OIDC User; the first User in the table is the
--- admin, even when allow_signups is off (ADR-0020).
+-- CreateOIDCUser creates the User of a first Polaris login; is_admin comes
+-- from the access token's entitlements (ADR-0029).
 -- name: CreateOIDCUser :one
 INSERT INTO users (
     id, name, email, is_admin, login_type, oidc_issuer, oidc_subject,
     gpu_quota, sandbox_quota
-) VALUES (
-    $1, $2, $3,
-    NOT EXISTS (SELECT 1 FROM users),
-    'oidc', $4, $5, $6, $7
-)
+) VALUES ($1, $2, $3, $4, 'oidc', $5, $6, $7, $8)
+RETURNING *;
+
+-- SyncOIDCUser copies a returning login's claims onto its User (ADR-0029).
+-- name: SyncOIDCUser :one
+UPDATE users
+SET name = $2, email = $3, is_admin = $4, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
 -- LockUser serializes quota checks of one User: concurrent creates and starts
@@ -106,8 +97,8 @@ RETURNING *;
 
 -- name: CreateToken :one
 INSERT INTO api_tokens (
-    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key, sid
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- CreatePasswordToken inserts a token only while the User still has the

@@ -90,7 +90,7 @@ func (s *Server) createLoginToken(w http.ResponseWriter, r *http.Request, user s
 }
 
 func (s *Server) createBrowserSession(w http.ResponseWriter, r *http.Request, user store.User, passwordHash string) {
-	token, err := s.startBrowserSession(w, r.Context(), user, &passwordHash, nil)
+	token, err := s.startBrowserSession(w, r.Context(), user, &passwordHash, nil, nil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeUnauthenticated(w, "invalid username or password")
 		return
@@ -103,10 +103,10 @@ func (s *Server) createBrowserSession(w http.ResponseWriter, r *http.Request, us
 }
 
 // startBrowserSession mints a Session, sets its cookie and audits it. A nil
-// passwordHash is an OIDC login; otherwise the insert is conditional on that
+// passwordHash is an OIDC login, whose Polaris sid is recorded; otherwise the insert is conditional on that
 // hash still being current (#123). No idempotency key: the cookie is the only
 // copy of the secret, so a retried login cannot return the old one (api.md §1).
-func (s *Server) startBrowserSession(w http.ResponseWriter, ctx context.Context, user store.User, passwordHash *string, detail any) (store.ApiToken, error) {
+func (s *Server) startBrowserSession(w http.ResponseWriter, ctx context.Context, user store.User, passwordHash, sid *string, detail any) (store.ApiToken, error) {
 	raw, id, hash, err := NewToken()
 	if err != nil {
 		return store.ApiToken{}, err
@@ -124,6 +124,7 @@ func (s *Server) startBrowserSession(w http.ResponseWriter, ctx context.Context,
 		SecretHash: hash,
 		Scope:      scope,
 		ExpiresAt:  timestamptzPtr(&expires),
+		Sid:        sid,
 	}, passwordHash)
 	if err != nil {
 		return store.ApiToken{}, err

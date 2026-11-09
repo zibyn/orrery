@@ -408,12 +408,13 @@ encryption_keys:
 #   - {id: gitea, type: gitea, client_id: ..., client_secret: ...,
 #      base_url: https://git.example.com, scopes: [read:user]}
 
+# Polaris, the only login (ADR-0029, docs/deploy.md). Required: the server
+# does not start until this block is filled in and uncommented.
 # oidc:
-#   issuer_url: https://idp.example.com
+#   issuer_url: https://polaris.example.com
 #   client_id: ...
 #   client_secret: ...
-#   email_domains: []
-#   allow_signups: false
+#   audience: api://orrery
 
 # A Sandbox needs a Platform Snapshot, referenced by digest:
 # platform_snapshots:

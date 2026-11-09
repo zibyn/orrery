@@ -42,6 +42,7 @@ type ApiToken struct {
 	LastUsedAt     pgtype.Timestamptz
 	IdempotencyKey *string
 	CreatedAt      pgtype.Timestamptz
+	Sid            *string
 }
 
 type Attachment struct {

@@ -148,7 +148,7 @@ export ORRERY_REGISTRY_CREDENTIAL="${ORRERY_REGISTRY_CREDENTIAL:-{\"auths\":{\"1
 # URIs use the host gateway because ORRERY_ACCESS_URL also does (defaults.md).
 export ORRERY_OIDC_ISSUER_URL="${ORRERY_OIDC_ISSUER_URL:-http://dex:5556/dex}"
 export ORRERY_OIDC_CLIENT_ID="${ORRERY_OIDC_CLIENT_ID:-orrery}"
-export ORRERY_OIDC_ALLOW_SIGNUPS="${ORRERY_OIDC_ALLOW_SIGNUPS:-false}"
+export ORRERY_OIDC_AUDIENCE="${ORRERY_OIDC_AUDIENCE:-api://orrery}"
 export ORRERY_OIDC_ACCESS_URL="${ORRERY_OIDC_ACCESS_URL:-http://${HOST_GATEWAY}:18082}"
 mkdir -p .e2e/oidc .e2e/dex
 E2E_OIDC_SECRET="orrery-oidc-secret"
@@ -341,8 +341,7 @@ oidc:
   issuer_url: ${ORRERY_OIDC_ISSUER_URL}
   client_id: ${ORRERY_OIDC_CLIENT_ID}
   client_secret: ${E2E_OIDC_SECRET}
-  email_domains: []
-  allow_signups: ${ORRERY_OIDC_ALLOW_SIGNUPS}
+  audience: ${ORRERY_OIDC_AUDIENCE}
 s3:
   endpoint: ${ORRERY_S3_ENDPOINT}
   public_endpoint: ${ORRERY_S3_PUBLIC_ENDPOINT}

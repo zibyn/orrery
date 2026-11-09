@@ -12,6 +12,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	polaris "github.com/zibyn/polaris/sdk/go"
 	"google.golang.org/grpc"
 
 	"github.com/zibyn/orrery/internal/objectstore"
@@ -32,6 +33,7 @@ type Server struct {
 	activity     *activityTracker
 	oidcMu       sync.Mutex
 	oidcProvider *oidc.Provider
+	polaris      *polaris.Verifier // with oidcProvider, under oidcMu
 	// snapshotCancels ends in-flight imports (api.md §3). Imports do not
 	// survive a restart, so an in-process map is the whole registry.
 	snapshotMu      sync.Mutex
