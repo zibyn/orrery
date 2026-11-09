@@ -154,6 +154,10 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request, _ *p
 		s.internal(w, "resolve OIDC User", err)
 		return
 	}
+	if user.DisabledAt.Valid {
+		writeProblem(w, "permission_denied", "this User is disabled in Polaris")
+		return
+	}
 	var sid *string
 	if claims.Sid != "" {
 		sid = &claims.Sid

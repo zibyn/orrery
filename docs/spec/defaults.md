@@ -191,8 +191,9 @@ egress:
 | `client_id` | 无 | `ORRERY_OIDC_CLIENT_ID` | 必填；Orrery Web Application 的 client id |
 | `client_secret` | 无 | `ORRERY_OIDC_CLIENT_SECRET` | 必填；直接写在文件里 |
 | `audience` | 无 | `ORRERY_OIDC_AUDIENCE` | 必填；Orrery API 在 Polaris 里的标识，如 `api://orrery`，即登录拿到的 access token 的 `aud` |
+| `webhook_secret` | 无 | `ORRERY_OIDC_WEBHOOK_SECRET` | 必填；Polaris 里 Orrery Application 的 Webhook secret，校验 `POST /polaris/webhook` |
 
-`email_domains` 和 `allow_signups` 已移除，写了就拒绝启动：谁能用 Orrery 改在 Polaris 里给 Orrery Application 打开 require Role。环境变量模式下对应 `ORRERY_OIDC_ISSUER_URL`、`ORRERY_OIDC_CLIENT_ID`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_OIDC_AUDIENCE`，同样必填。
+`email_domains` 和 `allow_signups` 已移除，写了就拒绝启动：谁能用 Orrery 改在 Polaris 里给 Orrery Application 打开 require Role。环境变量模式下对应 `ORRERY_OIDC_ISSUER_URL`、`ORRERY_OIDC_CLIENT_ID`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_OIDC_AUDIENCE`、`ORRERY_OIDC_WEBHOOK_SECRET`，同样必填。
 
 ### `s3`
 
