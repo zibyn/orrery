@@ -11,7 +11,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 - **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
 - **创建**返回 `201` 和初始状态的资源；**动作**（`POST /{资源}/{id}/{动词}`）返回 `202` 和当前资源；删除用 `DELETE`，返回 `202`，资源进入 `deleting`。
-- **幂等**：创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。两个例外：`POST /enrollment-packets` 和 `POST /sessions` 的浏览器 Session 分支——响应里的 secret 只存哈希，重试拿不回旧值，只能新发一个，所以不读该头；`POST /sessions` 带 `token` 的分支仍幂等。
+- **幂等**：创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。例外是 `POST /enrollment-packets`：响应里的 secret 只存哈希，重试拿不回旧值，只能新发一个，所以不读该头。
 - **等待**：`GET /sandboxes/{id}?wait_for=<state>` 最多挂起 60 秒，到期返回当前状态，不报错。
 - **分页**：`?limit=`（默认 50，上限 200）和不透明的 `?cursor=`；响应 `{items, next_cursor}`。
 - **条件更新**：`If-Match` 只用于移动 Resource 的 current 指针（ADR-0012）。
@@ -31,7 +31,6 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
-| `rate_limited` | 429 | 登录失败次数超限；带 `Retry-After` |
 | `internal` | 500 | 平台缺陷 |
 | `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达；可以重试 |
 
@@ -47,18 +46,15 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /users` · `GET /users` · `GET /users/{id}` · `PATCH /users/{id}` · `DELETE /users/{id}` | **admin**。`{name, email?, login_type, password?, is_admin}`；`login_type` 取 `password`、`oidc`、`none`。第一个 admin 由 `orrery-server bootstrap` 交互式设密码创建，或者是没有任何 User 时第一个 OIDC 登录者 |
-| `PUT /users/{id}/password` | **admin**。重置密码 |
+| `GET /users` · `GET /users/{id}` · `PATCH /users/{id}` · `DELETE /users/{id}` | **admin**。User 带 `machine`：没有 Polaris 身份的 Machine User 为 `true`。`PATCH` 只改 `{name?, email?}`；admin 身份来自 Polaris 的 `orrery:admin`，Machine User 的来自 `user-token --admin`。API 不能建 User：人在首次 Polaris 登录时建号，Machine User 只由服务器上的 `orrery-server user-token --name` 建（ADR-0029）。第一个 admin 用 `user-token --sub` 或 `--name --admin` 拿 token |
 | `PUT /users/{id}/quota` | **admin**。`{gpus, sandboxes}` |
 | `GET /users/me` · `GET /users/me/quota` | quota 返回上限与当前用量 |
-| `PUT /users/me/password` | `{old, new}`，仅 `login_type=password`。改密码和重置密码都会吊销该 User 的全部 Session |
-| `POST /users/me/tokens` · `GET /users/me/tokens` · `DELETE /users/me/tokens/{id}` | `{name, scope, expires_at?}`；明文只在创建响应里出现一次；列表带 `kind`（`token`/`session`）和 `last_used_at`，Session 也能单独吊销 |
+| `POST /users/me/tokens` · `GET /users/me/tokens` · `DELETE /users/me/tokens/{id}` | `{name, scope, expires_at?}`；明文只在创建响应里出现一次；列表带 `kind`（`token`/`session`）和 `last_used_at`，发起请求的那个凭据带 `current: true`，Session 也能单独吊销 |
 
 **登录**（不需要已有凭据）
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /sessions` | `{username, password}` → `Set-Cookie` 一个 Session。带 `token: {name, scope, expires_at?}` 时改为返回一枚具名 API Token，不设 cookie（`orrery login` 用）。用户名不存在和密码错误都返回同一个 `401`；失败超限返回 `429 rate_limited` |
 | `DELETE /sessions/current` | 退出登录，删掉当前 Session |
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
 | `GET /oidc/account` | 302 到 Polaris 账号中心 `{issuer}/account?client_id=`，控制台的「编辑资料」链接指向这里（ADR-0029） |

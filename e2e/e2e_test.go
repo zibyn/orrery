@@ -134,49 +134,12 @@ func TestAuditQuery(t *testing.T) {
 	}
 }
 
-// shortcut: the Git link tests still need a password User for a browser
-// Session; e2e has no other Session source after ADR-0029. Replace before #231
-// removes POST /sessions.
-func login(t *testing.T, username, password, tokenName, scope string) (string, int, []byte) {
+// loginSession mints a console Session for the machine User called name with
+// orrery-server user-token --session: e2e has no Polaris to log in through
+// (ADR-0029).
+func loginSession(t *testing.T, name string) *http.Cookie {
 	t.Helper()
-	status, data, err := postJSON(http.MethodPost, "/api/v1/sessions", "", map[string]any{
-		"username": username,
-		"password": password,
-		"token":    map[string]any{"name": tokenName, "scope": scope},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status != http.StatusCreated {
-		return "", status, data
-	}
-	var out struct {
-		Token string `json:"token"`
-	}
-	mustJSON(t, data, &out)
-	return out.Token, status, data
-}
-
-func loginSession(t *testing.T, username, password string) *http.Cookie {
-	t.Helper()
-	resp, data := request(t, http.MethodPost, "/api/v1/sessions", nil, nil, map[string]any{
-		"username": username, "password": password,
-	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("login as %s: %d %s", username, resp.StatusCode, data)
-	}
-	cookies := resp.Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("login Set-Cookie = %v", resp.Header.Values("Set-Cookie"))
-	}
-	return cookies[0]
-}
-
-func postSession(t *testing.T, username, password string) (int, []byte) {
-	resp, data := request(t, http.MethodPost, "/api/v1/sessions", nil, nil, map[string]any{
-		"username": username, "password": password,
-	})
-	return resp.StatusCode, data
+	return &http.Cookie{Name: "orrery_session", Value: userToken(t, "--name", name, "--session")}
 }
 
 // callWithCookie sends body with the Session cookie and extra headers.

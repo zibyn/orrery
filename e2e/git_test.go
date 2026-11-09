@@ -28,19 +28,11 @@ func TestGitLinkStateBinding(t *testing.T) {
 	giteaUser := envOr("ORRERY_E2E_GITEA_USER", "gitea-user")
 	giteaPassword := envOr("ORRERY_E2E_GITEA_PASSWORD", "gitea-user-password-123")
 
-	admin := adminToken(t)
-	adminCLI := newCLIRunner(t, admin)
 	suffix := time.Now().UnixNano()
 	userA := fmt.Sprintf("git-a-%d", suffix)
 	userB := fmt.Sprintf("git-b-%d", suffix)
-	const passwordA = "git-a-password-123"
-	const passwordB = "git-b-password-123"
-	for _, user := range []struct{ name, password string }{{userA, passwordA}, {userB, passwordB}} {
-		adminCLI.run(t, user.password+"\n", "user", "create",
-			"--name", user.name, "--login-type", "password", "--password-stdin")
-	}
-	sessionA := loginSession(t, userA, passwordA)
-	sessionB := loginSession(t, userB, passwordB)
+	sessionA := loginSession(t, userA)
+	sessionB := loginSession(t, userB)
 
 	// A browser with no Session is sent to the console login page and comes
 	// back here afterwards.
@@ -99,10 +91,7 @@ func TestGitLinkStateBinding(t *testing.T) {
 	}
 
 	// The external CLI sees the link and removes it.
-	tokenA, statusCode, data := login(t, userA, passwordA, fmt.Sprintf("git-cli-%d", suffix), "user")
-	if statusCode != http.StatusCreated {
-		t.Fatalf("login for CLI: %d %s", statusCode, data)
-	}
+	tokenA := userToken(t, "--name", userA, "--token-name", fmt.Sprintf("git-cli-%d", suffix))
 	cli := newCLIRunner(t, tokenA)
 	out := cli.run(t, "", "git", "links")
 	if !strings.Contains(string(out), `"provider_id": "`+providerID+`"`) {
@@ -355,16 +344,8 @@ func newGitFixture(t *testing.T, admin string, link bool) *gitFixture {
 	t.Helper()
 	suffix := time.Now().UnixNano()
 	username := fmt.Sprintf("git-cred-%d", suffix)
-	const password = "git-cred-password-123"
-	adminCLI := newCLIRunner(t, admin)
-	adminCLI.run(t, password+"\n", "user", "create",
-		"--name", username, "--login-type", "password", "--password-stdin")
-
-	userToken, status, data := login(t, username, password, fmt.Sprintf("git-cred-%d", suffix), "user")
-	if status != http.StatusCreated {
-		t.Fatalf("login as %s: %d %s", username, status, data)
-	}
-	status, data = call(t, http.MethodGet, "/api/v1/users/me", userToken, nil)
+	userToken := userToken(t, "--name", username, "--token-name", fmt.Sprintf("git-cred-%d", suffix))
+	status, data := call(t, http.MethodGet, "/api/v1/users/me", userToken, nil)
 	if status != http.StatusOK {
 		t.Fatalf("get me: %d %s", status, data)
 	}
@@ -375,7 +356,7 @@ func newGitFixture(t *testing.T, admin string, link bool) *gitFixture {
 	setUserSandboxQuota(t, admin, me.ID, 5)
 
 	if link {
-		linkGitea(t, loginSession(t, username, password))
+		linkGitea(t, loginSession(t, username))
 	}
 
 	nodeName := fmt.Sprintf("git-cred-node-%d", suffix)
@@ -612,7 +593,7 @@ func TestGitUnlinked(t *testing.T) {
 	if code == 0 {
 		t.Fatal("cloning a private repository without a link succeeded")
 	}
-	want := strings.TrimSuffix(envURL("ORRERY_E2E_ACCESS_URL", apiURL()), "/") + "/git"
+	want := strings.TrimSuffix(envOr("ORRERY_E2E_ACCESS_URL", apiURL()), "/") + "/git"
 	if !strings.Contains(stdout+stderr, want) {
 		t.Fatalf("clone output does not name %s:\nstdout %s\nstderr %s", want, stdout, stderr)
 	}

@@ -17,7 +17,6 @@ type User struct {
 	Name      string     `json:"name"`
 	Email     *string    `json:"email"`
 	IsAdmin   bool       `json:"is_admin"`
-	LoginType string     `json:"login_type"`
 	Machine   bool       `json:"machine"` // no Polaris identity, API Tokens only
 	Quota     Quota      `json:"quota"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -460,13 +459,6 @@ type PortTicket struct {
 
 // Request bodies.
 
-// SessionRequest logs in with a username and password.
-type SessionRequest struct {
-	Username string        `json:"username"`
-	Password string        `json:"password"`
-	Token    *TokenRequest `json:"token,omitempty"`
-}
-
 // TokenRequest creates an API Token.
 type TokenRequest struct {
 	Name      string     `json:"name"`
@@ -474,22 +466,10 @@ type TokenRequest struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
-// CreateUserRequest creates a User.
-type CreateUserRequest struct {
-	Name      string  `json:"name"`
-	Email     *string `json:"email,omitempty"`
-	LoginType string  `json:"login_type"`
-	Password  *string `json:"password,omitempty"`
-	IsAdmin   bool    `json:"is_admin"`
-}
-
 // UpdateUserRequest patches a User; nil fields are left unchanged.
 type UpdateUserRequest struct {
-	Name      *string `json:"name,omitempty"`
-	Email     *string `json:"email,omitempty"`
-	LoginType *string `json:"login_type,omitempty"`
-	Password  *string `json:"password,omitempty"`
-	IsAdmin   *bool   `json:"is_admin,omitempty"`
+	Name  *string `json:"name,omitempty"`
+	Email *string `json:"email,omitempty"`
 }
 
 // GitCredentialRequest asks for a Git credential by host or provider.

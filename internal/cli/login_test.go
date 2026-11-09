@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-// A User who has no password finishes login in the browser: the CLI prints the
-// console URL, takes the pasted token, validates it and stores it (ADR-0020).
-func TestLoginWithoutUsernameUsesTheConsoleToken(t *testing.T) {
+// Login finishes in the browser: the CLI prints the console URL, takes the
+// pasted token, validates it and stores it (ADR-0029).
+func TestLoginUsesTheConsoleToken(t *testing.T) {
 	const token = "orr_0123456789abcdef_secret"
 	var authorization string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -21,7 +21,7 @@ func TestLoginWithoutUsernameUsesTheConsoleToken(t *testing.T) {
 		}
 		authorization = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"id":"u1","name":"alice","is_admin":false,"login_type":"oidc"}`)
+		io.WriteString(w, `{"id":"u1","name":"alice","is_admin":false}`)
 	}))
 	defer srv.Close()
 
@@ -45,25 +45,17 @@ func TestLoginWithoutUsernameUsesTheConsoleToken(t *testing.T) {
 	}
 }
 
-// A password attempt that fails points the User at the console, where an OIDC
-// User can get a token instead.
-func TestLoginPasswordFailureMentionsTheConsole(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/problem+json")
-		w.WriteHeader(http.StatusUnauthorized)
-		io.WriteString(w, `{"code":"unauthenticated","detail":"invalid username or password"}`)
-	}))
-	defer srv.Close()
-
-	err := runLogin(srv.URL, filepath.Join(t.TempDir(), "config.json"),
-		[]string{"--username", "bob", "--password-stdin"}, strings.NewReader("secret-password\n"), io.Discard, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "without --username") {
-		t.Fatalf("error = %v, want a hint to leave out --username", err)
+// There is no password login any more (ADR-0029): --username is not a flag.
+func TestLoginHasNoPasswordFlags(t *testing.T) {
+	err := runLogin("http://127.0.0.1:1", filepath.Join(t.TempDir(), "config.json"),
+		[]string{"--username", "bob"}, strings.NewReader("\n"), io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "username") {
+		t.Fatalf("error = %v, want --username rejected", err)
 	}
 }
 
 // An empty paste is rejected before any request is made.
-func TestLoginWithoutUsernameRejectsAnEmptyToken(t *testing.T) {
+func TestLoginRejectsAnEmptyToken(t *testing.T) {
 	err := runLogin("http://127.0.0.1:1", filepath.Join(t.TempDir(), "config.json"), nil,
 		strings.NewReader("\n"), io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "no token pasted") {

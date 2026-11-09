@@ -171,8 +171,12 @@ A fenced claim over a mutable Workspace or schedulable compute resource. It ends
 _Avoid_: timed lock, TTL
 
 **User**:
-A human or automation principal that owns resources and acts through scoped credentials.
-_Avoid_: Tenant, global administrator
+A human or automation principal that owns resources and acts through scoped credentials. A person's User is linked to their Polaris identity and created at their first login; Polaris says who they are, Orrery decides what they may do.
+_Avoid_: Tenant, global administrator, account
+
+**Machine User**:
+A User with no Polaris identity, for automation such as CI and bots. It holds only API Tokens, is created only by `orrery-server user-token` on the server host, and is never touched by Polaris events.
+_Avoid_: service account, bot user
 
 ## Access and reachability
 
@@ -181,7 +185,7 @@ A named credential a User presents to the Control Plane or the Gateway. A User m
 _Avoid_: login, key pair
 
 **Session**:
-A browser's credential, obtained by a User logging in with a password or through the external OIDC issuer. It is a kind of API Token that lapses when left idle.
+A browser's credential, obtained by a User logging in through Polaris. It is a kind of API Token that lapses when left idle, and it ends when the person logs out of the console or their Polaris Session ends.
 _Avoid_: cookie, login token
 
 **Web console**:

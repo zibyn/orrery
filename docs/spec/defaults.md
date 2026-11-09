@@ -76,9 +76,7 @@
 | 名称 | 默认值 | 谁能改 | 说明 |
 |---|---|---|---|
 | Session 闲置期限 | 24 小时 | 常量 | 每次使用顺延；与 Coder 浏览器 session 一致 |
-| 密码最短长度 | 12 | 常量 | 不设复杂度规则 |
-| 登录失败限速 | 每个（用户名、来源 IP）15 分钟内 10 次 | 常量 | 计数放在进程内存里，Control Plane 重启后清零 |
-| 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}` | 部署 | OIDC 自动建号和 `POST /users` 不带 quota 时都用它 |
+| 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}` | 部署 | Polaris 首次登录建号和 `user-token` 建 Machine User 时都用它 |
 
 ## 部署配置
 
