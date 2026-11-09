@@ -48,8 +48,8 @@ func TestPolarisWebhookRejectsBadSignature(t *testing.T) {
 	}
 }
 
-// apiToken mints an API Token of scope through the Session.
-func apiToken(t *testing.T, h http.Handler, session *http.Cookie, scope string) string {
+// scopedToken mints an API Token of scope through the Session.
+func scopedToken(t *testing.T, h http.Handler, session *http.Cookie, scope string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/users/me/tokens",
 		strings.NewReader(`{"name":"t-`+uuid.NewString()[:8]+`","scope":"`+scope+`"}`))
@@ -65,8 +65,8 @@ func apiToken(t *testing.T, h http.Handler, session *http.Cookie, scope string) 
 	return created.Token
 }
 
-// asBearer calls the API with a Bearer token and returns the status.
-func asBearer(h http.Handler, token, method, path, body string) int {
+// callBearer calls the API with a Bearer token and returns the status.
+func callBearer(h http.Handler, token, method, path, body string) int {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -112,11 +112,11 @@ func TestPolarisWebhookDisableAndEnable(t *testing.T) {
 	sub := "dis-" + uuid.NewString()
 	session := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub}))
 	user := me(t, h, session)
-	token := apiToken(t, h, session, "user")
+	token := scopedToken(t, h, session, "user")
 	sandbox := sandboxToken(t, pool, uuid.MustParse(user.ID))
 	// An authenticated Sandbox Token gets 404 for an unknown provider.
 	credential := func() int {
-		return asBearer(h, sandbox, http.MethodPost, "/api/v1/git/credential", `{"provider":"none"}`)
+		return callBearer(h, sandbox, http.MethodPost, "/api/v1/git/credential", `{"provider":"none"}`)
 	}
 	if code := credential(); code != http.StatusNotFound {
 		t.Fatalf("Sandbox Token before disable = %d, want 404", code)
@@ -128,7 +128,7 @@ func TestPolarisWebhookDisableAndEnable(t *testing.T) {
 	if code := asSession(t, h, session, "/api/v1/users/me", nil); code != http.StatusUnauthorized {
 		t.Errorf("Session of a disabled User = %d, want 401", code)
 	}
-	if code := asBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusUnauthorized {
+	if code := callBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusUnauthorized {
 		t.Errorf("API Token of a disabled User = %d, want 401", code)
 	}
 	if code := credential(); code != http.StatusUnauthorized {
@@ -143,7 +143,7 @@ func TestPolarisWebhookDisableAndEnable(t *testing.T) {
 	if code := op.Webhook(t, h, polarisEvent{Type: "user.enabled", Sub: sub}); code != http.StatusNoContent {
 		t.Fatalf("user.enabled webhook = %d, want 204", code)
 	}
-	if code := asBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusOK {
+	if code := callBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusOK {
 		t.Fatalf("API Token after enable = %d, want 200", code)
 	}
 }
@@ -173,13 +173,13 @@ func TestPolarisWebhookRolesChangeClearsAdmin(t *testing.T) {
 	h, op, _ := polarisTestServer(t)
 	sub := "roles-" + uuid.NewString()
 	session := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Entitlements: []string{adminEntitlement}}))
-	token := apiToken(t, h, session, "admin")
+	token := scopedToken(t, h, session, "admin")
 
 	// Other profile changes leave admin alone.
 	if code := op.Webhook(t, h, polarisEvent{Type: "user.updated", Sub: sub, Changed: []string{"email"}}); code != http.StatusNoContent {
 		t.Fatalf("user.updated{email} webhook = %d, want 204", code)
 	}
-	if code := asBearer(h, token, http.MethodGet, "/api/v1/users", ""); code != http.StatusOK {
+	if code := callBearer(h, token, http.MethodGet, "/api/v1/users", ""); code != http.StatusOK {
 		t.Fatalf("admin token after an email change = %d, want 200", code)
 	}
 
@@ -189,7 +189,7 @@ func TestPolarisWebhookRolesChangeClearsAdmin(t *testing.T) {
 	if code := asSession(t, h, session, "/api/v1/users", nil); code != http.StatusForbidden {
 		t.Errorf("Session GET /users after a Role change = %d, want 403", code)
 	}
-	if code := asBearer(h, token, http.MethodGet, "/api/v1/users", ""); code != http.StatusForbidden {
+	if code := callBearer(h, token, http.MethodGet, "/api/v1/users", ""); code != http.StatusForbidden {
 		t.Errorf("admin token GET /users after a Role change = %d, want 403", code)
 	}
 }
@@ -199,7 +199,7 @@ func TestPolarisWebhookRolesChangeClearsAdmin(t *testing.T) {
 func TestPolarisWebhookIgnoresWhatItWillNeverApply(t *testing.T) {
 	h, op, pool := polarisTestServer(t)
 	sub := "stale-" + uuid.NewString()
-	token := apiToken(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub})), "user")
+	token := scopedToken(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub})), "user")
 	now := time.Now()
 
 	for _, e := range []polarisEvent{
@@ -213,7 +213,7 @@ func TestPolarisWebhookIgnoresWhatItWillNeverApply(t *testing.T) {
 			t.Fatalf("%+v webhook = %d, want 204", e, code)
 		}
 	}
-	if code := asBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusUnauthorized {
+	if code := callBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusUnauthorized {
 		t.Fatalf("API Token after a stale enable = %d, want 401 (still disabled)", code)
 	}
 
@@ -238,7 +238,7 @@ func TestPolarisWebhookIgnoresWhatItWillNeverApply(t *testing.T) {
 			t.Fatalf("webhook naming a machine User = %d, want 204", code)
 		}
 	}
-	if code := asBearer(h, machine.Token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusOK {
+	if code := callBearer(h, machine.Token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusOK {
 		t.Fatalf("machine User's token after webhooks = %d, want 200", code)
 	}
 }

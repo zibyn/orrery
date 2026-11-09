@@ -1719,6 +1719,38 @@ func (q *Queries) DeleteSecret(ctx context.Context, arg DeleteSecretParams) (Sec
 	return i, err
 }
 
+const deleteSessionsBySid = `-- name: DeleteSessionsBySid :many
+DELETE FROM api_tokens WHERE sid = $1 AND kind = 'session'
+RETURNING id, user_id
+`
+
+type DeleteSessionsBySidRow struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+// DeleteSessionsBySid ends the Sessions issued for one Polaris Session
+// (Back-Channel Logout, ADR-0029).
+func (q *Queries) DeleteSessionsBySid(ctx context.Context, sid *string) ([]DeleteSessionsBySidRow, error) {
+	rows, err := q.db.Query(ctx, deleteSessionsBySid, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeleteSessionsBySidRow{}
+	for rows.Next() {
+		var i DeleteSessionsBySidRow
+		if err := rows.Scan(&i.ID, &i.UserID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteSnapshot = `-- name: DeleteSnapshot :one
 UPDATE snapshots SET deleted_at = now()
 WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL

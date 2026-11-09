@@ -163,6 +163,12 @@ LIMIT sqlc.arg('limit');
 -- name: DeleteToken :execrows
 DELETE FROM api_tokens WHERE id = $1 AND user_id = $2;
 
+-- DeleteSessionsBySid ends the Sessions issued for one Polaris Session
+-- (Back-Channel Logout, ADR-0029).
+-- name: DeleteSessionsBySid :many
+DELETE FROM api_tokens WHERE sid = $1 AND kind = 'session'
+RETURNING id, user_id;
+
 -- A bounded delete keeps one purge tick from holding a long transaction.
 -- name: PurgeExpiredTokens :exec
 DELETE FROM api_tokens

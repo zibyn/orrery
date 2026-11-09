@@ -61,7 +61,9 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `POST /sessions` | `{username, password}` → `Set-Cookie` 一个 Session。带 `token: {name, scope, expires_at?}` 时改为返回一枚具名 API Token，不设 cookie（`orrery login` 用）。用户名不存在和密码错误都返回同一个 `401`；失败超限返回 `429 rate_limited` |
 | `DELETE /sessions/current` | 退出登录，删掉当前 Session |
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
+| `GET /oidc/account` | 302 到 Polaris 账号中心 `{issuer}/account?client_id=`，控制台的「编辑资料」链接指向这里（ADR-0029） |
 | `GET /oidc/callback` | 只按 (`issuer`, `sub`) 匹配 User，匹配不到就建号，用部署默认 Quota（ADR-0029）。每次登录都从 claims 复制 name 和 email：name 被占用时用 `sub` 消歧，email 被占用时保留已存的值。用 `oidc.audience` 校验 code exchange 拿到的 access token，`entitlements` 含 `orrery:admin` 就设 `is_admin`，否则清掉；access token 无效或 audience 不对时 `400`。Session 记下 ID token 的 `sid`。已停用的 User 返回 `403`，不发 Session。成功后设 Session cookie 并 302 回 `return` |
+| `POST /polaris/backchannel-logout` | 不需要认证，Polaris 调用（ADR-0029）。表单字段 `logout_token`，用 Polaris Go SDK 校验（`aud` = `oidc.client_id`），删掉 `sid` 与之相同的所有 Session，同一 User 的其他 Session 和 API Token 不受影响。没有匹配的 Session 也返回 `200`；token 无效、过期、audience 不对或未签名时 `400` |
 | `POST /polaris/webhook` | Polaris 的 User 事件（ADR-0029）。按 Standard Webhooks 校验 `webhook-id`、`webhook-timestamp`、`webhook-signature`（HMAC-SHA256，密钥为 `oidc.webhook_secret`，`whsec_` 前缀后是 base64，否则按原字节），时间戳偏差超过 5 分钟或签名不符返回 `401`。按 (`oidc.issuer_url`, `data.sub`) 找 User：`user.disabled` 设 `disabled_at`，`user.enabled` 清掉，`user.deleted` 逻辑删除，`user.updated` 的 `changed` 含 `roles` 时清掉 `is_admin`（下次登录重新判定）。每个应用的事件写审计记录。未知 `sub`、未知类型、比已应用事件更早的事件、Machine User 一律 `204` 并忽略；Polaris 会重试任何非 2xx。事件时间只到秒，同一秒内的停用和启用可能乱序 |
 
 **Workspace**
@@ -360,7 +362,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 | 页面 | 用到的接口 |
 |---|---|
-| 登录 `/login?return=` | `POST /sessions`、`GET /oidc/login` |
+| 登录 `/login?return=` | `GET /oidc/login`，只有「使用 Polaris 登录」（ADR-0029） |
 | CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `orrery login` |
 | Git 关联 `/git` | `GET /git-providers`、`/users/me/git-links`、`authorize`；`authorize_url` 指向这里 |
 | Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、workspace（默认临时；或从 `GET /workspaces` 选一个持久的，并选 rw/ro）、idle_stop。resources、secrets、labels 用 CLI |
@@ -372,8 +374,8 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | 端口 | 详情页输入端口号，`POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
 | Snapshot | 列表、创建、删除；版本：构建（dockerfile、base、secrets）、导入、cancel、删除、设为 current；构建日志。构建的 contexts 用 CLI |
 | Secret | 名字列表、覆盖写入、删除 |
-| 我的 token 与 Session | `/users/me/tokens` 的列表（带 `kind`、`last_used_at`）、创建（明文只显示一次）、吊销；`PUT /users/me/password`（仅 `login_type=password`）；`DELETE /sessions/current` |
-| admin | User：列表、创建、`PATCH`（login_type、is_admin）、重置密码、Quota、删除。Node：`/nodes` 和 `/capacity` 列表、pause/resume、删除。`GET /audit` 按 actor、action、target、时间区间过滤并分页。declare-lost 和 Enrollment Packet 用 CLI |
+| 我的 token 与 Session | `/users/me/tokens` 的列表（带 `kind`、`last_used_at`）、创建（明文只显示一次）、吊销；`DELETE /sessions/current`；非机器 User 有链到 `GET /oidc/account` 的「编辑资料」 |
+| admin | User：列表（标出 Polaris 关联或机器 User）、Quota、删除。Node：`/nodes` 和 `/capacity` 列表、pause/resume、删除。`GET /audit` 按 actor、action、target、时间区间过滤并分页。declare-lost 和 Enrollment Packet 用 CLI |
 
 ## 9. SDK
 

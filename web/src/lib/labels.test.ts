@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ApiError } from '@/api'
 import { overwriteGetLocale } from '@/paraglide/runtime'
 
-import { causeLabel, idleStopLabel, problemOf, stateLabel } from './labels'
+import { causeLabel, identityLabel, idleStopLabel, problemOf, stateLabel } from './labels'
 
 afterEach(() => {
   overwriteGetLocale(() => 'en')
@@ -59,5 +59,15 @@ describe('idleStopLabel', () => {
     expect(idleStopLabel(0)).toBe('off')
     expect(idleStopLabel(900)).toBe('after 15 min idle')
     expect(idleStopLabel(90)).toBe('after 90 s idle')
+  })
+})
+
+describe('identityLabel', () => {
+  it('tells a Polaris-linked User from a machine User', () => {
+    overwriteGetLocale(() => 'en')
+    expect(identityLabel({ machine: false })).toBe('Polaris')
+    expect(identityLabel({ machine: true })).toBe('Machine')
+    overwriteGetLocale(() => 'zh')
+    expect(identityLabel({ machine: true })).toBe('机器用户')
   })
 })

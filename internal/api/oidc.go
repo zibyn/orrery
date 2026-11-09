@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -71,6 +72,14 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request, _ *prin
 	conf := s.oauth2Config(provider, r)
 	http.Redirect(w, r, conf.AuthCodeURL(state,
 		oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
+}
+
+// handleOIDCAccount sends the browser to the Polaris account center, where
+// profile edits live (ADR-0029); client_id brands it for Orrery.
+func (s *Server) handleOIDCAccount(w http.ResponseWriter, r *http.Request, _ *principal) {
+	target := strings.TrimSuffix(s.cfg.OIDC.IssuerURL, "/") + "/account?" +
+		url.Values{"client_id": {s.cfg.OIDC.ClientID}}.Encode()
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // handleOIDCCallback verifies Polaris's response, matches or creates the
@@ -373,4 +382,32 @@ func uniqueOIDCName(name, subject string) string {
 		runes = runes[:maxNameLen-len([]rune(suffix))]
 	}
 	return string(runes) + suffix
+}
+
+// handleBackchannelLogout ends the Sessions issued for the Polaris Session a
+// logout token names (ADR-0029). An unknown sid is still a 200: Polaris
+// retries every non-2xx response.
+func (s *Server) handleBackchannelLogout(w http.ResponseWriter, r *http.Request, _ *principal) {
+	ctx := r.Context()
+	_, verifier, err := s.oidcProviderFor(ctx)
+	if err != nil {
+		s.log.Error("OIDC discovery failed", "error", err)
+		writeProblem(w, "unavailable", "the OIDC provider is not reachable")
+		return
+	}
+	lt, err := verifier.VerifyLogoutToken(ctx, s.cfg.OIDC.ClientID, r.PostFormValue("logout_token"))
+	if err != nil {
+		s.log.Warn("Polaris logout token rejected", "error", err)
+		writeProblem(w, "invalid_request", "the logout token is invalid")
+		return
+	}
+	ended, err := s.q.DeleteSessionsBySid(ctx, &lt.Sid)
+	if err != nil {
+		s.internal(w, "end Sessions by sid", err)
+		return
+	}
+	for _, row := range ended {
+		s.auditAs(ctx, &row.UserID, nil, "session.delete", "session", row.ID.String(), map[string]any{"via": "backchannel_logout"})
+	}
+	w.WriteHeader(http.StatusOK)
 }

@@ -74,3 +74,17 @@ func TestOIDCStateWithoutCookieIsRejected(t *testing.T) {
 		t.Fatal("a callback without the state cookie must be rejected")
 	}
 }
+
+// The console's profile link: the Polaris account center, branded for Orrery's
+// Application (Polaris management-api.md, ADR-0029).
+func TestOIDCAccountRedirectsToPolarisAccountCenter(t *testing.T) {
+	s := &Server{cfg: Config{OIDC: OIDCConfig{IssuerURL: "https://id.example.com/", ClientID: "orrery web"}}}
+	w := httptest.NewRecorder()
+	s.handleOIDCAccount(w, httptest.NewRequest(http.MethodGet, "/api/v1/oidc/account", nil), nil)
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", w.Code)
+	}
+	if got, want := w.Header().Get("Location"), "https://id.example.com/account?client_id=orrery+web"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
