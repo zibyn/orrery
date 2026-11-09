@@ -46,7 +46,7 @@ orrery-server user-token --sub <polaris sub> [--scope ...] [--token-name <name>]
 - It reads the deployment configuration file, connects to PostgreSQL directly, and prints one new API Token. It never goes over the network API, so possession of the configuration file and database credentials is the authority.
 - `--name` finds or creates a machine User; `--admin` makes it an admin. Polaris events never touch a machine User.
 - `--sub` mints a token for an existing Polaris-linked User. It is the break-glass path while Polaris is unreachable and how the first admin gets a token before any Role is assigned. It does not change that User's `is_admin`.
-- e2e creates its Users (`admin`, `alice` and the rest) this way, so most tests do not depend on Polaris. `e2e/oidc_test.go` replaces Dex with a Polaris container in the e2e Compose stack. Dex issues no RFC 9068 access tokens with `entitlements`, so the admin sync cannot be tested against it.
+- e2e creates its Users (`admin`, `alice` and the rest) this way and never runs Polaris. The Dex-based `e2e/oidc_test.go` and the Dex service are removed. Login, Back-Channel Logout and Webhooks are tested at the API handler against PostgreSQL and an in-process fake Polaris.
 
 **Removed.**
 
