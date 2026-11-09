@@ -38,6 +38,8 @@ func run() error {
 		return serve(args, logger)
 	case "bootstrap":
 		return runBootstrap(args, logger)
+	case "user-token":
+		return runUserToken(args, logger)
 	case "openapi":
 		return runOpenAPI(logger)
 	case "help", "-h", "--help":
@@ -54,6 +56,7 @@ func usage() {
 commands:
   serve       run the Control Plane (default)
   bootstrap   create the first admin interactively
+  user-token  mint an API Token for a machine User (--name) or a Polaris-linked User (--sub)
   openapi     print the generated OpenAPI document
 
 environment:
@@ -189,6 +192,42 @@ func runBootstrap(args []string, logger *slog.Logger) error {
 	}
 	fmt.Printf("created admin %q (%s)\n", user.Name, user.ID)
 	return nil
+}
+
+func runUserToken(args []string, logger *slog.Logger) error {
+	fs := flag.NewFlagSet("user-token", flag.ContinueOnError)
+	var opts api.UserTokenOptions
+	fs.StringVar(&opts.Name, "name", "", "find or create the machine User with this name")
+	fs.StringVar(&opts.Sub, "sub", "", "the Polaris subject of an existing linked User")
+	fs.BoolVar(&opts.Admin, "admin", false, "with --name: the machine User is, or becomes, an admin")
+	fs.StringVar(&opts.Scope, "scope", "user", "token scope: read_only, user, or admin")
+	fs.StringVar(&opts.TokenName, "token-name", "", "token name (generated when omitted)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Logs go to stderr so stdout carries only the token JSON.
+	logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	cfg, err := api.LoadConfig(logger)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	pool, err := api.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := api.Migrate(ctx, pool, cfg.DatabaseURL); err != nil {
+		return err
+	}
+	server := api.New(cfg, pool, logger)
+	token, err := server.UserToken(ctx, opts)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(token)
 }
 
 func runOpenAPI(logger *slog.Logger) error {

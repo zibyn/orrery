@@ -1,0 +1,48 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/google/uuid"
+)
+
+// user-token --sub is the break-glass path: it mints a working token for an
+// existing Polaris-linked User, refuses an unknown sub, and never touches
+// is_admin (ADR-0029).
+func TestUserTokenSub(t *testing.T) {
+	s, pool := oidcTestServer(t)
+	ctx := context.Background()
+	s.cfg.OIDC.IssuerURL = "https://polaris-" + uuid.NewString()
+	id, sub := uuid.New(), "sub-"+uuid.NewString()
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, login_type, oidc_issuer, oidc_subject, is_admin)
+		VALUES ($1, $2, 'oidc', $3, $4, true)`, id, "linked-"+id.String(), s.cfg.OIDC.IssuerURL, sub); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.UserToken(ctx, UserTokenOptions{Sub: "no-such-" + sub, Scope: "user"}); err == nil {
+		t.Fatal("unknown sub: want an error")
+	}
+
+	created, err := s.UserToken(ctx, UserTokenOptions{Sub: sub, Scope: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /users/me with the minted token: %d %s", rec.Code, rec.Body)
+	}
+	var me userDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil {
+		t.Fatal(err)
+	}
+	if me.ID != id.String() || !me.IsAdmin || me.Machine {
+		t.Fatalf("GET /users/me = %+v, want the linked admin User", me)
+	}
+}
