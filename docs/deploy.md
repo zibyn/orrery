@@ -93,6 +93,7 @@ Polaris 是唯一的登录方式（ADR-0029），`config.yaml` 的 `oidc` 段必
 3. **Web Application**（confidential）：
    - default API 设为 `api://orrery`。Polaris 不支持 `resource` 参数，access token 的 `aud` 只由 default API 决定；设错了登录会失败。
    - callback URL 填 `https://cp.example.com/api/v1/oidc/callback`（公开地址加这个路径）。
+   - Back-Channel Logout URI 填 `https://cp.example.com/api/v1/polaris/backchannel-logout`。在 Polaris 登出、被管理员结束 Session、被禁用或删除时，对应的 Orrery Session 随之失效。
    - 只让指定的人用 Orrery 时，打开 require Role。
 4. 把 issuer、client id、client secret 和 audience 写进 `config.yaml`：
 
