@@ -49,7 +49,8 @@ func usage() {
 
 commands:
   serve       run the Control Plane (default)
-  user-token  mint an API Token for a machine User (--name) or a Polaris-linked User (--sub)
+  user-token  mint an API Token for a machine User (--name) or a Polaris-linked User (--sub);
+              --session mints a console Session instead (e2e, operator console access)
   openapi     print the generated OpenAPI document
 
 environment:
@@ -105,7 +106,7 @@ func runUserToken(args []string, logger *slog.Logger) error {
 	fs.BoolVar(&opts.Admin, "admin", false, "with --name: the machine User is, or becomes, an admin")
 	fs.StringVar(&opts.Scope, "scope", "user", "token scope: read_only, user, or admin")
 	fs.StringVar(&opts.TokenName, "token-name", "", "token name (generated when omitted)")
-	fs.BoolVar(&opts.Session, "session", false, "mint a Session (the console cookie) instead of an API Token; for tests")
+	fs.BoolVar(&opts.Session, "session", false, "mint a Session (the orrery_session console cookie value) instead of an API Token: how e2e and an operator reach the console without a Polaris login")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

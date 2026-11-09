@@ -32,7 +32,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `internal` | 500 | 平台缺陷 |
-| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达；可以重试 |
+| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达，或 OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败；可以重试 |
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
@@ -59,8 +59,8 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
 | `GET /oidc/account` | 302 到 Polaris 账号中心 `{issuer}/account?client_id=`，控制台的「编辑资料」链接指向这里（ADR-0029） |
 | `GET /oidc/callback` | 只按 (`issuer`, `sub`) 匹配 User，匹配不到就建号，用部署默认 Quota（ADR-0029）。每次登录都从 claims 复制 name 和 email：name 被占用时用 `sub` 消歧，email 被占用时保留已存的值。用 `oidc.audience` 校验 code exchange 拿到的 access token，`entitlements` 含 `orrery:admin` 就设 `is_admin`，否则清掉；access token 无效或 audience 不对时 `400`。Session 记下 ID token 的 `sid`。已停用的 User 返回 `403`，不发 Session。成功后设 Session cookie 并 302 回 `return` |
-| `POST /polaris/backchannel-logout` | 不需要认证，Polaris 调用（ADR-0029）。表单字段 `logout_token`，用 Polaris Go SDK 校验（`aud` = `oidc.client_id`），删掉 `sid` 与之相同的所有 Session，同一 User 的其他 Session 和 API Token 不受影响。没有匹配的 Session 也返回 `200`；token 无效、过期、audience 不对或未签名时 `400` |
-| `POST /polaris/webhook` | Polaris 的 User 事件（ADR-0029）。按 Standard Webhooks 校验 `webhook-id`、`webhook-timestamp`、`webhook-signature`（HMAC-SHA256，密钥为 `oidc.webhook_secret`，`whsec_` 前缀后是 base64，否则按原字节），时间戳偏差超过 5 分钟或签名不符返回 `401`。按 (`oidc.issuer_url`, `data.sub`) 找 User：`user.disabled` 设 `disabled_at`，`user.enabled` 清掉，`user.deleted` 逻辑删除，`user.updated` 的 `changed` 含 `roles` 时清掉 `is_admin`（下次登录重新判定）。每个应用的事件写审计记录。未知 `sub`、未知类型、比已应用事件更早的事件、Machine User 一律 `204` 并忽略；Polaris 会重试任何非 2xx。事件时间只到秒，同一秒内的停用和启用可能乱序 |
+| `POST /polaris/backchannel-logout` | 不需要认证，Polaris 调用（ADR-0029）。表单字段 `logout_token`，用 Polaris Go SDK 校验（`aud` = `oidc.client_id`），删掉 `sid` 与之相同的所有 Session，同一 User 的其他 Session 和 API Token 不受影响。没有匹配的 Session 也返回 `200`；token 无效、过期、audience 不对或未签名时 `400`；Polaris discovery 失败时 `503 unavailable`，Polaris 会重试 |
+| `POST /polaris/webhook` | Polaris 的 User 事件（ADR-0029）。按 Standard Webhooks 校验 `webhook-id`、`webhook-timestamp`、`webhook-signature`（HMAC-SHA256，密钥为 `oidc.webhook_secret`，`whsec_` 前缀后是 base64，否则按原字节），时间戳偏差超过 5 分钟或签名不符返回 `401`。按 (`oidc.issuer_url`, `data.sub`) 找 User：`user.disabled` 设 `disabled_at`，`user.enabled` 清掉，`user.deleted` 逻辑删除，`user.updated` 的 `changed` 含 `roles` 时清掉 `is_admin`（下次登录重新判定）。每个应用的事件写审计记录。未知 `sub`、未知类型、比已应用事件更早的事件、Machine User 一律 `204` 并忽略；Polaris 会重试任何非 2xx。已应用过的 `webhook-id`（Polaris 重试时不变）再次送达时 `204` 且不改任何东西，不写审计、不动 `updated_at`。事件时间只到秒且投递乱序：同一秒的事件照常应用，但 `user.enabled` 不会撤销同一秒的 `user.disabled`，无论谁先到（fail closed）。每个事件（含 `user.deleted` 的逻辑删除）在一个事务里应用，失败不留痕迹，重试会重新应用 |
 
 **Workspace**
 

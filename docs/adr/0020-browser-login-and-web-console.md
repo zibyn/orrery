@@ -1,6 +1,6 @@
 # ADR-0020: Password and OIDC login, cookie Sessions, and an embedded Web console
 
-- Status: accepted; amends ADR-0010's caller identity ("No OIDC") and ADR-0017's Web console
+- Status: accepted; amends ADR-0010's caller identity ("No OIDC") and ADR-0017's Web console; login methods, OIDC matching rules and password handling superseded by ADR-0029 (Polaris is the only identity provider)
 - Date: 2026-10-17
 
 ## Context

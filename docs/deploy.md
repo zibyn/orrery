@@ -119,6 +119,8 @@ cd /etc/orrery
 docker compose exec server orrery-server user-token --sub <Polaris sub> --scope admin
 # 找到或新建 Machine User（CI、bot），--admin 让它成为 admin
 docker compose exec server orrery-server user-token --name ci --admin --scope admin
+# 加 --session 签一个控制台 Session（token 即 orrery_session cookie 的值），不经 Polaris 登录进控制台；e2e 也这样进控制台
+docker compose exec server orrery-server user-token --sub <Polaris sub> --session
 ```
 
 全新部署时还没人有 Polaris Role，用 `--name ops --admin` 建一个 admin Machine User 起步。
