@@ -63,6 +63,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
 | `GET /oidc/account` | 302 到 Polaris 账号中心 `{issuer}/account?client_id=`，控制台的「编辑资料」链接指向这里（ADR-0029） |
 | `GET /oidc/callback` | 只按 (`issuer`, `sub`) 匹配 User，匹配不到就建号，用部署默认 Quota（ADR-0029）。每次登录都从 claims 复制 name 和 email：name 被占用时用 `sub` 消歧，email 被占用时保留已存的值。用 `oidc.audience` 校验 code exchange 拿到的 access token，`entitlements` 含 `orrery:admin` 就设 `is_admin`，否则清掉；access token 无效或 audience 不对时 `400`。Session 记下 ID token 的 `sid`。成功后设 Session cookie 并 302 回 `return` |
+| `POST /polaris/backchannel-logout` | 不需要认证，Polaris 调用（ADR-0029）。表单字段 `logout_token`，用 Polaris Go SDK 校验（`aud` = `oidc.client_id`），删掉 `sid` 与之相同的所有 Session，同一 User 的其他 Session 和 API Token 不受影响。没有匹配的 Session 也返回 `200`；token 无效、过期、audience 不对或未签名时 `400` |
 
 **Workspace**
 
