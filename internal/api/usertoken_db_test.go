@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,9 +15,11 @@ import (
 // existing Polaris-linked User, refuses an unknown sub, and never touches
 // is_admin (ADR-0029).
 func TestUserTokenSub(t *testing.T) {
-	s, pool := oidcTestServer(t)
+	_, op, pool := polarisTestServer(t)
+	s := New(Config{OIDC: OIDCConfig{
+		IssuerURL: op.URL, ClientID: op.ClientID, ClientSecret: "secret", Audience: op.Audience,
+	}}, pool, slog.New(slog.DiscardHandler))
 	ctx := context.Background()
-	s.cfg.OIDC.IssuerURL = "https://polaris-" + uuid.NewString()
 	id, sub := uuid.New(), "sub-"+uuid.NewString()
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, login_type, oidc_issuer, oidc_subject, is_admin)
 		VALUES ($1, $2, 'oidc', $3, $4, true)`, id, "linked-"+id.String(), s.cfg.OIDC.IssuerURL, sub); err != nil {

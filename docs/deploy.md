@@ -84,6 +84,28 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 
 ADR-0028 移除了自动更新（取代 ADR-0023 的 `--auto-update`）。升级就是运维重跑 `install.sh`；现在传 `--auto-update` 或 `--no-auto-update` 会报错。旧版本留下的更新器（Control Plane 的 Compose 项目 `orrery-updater`、Node 的 `orrery-update.service`）在下一次成功运行 `install.sh` 后自动删除。
 
+### Polaris
+
+Polaris 是唯一的登录方式（ADR-0029），`config.yaml` 的 `oidc` 段必填，缺了 Control Plane 不启动。在 Polaris 控制台里按顺序建：
+
+1. **API**：标识 `api://orrery`（即 `oidc.audience`），在它下面加 Permission `orrery:admin`。
+2. **Role**：例如「Orrery 管理员」，挂在这个 API 上，包含 `orrery:admin`。持有它的人下次登录时成为 Orrery admin；收回后下次登录失去 admin。
+3. **Web Application**（confidential）：
+   - default API 设为 `api://orrery`。Polaris 不支持 `resource` 参数，access token 的 `aud` 只由 default API 决定；设错了登录会失败。
+   - callback URL 填 `https://cp.example.com/api/v1/oidc/callback`（公开地址加这个路径）。
+   - 只让指定的人用 Orrery 时，打开 require Role。
+4. 把 issuer、client id、client secret 和 audience 写进 `config.yaml`：
+
+```yaml
+oidc:
+  issuer_url: https://polaris.example.com
+  client_id: ...
+  client_secret: ...
+  audience: api://orrery
+```
+
+旧的 `oidc.allow_signups` 和 `oidc.email_domains` 已移除，配置里还有它们时拒绝启动。
+
 ## Node
 
 把 `/etc/orrery/ca/ca.crt` 复制到 Node 上（公共 CA 证书不需要），然后：

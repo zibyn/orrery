@@ -8,6 +8,7 @@ const configTestDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcde
 
 func TestConfigParsesPlatformSnapshots(t *testing.T) {
 	t.Setenv("ORRERY_DATABASE_URL", "postgres://x")
+	setTestOIDCEnv(t)
 	t.Setenv("ORRERY_PLATFORM_SNAPSHOTS", "default=alpine@"+configTestDigest+", tools=ghcr.io/acme/tools@"+configTestDigest)
 	t.Setenv("ORRERY_DEFAULT_SNAPSHOT", "default")
 	cfg, err := ConfigFromEnv()
@@ -39,6 +40,7 @@ func TestConfigRejectsBadPlatformSnapshots(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ORRERY_DATABASE_URL", "postgres://x")
+			setTestOIDCEnv(t)
 			t.Setenv("ORRERY_PLATFORM_SNAPSHOTS", tc.platform)
 			t.Setenv("ORRERY_DEFAULT_SNAPSHOT", tc.def)
 			if _, err := ConfigFromEnv(); err == nil {
@@ -50,6 +52,7 @@ func TestConfigRejectsBadPlatformSnapshots(t *testing.T) {
 
 func TestConfigRegistryPushAddress(t *testing.T) {
 	t.Setenv("ORRERY_DATABASE_URL", "postgres://x")
+	setTestOIDCEnv(t)
 	t.Setenv("ORRERY_REGISTRY_ADDR", "127.0.0.1:15000")
 	t.Setenv("ORRERY_REGISTRY_PUSH_ADDR", "")
 	cfg, err := ConfigFromEnv()

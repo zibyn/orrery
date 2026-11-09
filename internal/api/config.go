@@ -77,8 +77,8 @@ type Config struct {
 	AccessURL string
 	// GitProviders is the deployment's OAuth applications (ADR-0013).
 	GitProviders []GitProvider
-	// OIDC is the single external issuer (ADR-0020). An empty IssuerURL turns
-	// OIDC off.
+	// OIDC is Polaris, the only identity provider (ADR-0029). Every field is
+	// required.
 	OIDC OIDCConfig
 	// S3 is the object store. An empty Endpoint turns object storage off, and
 	// Presign then answers with an error.
@@ -126,13 +126,13 @@ type OIDCConfig struct {
 	IssuerURL    string
 	ClientID     string
 	ClientSecret string
-	// AllowSignups defaults to false; the first User bypasses it.
-	AllowSignups bool
-	// EmailDomains, when non-empty, restricts logins to those email domains.
-	EmailDomains []string
+	// Audience is the Orrery API's identifier in Polaris (api://orrery), the
+	// `aud` of the access token a login returns.
+	Audience string
 }
 
-func (c OIDCConfig) Enabled() bool { return c.IssuerURL != "" }
+// errRemovedSignupPolicy names where allow_signups and email_domains went.
+const errRemovedSignupPolicy = "removed: who may use Orrery is decided in Polaris by turning on require Role for the Orrery Application (ADR-0029)"
 
 // ConfigFromEnv reads the environment-only configuration used by tests and CI
 // when ORRERY_CONFIG_FILE is unset (defaults.md). It is not the deployment
@@ -286,38 +286,30 @@ func parsePlatformSnapshots(raw string) ([]PlatformSnapshot, error) {
 	return snapshots, nil
 }
 
-// loadOIDC reads the deployment's one external issuer (defaults.md identity
-// section). A configured issuer needs a client id and a secret file.
+// loadOIDC reads Polaris, the deployment's only identity provider (ADR-0029).
 func (c *Config) loadOIDC() error {
+	for _, key := range []string{"ORRERY_OIDC_ALLOW_SIGNUPS", "ORRERY_OIDC_EMAIL_DOMAINS"} {
+		if os.Getenv(key) != "" {
+			return fmt.Errorf("%s is %s", key, errRemovedSignupPolicy)
+		}
+	}
 	c.OIDC.IssuerURL = os.Getenv("ORRERY_OIDC_ISSUER_URL")
 	c.OIDC.ClientID = os.Getenv("ORRERY_OIDC_CLIENT_ID")
-	if !c.OIDC.Enabled() {
-		return nil
-	}
-	if c.OIDC.ClientID == "" {
-		return fmt.Errorf("ORRERY_OIDC_CLIENT_ID is required when ORRERY_OIDC_ISSUER_URL is set")
-	}
+	c.OIDC.Audience = os.Getenv("ORRERY_OIDC_AUDIENCE")
 	path := os.Getenv("ORRERY_OIDC_CLIENT_SECRET_FILE")
-	if path == "" {
-		return fmt.Errorf("ORRERY_OIDC_CLIENT_SECRET_FILE is required when ORRERY_OIDC_ISSUER_URL is set")
+	for _, kv := range [][2]string{
+		{"ORRERY_OIDC_ISSUER_URL", c.OIDC.IssuerURL}, {"ORRERY_OIDC_CLIENT_ID", c.OIDC.ClientID},
+		{"ORRERY_OIDC_CLIENT_SECRET_FILE", path}, {"ORRERY_OIDC_AUDIENCE", c.OIDC.Audience},
+	} {
+		if kv[1] == "" {
+			return fmt.Errorf("%s is required", kv[0])
+		}
 	}
 	secret, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read OIDC client secret: %w", err)
 	}
 	c.OIDC.ClientSecret = strings.TrimSpace(string(secret))
-	for _, domain := range strings.Split(os.Getenv("ORRERY_OIDC_EMAIL_DOMAINS"), ",") {
-		if domain = strings.ToLower(strings.TrimSpace(domain)); domain != "" {
-			c.OIDC.EmailDomains = append(c.OIDC.EmailDomains, domain)
-		}
-	}
-	if raw := os.Getenv("ORRERY_OIDC_ALLOW_SIGNUPS"); raw != "" {
-		allow, err := strconv.ParseBool(raw)
-		if err != nil {
-			return fmt.Errorf("ORRERY_OIDC_ALLOW_SIGNUPS must be true or false")
-		}
-		c.OIDC.AllowSignups = allow
-	}
 	return nil
 }
 

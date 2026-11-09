@@ -61,7 +61,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `POST /sessions` | `{username, password}` → `Set-Cookie` 一个 Session。带 `token: {name, scope, expires_at?}` 时改为返回一枚具名 API Token，不设 cookie（`orrery login` 用）。用户名不存在和密码错误都返回同一个 `401`；失败超限返回 `429 rate_limited` |
 | `DELETE /sessions/current` | 退出登录，删掉当前 Session |
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
-| `GET /oidc/callback` | 先按 (`issuer`, `sub`) 匹配 User，再按已验证的 email 匹配；匹配不到时，`allow_signups` 打开或还没有任何 User 才建号，否则 `403`。`email_domains` 之外和 `email_verified=false` 一律 `403`。成功后设 Session cookie 并 302 回 `return` |
+| `GET /oidc/callback` | 只按 (`issuer`, `sub`) 匹配 User，匹配不到就建号，用部署默认 Quota（ADR-0029）。每次登录都从 claims 复制 name 和 email：name 被占用时用 `sub` 消歧，email 被占用时保留已存的值。用 `oidc.audience` 校验 code exchange 拿到的 access token，`entitlements` 含 `orrery:admin` 就设 `is_admin`，否则清掉；access token 无效或 audience 不对时 `400`。Session 记下 ID token 的 `sid`。成功后设 Session cookie 并 302 回 `return` |
 
 **Workspace**
 

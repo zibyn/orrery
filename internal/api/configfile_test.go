@@ -23,6 +23,79 @@ func writeConfigYAML(t *testing.T, body string) string {
 	return path
 }
 
+// testOIDCYAML is the required oidc block (ADR-0029); every loadable file needs it.
+const testOIDCYAML = "oidc: {issuer_url: https://idp.test, client_id: c, client_secret: s, audience: api://orrery}\n"
+
+// setTestOIDCEnv sets the environment-only equivalent of testOIDCYAML.
+func setTestOIDCEnv(t *testing.T) {
+	t.Helper()
+	secret := filepath.Join(t.TempDir(), "oidc-secret")
+	if err := os.WriteFile(secret, []byte("s\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORRERY_OIDC_ISSUER_URL", "https://idp.test")
+	t.Setenv("ORRERY_OIDC_CLIENT_ID", "c")
+	t.Setenv("ORRERY_OIDC_CLIENT_SECRET_FILE", secret)
+	t.Setenv("ORRERY_OIDC_AUDIENCE", "api://orrery")
+}
+
+// ADR-0029: Polaris is the only login, so every oidc key is required, and the
+// signup policy that moved to Polaris fails loudly instead of being ignored.
+func TestLoadConfigYAMLRequiresPolaris(t *testing.T) {
+	base := "database: {host: h, user: u, password: p, name: n}\ns3: {secret_key: s}\n"
+	for name, tt := range map[string]struct{ oidc, want string }{
+		"no oidc block": {"", "oidc.issuer_url"},
+		"no issuer":     {"oidc: {client_id: c, client_secret: s, audience: a}\n", "oidc.issuer_url"},
+		"no client id":  {"oidc: {issuer_url: https://i, client_secret: s, audience: a}\n", "oidc.client_id"},
+		"no secret":     {"oidc: {issuer_url: https://i, client_id: c, audience: a}\n", "oidc.client_secret"},
+		"no audience":   {"oidc: {issuer_url: https://i, client_id: c, client_secret: s}\n", "oidc.audience"},
+		"allow_signups": {"oidc: {issuer_url: https://i, client_id: c, client_secret: s, audience: a, allow_signups: true}\n", "require Role"},
+		"email_domains": {"oidc: {issuer_url: https://i, client_id: c, client_secret: s, audience: a, email_domains: [x.com]}\n", "require Role"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeConfigYAML(t, base+tt.oidc)
+			_, err := LoadConfig(discardLogger())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadConfig error = %v, want one naming %q", err, tt.want)
+			}
+		})
+	}
+	// Each key keeps its ORRERY_OIDC_* override.
+	writeConfigYAML(t, base)
+	t.Setenv("ORRERY_OIDC_ISSUER_URL", "https://env.idp")
+	t.Setenv("ORRERY_OIDC_CLIENT_ID", "env-id")
+	t.Setenv("ORRERY_OIDC_CLIENT_SECRET", "env-secret")
+	t.Setenv("ORRERY_OIDC_AUDIENCE", "api://env")
+	cfg, err := LoadConfig(discardLogger())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.OIDC != (OIDCConfig{IssuerURL: "https://env.idp", ClientID: "env-id", ClientSecret: "env-secret", Audience: "api://env"}) {
+		t.Fatalf("OIDC = %+v", cfg.OIDC)
+	}
+}
+
+// The environment-only path has the same requirements.
+func TestConfigFromEnvRequiresPolaris(t *testing.T) {
+	t.Setenv("ORRERY_DATABASE_URL", "postgres://x")
+	setTestOIDCEnv(t)
+	if _, err := ConfigFromEnv(); err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	for _, key := range []string{"ORRERY_OIDC_ISSUER_URL", "ORRERY_OIDC_CLIENT_ID", "ORRERY_OIDC_CLIENT_SECRET_FILE", "ORRERY_OIDC_AUDIENCE"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, "")
+			if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("ConfigFromEnv error = %v, want one naming %s", err, key)
+			}
+		})
+	}
+	t.Setenv("ORRERY_OIDC_ALLOW_SIGNUPS", "true")
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "require Role") {
+		t.Fatalf("ConfigFromEnv error = %v, want the removed-setting message", err)
+	}
+}
+
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
@@ -46,7 +119,7 @@ logs: {exec_cap: 1024, exec_retention: 26h, audit_retention: 0,
 lifecycle: {pty_idle_seconds: 30, idle_stop_seconds: 60, admission_timeout: 5m}
 builds: {cpu: 2, memory: 1073741824, timeout: 10m}
 s3: {secret_key: s3-secret}
-`)
+`+testOIDCYAML)
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -86,7 +159,7 @@ func TestLoadConfigYAMLDefaults(t *testing.T) {
 	writeConfigYAML(t, `
 database: {host: postgres, user: orrery, password: secret, name: orrery}
 s3: {secret_key: s3-secret}
-`)
+`+testOIDCYAML)
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -146,7 +219,7 @@ database: {host: postgres, user: orrery, password: secret, name: orrery}
 access: {url: https://file.example}
 enrollment_packet_ttl: 2h
 s3: {secret_key: s3-secret}
-`)
+`+testOIDCYAML)
 	t.Setenv("ORRERY_DATABASE_HOST", "db.example")
 	t.Setenv("ORRERY_ACCESS_URL", "https://env.example")
 	t.Setenv("ORRERY_ENROLLMENT_PACKET_TTL", "3h")
@@ -180,8 +253,7 @@ encryption_keys:
 git_providers:
   - {id: gitea, type: gitea, client_id: cid, client_secret: inline-secret,
      base_url: https://git.example.com, scopes: [read:user]}
-oidc: {issuer_url: https://idp.test, client_id: oidc-id, client_secret: oidc-secret,
-       email_domains: [Example.COM], allow_signups: true}
+oidc: {issuer_url: https://idp.test, client_id: oidc-id, client_secret: oidc-secret, audience: api://orrery}
 registry: {addr: cp.example.com:9443, username: orrery, password: registry-secret}
 platform_snapshots:
   - {name: default, ref: alpine@`+configTestDigest+`, default: true}
@@ -200,8 +272,7 @@ platform_snapshots:
 		cfg.GitProviders[0].AuthURL != "https://git.example.com/login/oauth/authorize" {
 		t.Fatalf("GitProviders = %+v", cfg.GitProviders)
 	}
-	if cfg.OIDC.ClientSecret != "oidc-secret" || !cfg.OIDC.AllowSignups ||
-		len(cfg.OIDC.EmailDomains) != 1 || cfg.OIDC.EmailDomains[0] != "example.com" {
+	if cfg.OIDC.ClientSecret != "oidc-secret" || cfg.OIDC.Audience != "api://orrery" {
 		t.Fatalf("OIDC = %+v", cfg.OIDC)
 	}
 	if cfg.RegistryAddr != "cp.example.com:9443" || cfg.RegistryPushAddr != "cp.example.com:9443" {
@@ -222,7 +293,7 @@ s3: {secret_key: s3-secret}
 egress:
   allow: ["10.0.0.5/32:443", "10.0.0.2:53"]
   deny: [169.254.169.254/32, 10.0.0.0/8]
-`)
+`+testOIDCYAML)
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -234,14 +305,14 @@ egress:
 	}
 
 	// No entries are required.
-	writeConfigYAML(t, "database: {host: postgres, user: orrery, password: secret, name: orrery}\ns3: {secret_key: s}\negress: {}\n")
+	writeConfigYAML(t, "database: {host: postgres, user: orrery, password: secret, name: orrery}\ns3: {secret_key: s}\negress: {}\n"+testOIDCYAML)
 	if cfg, err := LoadConfig(discardLogger()); err != nil || len(cfg.EgressAllow)+len(cfg.EgressDeny) != 0 {
 		t.Fatalf("empty egress: %v, %+v %+v", err, cfg.EgressAllow, cfg.EgressDeny)
 	}
 }
 
 func TestLoadConfigYAMLRejectsBadLists(t *testing.T) {
-	base := "database: {host: h, user: u, password: p, name: n}\ns3: {secret_key: s}\n"
+	base := "database: {host: h, user: u, password: p, name: n}\ns3: {secret_key: s}\n" + testOIDCYAML
 	for name, body := range map[string]string{
 		"duplicate provider id": `
 git_providers:
@@ -251,9 +322,6 @@ git_providers:
 		"provider without secret": `
 git_providers:
   - {id: g, type: github, client_id: c, scopes: []}
-`,
-		"oidc without secret": `
-oidc: {issuer_url: https://idp.test, client_id: c}
 `,
 		"registry username only": `
 registry: {addr: r, username: u}
@@ -293,7 +361,7 @@ func TestLoadConfigYAMLAcceptsDatabaseURLAlone(t *testing.T) {
 	writeConfigYAML(t, `
 database: {url: "postgres://u:p@db.example:6543/x?sslmode=require"}
 s3: {endpoint: ""}
-`)
+`+testOIDCYAML)
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -310,6 +378,7 @@ s3: {endpoint: ""}
 func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	t.Setenv("ORRERY_CONFIG_FILE", "")
 	t.Setenv("ORRERY_DATABASE_URL", "postgres://u:p@db.example:5432/x")
+	setTestOIDCEnv(t)
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -325,7 +394,7 @@ database: {host: h, user: u, password: p, name: n}
 s3: {secret_key: s}
 git_providers:
   - {id: g, type: github, client_id: c, client_secret: s}
-`)
+`+testOIDCYAML)
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)

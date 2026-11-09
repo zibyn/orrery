@@ -28,31 +28,6 @@ func TestSafeReturnPath(t *testing.T) {
 	}
 }
 
-func TestEmailDomainAllowed(t *testing.T) {
-	domains := []string{"example.com", "corp.example"}
-	for _, tt := range []struct {
-		name   string
-		email  string
-		limits []string
-		want   bool
-	}{
-		{"empty config allows anyone", "a@anywhere.test", nil, true},
-		{"allowed domain", "a@example.com", domains, true},
-		{"case-insensitive domain", "a@EXAMPLE.COM", domains, true},
-		{"another allowed domain", "a@corp.example", domains, true},
-		{"outside the list", "a@evil.test", domains, false},
-		{"subdomain is not the domain", "a@sub.example.com", domains, false},
-		{"no email with a list", "", domains, false},
-		{"malformed email", "not-an-email", domains, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := emailDomainAllowed(tt.email, tt.limits); got != tt.want {
-				t.Fatalf("emailDomainAllowed(%q, %v) = %v, want %v", tt.email, tt.limits, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestOIDCUserName(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
