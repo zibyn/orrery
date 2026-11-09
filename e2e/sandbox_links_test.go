@@ -119,20 +119,10 @@ func TestSandboxLinks(t *testing.T) {
 // same as a missing one.
 func foreignSandbox(t *testing.T, admin string, suffix int64) string {
 	t.Helper()
-	username, password := fmt.Sprintf("links-other-%d", suffix), "links-other-password-123"
-	newCLIRunner(t, admin).run(t, password+"\n", "user", "create",
-		"--name", username, "--login-type", "password", "--password-stdin")
-	token, status, data := login(t, username, password, "links", "user")
-	if status != http.StatusCreated {
-		t.Fatalf("login %s: %d %s", username, status, data)
-	}
-	status, data = call(t, http.MethodGet, "/api/v1/users/me", token, nil)
-	var me struct {
-		ID string `json:"id"`
-	}
-	mustJSON(t, data, &me)
+	token := userToken(t, "--name", fmt.Sprintf("links-other-%d", suffix))
+	me := getMe(t, token)
 	setUserSandboxQuota(t, admin, me.ID, 1)
-	status, data = call(t, http.MethodPost, "/api/v1/sandboxes", token, map[string]any{"cpu": 0.5, "memory": 64 << 20})
+	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", token, map[string]any{"cpu": 0.5, "memory": 64 << 20})
 	if status != http.StatusCreated {
 		t.Fatalf("create the other User's Sandbox: %d %s", status, data)
 	}

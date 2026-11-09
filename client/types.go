@@ -18,6 +18,7 @@ type User struct {
 	Email     *string    `json:"email"`
 	IsAdmin   bool       `json:"is_admin"`
 	LoginType string     `json:"login_type"`
+	Machine   bool       `json:"machine"` // no Polaris identity, API Tokens only
 	Quota     Quota      `json:"quota"`
 	CreatedAt time.Time  `json:"created_at"`
 	DeletedAt *time.Time `json:"deleted_at"`

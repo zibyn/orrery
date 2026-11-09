@@ -202,13 +202,14 @@ func schemas() map[string]any {
 		},
 		"User": map[string]any{
 			"type":     "object",
-			"required": []string{"id", "name", "is_admin", "login_type", "quota", "created_at"},
+			"required": []string{"id", "name", "is_admin", "login_type", "machine", "quota", "created_at"},
 			"properties": map[string]any{
 				"id":         map[string]any{"type": "string", "format": "uuid"},
 				"name":       map[string]any{"type": "string"},
 				"email":      nullableString,
 				"is_admin":   map[string]any{"type": "boolean"},
 				"login_type": map[string]any{"type": "string", "enum": []string{"password", "oidc", "none"}},
+				"machine":    map[string]any{"type": "boolean", "description": "a machine User: no Polaris identity, API Tokens only"},
 				"quota":      schemaRef("Quota"),
 				"created_at": map[string]any{"type": "string", "format": "date-time"},
 				"deleted_at": nullableTime,

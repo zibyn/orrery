@@ -33,6 +33,7 @@ type userDTO struct {
 	Email     *string    `json:"email"`
 	IsAdmin   bool       `json:"is_admin"`
 	LoginType string     `json:"login_type"`
+	Machine   bool       `json:"machine"`
 	Quota     quotaDTO   `json:"quota"`
 	CreatedAt time.Time  `json:"created_at"`
 	DeletedAt *time.Time `json:"deleted_at"`
@@ -156,6 +157,7 @@ func userToDTO(u store.User) userDTO {
 		Email:     u.Email,
 		IsAdmin:   u.IsAdmin,
 		LoginType: u.LoginType,
+		Machine:   u.OidcIssuer == nil && u.OidcSubject == nil,
 		Quota:     quotaDTO{GPUs: u.GpuQuota, Sandboxes: u.SandboxQuota},
 		CreatedAt: u.CreatedAt.Time.UTC(),
 		DeletedAt: timePtr(u.DeletedAt),
