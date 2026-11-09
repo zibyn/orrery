@@ -178,7 +178,7 @@ func TestListSandboxLinkEndsSourcesStopped(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO users (id, name, login_type) VALUES ($1, $2, 'none')`, []any{user, "u-" + user.String()}},
+		{`INSERT INTO users (id, name) VALUES ($1, $2)`, []any{user, "u-" + user.String()}},
 		{`INSERT INTO nodes (id, name, token_hash) VALUES ($1, $2, '')`, []any{node, "n-" + node.String()}},
 		{sandbox, []any{stopped, user, "stopped", node, nil, nil, []uuid.UUID{}}},
 		{sandbox, []any{deleted, user, "deleted", node, "10.213.0.4", time.Now(), []uuid.UUID{}}},

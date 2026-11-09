@@ -211,13 +211,12 @@ func schemas() map[string]any {
 		},
 		"User": map[string]any{
 			"type":     "object",
-			"required": []string{"id", "name", "is_admin", "login_type", "machine", "quota", "created_at"},
+			"required": []string{"id", "name", "is_admin", "machine", "quota", "created_at"},
 			"properties": map[string]any{
 				"id":         map[string]any{"type": "string", "format": "uuid"},
 				"name":       map[string]any{"type": "string"},
 				"email":      nullableString,
 				"is_admin":   map[string]any{"type": "boolean"},
-				"login_type": map[string]any{"type": "string", "enum": []string{"password", "oidc", "none"}},
 				"machine":    map[string]any{"type": "boolean", "description": "a machine User: no Polaris identity, API Tokens only"},
 				"quota":      schemaRef("Quota"),
 				"created_at": map[string]any{"type": "string", "format": "date-time"},
@@ -232,25 +231,11 @@ func schemas() map[string]any {
 				"next_cursor": nullableString,
 			},
 		},
-		"CreateUserRequest": map[string]any{
-			"type":     "object",
-			"required": []string{"name", "login_type"},
-			"properties": map[string]any{
-				"name":       map[string]any{"type": "string"},
-				"email":      nullableString,
-				"login_type": map[string]any{"type": "string", "enum": []string{"password", "oidc", "none"}},
-				"password":   nullableString,
-				"is_admin":   map[string]any{"type": "boolean"},
-			},
-		},
 		"UpdateUserRequest": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name":       map[string]any{"type": "string"},
-				"email":      nullableString,
-				"login_type": map[string]any{"type": "string", "enum": []string{"password", "oidc", "none"}},
-				"password":   nullableString,
-				"is_admin":   map[string]any{"type": "boolean"},
+				"name":  map[string]any{"type": "string"},
+				"email": nullableString,
 			},
 		},
 		"SetQuotaRequest": map[string]any{
@@ -288,6 +273,7 @@ func schemas() map[string]any {
 				"expires_at":   nullableTime,
 				"last_used_at": nullableTime,
 				"created_at":   map[string]any{"type": "string", "format": "date-time"},
+				"current":      map[string]any{"type": "boolean", "description": "Set in GET /users/me/tokens on the credential making the request."},
 			},
 		},
 		"CreatedToken": map[string]any{
@@ -322,15 +308,6 @@ func schemas() map[string]any {
 			"required": []string{"logout_token"},
 			"properties": map[string]any{
 				"logout_token": map[string]any{"type": "string", "description": "A Polaris-signed OIDC Back-Channel Logout token."},
-			},
-		},
-		"SessionRequest": map[string]any{
-			"type":     "object",
-			"required": []string{"username", "password"},
-			"properties": map[string]any{
-				"username": map[string]any{"type": "string"},
-				"password": map[string]any{"type": "string"},
-				"token":    schemaRef("CreateTokenRequest"),
 			},
 		},
 		"Secret": map[string]any{
@@ -404,26 +381,6 @@ func schemas() map[string]any {
 			"properties": map[string]any{
 				"username": map[string]any{"type": "string"},
 				"password": map[string]any{"type": "string"},
-			},
-		},
-		"ChangePasswordRequest": map[string]any{
-			"type":     "object",
-			"required": []string{"old", "new"},
-			"properties": map[string]any{
-				"old": map[string]any{"type": "string"},
-				"new": map[string]any{"type": "string", "minLength": minPasswordLen},
-			},
-		},
-		"LoginResponse": map[string]any{
-			"oneOf": []any{schemaRef("Token"), schemaRef("CreatedToken")},
-			"description": "Token is the browser login shape (the Session travels in Set-Cookie). " +
-				"CreatedToken is returned when the request asked for a named API Token.",
-		},
-		"ResetPasswordRequest": map[string]any{
-			"type":     "object",
-			"required": []string{"password"},
-			"properties": map[string]any{
-				"password": map[string]any{"type": "string", "minLength": minPasswordLen},
 			},
 		},
 		"AuditRecord": map[string]any{

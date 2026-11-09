@@ -176,3 +176,36 @@ func TestPolarisLoginSessionCarriesSid(t *testing.T) {
 		t.Fatalf("Session sid = %q, want %q", got, sid)
 	}
 }
+
+// The token list marks the Session the caller is using, so the console can
+// badge it without having seen a login response.
+func TestTokenListMarksCurrentSession(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	sub := "cur-" + uuid.NewString()
+	currentID := func(c *http.Cookie) string {
+		var list struct {
+			Items []struct {
+				ID      string `json:"id"`
+				Current bool   `json:"current"`
+			} `json:"items"`
+		}
+		if code := asSession(t, h, c, "/api/v1/users/me/tokens", &list); code != http.StatusOK {
+			t.Fatalf("GET /users/me/tokens = %d", code)
+		}
+		var ids []string
+		for _, it := range list.Items {
+			if it.Current {
+				ids = append(ids, it.ID)
+			}
+		}
+		if len(list.Items) != 2 || len(ids) != 1 {
+			t.Fatalf("token list = %+v, want two Sessions with exactly one current", list.Items)
+		}
+		return ids[0]
+	}
+	first := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Sid: "sid-a"}))
+	second := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Sid: "sid-b"}))
+	if currentID(first) == currentID(second) {
+		t.Fatal("both Sessions see the same row as current")
+	}
+}

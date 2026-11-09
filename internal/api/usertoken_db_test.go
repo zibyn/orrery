@@ -21,8 +21,8 @@ func TestUserTokenSub(t *testing.T) {
 	}}, pool, slog.New(slog.DiscardHandler))
 	ctx := context.Background()
 	id, sub := uuid.New(), "sub-"+uuid.NewString()
-	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, login_type, oidc_issuer, oidc_subject, is_admin)
-		VALUES ($1, $2, 'oidc', $3, $4, true)`, id, "linked-"+id.String(), s.cfg.OIDC.IssuerURL, sub); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, oidc_issuer, oidc_subject, is_admin)
+		VALUES ($1, $2, $3, $4, true)`, id, "linked-"+id.String(), s.cfg.OIDC.IssuerURL, sub); err != nil {
 		t.Fatal(err)
 	}
 
@@ -47,5 +47,24 @@ func TestUserTokenSub(t *testing.T) {
 	}
 	if me.ID != id.String() || !me.IsAdmin || me.Machine {
 		t.Fatalf("GET /users/me = %+v, want the linked admin User", me)
+	}
+}
+
+// user-token --session mints a console Session for e2e: its cookie
+// authenticates as the User, with the scope a login would give.
+func TestUserTokenSession(t *testing.T) {
+	h, op, pool := polarisTestServer(t)
+	s := New(Config{OIDC: OIDCConfig{IssuerURL: op.URL}}, pool, slog.New(slog.DiscardHandler))
+	name := "e2e-" + uuid.NewString()
+	created, err := s.UserToken(context.Background(), UserTokenOptions{Name: name, Admin: true, Scope: "user", Session: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Kind != "session" || created.Scope != "admin" {
+		t.Fatalf("created = %+v, want an admin-scoped Session", created.tokenDTO)
+	}
+	var got userDTO
+	if code := asSession(t, h, newSessionCookie(created.Token), "/api/v1/users/me", &got); code != http.StatusOK || got.Name != name {
+		t.Fatalf("GET /users/me with the Session cookie = %d %+v", code, got)
 	}
 }

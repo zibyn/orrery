@@ -25,7 +25,6 @@ type Server struct {
 	q            *store.Queries
 	log          *slog.Logger
 	objects      *objectstore.Store // nil when object storage is unconfigured
-	logins       *loginLimiter
 	crossOrigin  http.CrossOriginProtection
 	reconcile    *reconciler
 	mesh         *meshMatrix
@@ -47,7 +46,7 @@ func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
 			panic(err) // no entropy, no serving
 		}
 	}
-	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter(),
+	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log,
 		tunnels: newTunnelRegistry(), activity: newActivityTracker(), mesh: newMeshMatrix(),
 		snapshotCancels: map[uuid.UUID]context.CancelFunc{}}
 	if cfg.S3.Endpoint != "" {

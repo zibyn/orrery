@@ -45,7 +45,6 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Spinner } from '@/components/ui/spinner'
-import { matchesCurrentSession, readCurrentSessionId, forgetCurrentSession } from '@/lib/current-session'
 import { useLocale } from '@/lib/i18n'
 import { messageOf, scopeLabel } from '@/lib/labels'
 import { expiresAtFromInput, formatTimestamp, scopeOptions } from '@/lib/tokens'
@@ -72,9 +71,6 @@ function AccountPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user } = Route.useRouteContext()
   const queryClient = useQueryClient()
-  // A Polaris login never learns its Session id, so normally no row is marked
-  // (api.md §8); a stale stored id simply matches nothing.
-  const [currentId] = useState(readCurrentSessionId)
   const [created, setCreated] = useState<CreatedToken | null>(null)
   const [tokenOpen, setTokenOpen] = useState(false)
   const [tokenError, setTokenError] = useState('')
@@ -93,9 +89,8 @@ function AccountPage() {
 
   const revokeToken = useMutation({
     mutationFn: (id: string) => api<Token>('DELETE', `/users/me/tokens/${id}`),
-    onSuccess: (_, id) => {
-      if (id === currentId) {
-        forgetCurrentSession()
+    onSuccess: (revoked) => {
+      if (tokens.data?.items.find((token) => token.id === revoked.id)?.current) {
         window.location.assign('/login')
         return
       }
@@ -111,7 +106,7 @@ function AccountPage() {
     .filter((token) => token.kind === 'session')
     .sort(
       (a, b) =>
-        Number(matchesCurrentSession(b, currentId)) - Number(matchesCurrentSession(a, currentId)) ||
+        Number(Boolean(b.current)) - Number(Boolean(a.current)) ||
         b.created_at.localeCompare(a.created_at),
     )
 
@@ -352,7 +347,7 @@ function AccountPage() {
           </div>
           <ItemGroup className="gap-2">
             {sessions.map((session) => {
-              const isCurrent = matchesCurrentSession(session, currentId)
+              const isCurrent = Boolean(session.current)
               return (
                 <Item key={session.id} variant="outline" role="listitem">
                   <ItemMedia variant="icon">

@@ -41,6 +41,8 @@ export type Token = {
   expires_at: string | null
   last_used_at: string | null
   created_at: string
+  // Set in the caller's token list on the credential in use (api.md §8).
+  current?: boolean
 }
 
 // The plaintext `token` is present only on creation (api.md §8).
