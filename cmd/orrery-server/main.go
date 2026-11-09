@@ -1,19 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-
-	"golang.org/x/term"
 
 	"github.com/zibyn/orrery/internal/api"
 	"github.com/zibyn/orrery/internal/buildinfo"
@@ -36,8 +32,8 @@ func run() error {
 	switch command {
 	case "serve":
 		return serve(args, logger)
-	case "bootstrap":
-		return runBootstrap(args, logger)
+	case "user-token":
+		return runUserToken(args, logger)
 	case "openapi":
 		return runOpenAPI(logger)
 	case "help", "-h", "--help":
@@ -53,7 +49,8 @@ func usage() {
 
 commands:
   serve       run the Control Plane (default)
-  bootstrap   create the first admin interactively
+  user-token  mint an API Token for a machine User (--name) or a Polaris-linked User (--sub);
+              --session mints a console Session instead (e2e, operator console access)
   openapi     print the generated OpenAPI document
 
 environment:
@@ -101,14 +98,20 @@ func serve(args []string, logger *slog.Logger) error {
 	return server.Serve(ctx)
 }
 
-func runBootstrap(args []string, logger *slog.Logger) error {
-	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
-	username := fs.String("username", "", "admin username (prompted when omitted)")
-	email := fs.String("email", "", "admin email (optional)")
-	passwordStdin := fs.Bool("password-stdin", false, "read the password from the first line of stdin")
+func runUserToken(args []string, logger *slog.Logger) error {
+	fs := flag.NewFlagSet("user-token", flag.ContinueOnError)
+	var opts api.UserTokenOptions
+	fs.StringVar(&opts.Name, "name", "", "find or create the machine User with this name")
+	fs.StringVar(&opts.Sub, "sub", "", "the Polaris subject of an existing linked User")
+	fs.BoolVar(&opts.Admin, "admin", false, "with --name: the machine User is, or becomes, an admin")
+	fs.StringVar(&opts.Scope, "scope", "user", "token scope: read_only, user, or admin")
+	fs.StringVar(&opts.TokenName, "token-name", "", "token name (generated when omitted)")
+	fs.BoolVar(&opts.Session, "session", false, "mint a Session (the orrery_session console cookie value) instead of an API Token: how e2e and an operator reach the console without a Polaris login")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// Logs go to stderr so stdout carries only the token JSON.
+	logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	cfg, err := api.LoadConfig(logger)
 	if err != nil {
 		return err
@@ -122,73 +125,14 @@ func runBootstrap(args []string, logger *slog.Logger) error {
 	if err := api.Migrate(ctx, pool, cfg.DatabaseURL); err != nil {
 		return err
 	}
-
-	reader := bufio.NewReader(os.Stdin)
-	name := *username
-	if name == "" {
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			return fmt.Errorf("--username is required when stdin is not a terminal")
-		}
-		fmt.Fprint(os.Stderr, "Username [admin]: ")
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return err
-		}
-		name = strings.TrimSpace(line)
-		if name == "" {
-			name = "admin"
-		}
-	}
-	adminEmail := *email
-	if adminEmail == "" && term.IsTerminal(int(os.Stdin.Fd())) && !*passwordStdin {
-		fmt.Fprint(os.Stderr, "Email (optional): ")
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return err
-		}
-		adminEmail = strings.TrimSpace(line)
-	}
-
-	var password string
-	switch {
-	case *passwordStdin:
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return err
-		}
-		password = strings.TrimRight(line, "\r\n")
-	case term.IsTerminal(int(os.Stdin.Fd())):
-		fmt.Fprint(os.Stderr, "Password: ")
-		first, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return err
-		}
-		fmt.Fprint(os.Stderr, "Password (again): ")
-		second, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return err
-		}
-		if string(first) != string(second) {
-			return fmt.Errorf("passwords do not match")
-		}
-		password = string(first)
-	default:
-		return fmt.Errorf("--password-stdin is required when stdin is not a terminal")
-	}
-
 	server := api.New(cfg, pool, logger)
-	user, err := server.Bootstrap(ctx, api.BootstrapOptions{
-		Username: name,
-		Email:    adminEmail,
-		Password: password,
-	})
+	token, err := server.UserToken(ctx, opts)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("created admin %q (%s)\n", user.Name, user.ID)
-	return nil
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(token)
 }
 
 func runOpenAPI(logger *slog.Logger) error {

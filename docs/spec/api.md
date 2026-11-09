@@ -6,12 +6,12 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 - **前缀**：`/api/v1`。`api` 监听面上另有 `/metrics`（`admin`）、端口转发子域名（§6）和 `/` 下的 Web 控制台（§8）。
 - **ID**：服务端生成的 UUIDv7，不带类型前缀。Sandbox 的 `name` 每个 User 内唯一，只用于过滤，不进路径。
-- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `orr_<id>_<secret>`，Sandbox Token 形如 `ors_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。
+- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `orr_<id>_<secret>`，Sandbox Token 形如 `ors_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。User 在 Polaris 被停用（`disabled_at` 非空）期间，它的 Session、API Token 和它拥有的 Sandbox 的 Sandbox Token 都按 `401` 拒绝（ADR-0029）。
 - **Session cookie**：`orrery_session; HttpOnly; Secure; SameSite=Lax; Path=/`，不带 `Domain`，端口转发子域名收不到。值的格式同 API Token，对应 `api_tokens` 里 `kind=session` 的一行。cookie 与 Bearer 等价；用 cookie 认证时，非安全方法要过 `http.CrossOriginProtection`，WebSocket 升级要求 `Origin` 等于 `api` 自己的源（ADR-0020）。
 - **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
 - **创建**返回 `201` 和初始状态的资源；**动作**（`POST /{资源}/{id}/{动词}`）返回 `202` 和当前资源；删除用 `DELETE`，返回 `202`，资源进入 `deleting`。
-- **幂等**：创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。两个例外：`POST /enrollment-packets` 和 `POST /sessions` 的浏览器 Session 分支——响应里的 secret 只存哈希，重试拿不回旧值，只能新发一个，所以不读该头；`POST /sessions` 带 `token` 的分支仍幂等。
+- **幂等**：创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。例外是 `POST /enrollment-packets`：响应里的 secret 只存哈希，重试拿不回旧值，只能新发一个，所以不读该头。
 - **等待**：`GET /sandboxes/{id}?wait_for=<state>` 最多挂起 60 秒，到期返回当前状态，不报错。
 - **分页**：`?limit=`（默认 50，上限 200）和不透明的 `?cursor=`；响应 `{items, next_cursor}`。
 - **条件更新**：`If-Match` 只用于移动 Resource 的 current 指针（ADR-0012）。
@@ -31,9 +31,8 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
-| `rate_limited` | 429 | 登录失败次数超限；带 `Retry-After` |
 | `internal` | 500 | 平台缺陷 |
-| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达；可以重试 |
+| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达，或 OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败；可以重试 |
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
@@ -47,21 +46,21 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /users` · `GET /users` · `GET /users/{id}` · `PATCH /users/{id}` · `DELETE /users/{id}` | **admin**。`{name, email?, login_type, password?, is_admin}`；`login_type` 取 `password`、`oidc`、`none`。第一个 admin 由 `orrery-server bootstrap` 交互式设密码创建，或者是没有任何 User 时第一个 OIDC 登录者 |
-| `PUT /users/{id}/password` | **admin**。重置密码 |
+| `GET /users` · `GET /users/{id}` · `PATCH /users/{id}` · `DELETE /users/{id}` | **admin**。User 带 `machine`：没有 Polaris 身份的 Machine User 为 `true`。`PATCH` 只改 `{name?, email?}`；admin 身份来自 Polaris 的 `orrery:admin`，Machine User 的来自 `user-token --admin`。API 不能建 User：人在首次 Polaris 登录时建号，Machine User 只由服务器上的 `orrery-server user-token --name` 建（ADR-0029）。第一个 admin 用 `user-token --sub` 或 `--name --admin` 拿 token |
 | `PUT /users/{id}/quota` | **admin**。`{gpus, sandboxes}` |
 | `GET /users/me` · `GET /users/me/quota` | quota 返回上限与当前用量 |
-| `PUT /users/me/password` | `{old, new}`，仅 `login_type=password`。改密码和重置密码都会吊销该 User 的全部 Session |
-| `POST /users/me/tokens` · `GET /users/me/tokens` · `DELETE /users/me/tokens/{id}` | `{name, scope, expires_at?}`；明文只在创建响应里出现一次；列表带 `kind`（`token`/`session`）和 `last_used_at`，Session 也能单独吊销 |
+| `POST /users/me/tokens` · `GET /users/me/tokens` · `DELETE /users/me/tokens/{id}` | `{name, scope, expires_at?}`；明文只在创建响应里出现一次；列表带 `kind`（`token`/`session`）和 `last_used_at`，发起请求的那个凭据带 `current: true`，Session 也能单独吊销 |
 
 **登录**（不需要已有凭据）
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /sessions` | `{username, password}` → `Set-Cookie` 一个 Session。带 `token: {name, scope, expires_at?}` 时改为返回一枚具名 API Token，不设 cookie（`orrery login` 用）。用户名不存在和密码错误都返回同一个 `401`；失败超限返回 `429 rate_limited` |
 | `DELETE /sessions/current` | 退出登录，删掉当前 Session |
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
-| `GET /oidc/callback` | 先按 (`issuer`, `sub`) 匹配 User，再按已验证的 email 匹配；匹配不到时，`allow_signups` 打开或还没有任何 User 才建号，否则 `403`。`email_domains` 之外和 `email_verified=false` 一律 `403`。成功后设 Session cookie 并 302 回 `return` |
+| `GET /oidc/account` | 302 到 Polaris 账号中心 `{issuer}/account?client_id=`，控制台的「编辑资料」链接指向这里（ADR-0029） |
+| `GET /oidc/callback` | 只按 (`issuer`, `sub`) 匹配 User，匹配不到就建号，用部署默认 Quota（ADR-0029）。每次登录都从 claims 复制 name 和 email：name 被占用时用 `sub` 消歧，email 被占用时保留已存的值。用 `oidc.audience` 校验 code exchange 拿到的 access token，`entitlements` 含 `orrery:admin` 就设 `is_admin`，否则清掉；access token 无效或 audience 不对时 `400`。Session 记下 ID token 的 `sid`。已停用的 User 返回 `403`，不发 Session。成功后设 Session cookie 并 302 回 `return` |
+| `POST /polaris/backchannel-logout` | 不需要认证，Polaris 调用（ADR-0029）。表单字段 `logout_token`，用 Polaris Go SDK 校验（`aud` = `oidc.client_id`），删掉 `sid` 与之相同的所有 Session，同一 User 的其他 Session 和 API Token 不受影响。没有匹配的 Session 也返回 `200`；token 无效、过期、audience 不对或未签名时 `400`；Polaris discovery 失败时 `503 unavailable`，Polaris 会重试 |
+| `POST /polaris/webhook` | Polaris 的 User 事件（ADR-0029）。按 Standard Webhooks 校验 `webhook-id`、`webhook-timestamp`、`webhook-signature`（HMAC-SHA256，密钥为 `oidc.webhook_secret`，`whsec_` 前缀后是 base64，否则按原字节），时间戳偏差超过 5 分钟或签名不符返回 `401`。按 (`oidc.issuer_url`, `data.sub`) 找 User：`user.disabled` 设 `disabled_at`，`user.enabled` 清掉，`user.deleted` 逻辑删除，`user.updated` 的 `changed` 含 `roles` 时清掉 `is_admin`（下次登录重新判定）。每个应用的事件写审计记录。未知 `sub`、未知类型、比已应用事件更早的事件、Machine User 一律 `204` 并忽略；Polaris 会重试任何非 2xx。已应用过的 `webhook-id`（Polaris 重试时不变）再次送达时 `204` 且不改任何东西，不写审计、不动 `updated_at`。事件时间只到秒且投递乱序：同一秒的事件照常应用，但 `user.enabled` 不会撤销同一秒的 `user.disabled`，无论谁先到（fail closed）。每个事件（含 `user.deleted` 的逻辑删除）在一个事务里应用，失败不留痕迹，重试会重新应用 |
 
 **Workspace**
 
@@ -359,7 +358,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 | 页面 | 用到的接口 |
 |---|---|
-| 登录 `/login?return=` | `POST /sessions`、`GET /oidc/login` |
+| 登录 `/login?return=` | `GET /oidc/login`，只有「使用 Polaris 登录」（ADR-0029） |
 | CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `orrery login` |
 | Git 关联 `/git` | `GET /git-providers`、`/users/me/git-links`、`authorize`；`authorize_url` 指向这里 |
 | Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、workspace（默认临时；或从 `GET /workspaces` 选一个持久的，并选 rw/ro）、idle_stop。resources、secrets、labels 用 CLI |
@@ -371,8 +370,8 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | 端口 | 详情页输入端口号，`POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
 | Snapshot | 列表、创建、删除；版本：构建（dockerfile、base、secrets）、导入、cancel、删除、设为 current；构建日志。构建的 contexts 用 CLI |
 | Secret | 名字列表、覆盖写入、删除 |
-| 我的 token 与 Session | `/users/me/tokens` 的列表（带 `kind`、`last_used_at`）、创建（明文只显示一次）、吊销；`PUT /users/me/password`（仅 `login_type=password`）；`DELETE /sessions/current` |
-| admin | User：列表、创建、`PATCH`（login_type、is_admin）、重置密码、Quota、删除。Node：`/nodes` 和 `/capacity` 列表、pause/resume、删除。`GET /audit` 按 actor、action、target、时间区间过滤并分页。declare-lost 和 Enrollment Packet 用 CLI |
+| 我的 token 与 Session | `/users/me/tokens` 的列表（带 `kind`、`last_used_at`）、创建（明文只显示一次）、吊销；`DELETE /sessions/current`；非机器 User 有链到 `GET /oidc/account` 的「编辑资料」 |
+| admin | User：列表（标出 Polaris 关联或机器 User）、Quota、删除。Node：`/nodes` 和 `/capacity` 列表、pause/resume、删除。`GET /audit` 按 actor、action、target、时间区间过滤并分页。declare-lost 和 Enrollment Packet 用 CLI |
 
 ## 9. SDK
 

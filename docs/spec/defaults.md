@@ -76,11 +76,7 @@
 | 名称 | 默认值 | 谁能改 | 说明 |
 |---|---|---|---|
 | Session 闲置期限 | 24 小时 | 常量 | 每次使用顺延；与 Coder 浏览器 session 一致 |
-| 密码最短长度 | 12 | 常量 | 不设复杂度规则 |
-| 登录失败限速 | 每个（用户名、来源 IP）15 分钟内 10 次 | 常量 | 计数放在进程内存里，Control Plane 重启后清零 |
-| OIDC `allow_signups` | 关 | 部署 | 没有任何 User 时第一个 OIDC 登录者不受它限制（ADR-0020） |
-| OIDC `email_domains` | 空（不限） | 部署 | |
-| 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}` | 部署 | OIDC 自动建号和 `POST /users` 不带 quota 时都用它 |
+| 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}` | 部署 | Polaris 首次登录建号和 `user-token` 建 Machine User 时都用它 |
 
 ## 部署配置
 
@@ -189,11 +185,13 @@ egress:
 
 | 键 | 默认 | 覆盖变量 | 说明 |
 |---|---|---|---|
-| `issuer_url` | 空 | `ORRERY_OIDC_ISSUER_URL` | 空表示 OIDC 关闭 |
-| `client_id` | 空 | `ORRERY_OIDC_CLIENT_ID` | 配置 issuer 时必填 |
-| `client_secret` | 空 | `ORRERY_OIDC_CLIENT_SECRET` | 配置 issuer 时必填；直接写在文件里 |
-| `email_domains` | `[]` | 无（列表仅文件） | 空表示不限 |
-| `allow_signups` | `false` | `ORRERY_OIDC_ALLOW_SIGNUPS` | 没有任何 User 时，第一个 OIDC 登录者不受它限制（ADR-0020） |
+| `issuer_url` | 无 | `ORRERY_OIDC_ISSUER_URL` | 必填；Polaris 的 issuer（ADR-0029） |
+| `client_id` | 无 | `ORRERY_OIDC_CLIENT_ID` | 必填；Orrery Web Application 的 client id |
+| `client_secret` | 无 | `ORRERY_OIDC_CLIENT_SECRET` | 必填；直接写在文件里 |
+| `audience` | 无 | `ORRERY_OIDC_AUDIENCE` | 必填；Orrery API 在 Polaris 里的标识，如 `api://orrery`，即登录拿到的 access token 的 `aud` |
+| `webhook_secret` | 无 | `ORRERY_OIDC_WEBHOOK_SECRET` | 必填；Polaris 里 Orrery Application 的 Webhook secret，校验 `POST /polaris/webhook` |
+
+`email_domains` 和 `allow_signups` 已移除，写了就拒绝启动：谁能用 Orrery 改在 Polaris 里给 Orrery Application 打开 require Role。环境变量模式下对应 `ORRERY_OIDC_ISSUER_URL`、`ORRERY_OIDC_CLIENT_ID`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_OIDC_AUDIENCE`、`ORRERY_OIDC_WEBHOOK_SECRET`，同样必填。
 
 ### `s3`
 

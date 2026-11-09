@@ -1,6 +1,6 @@
 # ADR-0029: Polaris is the only identity provider; machine Users come from a local command
 
-- Status: proposed; supersedes ADR-0020's login methods, OIDC matching rules and password handling, and amends ADR-0010's caller identity
+- Status: accepted; supersedes ADR-0020's login methods, OIDC matching rules and password handling, and amends ADR-0010's caller identity
 - Date: 2026-11-09
 
 ## Context
@@ -27,11 +27,12 @@ Orrery's `oidc.go` is already a standard RP, with authorization code, PKCE and n
 - A login matches a User by (`oidc_issuer`, `oidc_subject`) only, and creates one when nothing matches. The new User gets the deployment's default User Quota. There is no email matching, since Polaris is the only user pool.
 - On every login the callback verifies the access token with `github.com/zibyn/polaris/sdk/go`. It sets `is_admin` from whether `entitlements` contains `orrery:admin`, and copies name and email from the claims.
 - The Session row records the ID token's `sid`.
+- `GET /api/v1/oidc/account` redirects to the Polaris account center (`{issuer}/account?client_id=`); the console's profile link points there.
 
 **Polaris notifies Orrery about changes.**
 
 - `POST /api/v1/polaris/backchannel-logout` verifies the logout token (`VerifyLogoutToken`) and revokes the Sessions carrying that `sid`.
-- `POST /api/v1/polaris/webhook` verifies the signature with the shared secret (`oidc.webhook_secret`), drops events older than the last one applied for that `sub`, and ignores unknown types:
+- `POST /api/v1/polaris/webhook` verifies the signature with the shared secret (`oidc.webhook_secret`), drops events older than the last one applied for that `sub`, and ignores unknown types. Polaris stamps events to the second, delivers them unordered and keeps the `webhook-id` across retries, so a `webhook-id` already applied changes nothing, and at the same second a `user.enabled` never undoes a `user.disabled`, whichever arrives first (fail closed). Each event, `user.deleted`'s logical deletion included, is applied in one transaction, so a failure leaves nothing behind and the retry applies it afresh:
   - `user.disabled` sets `users.disabled_at`, and `user.enabled` clears it. `authenticate` rejects every credential of a disabled User: Session, API Token and the User's Sandbox Tokens.
   - `user.deleted` runs the existing logical deletion of the User.
   - `user.updated` with `roles` in `changed` clears `is_admin`, and the next login sets it again. This fails closed: a newly granted admin must log in once. Pulling the current Roles through the Management API with an M2M Application is the upgrade path.
@@ -41,11 +42,13 @@ Orrery's `oidc.go` is already a standard RP, with authorization code, PKCE and n
 ```
 orrery-server user-token --name <name> [--admin] [--scope read_only|user|admin] [--token-name <name>]
 orrery-server user-token --sub <polaris sub> [--scope ...] [--token-name <name>]
+orrery-server user-token (--name <name> [--admin] | --sub <polaris sub>) --session
 ```
 
 - It reads the deployment configuration file, connects to PostgreSQL directly, and prints one new API Token. It never goes over the network API, so possession of the configuration file and database credentials is the authority.
 - `--name` finds or creates a machine User; `--admin` makes it an admin. Polaris events never touch a machine User.
 - `--sub` mints a token for an existing Polaris-linked User. It is the break-glass path while Polaris is unreachable and how the first admin gets a token before any Role is assigned. It does not change that User's `is_admin`.
+- `--session` mints a Session (the console cookie value) for the User instead of an API Token, its scope following the User's admin status as a login's does. It is how e2e and an operator get into the console without a Polaris login.
 - e2e creates its Users (`admin`, `alice` and the rest) this way and never runs Polaris. The Dex-based `e2e/oidc_test.go` and the Dex service are removed. Login, Back-Channel Logout and Webhooks are tested at the API handler against PostgreSQL and an in-process fake Polaris.
 
 **Removed.**
@@ -58,11 +61,12 @@ orrery-server user-token --sub <polaris sub> [--scope ...] [--token-name <name>]
 
 **Kept.** `GET /users`, `GET /users/{id}`, `DELETE /users/{id}` (any User; the only removal for a machine User), quota endpoints, `/users/me`, `/users/me/tokens`, Git account linking, the Session cookie with its CSRF and Origin checks (ADR-0020), Sandbox Tokens and Node identity.
 
-**Schema (migration 000027).**
+**Schema.**
 
-- Drop `users.password_hash`, `users.login_type` and `users_password_hash_only_for_password`.
-- Add `CHECK ((oidc_issuer IS NULL) = (oidc_subject IS NULL))`; null means a machine User.
-- Add `users.disabled_at` and a nullable `api_tokens.sid`.
+- 000027: a nullable `api_tokens.sid`, only for `kind=session`, indexed.
+- 000028: `users.disabled_at`, and `users.polaris_event_at`, the time of the last Polaris event applied.
+- 000029: drop `users.password_hash`, `users.login_type` and `users_password_hash_only_for_password`; add `CHECK ((oidc_issuer IS NULL) = (oidc_subject IS NULL))`, where null means a machine User.
+- 000030: `users.polaris_disabled_at`, the time of the last `user.disabled` applied, and `polaris_webhook_deliveries`, the `webhook-id`s applied.
 
 **Migration is a one-off script run before the configuration switches to Polaris.**
 

@@ -38,7 +38,7 @@ func testExecDB(t *testing.T) (*nodeService, uuid.UUID) {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO users (id, name, login_type) VALUES ($1, $2, 'none')`, []any{userID, "u-" + userID.String()}},
+		{`INSERT INTO users (id, name) VALUES ($1, $2)`, []any{userID, "u-" + userID.String()}},
 		{`INSERT INTO sandboxes (id, owner_id, name, snapshot_digest, cpu, memory) VALUES ($1, $2, 'sb', 'sha256:x', 1, 1)`, []any{sandboxID, userID}},
 		{`INSERT INTO execs (id, sandbox_id, argv, generation) VALUES ($1, $2, '["true"]', 1)`, []any{execID, sandboxID}},
 	} {

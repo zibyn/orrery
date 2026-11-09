@@ -23,13 +23,6 @@ func pageQuery(limit int, cursor string) url.Values {
 
 // Sessions, Users and tokens.
 
-// CreateSession logs in with a username and password and returns a new token.
-func (c *Client) CreateSession(ctx context.Context, req SessionRequest) (*CreatedToken, error) {
-	var out CreatedToken
-	err := c.do(ctx, http.MethodPost, "/api/v1/sessions", nil, req, &out, "")
-	return &out, err
-}
-
 // Me returns the authenticated User.
 func (c *Client) Me(ctx context.Context) (*User, error) {
 	var out User
@@ -41,13 +34,6 @@ func (c *Client) Me(ctx context.Context) (*User, error) {
 func (c *Client) MyQuota(ctx context.Context) (*UserQuota, error) {
 	var out UserQuota
 	err := c.do(ctx, http.MethodGet, "/api/v1/users/me/quota", nil, nil, &out, "")
-	return &out, err
-}
-
-// CreateUser creates a User (admin only).
-func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest, idempotencyKey string) (*User, error) {
-	var out User
-	err := c.do(ctx, http.MethodPost, "/api/v1/users", nil, req, &out, idempotencyKey)
 	return &out, err
 }
 

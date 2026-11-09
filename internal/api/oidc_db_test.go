@@ -2,18 +2,21 @@ package api
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/zibyn/orrery/internal/store"
 )
 
-func oidcTestServer(t *testing.T) (*Server, *pgxpool.Pool) {
+// polarisTestServer is a DB-backed Control Plane whose identity provider is
+// an in-process fake Polaris (ADR-0029).
+func polarisTestServer(t *testing.T) (http.Handler, *fakePolaris, *pgxpool.Pool) {
 	t.Helper()
 	dsn := os.Getenv("ORRERY_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -28,112 +31,183 @@ func oidcTestServer(t *testing.T) (*Server, *pgxpool.Pool) {
 	if err := Migrate(ctx, pool, dsn); err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{pool: pool, q: store.New(pool), log: slog.New(slog.DiscardHandler)}
-	s.cfg.OIDC.AllowSignups = true
-	return s, pool
+	op := newFakePolaris(t)
+	cfg := Config{
+		AccessURL:           "https://orrery.test",
+		EncryptionKeys:      testKeyring(t),
+		DefaultGPUQuota:     3,
+		DefaultSandboxQuota: 4,
+		OIDC: OIDCConfig{
+			IssuerURL: op.URL, ClientID: op.ClientID, ClientSecret: "secret", Audience: op.Audience,
+			WebhookSecret: op.WebhookSecret,
+		},
+	}
+	return New(cfg, pool, slog.New(slog.DiscardHandler)).Handler(), op, pool
 }
 
-// Two first logins match the same unlinked User by email. The one that binds
-// second must not overwrite the first: it is let through only for the same
-// identity and denied for a different one.
-func TestOIDCEmailBindRace(t *testing.T) {
-	s, pool := oidcTestServer(t)
-	ctx := context.Background()
-	for _, tt := range []struct {
-		name     string
-		second   string
-		wantDeny bool
-	}{
-		{"same identity", "sub-a", false},
-		{"different identity", "sub-b", true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			id := uuid.New()
-			email := id.String() + "@example.com"
-			issuer := "https://idp-" + id.String()
-			if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, email, login_type) VALUES ($1, $2, $3, 'oidc')`,
-				id, "u-"+id.String(), email); err != nil {
-				t.Fatal(err)
-			}
-			// The first login holds the row with its bind uncommitted.
-			first, err := pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer first.Rollback(ctx) //nolint:errcheck
-			if _, err := first.Exec(ctx, `UPDATE users SET oidc_issuer = $2, oidc_subject = 'sub-a' WHERE id = $1`,
-				id, issuer); err != nil {
-				t.Fatal(err)
-			}
+// asSession calls the API with a Session cookie and decodes a 2xx body into out.
+func asSession(t *testing.T, h http.Handler, c *http.Cookie, path string, out any) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if out != nil && rec.Code/100 == 2 {
+		if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return rec.Code
+}
 
-			type result struct {
-				user store.User
-				err  error
-			}
-			done := make(chan result)
-			go func() {
-				u, err := s.oidcUser(ctx, issuer, tt.second, oidcClaims{Email: email})
-				done <- result{u, err}
-			}()
-			// Give the second login time to block on the held row.
-			time.Sleep(300 * time.Millisecond)
-			if err := first.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			got := <-done
+func me(t *testing.T, h http.Handler, c *http.Cookie) userDTO {
+	t.Helper()
+	var u userDTO
+	if code := asSession(t, h, c, "/api/v1/users/me", &u); code != http.StatusOK {
+		t.Fatalf("GET /users/me = %d", code)
+	}
+	return u
+}
 
-			var denial oidcDenial
-			if tt.wantDeny {
-				if !errors.As(got.err, &denial) {
-					t.Fatalf("second login: err = %v, want an oidcDenial", got.err)
-				}
-			} else if got.err != nil || got.user.ID != id {
-				t.Fatalf("second login: user %v, err %v; want the bound User", got.user.ID, got.err)
-			}
-			var subject string
-			if err := pool.QueryRow(ctx, `SELECT oidc_subject FROM users WHERE id = $1`, id).Scan(&subject); err != nil {
-				t.Fatal(err)
-			}
-			if subject != "sub-a" {
-				t.Fatalf("oidc_subject = %q, want the first login's sub-a", subject)
-			}
-		})
+func profile(name, email string) map[string]any {
+	return map[string]any{"preferred_username": name, "email": email, "email_verified": true}
+}
+
+func TestPolarisLoginCreatesThenMatchesBySubject(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	name := "p-" + uuid.NewString()[:8]
+	first := me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{
+		Sub: "sub-" + name, Sid: "sid-1", Profile: profile(name, name+"@example.com"),
+	})))
+	if first.Name != name || first.Email == nil || *first.Email != name+"@example.com" {
+		t.Fatalf("new User = %+v, want the claims' name and email", first)
+	}
+	if first.Quota.GPUs != 3 || first.Quota.Sandboxes != 4 {
+		t.Fatalf("new User quota = %+v, want the default 3 GPUs and 4 Sandboxes", first.Quota)
+	}
+
+	// The same subject with changed claims lands on the same User, updated.
+	renamed := name + "-new"
+	again := me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{
+		Sub: "sub-" + name, Sid: "sid-2", Profile: profile(renamed, renamed+"@example.com"),
+	})))
+	if again.ID != first.ID {
+		t.Fatalf("second login landed on User %s, want %s", again.ID, first.ID)
+	}
+	if again.Name != renamed || again.Email == nil || *again.Email != renamed+"@example.com" {
+		t.Fatalf("returning User = %+v, want the changed claims copied", again)
 	}
 }
 
-// A signup waits for the signup lock, so it cannot read the User count while
-// another signup is still deciding first-admin.
-func TestOIDCSignupTakesSignupLock(t *testing.T) {
-	s, pool := oidcTestServer(t)
-	ctx := context.Background()
-	held, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
+func TestPolarisLoginNameAndEmailCollisions(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	name := "c-" + uuid.NewString()[:8]
+	email := name + "@example.com"
+	taken := me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "a-" + name, Profile: profile(name, email)})))
+
+	// A second person with the same username and email still gets in: the
+	// name is disambiguated with the subject and the email is left unset.
+	other := me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "b-" + name, Profile: profile(name, email)})))
+	if other.ID == taken.ID {
+		t.Fatal("a different subject matched the existing User")
 	}
-	defer held.Rollback(ctx) //nolint:errcheck
-	if _, err := held.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", oidcSignupLockID); err != nil {
-		t.Fatal(err)
+	if other.Name == name || !strings.HasPrefix(other.Name, name+"-") {
+		t.Fatalf("colliding name = %q, want %q disambiguated with the subject", other.Name, name)
+	}
+	if other.Email != nil {
+		t.Fatalf("colliding email stored as %q, want none", *other.Email)
 	}
 
-	issuer, subject := "https://idp-"+uuid.NewString(), "sub-lock"
-	done := make(chan error)
-	go func() {
-		_, err := s.createOIDCUser(ctx, issuer, subject, oidcClaims{PreferredUsername: "lock-" + uuid.NewString()})
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		t.Fatalf("signup finished while the lock was held (err %v)", err)
-	case <-time.After(300 * time.Millisecond):
+	// A returning User whose new email is taken keeps the stored one.
+	own := name + "-own@example.com"
+	third := me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "c-" + name, Profile: profile("c3-"+name, own)})))
+	third = me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "c-" + name, Profile: profile("c3-"+name, email)})))
+	if third.Email == nil || *third.Email != own {
+		t.Fatalf("returning User's email = %v, want the stored %q", third.Email, own)
 	}
-	if err := held.Commit(ctx); err != nil {
+}
+
+func TestPolarisLoginAdminFromEntitlements(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	sub := "admin-" + uuid.NewString()
+	admin := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Entitlements: []string{"orrery:read", "orrery:admin"}}))
+	if !me(t, h, admin).IsAdmin {
+		t.Fatal("orrery:admin entitlement did not grant admin")
+	}
+	if code := asSession(t, h, admin, "/api/v1/users", nil); code != http.StatusOK {
+		t.Fatalf("admin GET /users = %d, want 200", code)
+	}
+
+	// The next login without the entitlement removes it, and the earlier
+	// admin Session loses admin authority with it.
+	plain := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Entitlements: []string{"orrery:read"}}))
+	if me(t, h, plain).IsAdmin {
+		t.Fatal("login without orrery:admin kept admin")
+	}
+	for _, c := range []*http.Cookie{plain, admin} {
+		if code := asSession(t, h, c, "/api/v1/users", nil); code != http.StatusForbidden {
+			t.Fatalf("GET /users after admin removed = %d, want 403", code)
+		}
+	}
+}
+
+func TestPolarisLoginRejectsAccessTokenForAnotherAudience(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	resp := op.Login(t, h, polarisLogin{Sub: "aud-" + uuid.NewString(), Audience: "api://other", Entitlements: []string{"orrery:admin"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("login with a foreign-audience access token = %d, want 400", resp.StatusCode)
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == sessionCookieName && c.Value != "" {
+			t.Fatal("login with a foreign-audience access token set a Session cookie")
+		}
+	}
+}
+
+// The Session records the Polaris sid so Back-Channel Logout can end it.
+func TestPolarisLoginSessionCarriesSid(t *testing.T) {
+	h, op, pool := polarisTestServer(t)
+	sid := "sid-" + uuid.NewString()
+	u := me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "sid-" + uuid.NewString(), Sid: sid})))
+	var got string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT sid FROM api_tokens WHERE user_id = $1 AND kind = 'session'`, u.ID).Scan(&got); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	if got != sid {
+		t.Fatalf("Session sid = %q, want %q", got, sid)
 	}
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE oidc_issuer = $1`, issuer).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("users for issuer = %d (err %v), want 1", n, err)
+}
+
+// The token list marks the Session the caller is using, so the console can
+// badge it without having seen a login response.
+func TestTokenListMarksCurrentSession(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	sub := "cur-" + uuid.NewString()
+	currentID := func(c *http.Cookie) string {
+		var list struct {
+			Items []struct {
+				ID      string `json:"id"`
+				Current bool   `json:"current"`
+			} `json:"items"`
+		}
+		if code := asSession(t, h, c, "/api/v1/users/me/tokens", &list); code != http.StatusOK {
+			t.Fatalf("GET /users/me/tokens = %d", code)
+		}
+		var ids []string
+		for _, it := range list.Items {
+			if it.Current {
+				ids = append(ids, it.ID)
+			}
+		}
+		if len(list.Items) != 2 || len(ids) != 1 {
+			t.Fatalf("token list = %+v, want two Sessions with exactly one current", list.Items)
+		}
+		return ids[0]
+	}
+	first := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Sid: "sid-a"}))
+	second := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Sid: "sid-b"}))
+	if currentID(first) == currentID(second) {
+		t.Fatal("both Sessions see the same row as current")
 	}
 }

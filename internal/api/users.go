@@ -14,96 +14,6 @@ import (
 	"github.com/zibyn/orrery/internal/store"
 )
 
-func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, p *principal) {
-	key, ok := idempotencyKey(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
-		return
-	}
-	ctx := r.Context()
-	lookup := func() (store.User, error) {
-		return s.q.GetUserByIdempotencyKey(ctx, store.GetUserByIdempotencyKeyParams{
-			CreatedBy: &p.user.ID, IdempotencyKey: key,
-		})
-	}
-	if replayOr(s, w, "look up idempotent user", key, lookup, func(u store.User) {
-		writeJSON(w, http.StatusOK, userToDTO(u))
-	}) {
-		return
-	}
-
-	var req createUserRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	email, ok := normalizeEmail(w, req.Email)
-	if !ok {
-		return
-	}
-	if !validDisplayName(req.Name) {
-		writeProblem(w, "invalid_request", "name must be non-empty, trimmed, and at most 255 characters")
-		return
-	}
-	if !validLoginType(req.LoginType) {
-		writeProblem(w, "invalid_request", "login_type must be password, oidc, or none")
-		return
-	}
-	var passwordHash *string
-	if req.Password != nil {
-		if req.LoginType != "password" {
-			writeProblem(w, "invalid_request", "password requires login_type=password")
-			return
-		}
-		if !validPassword(*req.Password) {
-			writeProblem(w, "invalid_request", "password must be at least 12 characters")
-			return
-		}
-		h, err := HashPassword(*req.Password)
-		if err != nil {
-			s.internal(w, "hash password", err)
-			return
-		}
-		passwordHash = &h
-	}
-	id, err := uuid.NewV7()
-	if err != nil {
-		s.internal(w, "generate user id", err)
-		return
-	}
-	user, replayed, err := createIdempotent(key, lookup,
-		func() (store.User, error) {
-			return s.q.CreateUser(ctx, store.CreateUserParams{
-				ID:             id,
-				Name:           req.Name,
-				Email:          email,
-				IsAdmin:        req.IsAdmin,
-				LoginType:      req.LoginType,
-				PasswordHash:   passwordHash,
-				GpuQuota:       s.cfg.DefaultGPUQuota,
-				SandboxQuota:   s.cfg.DefaultSandboxQuota,
-				IdempotencyKey: key,
-				CreatedBy:      &p.user.ID,
-			})
-		})
-	if err != nil {
-		if writeConstraintProblem(w, err) {
-			return
-		}
-		s.internal(w, "create user", err)
-		return
-	}
-	if replayed {
-		writeJSON(w, http.StatusOK, userToDTO(user))
-		return
-	}
-	s.audit(r.Context(), p, "user.create", "user", user.ID.String(), map[string]any{
-		"name":       user.Name,
-		"login_type": user.LoginType,
-		"is_admin":   user.IsAdmin,
-	})
-	writeJSON(w, http.StatusCreated, userToDTO(user))
-}
-
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request, p *principal) {
 	rows, next, ok := readPage(s, w, r, "list users", parseCursor,
 		func(ctx context.Context, limit int32, after *uuid.UUID) ([]store.User, error) {
@@ -148,8 +58,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	// Checks that need no stored state, and the slow argon2 hash, run before
-	// the row lock is taken.
+	// Checks that need no stored state run before the row lock is taken.
 	if req.Name != nil && !validDisplayName(*req.Name) {
 		writeProblem(w, "invalid_request", "name must be non-empty, trimmed, and at most 255 characters")
 		return
@@ -159,23 +68,6 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		if email, ok = normalizeEmail(w, req.Email); !ok {
 			return
 		}
-	}
-	if req.LoginType != nil && !validLoginType(*req.LoginType) {
-		writeProblem(w, "invalid_request", "login_type must be password, oidc, or none")
-		return
-	}
-	var hash *string
-	if req.Password != nil {
-		if !validPassword(*req.Password) {
-			writeProblem(w, "invalid_request", "password must be at least 12 characters")
-			return
-		}
-		h, err := HashPassword(*req.Password)
-		if err != nil {
-			s.internal(w, "hash password", err)
-			return
-		}
-		hash = &h
 	}
 
 	ctx := r.Context()
@@ -207,34 +99,12 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		user.Email = email
 		changed = append(changed, "email")
 	}
-	if req.LoginType != nil {
-		user.LoginType = *req.LoginType
-		changed = append(changed, "login_type")
-	}
-	if hash != nil {
-		if user.LoginType != "password" {
-			writeProblem(w, "invalid_request", "password requires login_type=password")
-			return
-		}
-		user.PasswordHash = hash
-		changed = append(changed, "password")
-	}
-	if req.IsAdmin != nil {
-		user.IsAdmin = *req.IsAdmin
-		changed = append(changed, "is_admin")
-	}
-	// A User that no longer logs in with a password keeps no password hash.
-	if user.LoginType != "password" {
-		user.PasswordHash = nil
-	}
 
 	updated, err := q.UpdateUser(ctx, store.UpdateUserParams{
 		ID:           user.ID,
 		Name:         user.Name,
 		Email:        user.Email,
 		IsAdmin:      user.IsAdmin,
-		LoginType:    user.LoginType,
-		PasswordHash: user.PasswordHash,
 		GpuQuota:     user.GpuQuota,
 		SandboxQuota: user.SandboxQuota,
 	})
@@ -244,14 +114,6 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		}
 		s.internal(w, "update user", err)
 		return
-	}
-	// ADR-0020: every password change revokes the User's Sessions, in the
-	// same transaction so old Sessions cannot outlive it.
-	if hash != nil {
-		if _, err := q.DeleteUserSessions(ctx, user.ID); err != nil {
-			s.internal(w, "revoke sessions", err)
-			return
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		s.internal(w, "commit update user", err)

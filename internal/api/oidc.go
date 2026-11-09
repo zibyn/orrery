@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +15,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	polaris "github.com/zibyn/polaris/sdk/go"
 	"golang.org/x/oauth2"
 
 	"github.com/zibyn/orrery/internal/store"
@@ -37,16 +40,16 @@ type oidcClaims struct {
 	EmailVerified     bool   `json:"email_verified"`
 	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
+	Sid               string `json:"sid"`
 }
+
+// adminEntitlement is the Polaris Permission that makes a User an Orrery admin.
+const adminEntitlement = "orrery:admin"
 
 // handleOIDCLogin sends the browser to the IdP with an authorization code, PKCE
 // and a nonce. The state cookie binds the callback to this request.
 func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request, _ *principal) {
-	if !s.cfg.OIDC.Enabled() {
-		writeProblem(w, "not_found", "OIDC is not configured")
-		return
-	}
-	provider, err := s.oidcProviderFor(r.Context())
+	provider, _, err := s.oidcProviderFor(r.Context())
 	if err != nil {
 		s.log.Error("OIDC discovery failed", "error", err)
 		writeProblem(w, "unavailable", "the OIDC provider is not reachable")
@@ -71,13 +74,17 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request, _ *prin
 		oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
 
-// handleOIDCCallback verifies the IdP's response, matches or creates the User,
-// and issues a Session (ADR-0020).
+// handleOIDCAccount sends the browser to the Polaris account center, where
+// profile edits live (ADR-0029); client_id brands it for Orrery.
+func (s *Server) handleOIDCAccount(w http.ResponseWriter, r *http.Request, _ *principal) {
+	target := strings.TrimSuffix(s.cfg.OIDC.IssuerURL, "/") + "/account?" +
+		url.Values{"client_id": {s.cfg.OIDC.ClientID}}.Encode()
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// handleOIDCCallback verifies Polaris's response, matches or creates the
+// User, and issues a Session (ADR-0029).
 func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request, _ *principal) {
-	if !s.cfg.OIDC.Enabled() {
-		writeProblem(w, "not_found", "OIDC is not configured")
-		return
-	}
 	flow, ok := takeOIDCState(w, r)
 	if !ok {
 		writeProblem(w, "invalid_request", "the OIDC state cookie is missing or malformed")
@@ -98,7 +105,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request, _ *p
 		return
 	}
 
-	provider, err := s.oidcProviderFor(r.Context())
+	provider, accessVerifier, err := s.oidcProviderFor(r.Context())
 	if err != nil {
 		s.log.Error("OIDC discovery failed", "error", err)
 		writeProblem(w, "unavailable", "the OIDC provider is not reachable")
@@ -132,117 +139,64 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request, _ *p
 		writeProblem(w, "permission_denied", "the ID token has no usable claims")
 		return
 	}
-	// An unverified email never logs in, and email_domains restricts every
-	// login, not just signups (defaults.md).
-	if !claims.EmailVerified {
-		writeProblem(w, "permission_denied", "the email address is not verified")
-		return
-	}
-	if !emailDomainAllowed(claims.Email, s.cfg.OIDC.EmailDomains) {
-		writeProblem(w, "permission_denied", "the email address is outside the allowed domains")
+	// Admin authority comes only from the access token for the Orrery API
+	// (ADR-0029); one for any other audience fails the login.
+	access, err := accessVerifier.VerifyAccessToken(r.Context(), token.AccessToken)
+	if err != nil || access.Sub != idToken.Subject {
+		s.log.Warn("Polaris access token rejected", "error", err)
+		writeProblem(w, "invalid_request", "the access token is invalid")
 		return
 	}
 
-	user, err := s.oidcUser(r.Context(), idToken.Issuer, idToken.Subject, claims)
-	var denial oidcDenial
-	if errors.As(err, &denial) {
-		writeProblem(w, "permission_denied", string(denial))
-		return
-	}
+	user, err := s.oidcUser(r.Context(), idToken.Issuer, idToken.Subject, claims,
+		slices.Contains(access.Entitlements, adminEntitlement))
 	if err != nil {
 		s.internal(w, "resolve OIDC User", err)
 		return
 	}
-	if _, err := s.startBrowserSession(w, r.Context(), user, nil, map[string]any{"via": "oidc"}); err != nil {
+	if user.DisabledAt.Valid {
+		writeProblem(w, "permission_denied", "this User is disabled in Polaris")
+		return
+	}
+	var sid *string
+	if claims.Sid != "" {
+		sid = &claims.Sid
+	}
+	if _, err := s.startBrowserSession(w, r.Context(), user, sid, map[string]any{"via": "oidc"}); err != nil {
 		s.internal(w, "create OIDC Session", err)
 		return
 	}
 	http.Redirect(w, r, safeReturnPath(flow.Return), http.StatusFound)
 }
 
-// oidcSignupLockID serializes OIDC signups across replicas (ADR-0020).
-const oidcSignupLockID = 724003
-
-// oidcDenial is a policy decision answered with 403, as opposed to a failure.
-type oidcDenial string
-
-func (d oidcDenial) Error() string { return string(d) }
-
-// oidcUser matches by (issuer, subject), then by verified email, and otherwise
-// signs up when allowed.
-func (s *Server) oidcUser(ctx context.Context, issuer, subject string, claims oidcClaims) (store.User, error) {
-	user, err := s.q.GetUserByOIDCIdentity(ctx, store.GetUserByOIDCIdentityParams{
-		OidcIssuer: &issuer, OidcSubject: &subject,
-	})
-	switch {
-	case err == nil:
-		if user.LoginType != "oidc" {
-			return store.User{}, oidcDenial("this User does not log in through OIDC")
-		}
-		return user, nil
-	case !errors.Is(err, pgx.ErrNoRows):
-		return store.User{}, err
-	}
-
-	if claims.Email != "" {
-		user, err = s.q.GetUserByEmail(ctx, &claims.Email)
-		switch {
-		case err == nil:
-			// Matching by email links an OIDC User an admin already created;
-			// it never converts another login type (ADR-0020).
-			if user.LoginType != "oidc" {
-				return store.User{}, oidcDenial("this email belongs to a User that does not log in through OIDC")
-			}
-			if user.OidcIssuer != nil || user.OidcSubject != nil {
-				return store.User{}, oidcDenial("this User is already linked to another OIDC identity")
-			}
-			bound, err := s.q.BindUserOIDCIdentity(ctx, store.BindUserOIDCIdentityParams{
-				ID: user.ID, OidcIssuer: &issuer, OidcSubject: &subject,
-			})
-			if errors.Is(err, pgx.ErrNoRows) {
-				// A concurrent login bound first: let it through only when it
-				// bound this same identity.
-				bound, err = s.q.GetUserByOIDCIdentity(ctx, store.GetUserByOIDCIdentityParams{
-					OidcIssuer: &issuer, OidcSubject: &subject,
-				})
-				if errors.Is(err, pgx.ErrNoRows) || (err == nil && bound.ID != user.ID) {
-					return store.User{}, oidcDenial("this User is already linked to another OIDC identity")
-				}
-				return bound, err
-			}
-			if err != nil {
-				return store.User{}, err
-			}
-			s.auditAs(ctx, &bound.ID, nil, "user.oidc_link", "user", bound.ID.String(), map[string]any{
-				"oidc_issuer": issuer,
-			})
-			return bound, nil
-		case !errors.Is(err, pgx.ErrNoRows):
-			return store.User{}, err
-		}
-	}
-
-	user, err = s.createOIDCUser(ctx, issuer, subject, claims)
-	switch uniqueViolation(err) {
-	case "users_email_unique":
-		// The email belongs to a soft-deleted User; a new account would be a
-		// merge, so deny it.
-		return store.User{}, oidcDenial("this email belongs to another User")
-	case "users_oidc_unique":
-		// A concurrent login with the same identity won the insert.
-		user, err = s.q.GetUserByOIDCIdentity(ctx, store.GetUserByOIDCIdentityParams{
-			OidcIssuer: &issuer, OidcSubject: &subject,
-		})
-	}
-	return user, err
-}
-
-func (s *Server) createOIDCUser(ctx context.Context, issuer, subject string, claims oidcClaims) (store.User, error) {
+// oidcUser matches by (issuer, subject) only, creating the User on a first
+// login, and copies the claims and admin status onto it (ADR-0029).
+func (s *Server) oidcUser(ctx context.Context, issuer, subject string, claims oidcClaims, isAdmin bool) (store.User, error) {
 	var email *string
-	if claims.Email != "" {
+	if claims.Email != "" && claims.EmailVerified {
 		email = &claims.Email
 	}
 	name := oidcUserName(subject, claims)
+	identity := store.GetUserByOIDCIdentityParams{OidcIssuer: &issuer, OidcSubject: &subject}
+	user, err := s.q.GetUserByOIDCIdentity(ctx, identity)
+	if errors.Is(err, pgx.ErrNoRows) {
+		user, err = s.createOIDCUser(ctx, issuer, subject, name, email, isAdmin)
+		if uniqueViolation(err) != "users_oidc_unique" {
+			return user, err
+		}
+		// A concurrent first login won the insert; update that User instead.
+		user, err = s.q.GetUserByOIDCIdentity(ctx, identity)
+	}
+	if err != nil {
+		return store.User{}, err
+	}
+	return s.syncOIDCUser(ctx, user, subject, name, email, isAdmin)
+}
+
+// createOIDCUser inserts a User with the default quota. A taken name is
+// disambiguated with the subject and a taken email is left unset, so a
+// collision never fails a login.
+func (s *Server) createOIDCUser(ctx context.Context, issuer, subject, name string, email *string, isAdmin bool) (store.User, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.User{}, err
@@ -251,73 +205,82 @@ func (s *Server) createOIDCUser(ctx context.Context, issuer, subject string, cla
 		ID:           id,
 		Name:         name,
 		Email:        email,
+		IsAdmin:      isAdmin,
 		OidcIssuer:   &issuer,
 		OidcSubject:  &subject,
 		GpuQuota:     s.cfg.DefaultGPUQuota,
 		SandboxQuota: s.cfg.DefaultSandboxQuota,
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return store.User{}, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	// Signups are serialized: the first User becomes admin and, with signups
-	// off, is the only one admitted, so two concurrent first logins must not
-	// both observe an empty table.
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", oidcSignupLockID); err != nil {
-		return store.User{}, err
-	}
-	q := s.q.WithTx(tx)
-	count, err := q.CountUsers(ctx)
-	if err != nil {
-		return store.User{}, err
-	}
-	if count > 0 && !s.cfg.OIDC.AllowSignups {
-		return store.User{}, oidcDenial("signups are disabled")
-	}
-	// The savepoint keeps the transaction usable after a name collision.
-	attempt, err := tx.Begin(ctx)
-	if err != nil {
-		return store.User{}, err
-	}
-	user, err := s.q.WithTx(attempt).CreateOIDCUser(ctx, params)
-	if uniqueViolation(err) == "users_name_key" {
-		if err := attempt.Rollback(ctx); err != nil {
-			return store.User{}, err
+	for {
+		user, err := s.q.CreateOIDCUser(ctx, params)
+		switch violated := uniqueViolation(err); {
+		case violated == "users_name_key" && params.Name == name:
+			params.Name = uniqueOIDCName(name, subject)
+		case violated == "users_email_unique" && params.Email != nil:
+			params.Email = nil
+		default:
+			if err == nil {
+				s.auditAs(ctx, &user.ID, nil, "user.create", "user", user.ID.String(), map[string]any{
+					"name": user.Name, "is_admin": user.IsAdmin, "oidc": true,
+				})
+			}
+			return user, err
 		}
-		// A name collision is not a denial: disambiguate with the subject.
-		params.Name = uniqueOIDCName(name, subject)
-		user, err = q.CreateOIDCUser(ctx, params)
-	} else if err == nil {
-		err = attempt.Commit(ctx)
 	}
-	if err != nil {
-		return store.User{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return store.User{}, err
-	}
-	s.auditAs(ctx, &user.ID, nil, "user.create", "user", user.ID.String(), map[string]any{
-		"name": user.Name, "login_type": user.LoginType, "is_admin": user.IsAdmin, "oidc": true,
-	})
-	return user, nil
 }
 
-// oidcProviderFor discovers the issuer once and remembers it. Discovery runs
-// on the first login rather than at startup, so a slow IdP cannot delay
-// serving.
-func (s *Server) oidcProviderFor(ctx context.Context) (*oidc.Provider, error) {
+// syncOIDCUser copies a returning login's name, email and admin status. The
+// same collision rules as createOIDCUser apply; an absent email claim keeps
+// the stored one.
+func (s *Server) syncOIDCUser(ctx context.Context, user store.User, subject, name string, email *string, isAdmin bool) (store.User, error) {
+	want := store.SyncOIDCUserParams{ID: user.ID, Name: name, Email: email, IsAdmin: isAdmin}
+	if email == nil {
+		want.Email = user.Email
+	}
+	for {
+		if want.Name == user.Name && sameString(want.Email, user.Email) && want.IsAdmin == user.IsAdmin {
+			return user, nil
+		}
+		updated, err := s.q.SyncOIDCUser(ctx, want)
+		switch violated := uniqueViolation(err); {
+		case violated == "users_name_key" && want.Name == name:
+			want.Name = uniqueOIDCName(name, subject)
+		case violated == "users_email_unique" && !sameString(want.Email, user.Email):
+			want.Email = user.Email
+		default:
+			if err == nil {
+				s.auditAs(ctx, &user.ID, nil, "user.update", "user", user.ID.String(), map[string]any{
+					"name": updated.Name, "is_admin": updated.IsAdmin, "via": "oidc",
+				})
+			}
+			return updated, err
+		}
+	}
+}
+
+func sameString(a, b *string) bool {
+	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
+}
+
+// oidcProviderFor discovers Polaris once and remembers it, with the access
+// token verifier for the Orrery API. Discovery runs on the first login rather
+// than at startup, so a slow IdP cannot delay serving.
+func (s *Server) oidcProviderFor(ctx context.Context) (*oidc.Provider, *polaris.Verifier, error) {
 	s.oidcMu.Lock()
 	defer s.oidcMu.Unlock()
 	if s.oidcProvider != nil {
-		return s.oidcProvider, nil
+		return s.oidcProvider, s.polaris, nil
 	}
 	provider, err := oidc.NewProvider(ctx, s.cfg.OIDC.IssuerURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	s.oidcProvider = provider
-	return provider, nil
+	verifier, err := polaris.NewVerifier(ctx, s.cfg.OIDC.IssuerURL, s.cfg.OIDC.Audience)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.oidcProvider, s.polaris = provider, verifier
+	return provider, verifier, nil
 }
 
 func (s *Server) oauth2Config(provider *oidc.Provider, r *http.Request) oauth2.Config {
@@ -392,25 +355,8 @@ func safeReturnPath(value string) string {
 	return value
 }
 
-// emailDomainAllowed treats an empty configuration as unrestricted.
-func emailDomainAllowed(email string, domains []string) bool {
-	if len(domains) == 0 {
-		return true
-	}
-	if !validEmail(email) {
-		return false
-	}
-	domain := strings.ToLower(email[strings.LastIndexByte(email, '@')+1:])
-	for _, allowed := range domains {
-		if domain == allowed {
-			return true
-		}
-	}
-	return false
-}
-
 // oidcUserName picks a stable display name from the claims, falling back to
-// the subject. The first User has no admin to choose one for them.
+// the subject.
 func oidcUserName(subject string, claims oidcClaims) string {
 	candidates := []string{claims.PreferredUsername, claims.Name}
 	if at := strings.LastIndexByte(claims.Email, '@'); at > 0 {
@@ -436,4 +382,32 @@ func uniqueOIDCName(name, subject string) string {
 		runes = runes[:maxNameLen-len([]rune(suffix))]
 	}
 	return string(runes) + suffix
+}
+
+// handleBackchannelLogout ends the Sessions issued for the Polaris Session a
+// logout token names (ADR-0029). An unknown sid is still a 200: Polaris
+// retries every non-2xx response.
+func (s *Server) handleBackchannelLogout(w http.ResponseWriter, r *http.Request, _ *principal) {
+	ctx := r.Context()
+	_, verifier, err := s.oidcProviderFor(ctx)
+	if err != nil {
+		s.log.Error("OIDC discovery failed", "error", err)
+		writeProblem(w, "unavailable", "the OIDC provider is not reachable")
+		return
+	}
+	lt, err := verifier.VerifyLogoutToken(ctx, s.cfg.OIDC.ClientID, r.PostFormValue("logout_token"))
+	if err != nil {
+		s.log.Warn("Polaris logout token rejected", "error", err)
+		writeProblem(w, "invalid_request", "the logout token is invalid")
+		return
+	}
+	ended, err := s.q.DeleteSessionsBySid(ctx, &lt.Sid)
+	if err != nil {
+		s.internal(w, "end Sessions by sid", err)
+		return
+	}
+	for _, row := range ended {
+		s.auditAs(ctx, &row.UserID, nil, "session.delete", "session", row.ID.String(), map[string]any{"via": "backchannel_logout"})
+	}
+	w.WriteHeader(http.StatusOK)
 }

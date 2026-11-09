@@ -36,7 +36,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from '@/components/ui/sidebar'
-import { forgetCurrentSession } from '@/lib/current-session'
 import { useLocale } from '@/lib/i18n'
 import { m } from '@/paraglide/messages'
 
@@ -50,7 +49,6 @@ export const Route = createFileRoute('/_authed')({
       return { user }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        forgetCurrentSession()
         throw redirect({ to: '/login', search: { return: location.href } })
       }
       throw err
@@ -100,7 +98,6 @@ function AuthedShell() {
   const logout = useMutation({
     mutationFn: () => api('DELETE', '/sessions/current'),
     onSuccess: () => {
-      forgetCurrentSession()
       window.location.assign('/login')
     },
   })

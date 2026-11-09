@@ -84,6 +84,47 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 
 ADR-0028 移除了自动更新（取代 ADR-0023 的 `--auto-update`）。升级就是运维重跑 `install.sh`；现在传 `--auto-update` 或 `--no-auto-update` 会报错。旧版本留下的更新器（Control Plane 的 Compose 项目 `orrery-updater`、Node 的 `orrery-update.service`）在下一次成功运行 `install.sh` 后自动删除。
 
+### Polaris
+
+Polaris 是唯一的登录方式（ADR-0029），`config.yaml` 的 `oidc` 段必填，缺了 Control Plane 不启动。在 Polaris 控制台里按顺序建：
+
+1. **API**：标识 `api://orrery`（即 `oidc.audience`），在它下面加 Permission `orrery:admin`。
+2. **Role**：例如「Orrery 管理员」，挂在这个 API 上，包含 `orrery:admin`。持有它的人下次登录时成为 Orrery admin；收回后经 Webhook 立即失去 admin。
+3. **Web Application**（confidential）：
+   - default API 设为 `api://orrery`。Polaris 不支持 `resource` 参数，access token 的 `aud` 只由 default API 决定；设错了登录会失败。
+   - callback URL 填 `https://cp.example.com/api/v1/oidc/callback`（公开地址加这个路径）。
+   - Back-Channel Logout URI 填 `https://cp.example.com/api/v1/polaris/backchannel-logout`。在 Polaris 登出、被管理员结束 Session、被禁用或删除时，对应的 Orrery Session 随之失效。
+   - 只让指定的人用 Orrery 时，打开 require Role。
+   - Webhook URL 填 `https://cp.example.com/api/v1/polaris/webhook`，再生成一个 Webhook secret（`whsec_...`）。在 Polaris 停用、启用、删除一个人或改他的 Role 时，Orrery 据此立即生效：停用拒绝他的全部凭据，改 Role 收回 admin，直到下次登录重新判定。
+4. 把 issuer、client id、client secret、audience 和 Webhook secret 写进 `config.yaml`：
+
+```yaml
+oidc:
+  issuer_url: https://polaris.example.com
+  client_id: ...
+  client_secret: ...
+  audience: api://orrery
+  webhook_secret: whsec_...
+```
+
+旧的 `oidc.allow_signups` 和 `oidc.email_domains` 已移除，配置里还有它们时拒绝启动。
+
+### 第一个 admin 和 Machine User
+
+Orrery 没有密码，也不能在 API 里建 User。`orrery-server user-token` 直接连 PostgreSQL（读同一个 `config.yaml`），打印一枚 API Token 的 JSON，Polaris 或 API 挂了也能用：
+
+```sh
+cd /etc/orrery
+# 给已登录过的 Polaris User 签 token（不改 is_admin；Polaris 不可用时的应急入口）
+docker compose exec server orrery-server user-token --sub <Polaris sub> --scope admin
+# 找到或新建 Machine User（CI、bot），--admin 让它成为 admin
+docker compose exec server orrery-server user-token --name ci --admin --scope admin
+# 加 --session 签一个控制台 Session（token 即 orrery_session cookie 的值），不经 Polaris 登录进控制台；e2e 也这样进控制台
+docker compose exec server orrery-server user-token --sub <Polaris sub> --session
+```
+
+全新部署时还没人有 Polaris Role，用 `--name ops --admin` 建一个 admin Machine User 起步。
+
 ## Node
 
 把 `/etc/orrery/ca/ca.crt` 复制到 Node 上（公共 CA 证书不需要），然后：
@@ -152,6 +193,8 @@ Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules
   ```
 
 - Node：下载、校验、替换二进制后重启 `orrery-agent`，`orrery-containerd`、`orrery-buildkitd` 只在变了时重启；不带 `--runtime` 或 `--` 参数时保留 Agent 现有的启动参数。允许装旧版本，Control Plane 会把它标为 `outdated`。
+
+从自带用户系统切到 Polaris（ADR-0029）的那次升级前，先按 `docs/polaris-migration.md` 把现有 User 迁到 Polaris。去掉密码的那个版本在还有没关联 Polaris 的 `password` User 时拒绝迁移数据库，并列出这些 User。
 
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 

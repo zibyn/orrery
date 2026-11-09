@@ -28,31 +28,6 @@ func TestSafeReturnPath(t *testing.T) {
 	}
 }
 
-func TestEmailDomainAllowed(t *testing.T) {
-	domains := []string{"example.com", "corp.example"}
-	for _, tt := range []struct {
-		name   string
-		email  string
-		limits []string
-		want   bool
-	}{
-		{"empty config allows anyone", "a@anywhere.test", nil, true},
-		{"allowed domain", "a@example.com", domains, true},
-		{"case-insensitive domain", "a@EXAMPLE.COM", domains, true},
-		{"another allowed domain", "a@corp.example", domains, true},
-		{"outside the list", "a@evil.test", domains, false},
-		{"subdomain is not the domain", "a@sub.example.com", domains, false},
-		{"no email with a list", "", domains, false},
-		{"malformed email", "not-an-email", domains, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := emailDomainAllowed(tt.email, tt.limits); got != tt.want {
-				t.Fatalf("emailDomainAllowed(%q, %v) = %v, want %v", tt.email, tt.limits, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestOIDCUserName(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -97,5 +72,19 @@ func TestOIDCStateWithoutCookieIsRejected(t *testing.T) {
 	w := httptest.NewRecorder()
 	if _, ok := takeOIDCState(w, httptest.NewRequest(http.MethodGet, "/api/v1/oidc/callback", nil)); ok {
 		t.Fatal("a callback without the state cookie must be rejected")
+	}
+}
+
+// The console's profile link: the Polaris account center, branded for Orrery's
+// Application (Polaris management-api.md, ADR-0029).
+func TestOIDCAccountRedirectsToPolarisAccountCenter(t *testing.T) {
+	s := &Server{cfg: Config{OIDC: OIDCConfig{IssuerURL: "https://id.example.com/", ClientID: "orrery web"}}}
+	w := httptest.NewRecorder()
+	s.handleOIDCAccount(w, httptest.NewRequest(http.MethodGet, "/api/v1/oidc/account", nil), nil)
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", w.Code)
+	}
+	if got, want := w.Header().Get("Location"), "https://id.example.com/account?client_id=orrery+web"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
 	}
 }

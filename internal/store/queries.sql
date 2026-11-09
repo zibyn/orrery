@@ -1,10 +1,10 @@
 -- Users
 
--- name: CreateUser :one
-INSERT INTO users (
-    id, name, email, is_admin, login_type, password_hash,
-    gpu_quota, sandbox_quota, idempotency_key, created_by
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+-- CreateMachineUser creates a User with no Polaris identity; only
+-- orrery-server user-token does (ADR-0029).
+-- name: CreateMachineUser :one
+INSERT INTO users (id, name, is_admin, gpu_quota, sandbox_quota)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: GetUser :one
@@ -17,52 +17,26 @@ SELECT * FROM users WHERE name = $1 AND deleted_at IS NULL;
 SELECT * FROM users
 WHERE oidc_issuer = $1 AND oidc_subject = $2 AND deleted_at IS NULL;
 
--- name: GetUserByEmail :one
-SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
-
--- BindUserOIDCIdentity links an identity only to an unlinked OIDC User, so a
--- concurrent login that bound first is never overwritten (ADR-0020).
--- name: BindUserOIDCIdentity :one
-UPDATE users
-SET oidc_issuer = $2, oidc_subject = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL AND login_type = 'oidc'
-  AND oidc_issuer IS NULL AND oidc_subject IS NULL
-RETURNING *;
-
--- CreateOIDCUser creates an OIDC User; the first User in the table is the
--- admin, even when allow_signups is off (ADR-0020).
+-- CreateOIDCUser creates the User of a first Polaris login; is_admin comes
+-- from the access token's entitlements (ADR-0029).
 -- name: CreateOIDCUser :one
 INSERT INTO users (
-    id, name, email, is_admin, login_type, oidc_issuer, oidc_subject,
+    id, name, email, is_admin, oidc_issuer, oidc_subject,
     gpu_quota, sandbox_quota
-) VALUES (
-    $1, $2, $3,
-    NOT EXISTS (SELECT 1 FROM users),
-    'oidc', $4, $5, $6, $7
-)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING *;
+
+-- SyncOIDCUser copies a returning login's claims onto its User (ADR-0029).
+-- name: SyncOIDCUser :one
+UPDATE users
+SET name = $2, email = $3, is_admin = $4, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
 -- LockUser serializes quota checks of one User: concurrent creates and starts
 -- cannot both observe the same usage (ADR-0015).
 -- name: LockUser :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
-
--- name: GetUserByIdempotencyKey :one
-SELECT * FROM users
-WHERE created_by = $1 AND idempotency_key = $2;
-
--- name: CountUsers :one
-SELECT count(*) FROM users;
-
--- BootstrapAdmin creates the first admin only while the table is empty.
--- name: BootstrapAdmin :one
-INSERT INTO users (
-    id, name, email, is_admin, login_type, password_hash,
-    gpu_quota, sandbox_quota
-)
-SELECT $1, $2, $3, true, 'password', $4, $5, $6
-WHERE NOT EXISTS (SELECT 1 FROM users)
-RETURNING *;
 
 -- name: ListUsers :many
 SELECT * FROM users
@@ -76,10 +50,8 @@ UPDATE users
 SET name = $2,
     email = $3,
     is_admin = $4,
-    login_type = $5,
-    password_hash = $6,
-    gpu_quota = $7,
-    sandbox_quota = $8,
+    gpu_quota = $5,
+    sandbox_quota = $6,
     updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
@@ -90,44 +62,46 @@ SET gpu_quota = $2, sandbox_quota = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
--- name: UpdateUserPassword :one
-UPDATE users
-SET password_hash = $2, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL
-RETURNING *;
-
 -- name: SoftDeleteUser :one
 UPDATE users
 SET deleted_at = now(), updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
+-- ApplyPolarisEvent records a Polaris webhook event on the Polaris-linked
+-- User it names, unless a newer event was already applied. Event times have
+-- second precision, so ties apply but fail closed: an enable never undoes a
+-- disable of the same second (ADR-0029). A null disabled keeps disabled_at.
+-- name: ApplyPolarisEvent :one
+UPDATE users
+SET disabled_at = CASE sqlc.narg('disabled')::boolean
+        WHEN true THEN coalesce(disabled_at, now())
+        WHEN false THEN NULL
+        ELSE disabled_at
+    END,
+    polaris_disabled_at = CASE WHEN sqlc.narg('disabled')::boolean
+        THEN sqlc.arg('event_at') ELSE polaris_disabled_at END,
+    is_admin = is_admin AND NOT sqlc.arg('clear_admin')::boolean,
+    polaris_event_at = sqlc.arg('event_at'),
+    updated_at = now()
+WHERE oidc_issuer = sqlc.arg('issuer') AND oidc_subject = sqlc.arg('subject')
+  AND deleted_at IS NULL
+  AND (polaris_event_at IS NULL OR polaris_event_at <= sqlc.arg('event_at'))
+  AND (sqlc.narg('disabled')::boolean IS DISTINCT FROM false
+       OR polaris_disabled_at IS NULL OR polaris_disabled_at < sqlc.arg('event_at'))
+RETURNING *;
+
+-- RecordPolarisDelivery claims a webhook-id; no row means a redelivery.
+-- shortcut: rows are never pruned (one per applied event); prune by received_at if it grows.
+-- name: RecordPolarisDelivery :execrows
+INSERT INTO polaris_webhook_deliveries (id) VALUES ($1) ON CONFLICT DO NOTHING;
+
 -- API tokens
 
 -- name: CreateToken :one
 INSERT INTO api_tokens (
-    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING *;
-
--- CreatePasswordToken inserts a token only while the User still has the
--- password hash the login verified. FOR SHARE makes a password change wait for
--- this statement, so the change either sees the new Session in its revocation
--- delete or this insert re-reads the new hash and inserts nothing. The lock
--- covers this statement only; argon2 verification stays outside it.
--- name: CreatePasswordToken :one
-INSERT INTO api_tokens (
-    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key
-)
-SELECT
-    sqlc.arg('id'), u.id, sqlc.arg('kind'), sqlc.arg('name'),
-    sqlc.arg('secret_hash'), sqlc.arg('scope'), sqlc.narg('expires_at'),
-    sqlc.narg('idempotency_key')
-FROM users u
-WHERE u.id = sqlc.arg('user_id')
-  AND u.password_hash = sqlc.arg('password_hash')
-  AND u.deleted_at IS NULL
-FOR SHARE
+    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key, sid
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetToken :one
@@ -139,7 +113,7 @@ SELECT t.id, t.user_id, t.kind, t.name, t.secret_hash, t.scope,
        u.is_admin AS user_is_admin
 FROM api_tokens t
 JOIN users u ON u.id = t.user_id
-WHERE t.id = $1 AND u.deleted_at IS NULL;
+WHERE t.id = $1 AND u.deleted_at IS NULL AND u.disabled_at IS NULL;
 
 -- name: GetTokenByIdempotencyKey :one
 SELECT * FROM api_tokens WHERE user_id = $1 AND idempotency_key = $2;
@@ -153,6 +127,12 @@ LIMIT sqlc.arg('limit');
 
 -- name: DeleteToken :execrows
 DELETE FROM api_tokens WHERE id = $1 AND user_id = $2;
+
+-- DeleteSessionsBySid ends the Sessions issued for one Polaris Session
+-- (Back-Channel Logout, ADR-0029).
+-- name: DeleteSessionsBySid :many
+DELETE FROM api_tokens WHERE sid = $1 AND kind = 'session'
+RETURNING id, user_id;
 
 -- A bounded delete keeps one purge tick from holding a long transaction.
 -- name: PurgeExpiredTokens :exec

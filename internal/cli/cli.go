@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/term"
-
 	orreryclient "github.com/zibyn/orrery/client"
 )
 
@@ -126,8 +124,8 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: orrery [global flags] <command> [flags]
 
 commands:
-  login            log in and store an API Token (--username for a password login)
-  user list|get|create|update|delete|quota
+  login            log in through the Web console and store an API Token
+  user list|get|update|delete|quota
   token list|create|revoke
   token <provider>                  fetch a Git credential by provider id
   git-credential get|store|erase    git credential helper (Sandbox only)
@@ -175,9 +173,8 @@ global flags:
   --token TOKEN    API token (default $ORRERY_SANDBOX_TOKEN or the config file)
 
 examples:
-  orrery login --username alice
+  orrery login
   orrery user list
-  orrery user create --name alice --login-type password --password-stdin
   orrery token create --name ci --scope read_only
   orrery secret set --file npm-token.txt NPM_TOKEN
   orrery secret list
@@ -195,53 +192,23 @@ examples:
 `)
 }
 
-// runLogin gets the CLI a named API Token (ADR-0020). With --username it trades
-// a password for one; without, the User signs in at the console's /cli-auth,
-// which creates a token with the browser Session, and pastes it back.
+// runLogin gets the CLI a named API Token (ADR-0029): the User signs in at
+// the console's /cli-auth through Polaris, creates a token there with the
+// browser Session, and pastes it back.
 func runLogin(base, configPath string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	username := fs.String("username", "", "username; omit to finish the login in the Web console")
-	name := fs.String("name", "", "token name (default cli-<UTC timestamp>; password login only)")
-	scope := fs.String("scope", "user", "token scope (password login only): read_only, user, or admin")
-	passwordStdin := fs.Bool("password-stdin", false, "read the password from stdin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: orrery login [--username NAME] [flags]")
+		return fmt.Errorf("usage: orrery login")
 	}
-	if *username == "" {
-		return consoleLogin(base, configPath, stdin, stdout, stderr)
-	}
-	password, err := readPassword(*passwordStdin, stdin, stderr)
-	if err != nil {
-		return err
-	}
-	if *name == "" {
-		*name = "cli-" + time.Now().UTC().Format("20060102T150405Z")
-	}
-	c := orreryclient.New(base, "")
-	out, err := c.CreateSession(ctx, orreryclient.SessionRequest{
-		Username: *username,
-		Password: password,
-		Token:    &orreryclient.TokenRequest{Name: *name, Scope: *scope},
-	})
-	if err != nil {
-		return fmt.Errorf("%w (if this User does not log in with a password, run again without --username and finish in the Web console)", err)
-	}
-	if out.Plaintext == "" {
-		return fmt.Errorf("login response did not contain a token")
-	}
-	if err := writeConfig(configPath, fileConfig{APIURL: base, Token: out.Plaintext}); err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "logged in as %s; token %q written to %s\n", *username, *name, configPath)
-	return nil
+	return consoleLogin(base, configPath, stdin, stdout, stderr)
 }
 
-// consoleLogin handles a User who logs in at an IdP: the console creates the
-// token with the browser Session, and the User pastes it here like `coder login`.
+// consoleLogin: the console creates the token with the browser Session, and
+// the User pastes it here like `coder login`.
 func consoleLogin(base, configPath string, stdin io.Reader, stdout, stderr io.Writer) error {
 	consoleURL := strings.TrimRight(base, "/") + "/login?return=%2Fcli-auth"
 	fmt.Fprintf(stderr, "Open %s, sign in, and create a token on the CLI authorization page.\n", consoleURL)
@@ -265,23 +232,6 @@ func consoleLogin(base, configPath string, stdin io.Reader, stdout, stderr io.Wr
 	}
 	fmt.Fprintf(stdout, "logged in as %s; token written to %s\n", me.Name, configPath)
 	return nil
-}
-
-func readPassword(fromStdin bool, stdin io.Reader, stderr io.Writer) (string, error) {
-	if fromStdin {
-		return readLine(stdin)
-	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", fmt.Errorf("--password-stdin is required when stdin is not a terminal")
-	}
-	// The terminal reads from the process's stdin, not the injected reader.
-	fmt.Fprint(stderr, "Password: ")
-	password, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Fprintln(stderr)
-	if err != nil {
-		return "", err
-	}
-	return string(password), nil
 }
 
 // readLine reads one trimmed line, accepting EOF as the end of the input.
@@ -405,47 +355,11 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 			return err
 		}
 		return c.print(user)
-	case "create":
-		fs := flag.NewFlagSet("user create", flag.ContinueOnError)
-		fs.SetOutput(stderr)
-		name := fs.String("name", "", "username")
-		email := fs.String("email", "", "email")
-		loginType := fs.String("login-type", "password", "password, oidc, or none")
-		password := fs.String("password", "", "password (prefer --password-stdin)")
-		passwordStdin := fs.Bool("password-stdin", false, "read the password from stdin")
-		isAdmin := fs.Bool("is-admin", false, "make the User an admin")
-		idem := fs.String("idempotency-key", "", "idempotency key")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if *name == "" {
-			return fmt.Errorf("--name is required")
-		}
-		pw, err := resolvePassword(*password, *passwordStdin)
-		if err != nil {
-			return err
-		}
-		req := orreryclient.CreateUserRequest{Name: *name, LoginType: *loginType, IsAdmin: *isAdmin}
-		if *email != "" {
-			req.Email = email
-		}
-		if pw != "" {
-			req.Password = &pw
-		}
-		user, err := c.CreateUser(ctx, req, *idem)
-		if err != nil {
-			return err
-		}
-		return c.print(user)
 	case "update":
 		fs := flag.NewFlagSet("user update", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		name := fs.String("name", "", "username")
 		email := fs.String("email", "", "email (empty string clears it)")
-		loginType := fs.String("login-type", "", "password, oidc, or none")
-		password := fs.String("password", "", "password (prefer --password-stdin)")
-		passwordStdin := fs.Bool("password-stdin", false, "read the password from stdin")
-		isAdmin := fs.Bool("is-admin", false, "make the User an admin")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -460,19 +374,6 @@ func runUser(c *client, args []string, stderr io.Writer) error {
 		}
 		if set["email"] {
 			req.Email = email
-		}
-		if set["login-type"] {
-			req.LoginType = loginType
-		}
-		if set["is-admin"] {
-			req.IsAdmin = isAdmin
-		}
-		if set["password"] || set["password-stdin"] {
-			pw, err := resolvePassword(*password, *passwordStdin)
-			if err != nil {
-				return err
-			}
-			req.Password = &pw
 		}
 		user, err := c.UpdateUser(ctx, fs.Arg(0), req)
 		if err != nil {
@@ -699,14 +600,4 @@ func runAudit(c *client, args []string, stderr io.Writer) error {
 		return err
 	}
 	return c.print(page)
-}
-
-func resolvePassword(value string, fromStdin bool) (string, error) {
-	if value != "" && fromStdin {
-		return "", fmt.Errorf("use either --password or --password-stdin, not both")
-	}
-	if !fromStdin {
-		return value, nil
-	}
-	return readLine(os.Stdin)
 }

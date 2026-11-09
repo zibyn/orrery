@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/zibyn/orrery/internal/keyring"
@@ -62,11 +61,14 @@ type fileConfig struct {
 	EncryptionKeys []encryptionKeyFile `yaml:"encryption_keys"`
 	GitProviders   []gitProviderYAML   `yaml:"git_providers"`
 	OIDC           struct {
-		IssuerURL    string   `yaml:"issuer_url"`
-		ClientID     string   `yaml:"client_id"`
-		ClientSecret string   `yaml:"client_secret"`
-		EmailDomains []string `yaml:"email_domains"`
-		AllowSignups bool     `yaml:"allow_signups"`
+		IssuerURL     string `yaml:"issuer_url"`
+		ClientID      string `yaml:"client_id"`
+		ClientSecret  string `yaml:"client_secret"`
+		Audience      string `yaml:"audience"`
+		WebhookSecret string `yaml:"webhook_secret"`
+		// Removed (ADR-0029); kept only to reject them with a clear message.
+		EmailDomains any `yaml:"email_domains"`
+		AllowSignups any `yaml:"allow_signups"`
 	} `yaml:"oidc"`
 	S3 struct {
 		Endpoint       string `yaml:"endpoint"`
@@ -304,12 +306,17 @@ func (o envOverride) apply(f *fileConfig) error {
 	if v, ok := o.get("oidc.client_secret", "ORRERY_OIDC_CLIENT_SECRET"); ok {
 		f.OIDC.ClientSecret = v
 	}
+	if v, ok := o.get("oidc.audience", "ORRERY_OIDC_AUDIENCE"); ok {
+		f.OIDC.Audience = v
+	}
+	if v, ok := o.get("oidc.webhook_secret", "ORRERY_OIDC_WEBHOOK_SECRET"); ok {
+		f.OIDC.WebhookSecret = v
+	}
 	if v, ok := o.get("oidc.allow_signups", "ORRERY_OIDC_ALLOW_SIGNUPS"); ok {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("ORRERY_OIDC_ALLOW_SIGNUPS must be true or false")
-		}
-		f.OIDC.AllowSignups = b
+		f.OIDC.AllowSignups = v
+	}
+	if v, ok := o.get("oidc.email_domains", "ORRERY_OIDC_EMAIL_DOMAINS"); ok {
+		f.OIDC.EmailDomains = v
 	}
 	if v, ok := o.get("s3.endpoint", "ORRERY_S3_ENDPOINT"); ok {
 		f.S3.Endpoint = v
@@ -539,19 +546,15 @@ func (f *fileConfig) oidc(cfg *Config) error {
 	cfg.OIDC.IssuerURL = f.OIDC.IssuerURL
 	cfg.OIDC.ClientID = f.OIDC.ClientID
 	cfg.OIDC.ClientSecret = f.OIDC.ClientSecret
-	cfg.OIDC.AllowSignups = f.OIDC.AllowSignups
-	for _, domain := range f.OIDC.EmailDomains {
-		if domain = strings.ToLower(strings.TrimSpace(domain)); domain != "" {
-			cfg.OIDC.EmailDomains = append(cfg.OIDC.EmailDomains, domain)
-		}
-	}
-	if !cfg.OIDC.Enabled() {
-		return nil
-	}
-	if cfg.OIDC.ClientID == "" || cfg.OIDC.ClientSecret == "" {
-		return fmt.Errorf("oidc.client_id and oidc.client_secret are required when oidc.issuer_url is set")
-	}
-	return nil
+	cfg.OIDC.Audience = f.OIDC.Audience
+	cfg.OIDC.WebhookSecret = f.OIDC.WebhookSecret
+	return checkOIDCKeys([]oidcKey{
+		{"oidc.allow_signups", f.OIDC.AllowSignups != nil}, {"oidc.email_domains", f.OIDC.EmailDomains != nil},
+	}, []oidcKey{
+		{"oidc.issuer_url", cfg.OIDC.IssuerURL != ""}, {"oidc.client_id", cfg.OIDC.ClientID != ""},
+		{"oidc.client_secret", cfg.OIDC.ClientSecret != ""}, {"oidc.audience", cfg.OIDC.Audience != ""},
+		{"oidc.webhook_secret", cfg.OIDC.WebhookSecret != ""},
+	})
 }
 
 func (f *fileConfig) s3(cfg *Config) error {

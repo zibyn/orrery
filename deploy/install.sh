@@ -408,12 +408,14 @@ encryption_keys:
 #   - {id: gitea, type: gitea, client_id: ..., client_secret: ...,
 #      base_url: https://git.example.com, scopes: [read:user]}
 
+# Polaris, the only login (ADR-0029, docs/deploy.md). Required: the server
+# does not start until this block is filled in and uncommented.
 # oidc:
-#   issuer_url: https://idp.example.com
+#   issuer_url: https://polaris.example.com
 #   client_id: ...
 #   client_secret: ...
-#   email_domains: []
-#   allow_signups: false
+#   audience: api://orrery
+#   webhook_secret: whsec_...
 
 # A Sandbox needs a Platform Snapshot, referenced by digest:
 # platform_snapshots:
@@ -502,12 +504,10 @@ The public entry is https://$host:$port: /v2/ is the registry,
 The object store is https://$s3_host.
 
 Next steps:
-  1. Create the first admin:
-       cd $etc && docker compose exec server orrery-server bootstrap
+  1. Mint an admin token (an admin machine User; people log in through Polaris):
+       TOKEN=\$(cd $etc && docker compose exec -T server orrery-server user-token \\
+         --name ops --admin --scope admin | sed -n 's/.*"token": *"\\([^"]*\\)".*/\\1/p')
   2. Issue an Enrollment Packet (valid for 1 hour):
-       TOKEN=\$(curl -ks --connect-to "$host:$port:$check_addr:$port" -H 'Content-Type: application/json' \\
-         -d '{"username":"admin","password":"...","token":{"name":"ops","scope":"admin"}}' \\
-         "https://$host:$port/api/v1/sessions" | sed -n 's/.*"token":"\\([^"]*\\)".*/\\1/p')
        curl -ks --connect-to "$host:$port:$check_addr:$port" -X POST -H "Authorization: Bearer \$TOKEN" \\
          "https://$host:$port/api/v1/enrollment-packets"
   3. On each Node$( [ -n "$ca_flags" ] && echo ", after copying $etc/ca/ca.crt there as ca.crt"):

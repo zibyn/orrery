@@ -42,6 +42,7 @@ type ApiToken struct {
 	LastUsedAt     pgtype.Timestamptz
 	IdempotencyKey *string
 	CreatedAt      pgtype.Timestamptz
+	Sid            *string
 }
 
 type Attachment struct {
@@ -157,6 +158,11 @@ type Node struct {
 	MeshPublicKey  *string
 	MeshEndpoint   *string
 	SandboxSubnet  *string
+}
+
+type PolarisWebhookDelivery struct {
+	ID         string
+	ReceivedAt pgtype.Timestamptz
 }
 
 type Resource struct {
@@ -279,21 +285,22 @@ type Upload struct {
 }
 
 type User struct {
-	ID             uuid.UUID
-	Name           string
-	Email          *string
-	IsAdmin        bool
-	LoginType      string
-	PasswordHash   *string
-	OidcIssuer     *string
-	OidcSubject    *string
-	GpuQuota       int32
-	SandboxQuota   int32
-	IdempotencyKey *string
-	CreatedBy      *uuid.UUID
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	DeletedAt      pgtype.Timestamptz
+	ID                uuid.UUID
+	Name              string
+	Email             *string
+	IsAdmin           bool
+	OidcIssuer        *string
+	OidcSubject       *string
+	GpuQuota          int32
+	SandboxQuota      int32
+	IdempotencyKey    *string
+	CreatedBy         *uuid.UUID
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+	DeletedAt         pgtype.Timestamptz
+	DisabledAt        pgtype.Timestamptz
+	PolarisEventAt    pgtype.Timestamptz
+	PolarisDisabledAt pgtype.Timestamptz
 }
 
 type Workspace struct {

@@ -12,6 +12,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	polaris "github.com/zibyn/polaris/sdk/go"
 	"google.golang.org/grpc"
 
 	"github.com/zibyn/orrery/internal/objectstore"
@@ -24,7 +25,6 @@ type Server struct {
 	q            *store.Queries
 	log          *slog.Logger
 	objects      *objectstore.Store // nil when object storage is unconfigured
-	logins       *loginLimiter
 	crossOrigin  http.CrossOriginProtection
 	reconcile    *reconciler
 	mesh         *meshMatrix
@@ -32,6 +32,7 @@ type Server struct {
 	activity     *activityTracker
 	oidcMu       sync.Mutex
 	oidcProvider *oidc.Provider
+	polaris      *polaris.Verifier // with oidcProvider, under oidcMu
 	// snapshotCancels ends in-flight imports (api.md §3). Imports do not
 	// survive a restart, so an in-process map is the whole registry.
 	snapshotMu      sync.Mutex
@@ -45,7 +46,7 @@ func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
 			panic(err) // no entropy, no serving
 		}
 	}
-	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log, logins: newLoginLimiter(),
+	s := &Server{cfg: cfg, pool: pool, q: store.New(pool), log: log,
 		tunnels: newTunnelRegistry(), activity: newActivityTracker(), mesh: newMeshMatrix(),
 		snapshotCancels: map[uuid.UUID]context.CancelFunc{}}
 	if cfg.S3.Endpoint != "" {

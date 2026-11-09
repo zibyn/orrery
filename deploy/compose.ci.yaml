@@ -12,11 +12,3 @@ services:
       cache_to:
         - type=gha,scope=orrery-server,mode=max
 
-  server-oidc:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-      cache_from:
-        - type=gha,scope=orrery-server-oidc
-      cache_to:
-        - type=gha,scope=orrery-server-oidc,mode=max

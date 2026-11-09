@@ -18,7 +18,6 @@ import (
 const (
 	defaultPageSize = 50
 	maxPageSize     = 200
-	minPasswordLen  = 12
 	maxNameLen      = 255
 )
 
@@ -32,7 +31,7 @@ type userDTO struct {
 	Name      string     `json:"name"`
 	Email     *string    `json:"email"`
 	IsAdmin   bool       `json:"is_admin"`
-	LoginType string     `json:"login_type"`
+	Machine   bool       `json:"machine"`
 	Quota     quotaDTO   `json:"quota"`
 	CreatedAt time.Time  `json:"created_at"`
 	DeletedAt *time.Time `json:"deleted_at"`
@@ -51,6 +50,9 @@ type tokenDTO struct {
 	ExpiresAt  *time.Time `json:"expires_at"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 	CreatedAt  time.Time  `json:"created_at"`
+	// Current marks, in the caller's own token list, the credential making the
+	// request.
+	Current bool `json:"current,omitempty"`
 }
 
 // createdTokenDTO carries the plaintext secret, which appears exactly once.
@@ -107,20 +109,9 @@ type putSecretRequest struct {
 	Value string `json:"value"`
 }
 
-type createUserRequest struct {
-	Name      string  `json:"name"`
-	Email     *string `json:"email"`
-	LoginType string  `json:"login_type"`
-	Password  *string `json:"password"`
-	IsAdmin   bool    `json:"is_admin"`
-}
-
 type updateUserRequest struct {
-	Name      *string `json:"name"`
-	Email     *string `json:"email"`
-	LoginType *string `json:"login_type"`
-	Password  *string `json:"password"`
-	IsAdmin   *bool   `json:"is_admin"`
+	Name  *string `json:"name"`
+	Email *string `json:"email"`
 }
 
 type setQuotaRequest struct {
@@ -134,28 +125,13 @@ type createTokenRequest struct {
 	ExpiresAt *time.Time `json:"expires_at"`
 }
 
-type sessionRequest struct {
-	Username string              `json:"username"`
-	Password string              `json:"password"`
-	Token    *createTokenRequest `json:"token"`
-}
-
-type changePasswordRequest struct {
-	Old string `json:"old"`
-	New string `json:"new"`
-}
-
-type resetPasswordRequest struct {
-	Password string `json:"password"`
-}
-
 func userToDTO(u store.User) userDTO {
 	return userDTO{
 		ID:        u.ID.String(),
 		Name:      u.Name,
 		Email:     u.Email,
 		IsAdmin:   u.IsAdmin,
-		LoginType: u.LoginType,
+		Machine:   isMachineUser(u),
 		Quota:     quotaDTO{GPUs: u.GpuQuota, Sandboxes: u.SandboxQuota},
 		CreatedAt: u.CreatedAt.Time.UTC(),
 		DeletedAt: timePtr(u.DeletedAt),
@@ -194,20 +170,12 @@ func uuidPtr(id *uuid.UUID) *string {
 	return &s
 }
 
-func validLoginType(s string) bool {
-	return s == "password" || s == "oidc" || s == "none"
-}
-
 func validScope(s string) bool {
 	return s == "read_only" || s == "user" || s == "admin"
 }
 
 func validDisplayName(s string) bool {
 	return s != "" && s == strings.TrimSpace(s) && utf8.RuneCountInString(s) <= maxNameLen
-}
-
-func validPassword(s string) bool {
-	return utf8.RuneCountInString(s) >= minPasswordLen
 }
 
 // idempotencyKey returns nil when the header is absent. A present but oversized
