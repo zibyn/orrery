@@ -20,10 +20,13 @@ WHERE oidc_issuer = $1 AND oidc_subject = $2 AND deleted_at IS NULL;
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
 
+-- BindUserOIDCIdentity links an identity only to an unlinked OIDC User, so a
+-- concurrent login that bound first is never overwritten (ADR-0020).
 -- name: BindUserOIDCIdentity :one
 UPDATE users
 SET oidc_issuer = $2, oidc_subject = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL
+WHERE id = $1 AND deleted_at IS NULL AND login_type = 'oidc'
+  AND oidc_issuer IS NULL AND oidc_subject IS NULL
 RETURNING *;
 
 -- CreateOIDCUser creates an OIDC User; the first User in the table is the

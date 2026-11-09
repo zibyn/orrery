@@ -160,6 +160,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request, _ *p
 	http.Redirect(w, r, safeReturnPath(flow.Return), http.StatusFound)
 }
 
+// oidcSignupLockID serializes OIDC signups across replicas (ADR-0020).
+const oidcSignupLockID = 724003
+
 // oidcDenial is a policy decision answered with 403, as opposed to a failure.
 type oidcDenial string
 
@@ -196,22 +199,29 @@ func (s *Server) oidcUser(ctx context.Context, issuer, subject string, claims oi
 			bound, err := s.q.BindUserOIDCIdentity(ctx, store.BindUserOIDCIdentityParams{
 				ID: user.ID, OidcIssuer: &issuer, OidcSubject: &subject,
 			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				// A concurrent login bound first: let it through only when it
+				// bound this same identity.
+				bound, err = s.q.GetUserByOIDCIdentity(ctx, store.GetUserByOIDCIdentityParams{
+					OidcIssuer: &issuer, OidcSubject: &subject,
+				})
+				if errors.Is(err, pgx.ErrNoRows) || (err == nil && bound.ID != user.ID) {
+					return store.User{}, oidcDenial("this User is already linked to another OIDC identity")
+				}
+				return bound, err
+			}
 			if err != nil {
 				return store.User{}, err
 			}
+			s.auditAs(ctx, &bound.ID, nil, "user.oidc_link", "user", bound.ID.String(), map[string]any{
+				"oidc_issuer": issuer,
+			})
 			return bound, nil
 		case !errors.Is(err, pgx.ErrNoRows):
 			return store.User{}, err
 		}
 	}
 
-	count, err := s.q.CountUsers(ctx)
-	if err != nil {
-		return store.User{}, err
-	}
-	if count > 0 && !s.cfg.OIDC.AllowSignups {
-		return store.User{}, oidcDenial("signups are disabled")
-	}
 	user, err = s.createOIDCUser(ctx, issuer, subject, claims)
 	switch uniqueViolation(err) {
 	case "users_email_unique":
@@ -246,13 +256,45 @@ func (s *Server) createOIDCUser(ctx context.Context, issuer, subject string, cla
 		GpuQuota:     s.cfg.DefaultGPUQuota,
 		SandboxQuota: s.cfg.DefaultSandboxQuota,
 	}
-	user, err := s.q.CreateOIDCUser(ctx, params)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.User{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	// Signups are serialized: the first User becomes admin and, with signups
+	// off, is the only one admitted, so two concurrent first logins must not
+	// both observe an empty table.
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", oidcSignupLockID); err != nil {
+		return store.User{}, err
+	}
+	q := s.q.WithTx(tx)
+	count, err := q.CountUsers(ctx)
+	if err != nil {
+		return store.User{}, err
+	}
+	if count > 0 && !s.cfg.OIDC.AllowSignups {
+		return store.User{}, oidcDenial("signups are disabled")
+	}
+	// The savepoint keeps the transaction usable after a name collision.
+	attempt, err := tx.Begin(ctx)
+	if err != nil {
+		return store.User{}, err
+	}
+	user, err := s.q.WithTx(attempt).CreateOIDCUser(ctx, params)
 	if uniqueViolation(err) == "users_name_key" {
+		if err := attempt.Rollback(ctx); err != nil {
+			return store.User{}, err
+		}
 		// A name collision is not a denial: disambiguate with the subject.
 		params.Name = uniqueOIDCName(name, subject)
-		user, err = s.q.CreateOIDCUser(ctx, params)
+		user, err = q.CreateOIDCUser(ctx, params)
+	} else if err == nil {
+		err = attempt.Commit(ctx)
 	}
 	if err != nil {
+		return store.User{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return store.User{}, err
 	}
 	s.auditAs(ctx, &user.ID, nil, "user.create", "user", user.ID.String(), map[string]any{

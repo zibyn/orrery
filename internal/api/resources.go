@@ -481,6 +481,16 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
+	// Serialize pointer moves of one Resource (ADR-0012), and re-check under
+	// the lock that a concurrent DELETE has not tombstoned it since the read.
+	if _, err := q.LockResource(ctx, resource.ID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeProblem(w, "not_found", "no such Resource")
+			return
+		}
+		s.internal(w, "lock Resource", err)
+		return
+	}
 	version, replayed, err := createIdempotent(key, lookup,
 		func() (store.ResourceVersion, error) {
 			return q.CreateResourceVersion(ctx, store.CreateResourceVersionParams{

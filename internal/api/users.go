@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/mail"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -143,63 +144,79 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		writeProblem(w, "not_found", "")
 		return
 	}
-	ctx := r.Context()
-	user, err := s.q.GetUser(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeProblem(w, "not_found", "")
-		return
-	}
-	if err != nil {
-		s.internal(w, "get user", err)
-		return
-	}
 	var req updateUserRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-
-	var changed []string
-	passwordChanged := false
-	if req.Name != nil {
-		if !validDisplayName(*req.Name) {
-			writeProblem(w, "invalid_request", "name must be non-empty, trimmed, and at most 255 characters")
-			return
-		}
-		user.Name = *req.Name
-		changed = append(changed, "name")
+	// Checks that need no stored state, and the slow argon2 hash, run before
+	// the row lock is taken.
+	if req.Name != nil && !validDisplayName(*req.Name) {
+		writeProblem(w, "invalid_request", "name must be non-empty, trimmed, and at most 255 characters")
+		return
 	}
+	var email *string
 	if req.Email != nil {
-		email, ok := normalizeEmail(w, req.Email)
-		if !ok {
+		if email, ok = normalizeEmail(w, req.Email); !ok {
 			return
 		}
-		user.Email = email
-		changed = append(changed, "email")
 	}
-	if req.LoginType != nil {
-		if !validLoginType(*req.LoginType) {
-			writeProblem(w, "invalid_request", "login_type must be password, oidc, or none")
-			return
-		}
-		user.LoginType = *req.LoginType
-		changed = append(changed, "login_type")
+	if req.LoginType != nil && !validLoginType(*req.LoginType) {
+		writeProblem(w, "invalid_request", "login_type must be password, oidc, or none")
+		return
 	}
+	var hash *string
 	if req.Password != nil {
 		if !validPassword(*req.Password) {
 			writeProblem(w, "invalid_request", "password must be at least 12 characters")
 			return
 		}
-		if user.LoginType != "password" {
-			writeProblem(w, "invalid_request", "password requires login_type=password")
-			return
-		}
-		hash, err := HashPassword(*req.Password)
+		h, err := HashPassword(*req.Password)
 		if err != nil {
 			s.internal(w, "hash password", err)
 			return
 		}
-		user.PasswordHash = &hash
-		passwordChanged = true
+		hash = &h
+	}
+
+	ctx := r.Context()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.internal(w, "begin update user", err)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	// UpdateUser writes every column back, so the read must hold the row:
+	// otherwise a concurrent PATCH or quota change is silently reverted.
+	user, err := q.LockUser(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, "not_found", "")
+		return
+	}
+	if err != nil {
+		s.internal(w, "lock user", err)
+		return
+	}
+
+	var changed []string
+	if req.Name != nil {
+		user.Name = *req.Name
+		changed = append(changed, "name")
+	}
+	if req.Email != nil {
+		user.Email = email
+		changed = append(changed, "email")
+	}
+	if req.LoginType != nil {
+		user.LoginType = *req.LoginType
+		changed = append(changed, "login_type")
+	}
+	if hash != nil {
+		if user.LoginType != "password" {
+			writeProblem(w, "invalid_request", "password requires login_type=password")
+			return
+		}
+		user.PasswordHash = hash
 		changed = append(changed, "password")
 	}
 	if req.IsAdmin != nil {
@@ -211,7 +228,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		user.PasswordHash = nil
 	}
 
-	params := store.UpdateUserParams{
+	updated, err := q.UpdateUser(ctx, store.UpdateUserParams{
 		ID:           user.ID,
 		Name:         user.Name,
 		Email:        user.Email,
@@ -220,14 +237,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		PasswordHash: user.PasswordHash,
 		GpuQuota:     user.GpuQuota,
 		SandboxQuota: user.SandboxQuota,
-	}
-	var updated store.User
-	if passwordChanged {
-		// ADR-0020: every password change revokes the User's Sessions.
-		updated, err = s.updateUserAndRevokeSessions(ctx, params)
-	} else {
-		updated, err = s.q.UpdateUser(ctx, params)
-	}
+	})
 	if err != nil {
 		if writeConstraintProblem(w, err) {
 			return
@@ -235,30 +245,20 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "update user", err)
 		return
 	}
-	s.audit(ctx, p, "user.update", "user", updated.ID.String(), map[string]any{"fields": changed})
-	writeJSON(w, http.StatusOK, userToDTO(updated))
-}
-
-// updateUserAndRevokeSessions commits the update and the Session revocation
-// together, so a password change cannot leave old Sessions valid.
-func (s *Server) updateUserAndRevokeSessions(ctx context.Context, params store.UpdateUserParams) (store.User, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return store.User{}, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	q := s.q.WithTx(tx)
-	user, err := q.UpdateUser(ctx, params)
-	if err != nil {
-		return store.User{}, err
-	}
-	if _, err := q.DeleteUserSessions(ctx, params.ID); err != nil {
-		return store.User{}, err
+	// ADR-0020: every password change revokes the User's Sessions, in the
+	// same transaction so old Sessions cannot outlive it.
+	if hash != nil {
+		if _, err := q.DeleteUserSessions(ctx, user.ID); err != nil {
+			s.internal(w, "revoke sessions", err)
+			return
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return store.User{}, err
+		s.internal(w, "commit update user", err)
+		return
 	}
-	return user, nil
+	s.audit(ctx, p, "user.update", "user", updated.ID.String(), map[string]any{"fields": changed})
+	writeJSON(w, http.StatusOK, userToDTO(updated))
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -385,6 +385,10 @@ func (s *Server) auditAs(ctx context.Context, actorUserID, actorTokenID *uuid.UU
 	if err != nil || string(raw) == "null" {
 		raw = []byte("{}")
 	}
+	// The mutation already committed; a client that disconnected meanwhile
+	// must not cancel its Audit Record. The timeout bounds a stuck database.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	err = s.q.InsertAudit(ctx, store.InsertAuditParams{
 		ActorUserID:   actorUserID,
 		ActorTokenID:  actorTokenID,

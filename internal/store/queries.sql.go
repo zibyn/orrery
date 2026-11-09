@@ -75,7 +75,8 @@ func (q *Queries) AppendExecChunk(ctx context.Context, arg AppendExecChunkParams
 const bindUserOIDCIdentity = `-- name: BindUserOIDCIdentity :one
 UPDATE users
 SET oidc_issuer = $2, oidc_subject = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL
+WHERE id = $1 AND deleted_at IS NULL AND login_type = 'oidc'
+  AND oidc_issuer IS NULL AND oidc_subject IS NULL
 RETURNING id, name, email, is_admin, login_type, password_hash, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at
 `
 
@@ -85,6 +86,8 @@ type BindUserOIDCIdentityParams struct {
 	OidcSubject *string
 }
 
+// BindUserOIDCIdentity links an identity only to an unlinked OIDC User, so a
+// concurrent login that bound first is never overwritten (ADR-0020).
 func (q *Queries) BindUserOIDCIdentity(ctx context.Context, arg BindUserOIDCIdentityParams) (User, error) {
 	row := q.db.QueryRow(ctx, bindUserOIDCIdentity, arg.ID, arg.OidcIssuer, arg.OidcSubject)
 	var i User
