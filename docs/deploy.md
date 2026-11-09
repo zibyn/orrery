@@ -29,9 +29,16 @@ api、registry、node 面和 RustFS 都只绑回环（`18080`、`15000`、`18081
 直接对外（版本由脚本解析为最新 release）：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh | sudo bash -s -- server \
-  --public-host cp.example.com
+read -rsp 'client secret: ' ORRERY_OIDC_CLIENT_SECRET; echo
+read -rsp 'webhook secret: ' ORRERY_OIDC_WEBHOOK_SECRET; echo
+export ORRERY_OIDC_CLIENT_SECRET ORRERY_OIDC_WEBHOOK_SECRET
+curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh |
+  sudo --preserve-env=ORRERY_OIDC_CLIENT_SECRET,ORRERY_OIDC_WEBHOOK_SECRET bash -s -- server \
+  --public-host cp.example.com \
+  --oidc-issuer https://polaris.example.com --oidc-client-id <client id>
 ```
+
+首次安装必须给出 Polaris 的 `--oidc-*`（见下文 [Polaris](#polaris)），脚本把它们写进 `config/config.yaml` 的 `oidc` 段，缺了直接退出。`--oidc-audience` 默认 `api://orrery`。两个 secret 也能用 `--oidc-client-secret`、`--oidc-webhook-secret` 传，但会留在 `ps` 和 shell 历史里，所以上面用环境变量。重跑升级时这些参数被忽略，改 `config.yaml` 即可。
 
 固定版本时从 tag 取脚本并显式给出 `--version vX.Y.Z`；不带版本时脚本只读取 `releases/latest` 的 tag，然后从该 tag 下载全部产物，不会跟随分支。
 
@@ -96,7 +103,7 @@ Polaris 是唯一的登录方式（ADR-0029），`config.yaml` 的 `oidc` 段必
    - Back-Channel Logout URI 填 `https://cp.example.com/api/v1/polaris/backchannel-logout`。在 Polaris 登出、被管理员结束 Session、被禁用或删除时，对应的 Orrery Session 随之失效。
    - 只让指定的人用 Orrery 时，打开 require Role。
    - Webhook URL 填 `https://cp.example.com/api/v1/polaris/webhook`，再生成一个 Webhook secret（`whsec_...`）。在 Polaris 停用、启用、删除一个人或改他的 Role 时，Orrery 据此立即生效：停用拒绝他的全部凭据，改 Role 收回 admin，直到下次登录重新判定。
-4. 把 issuer、client id、client secret、audience 和 Webhook secret 写进 `config.yaml`：
+4. 首次安装时用 `install.sh server --oidc-*` 传入（见上文），之后在 `config.yaml` 里改 issuer、client id、client secret、audience 和 Webhook secret：
 
 ```yaml
 oidc:

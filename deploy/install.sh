@@ -16,13 +16,18 @@ usage:
                     [--public-bind ADDR] [--tls self-signed|cert]
                     [--tls-cert FILE --tls-key FILE] [--ca FILE]
                     [--registry-addr HOST[:PORT]]
+                    --oidc-issuer https://POLARIS --oidc-client-id ID
+                    [--oidc-client-secret SECRET] [--oidc-audience api://orrery]
+                    [--oidc-webhook-secret whsec_...]
   install.sh node   [--version vX.Y.Z] [--server HOST:PORT --packet ore_...] [--ca FILE]
                     [--trust-registry HOST[:PORT]]... [--runtime containerd|local]
                     [--name NAME]
                     [-- extra `orrery-agent run` flags]
 
 --version defaults to the newest published release. To upgrade, rerun
-the same command.
+the same command. The --oidc-* flags are required on first install
+(ADR-0029); the two secrets may come from ORRERY_OIDC_CLIENT_SECRET and
+ORRERY_OIDC_WEBHOOK_SECRET instead, which keeps them out of ps and history.
 EOF
   exit 2
 }
@@ -56,6 +61,19 @@ split_url() {
   [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] ||
     die "$url has an invalid port"
   printf '%s %s' "$host" "$port"
+}
+
+# yaml_str prints $1 as a single-quoted YAML scalar.
+yaml_str() { local q="'"; printf "'%s'" "${1//$q/$q$q}"; }
+
+# oidc_block prints the config.yaml oidc section (ADR-0029, defaults.md).
+oidc_block() {
+  printf 'oidc:\n'
+  printf '  issuer_url: %s\n' "$(yaml_str "$1")"
+  printf '  client_id: %s\n' "$(yaml_str "$2")"
+  printf '  client_secret: %s\n' "$(yaml_str "$3")"
+  printf '  audience: %s\n' "$(yaml_str "$4")"
+  printf '  webhook_secret: %s\n' "$(yaml_str "$5")"
 }
 
 check_version() {
@@ -130,6 +148,8 @@ create_bucket() {
 
 server() {
   local version="" host="" port="" tls=self-signed cert="" key="" ca="" access_url="" registry_addr="" s3_url="" bind=""
+  local oidc_issuer="" oidc_client_id="" oidc_audience=api://orrery
+  local oidc_client_secret="${ORRERY_OIDC_CLIENT_SECRET:-}" oidc_webhook_secret="${ORRERY_OIDC_WEBHOOK_SECRET:-}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) version="$2"; shift 2 ;;
@@ -143,6 +163,11 @@ server() {
       --registry-addr) registry_addr="$2"; shift 2 ;;
       --s3-public-endpoint) s3_url="$2"; shift 2 ;;
       --public-bind) bind="$2"; shift 2 ;;
+      --oidc-issuer) oidc_issuer="$2"; shift 2 ;;
+      --oidc-client-id) oidc_client_id="$2"; shift 2 ;;
+      --oidc-client-secret) oidc_client_secret="$2"; shift 2 ;;
+      --oidc-audience) oidc_audience="$2"; shift 2 ;;
+      --oidc-webhook-secret) oidc_webhook_secret="$2"; shift 2 ;;
       --auto-update | --no-auto-update) die "auto-update was removed (ADR-0028); upgrade by rerunning install.sh" ;;
       *) usage ;;
     esac
@@ -169,12 +194,20 @@ server() {
   fi
 
   if [ ! -f .env ]; then
-    first_install "$version" "$host" "$port" "$tls" "$cert" "$key" "$ca" "$access_url" "$registry_addr" "$s3_url" "$bind"
+    # Polaris is the only login; without it the server never passes the health check below.
+    [ -n "$oidc_issuer" ] || die "--oidc-issuer is required on first install (docs/deploy.md, Polaris)"
+    [[ "$oidc_issuer" == https://* ]] || die "--oidc-issuer must be an https URL"
+    [ -n "$oidc_client_id" ] || die "--oidc-client-id is required on first install"
+    [ -n "$oidc_client_secret" ] || die "--oidc-client-secret (or ORRERY_OIDC_CLIENT_SECRET) is required on first install"
+    [ -n "$oidc_audience" ] || die "--oidc-audience must not be empty"
+    [ -n "$oidc_webhook_secret" ] || die "--oidc-webhook-secret (or ORRERY_OIDC_WEBHOOK_SECRET) is required on first install"
+    first_install "$version" "$host" "$port" "$tls" "$cert" "$key" "$ca" "$access_url" "$registry_addr" "$s3_url" "$bind" \
+      "$(oidc_block "$oidc_issuer" "$oidc_client_id" "$oidc_client_secret" "$oidc_audience" "$oidc_webhook_secret")"
   else
     [ -f nginx/orrery.conf ] ||
       die "nginx/orrery.conf is missing; recreate it from deploy/release/nginx.conf at this release tag"
-    if [ -n "$host$port$cert$key$ca$access_url$registry_addr$s3_url$bind" ] || [ "$tls" != self-signed ]; then
-      echo "install.sh: $etc/.env exists; addresses and TLS are kept, edit .env, config/config.yaml and nginx/orrery.conf to change them" >&2
+    if [ -n "$host$port$cert$key$ca$access_url$registry_addr$s3_url$bind$oidc_issuer$oidc_client_id" ] || [ "$tls" != self-signed ]; then
+      echo "install.sh: $etc/.env exists; addresses, TLS and oidc are kept, edit .env, config/config.yaml and nginx/orrery.conf to change them" >&2
     fi
   fi
 
@@ -231,7 +264,7 @@ server() {
 # and .env. None of it is ever regenerated.
 first_install() {
   local version="$1" host="$2" port="$3" tls="$4" cert="$5" key="$6" ca="$7" \
-    access_url="$8" registry_addr="$9" s3_url="${10}" bind="${11}"
+    access_url="$8" registry_addr="$9" s3_url="${10}" bind="${11}" oidc="${12}"
   local pair s3_host s3_port listen public_bind resolve
 
   # The public URL is the source of truth; --public-host/--public-port fill it.
@@ -408,14 +441,8 @@ encryption_keys:
 #   - {id: gitea, type: gitea, client_id: ..., client_secret: ...,
 #      base_url: https://git.example.com, scopes: [read:user]}
 
-# Polaris, the only login (ADR-0029, docs/deploy.md). Required: the server
-# does not start until this block is filled in and uncommented.
-# oidc:
-#   issuer_url: https://polaris.example.com
-#   client_id: ...
-#   client_secret: ...
-#   audience: api://orrery
-#   webhook_secret: whsec_...
+# Polaris, the only login (ADR-0029, docs/deploy.md).
+$oidc
 
 # A Sandbox needs a Platform Snapshot, referenced by digest:
 # platform_snapshots:

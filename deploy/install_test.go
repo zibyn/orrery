@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // sh sources install.sh and runs script after it.
@@ -211,4 +213,28 @@ func TestProbeImageNotice(t *testing.T) {
 		"ctr -a /run/orrery/containerd/containerd.sock -n orrery images import -",
 		"systemctl restart orrery-agent",
 	)
+}
+
+// The oidc block lands in config.yaml verbatim, so secrets with YAML
+// metacharacters must round-trip.
+func TestOIDCBlock(t *testing.T) {
+	want := map[string]string{
+		"issuer_url":     "https://polaris.example.com",
+		"client_id":      "orrery-web",
+		"client_secret":  "a'b: #c",
+		"audience":       "api://orrery",
+		"webhook_secret": "whsec_x/y+z=",
+	}
+	out := sh(t, `oidc_block "$@"`, want["issuer_url"], want["client_id"], want["client_secret"], want["audience"], want["webhook_secret"])
+	var got struct {
+		OIDC map[string]string `yaml:"oidc"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("oidc_block is not YAML: %v\n%s", err, out)
+	}
+	for k, v := range want {
+		if got.OIDC[k] != v {
+			t.Errorf("%s = %q, want %q\n%s", k, got.OIDC[k], v, out)
+		}
+	}
 }
