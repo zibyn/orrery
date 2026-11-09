@@ -20,6 +20,12 @@ func TestUnknownEndpointsReturnProblemJSON(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/nope"},
 		{http.MethodPost, "/api/v1/users/me/quota"},
+		// Polaris is the only identity provider (ADR-0029): no password login,
+		// no password changes, no admin-created Users.
+		{http.MethodPost, "/api/v1/sessions"},
+		{http.MethodPut, "/api/v1/users/me/password"},
+		{http.MethodPut, "/api/v1/users/0197a6c0-0000-7000-8000-000000000000/password"},
+		{http.MethodPost, "/api/v1/users"},
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
@@ -37,6 +43,19 @@ func TestUnknownEndpointsReturnProblemJSON(t *testing.T) {
 		}
 		if problem.Code != "not_found" {
 			t.Fatalf("%s %s code = %q, want not_found", tc.method, tc.path, problem.Code)
+		}
+	}
+}
+
+func TestOpenAPIHasNoPasswordIdentity(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	doc, err := json.Marshal(s.OpenAPIDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"createSession", "changeMyPassword", "resetUserPassword", "createUser", "login_type", "ChangePasswordRequest"} {
+		if strings.Contains(string(doc), gone) {
+			t.Errorf("OpenAPI still mentions %q", gone)
 		}
 	}
 }

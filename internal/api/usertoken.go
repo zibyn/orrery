@@ -13,13 +13,16 @@ import (
 )
 
 // UserTokenOptions are the flags of orrery-server user-token. Exactly one of
-// Name (a machine User) and Sub (a Polaris-linked User) is set.
+// Name (a machine User) and Sub (a Polaris-linked User) is set. Session mints
+// a Session instead of an API Token, for tests that drive the console; its
+// scope follows the User's admin status, like a login's.
 type UserTokenOptions struct {
 	Name      string
 	Sub       string
 	Admin     bool
 	Scope     string
 	TokenName string
+	Session   bool
 }
 
 // CreatedToken is the token-creation API response.
@@ -36,6 +39,9 @@ func (s *Server) UserToken(ctx context.Context, opts UserTokenOptions) (CreatedT
 	}
 	if opts.Sub != "" && opts.Admin {
 		return CreatedToken{}, fmt.Errorf("--admin applies only to --name; a linked User's admin status comes from Polaris")
+	}
+	if opts.Session && opts.TokenName != "" {
+		return CreatedToken{}, fmt.Errorf("--token-name does not apply to --session")
 	}
 	if opts.TokenName == "" {
 		b := make([]byte, 4)
@@ -62,11 +68,21 @@ func (s *Server) UserToken(ctx context.Context, opts UserTokenOptions) (CreatedT
 		return CreatedToken{}, err
 	}
 
+	if opts.Session {
+		token, raw, err := s.newSession(ctx, user, nil)
+		if err != nil {
+			return CreatedToken{}, err
+		}
+		s.auditAs(ctx, nil, nil, "session.create", "session", token.ID.String(), map[string]any{
+			"user_id": user.ID.String(), "actor": userTokenActor,
+		})
+		return CreatedToken{tokenDTO: tokenToDTO(token), Token: raw}, nil
+	}
 	req := createTokenRequest{Name: opts.TokenName, Scope: opts.Scope}
 	if _, detail, ok := s.validateTokenRequest(req, &principal{user: user}); !ok {
 		return CreatedToken{}, errors.New(detail)
 	}
-	token, raw, _, err := s.issueNamedToken(ctx, user.ID, req, nil, nil)
+	token, raw, _, err := s.issueNamedToken(ctx, user.ID, req, nil)
 	if err != nil {
 		return CreatedToken{}, err
 	}
@@ -88,12 +104,10 @@ func (s *Server) machineUser(ctx context.Context, name string, admin bool) (stor
 		if err != nil {
 			return store.User{}, err
 		}
-		// shortcut: login_type none until the password system is removed (#231).
-		user, err = s.q.CreateUser(ctx, store.CreateUserParams{
+		user, err = s.q.CreateMachineUser(ctx, store.CreateMachineUserParams{
 			ID:           id,
 			Name:         name,
 			IsAdmin:      admin,
-			LoginType:    "none",
 			GpuQuota:     s.cfg.DefaultGPUQuota,
 			SandboxQuota: s.cfg.DefaultSandboxQuota,
 		})
@@ -117,8 +131,6 @@ func (s *Server) machineUser(ctx context.Context, name string, admin bool) (stor
 			Name:         user.Name,
 			Email:        user.Email,
 			IsAdmin:      true,
-			LoginType:    user.LoginType,
-			PasswordHash: user.PasswordHash,
 			GpuQuota:     user.GpuQuota,
 			SandboxQuota: user.SandboxQuota,
 		})

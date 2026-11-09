@@ -67,7 +67,7 @@ func TestUpdateUserKeepsConcurrentQuotaChange(t *testing.T) {
 	}
 	s := &Server{pool: pool, q: store.New(pool), log: slog.New(slog.DiscardHandler)}
 	id := uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, login_type) VALUES ($1, $2, 'none')`,
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name) VALUES ($1, $2)`,
 		id, "u-"+id.String()); err != nil {
 		t.Fatal(err)
 	}

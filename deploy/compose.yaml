@@ -10,8 +10,6 @@ services:
       interval: 1s
       timeout: 5s
       retries: 60
-    volumes:
-      - ./postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
   # RustFS is the S3-compatible object store (defaults.md). The Control Plane
   # reaches it as http://rustfs:9000; Nodes reach the host-mapped
@@ -91,16 +89,6 @@ services:
       timeout: 3s
       retries: 60
 
-  dex:
-    image: ghcr.io/dexidp/dex:v2.41.1
-    # The e2e-only profile keeps the reference deployment free of a test IdP.
-    profiles: ["oidc"]
-    command: ["dex", "serve", "/etc/dex/dex.yaml"]
-    volumes:
-      - "${ORRERY_DEX_DIR:-.}:/etc/dex:ro"
-    ports:
-      - "15556:5556"
-
   # The e2e Git backend. scripts/e2e.sh creates the administrator, the OAuth2
   # application and the link-flow user through the Gitea CLI and API before the
   # Control Plane starts.
@@ -154,34 +142,6 @@ services:
     ports:
       - "18080:8080"
       - "18081:8081"
-
-  # An empty Control Plane for the "first OIDC login is the admin" scenario
-  # (ADR-0020). It has no Node Agent and serves nothing but the OIDC tests.
-  server-oidc:
-    profiles: ["oidc"]
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    environment:
-      ORRERY_DATABASE_URL: postgres://orrery:orrery@postgres:5432/orrery_oidc?sslmode=disable
-      ORRERY_API_ADDR: ":8080"
-      ORRERY_NODE_ADDR: ":8081"
-      ORRERY_NODE_TLS_CERT: /tls/server.crt
-      ORRERY_NODE_TLS_KEY: /tls/server.key
-      ORRERY_ACCESS_URL: "${ORRERY_OIDC_ACCESS_URL:-}"
-      ORRERY_OIDC_ISSUER_URL: "${ORRERY_OIDC_ISSUER_URL:-}"
-      ORRERY_OIDC_CLIENT_ID: "${ORRERY_OIDC_CLIENT_ID:-}"
-      ORRERY_OIDC_CLIENT_SECRET_FILE: "${ORRERY_OIDC_CLIENT_SECRET_FILE:-}"
-      ORRERY_OIDC_AUDIENCE: "${ORRERY_OIDC_AUDIENCE:-}"
-      ORRERY_OIDC_WEBHOOK_SECRET: "${ORRERY_OIDC_WEBHOOK_SECRET:-}"
-    volumes:
-      - "${ORRERY_NODE_TLS_DIR:-./tls}:/tls:ro"
-      - "${ORRERY_OIDC_SECRET_DIR:-./oidc}:/oidc:ro"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "18082:8080"
 
 volumes:
   gitea-data:

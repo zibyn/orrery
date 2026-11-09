@@ -36,7 +36,7 @@
 
 部署是 pull 式的：服务器从 release tag 取 `deploy/install.sh` 执行，GitHub 不持有服务器凭据。详见 [`docs/deploy.md`](docs/deploy.md)（前置条件、TLS、Node 注册、升级与回滚），所有配置项见 [`docs/spec/defaults.md`](docs/spec/defaults.md)。
 
-首次安装后还需要：配置平台 Snapshot、用 `orrery-server bootstrap` 创建第一个 admin、签发 Enrollment Packet 注册 Node。Node 只需要 root、systemd 和 cgroup v2：containerd、runc、buildkitd 和 runsc 都在 node 包里，见 [`docs/deploy.md`](docs/deploy.md)。
+首次安装后还需要：配置平台 Snapshot、在 Polaris 里配好 Orrery（见 `docs/deploy.md`），用 `orrery-server user-token` 给第一个 admin 签 token、签发 Enrollment Packet 注册 Node。Node 只需要 root、systemd 和 cgroup v2：containerd、runc、buildkitd 和 runsc 都在 node 包里，见 [`docs/deploy.md`](docs/deploy.md)。
 
 ## 客户端
 
@@ -51,7 +51,7 @@
 Sandbox 的创建走控制台、REST API、SDK 或 MCP；CLI 负责创建之后的操作：
 
 ```sh
-orrery login --username alice          # 或 --password-stdin
+orrery login                           # 在控制台经 Polaris 登录，粘贴 token
 orrery exec run <sandbox-id> -- uname -a
 orrery shell <sandbox-id> -- /bin/bash
 orrery files ls <sandbox-id> src

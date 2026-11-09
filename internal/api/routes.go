@@ -24,7 +24,6 @@ type route struct {
 
 func (s *Server) routes() []route {
 	return []route{
-		{http.MethodPost, "/users", "admin", "createUser", "Create a User", "CreateUserRequest", "User", nil, http.StatusCreated, s.handleCreateUser},
 		{http.MethodGet, "/users", "admin", "listUsers", "List Users", "", "UserList", []string{"limit", "cursor"}, http.StatusOK, s.handleListUsers},
 		{http.MethodGet, "/users/{id}", "admin", "getUser", "Get a User", "", "User", nil, http.StatusOK, s.handleGetUser},
 		{http.MethodPatch, "/users/{id}", "admin", "updateUser", "Update a User", "UpdateUserRequest", "User", nil, http.StatusOK, s.handleUpdateUser},
@@ -35,8 +34,6 @@ func (s *Server) routes() []route {
 		{http.MethodPost, "/users/me/tokens", "user", "createToken", "Create an API Token", "CreateTokenRequest", "CreatedToken", nil, http.StatusCreated, s.handleCreateToken},
 		{http.MethodGet, "/users/me/tokens", "user", "listTokens", "List API Tokens", "", "TokenList", []string{"limit", "cursor"}, http.StatusOK, s.handleListTokens},
 		{http.MethodDelete, "/users/me/tokens/{id}", "user", "revokeToken", "Revoke an API Token", "", "Token", nil, http.StatusAccepted, s.handleRevokeToken},
-		{http.MethodPut, "/users/me/password", "user", "changeMyPassword", "Change the calling User's password", "ChangePasswordRequest", "User", nil, http.StatusOK, s.handleChangeMyPassword},
-		{http.MethodPut, "/users/{id}/password", "admin", "resetUserPassword", "Reset a User's password", "ResetPasswordRequest", "User", nil, http.StatusOK, s.handleResetUserPassword},
 		{http.MethodPut, "/secrets/{name}", "user", "putSecret", "Create or overwrite a Secret", "PutSecretRequest", "Secret", nil, http.StatusOK, s.handlePutSecret},
 		{http.MethodGet, "/secrets", "user", "listSecrets", "List Secrets", "", "SecretList", []string{"limit", "cursor"}, http.StatusOK, s.handleListSecrets},
 		{http.MethodDelete, "/secrets/{name}", "user", "deleteSecret", "Delete a Secret", "", "Secret", nil, http.StatusAccepted, s.handleDeleteSecret},
@@ -46,7 +43,6 @@ func (s *Server) routes() []route {
 		{http.MethodGet, "/external-auth/{id}/callback", "", "finishGitAuthorization", "Finish linking a Git account", "", "", []string{"code", "state", "error"}, http.StatusFound, s.handleGitCallback},
 		{http.MethodGet, "/users/me/git-links", "user", "listGitLinks", "List the calling User's Git links", "", "GitLinkList", nil, http.StatusOK, s.handleListGitLinks},
 		{http.MethodDelete, "/users/me/git-links/{provider_id}", "user", "deleteGitLink", "Unlink a Git account", "", "GitLink", nil, http.StatusAccepted, s.handleDeleteGitLink},
-		{http.MethodPost, "/sessions", "", "createSession", "Log in with a password", "SessionRequest", "LoginResponse", nil, http.StatusCreated, s.handleCreateSession},
 		{http.MethodDelete, "/sessions/current", "user", "deleteCurrentSession", "Log out the current Session", "", "Token", nil, http.StatusAccepted, s.handleDeleteCurrentSession},
 		{http.MethodGet, "/oidc/login", "", "oidcLogin", "Start an OIDC login", "", "", []string{"return"}, http.StatusFound, s.handleOIDCLogin},
 		{http.MethodGet, "/oidc/callback", "", "oidcCallback", "Finish an OIDC login", "", "", []string{"code", "state", "error"}, http.StatusFound, s.handleOIDCCallback},

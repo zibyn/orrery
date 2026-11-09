@@ -1,10 +1,10 @@
 -- Users
 
--- name: CreateUser :one
-INSERT INTO users (
-    id, name, email, is_admin, login_type, password_hash,
-    gpu_quota, sandbox_quota, idempotency_key, created_by
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+-- CreateMachineUser creates a User with no Polaris identity; only
+-- orrery-server user-token does (ADR-0029).
+-- name: CreateMachineUser :one
+INSERT INTO users (id, name, is_admin, gpu_quota, sandbox_quota)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: GetUser :one
@@ -21,9 +21,9 @@ WHERE oidc_issuer = $1 AND oidc_subject = $2 AND deleted_at IS NULL;
 -- from the access token's entitlements (ADR-0029).
 -- name: CreateOIDCUser :one
 INSERT INTO users (
-    id, name, email, is_admin, login_type, oidc_issuer, oidc_subject,
+    id, name, email, is_admin, oidc_issuer, oidc_subject,
     gpu_quota, sandbox_quota
-) VALUES ($1, $2, $3, $4, 'oidc', $5, $6, $7, $8)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- SyncOIDCUser copies a returning login's claims onto its User (ADR-0029).
@@ -38,23 +38,6 @@ RETURNING *;
 -- name: LockUser :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
 
--- name: GetUserByIdempotencyKey :one
-SELECT * FROM users
-WHERE created_by = $1 AND idempotency_key = $2;
-
--- name: CountUsers :one
-SELECT count(*) FROM users;
-
--- BootstrapAdmin creates the first admin only while the table is empty.
--- name: BootstrapAdmin :one
-INSERT INTO users (
-    id, name, email, is_admin, login_type, password_hash,
-    gpu_quota, sandbox_quota
-)
-SELECT $1, $2, $3, true, 'password', $4, $5, $6
-WHERE NOT EXISTS (SELECT 1 FROM users)
-RETURNING *;
-
 -- name: ListUsers :many
 SELECT * FROM users
 WHERE deleted_at IS NULL
@@ -67,10 +50,8 @@ UPDATE users
 SET name = $2,
     email = $3,
     is_admin = $4,
-    login_type = $5,
-    password_hash = $6,
-    gpu_quota = $7,
-    sandbox_quota = $8,
+    gpu_quota = $5,
+    sandbox_quota = $6,
     updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
@@ -78,12 +59,6 @@ RETURNING *;
 -- name: SetUserQuota :one
 UPDATE users
 SET gpu_quota = $2, sandbox_quota = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL
-RETURNING *;
-
--- name: UpdateUserPassword :one
-UPDATE users
-SET password_hash = $2, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
@@ -117,26 +92,6 @@ RETURNING *;
 INSERT INTO api_tokens (
     id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key, sid
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING *;
-
--- CreatePasswordToken inserts a token only while the User still has the
--- password hash the login verified. FOR SHARE makes a password change wait for
--- this statement, so the change either sees the new Session in its revocation
--- delete or this insert re-reads the new hash and inserts nothing. The lock
--- covers this statement only; argon2 verification stays outside it.
--- name: CreatePasswordToken :one
-INSERT INTO api_tokens (
-    id, user_id, kind, name, secret_hash, scope, expires_at, idempotency_key
-)
-SELECT
-    sqlc.arg('id'), u.id, sqlc.arg('kind'), sqlc.arg('name'),
-    sqlc.arg('secret_hash'), sqlc.arg('scope'), sqlc.narg('expires_at'),
-    sqlc.narg('idempotency_key')
-FROM users u
-WHERE u.id = sqlc.arg('user_id')
-  AND u.password_hash = sqlc.arg('password_hash')
-  AND u.deleted_at IS NULL
-FOR SHARE
 RETURNING *;
 
 -- name: GetToken :one

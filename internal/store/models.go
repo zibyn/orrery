@@ -284,8 +284,6 @@ type User struct {
 	Name           string
 	Email          *string
 	IsAdmin        bool
-	LoginType      string
-	PasswordHash   *string
 	OidcIssuer     *string
 	OidcSubject    *string
 	GpuQuota       int32

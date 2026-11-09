@@ -33,7 +33,7 @@ COMPOSE_FILES=(-f "$COMPOSE_FILE")
 if [ -n "${ORRERY_E2E_COMPOSE_OVERRIDE:-}" ]; then
   COMPOSE_FILES+=(-f "$ORRERY_E2E_COMPOSE_OVERRIDE")
 fi
-COMPOSE=(docker compose --profile oidc --profile e2e "${COMPOSE_FILES[@]}" -p "$COMPOSE_PROJECT")
+COMPOSE=(docker compose --profile e2e "${COMPOSE_FILES[@]}" -p "$COMPOSE_PROJECT")
 
 # wait_for_http polls a URL until it answers the expected status, then leaves a
 # last-status diagnostic on failure.
@@ -143,24 +143,12 @@ export ORRERY_REGISTRY_S3_REGIONENDPOINT="${ORRERY_REGISTRY_S3_REGIONENDPOINT:-h
 REGISTRY_AUTH="b3JyZXJ5Om9ycmVyeS1yZWdpc3RyeS1wYXNzd29yZA=="
 export ORRERY_REGISTRY_CREDENTIAL="${ORRERY_REGISTRY_CREDENTIAL:-{\"auths\":{\"127.0.0.1:15000\":{\"auth\":\"${REGISTRY_AUTH}\"},\"${HOST_GATEWAY}:15000\":{\"auth\":\"${REGISTRY_AUTH}\"}}}}"
 
-# OIDC e2e: Dex is the deployment's one external issuer (ADR-0020). Its issuer
-# is the Compose service name, which the Control Plane resolves; the redirect
-# URIs use the host gateway because ORRERY_ACCESS_URL also does (defaults.md).
-export ORRERY_OIDC_ISSUER_URL="${ORRERY_OIDC_ISSUER_URL:-http://dex:5556/dex}"
-export ORRERY_OIDC_CLIENT_ID="${ORRERY_OIDC_CLIENT_ID:-orrery}"
-export ORRERY_OIDC_AUDIENCE="${ORRERY_OIDC_AUDIENCE:-api://orrery}"
-export ORRERY_OIDC_WEBHOOK_SECRET="${ORRERY_OIDC_WEBHOOK_SECRET:-orrery-e2e-webhook-secret}"
-export ORRERY_OIDC_ACCESS_URL="${ORRERY_OIDC_ACCESS_URL:-http://${HOST_GATEWAY}:18082}"
-mkdir -p .e2e/oidc .e2e/dex
+# Polaris settings are required (ADR-0029), but e2e never runs Polaris: Users
+# and Sessions come from orrery-server user-token, and discovery is lazy, so
+# the issuer is never contacted.
+E2E_OIDC_ISSUER_URL="http://polaris.invalid"
 E2E_OIDC_SECRET="orrery-oidc-secret"
-printf '%s' "$E2E_OIDC_SECRET" > .e2e/oidc/client
-chmod 644 .e2e/oidc/client
-export ORRERY_OIDC_SECRET_DIR="$PWD/.e2e/oidc"
-export ORRERY_OIDC_CLIENT_SECRET_FILE=/oidc/client
-sed -e "s|__MAIN_CALLBACK__|${ORRERY_ACCESS_URL%/}/api/v1/oidc/callback|" \
-    -e "s|__OIDC_CALLBACK__|${ORRERY_OIDC_ACCESS_URL%/}/api/v1/oidc/callback|" \
-    deploy/dex.yaml > .e2e/dex/dex.yaml
-export ORRERY_DEX_DIR="$PWD/.e2e/dex"
+E2E_OIDC_WEBHOOK_SECRET="orrery-e2e-webhook-secret"
 
 # Every Sandbox without an explicit snapshot runs the deployment default
 # platform Snapshot (api.md §3, defaults.md). The Control Plane imports it into
@@ -192,8 +180,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# A killed previous run leaves a volume whose postgres-init.sql never ran, so
-# orrery_oidc would be missing. Start from a clean volume every time.
+# Start from a clean volume every time; a killed previous run leaves one.
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 
 # Gitea is the e2e Git backend. It needs its administrator, its OAuth2
@@ -299,8 +286,7 @@ if [ -n "${ORRERY_E2E_CUDA_IMAGE:-}" ]; then
   SNAPSHOTS_YAML+=$'\n'"  - {name: ${ORRERY_E2E_GPU_SNAPSHOT:-cuda}, ref: ${SOURCE_HOST}:5000/e2e-cuda@${CUDA_DIGEST}}"
 fi
 
-# The main Control Plane runs from config.yaml: the e2e scenario for ADR-0024.
-# server-oidc keeps the environment mode, so both paths stay covered.
+# The Control Plane runs from config.yaml: the e2e scenario for ADR-0024.
 export ORRERY_CONFIG_DIR="$PWD/.e2e/config"
 mkdir -p "$ORRERY_CONFIG_DIR"
 cat > "$ORRERY_CONFIG_DIR/config.yaml" <<EOF
@@ -339,11 +325,11 @@ git_providers:
     base_url: ${ORRERY_GITEA_URL}
     scopes: [read:user, read:repository, write:repository]
 oidc:
-  issuer_url: ${ORRERY_OIDC_ISSUER_URL}
-  client_id: ${ORRERY_OIDC_CLIENT_ID}
+  issuer_url: ${E2E_OIDC_ISSUER_URL}
+  client_id: orrery
   client_secret: ${E2E_OIDC_SECRET}
-  audience: ${ORRERY_OIDC_AUDIENCE}
-  webhook_secret: ${ORRERY_OIDC_WEBHOOK_SECRET}
+  audience: api://orrery
+  webhook_secret: ${E2E_OIDC_WEBHOOK_SECRET}
 s3:
   endpoint: ${ORRERY_S3_ENDPOINT}
   public_endpoint: ${ORRERY_S3_PUBLIC_ENDPOINT}
@@ -409,30 +395,8 @@ if [ -n "${ORRERY_E2E_CUDA_IMAGE:-}" ]; then
   fi
 fi
 
-# The OIDC-first-User scenario has its own Control Plane and database.
-for _ in $(seq 1 120); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18082/api/v1/users" || true)"
-  [ "$code" = "401" ] && break
-  sleep 1
-done
-if [ "$code" != "401" ]; then
-  echo "server-oidc did not become ready (last status: ${code:-none})" >&2
-  "${COMPOSE[@]}" logs --no-color >&2 || true
-  exit 1
-fi
-for _ in $(seq 1 60); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:15556/dex/.well-known/openid-configuration" || true)"
-  [ "$code" = "200" ] && break
-  sleep 1
-done
-if [ "$code" != "200" ]; then
-  echo "dex did not become ready (last status: ${code:-none})" >&2
-  "${COMPOSE[@]}" logs --no-color >&2 || true
-  exit 1
-fi
-
 # make e2e-console: Compose starts no Node Agent, so the Playwright Sandbox
-# would never leave pending. Bootstrap the admin, mint an admin Token, enroll a
+# would never leave pending. Mint an admin Token with user-token, enroll a
 # local Agent and wait until the Control Plane reports it ready, then drive the
 # embedded console with Playwright. The Go e2e path below is untouched when
 # ORRERY_E2E_CONSOLE is unset.
@@ -443,13 +407,9 @@ run_console_e2e() {
   local admin_token packet node_name admin_id ready pnpm
   mkdir -p "$TMPDIR/console-agent" "$data_root"
 
-  printf '%s\n' admin-password-123 | "${COMPOSE[@]}" exec -T server \
-    orrery-server bootstrap --username admin --email admin@example.com --password-stdin \
-    >/dev/null 2>&1 || true
-
-  admin_token="$(curl -fsS -H 'Content-Type: application/json' \
-    -d '{"username":"admin","password":"admin-password-123","token":{"name":"e2e-console","scope":"admin"}}' \
-    "$API_URL/api/v1/sessions" |
+  # The same machine admin the Playwright harness signs in as (web/e2e).
+  admin_token="$("${COMPOSE[@]}" exec -T server \
+    orrery-server user-token --name admin --admin --scope admin --token-name e2e-console |
     python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')"
   # A fresh admin has the deployment default quota of zero Sandboxes.
   admin_id="$(curl -fsS -H "Authorization: Bearer $admin_token" "$API_URL/api/v1/users/me" |
@@ -504,6 +464,7 @@ print("ready" if any(n["name"] == name and n["status"] == "ready" for n in json.
     "$pnpm" install --frozen-lockfile
     "$pnpm" exec playwright install chromium
     ORRERY_E2E_API_URL="$API_URL" ORRERY_E2E_APPS_DOMAIN="$ORRERY_APPS_DOMAIN" \
+      ORRERY_E2E_COMPOSE_FILE="$COMPOSE_FILE" ORRERY_E2E_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
       "$pnpm" exec playwright test
   )
 }
@@ -515,9 +476,6 @@ fi
 
 ORRERY_E2E_API_URL="$API_URL" \
 ORRERY_E2E_ACCESS_URL="$ORRERY_ACCESS_URL" \
-ORRERY_E2E_OIDC_ACCESS_URL="$ORRERY_OIDC_ACCESS_URL" \
-ORRERY_E2E_OIDC_ISSUER_URL="$ORRERY_OIDC_ISSUER_URL" \
-ORRERY_E2E_DEX_URL="http://127.0.0.1:15556/dex" \
 ORRERY_E2E_GITEA_URL="$ORRERY_GITEA_URL" \
 ORRERY_E2E_GITEA_USER="$GITEA_USER" \
 ORRERY_E2E_GITEA_PASSWORD="$GITEA_USER_PASSWORD" \

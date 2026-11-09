@@ -56,4 +56,4 @@ docker compose exec -T -e POLARIS_CLIENT_SECRET server orrery-polaris-migrate \
 
 ## 4. 切换 Orrery 配置
 
-在 `config.yaml` 里配好 `oidc.*`（见 `docs/spec/defaults.md`），升级到切换后的版本，`docker compose up -d`。此后人们只能经 Polaris 登录，按 (issuer, sub) 落到原来的 User 上。已有的 API Token 继续可用。
+在 `config.yaml` 里配好 `oidc.*`（见 `docs/spec/defaults.md`），升级到切换后的版本，`docker compose up -d`。切换后的版本删掉 `password_hash` 和 `login_type`；还有未关联的 `password` User 时，它拒绝迁移数据库、不启动，并列出这些 User：回到旧版本跑完脚本再升级。此后人们只能经 Polaris 登录，按 (issuer, sub) 落到原来的 User 上。已有的 API Token 继续可用。

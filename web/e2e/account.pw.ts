@@ -11,7 +11,7 @@ test('admin creates a token, uses it, revokes it and it stops working', async ({
   await signIn(page, { returnTo: '/account' })
   await expect(page).toHaveURL(/\/account$/)
 
-  // The login response carried the Session id, so exactly one row is marked.
+  // The token list marks the Session in use, so exactly one row is badged.
   await expect(page.getByTestId('current-session')).toHaveCount(1)
 
   const name = `pw-token-${Date.now()}`
