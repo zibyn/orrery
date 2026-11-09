@@ -22,7 +22,6 @@ export type User = {
   name: string
   email: string | null
   is_admin: boolean
-  login_type: 'password' | 'oidc' | 'none'
   machine: boolean
   quota: Quota
   created_at: string

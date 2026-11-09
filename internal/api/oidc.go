@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -71,6 +72,14 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request, _ *prin
 	conf := s.oauth2Config(provider, r)
 	http.Redirect(w, r, conf.AuthCodeURL(state,
 		oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
+}
+
+// handleOIDCAccount sends the browser to the Polaris account center, where
+// profile edits live (ADR-0029); client_id brands it for Orrery.
+func (s *Server) handleOIDCAccount(w http.ResponseWriter, r *http.Request, _ *principal) {
+	target := strings.TrimSuffix(s.cfg.OIDC.IssuerURL, "/") + "/account?" +
+		url.Values{"client_id": {s.cfg.OIDC.ClientID}}.Encode()
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // handleOIDCCallback verifies Polaris's response, matches or creates the

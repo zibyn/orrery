@@ -81,11 +81,9 @@ export function runtimeLabel(runtime: string): string {
   return runtime
 }
 
-export function loginTypeLabel(loginType: string): string {
-  if (loginType === 'password') return m.login_type_password()
-  if (loginType === 'oidc') return m.login_type_oidc()
-  if (loginType === 'none') return m.login_type_none()
-  return loginType
+// A User is either linked to a Polaris identity or a machine User (ADR-0029).
+export function identityLabel(user: { machine: boolean }): string {
+  return user.machine ? m.identity_machine() : m.identity_polaris()
 }
 
 export function scopeLabel(scope: string): string {
