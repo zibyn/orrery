@@ -55,7 +55,7 @@ func (s *Server) OpenAPIDocument() map[string]any {
 		if rt.Request != "" {
 			op["requestBody"] = map[string]any{
 				"required": true,
-				"content":  map[string]any{"application/json": map[string]any{"schema": schemaRef(rt.Request)}},
+				"content":  map[string]any{requestMediaType(rt): map[string]any{"schema": schemaRef(rt.Request)}},
 			}
 		}
 		item[strings.ToLower(rt.Method)] = op
@@ -70,6 +70,15 @@ func (s *Server) OpenAPIDocument() map[string]any {
 		"paths":      paths,
 		"components": map[string]any{"schemas": schemas()},
 	}
+}
+
+// requestMediaType is JSON except for Polaris's Back-Channel Logout, which
+// OIDC Back-Channel Logout 1.0 defines as a form post.
+func requestMediaType(rt route) string {
+	if rt.OperationID == "polarisBackchannelLogout" {
+		return "application/x-www-form-urlencoded"
+	}
+	return "application/json"
 }
 
 func schemaRef(name string) map[string]any {
@@ -306,6 +315,13 @@ func schemas() map[string]any {
 				"name":       map[string]any{"type": "string"},
 				"scope":      map[string]any{"type": "string", "enum": []string{"read_only", "user", "admin"}},
 				"expires_at": nullableTime,
+			},
+		},
+		"BackchannelLogoutForm": map[string]any{
+			"type":     "object",
+			"required": []string{"logout_token"},
+			"properties": map[string]any{
+				"logout_token": map[string]any{"type": "string", "description": "A Polaris-signed OIDC Back-Channel Logout token."},
 			},
 		},
 		"SessionRequest": map[string]any{

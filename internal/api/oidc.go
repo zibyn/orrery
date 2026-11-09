@@ -370,3 +370,31 @@ func uniqueOIDCName(name, subject string) string {
 	}
 	return string(runes) + suffix
 }
+
+// handleBackchannelLogout ends the Sessions issued for the Polaris Session a
+// logout token names (ADR-0029). An unknown sid is still a 200: Polaris
+// retries every non-2xx response.
+func (s *Server) handleBackchannelLogout(w http.ResponseWriter, r *http.Request, _ *principal) {
+	ctx := r.Context()
+	_, verifier, err := s.oidcProviderFor(ctx)
+	if err != nil {
+		s.log.Error("OIDC discovery failed", "error", err)
+		writeProblem(w, "unavailable", "the OIDC provider is not reachable")
+		return
+	}
+	lt, err := verifier.VerifyLogoutToken(ctx, s.cfg.OIDC.ClientID, r.PostFormValue("logout_token"))
+	if err != nil {
+		s.log.Warn("Polaris logout token rejected", "error", err)
+		writeProblem(w, "invalid_request", "the logout token is invalid")
+		return
+	}
+	ended, err := s.q.DeleteSessionsBySid(ctx, &lt.Sid)
+	if err != nil {
+		s.internal(w, "end Sessions by sid", err)
+		return
+	}
+	for _, row := range ended {
+		s.auditAs(ctx, &row.UserID, nil, "session.delete", "session", row.ID.String(), map[string]any{"via": "backchannel_logout"})
+	}
+	w.WriteHeader(http.StatusOK)
+}
