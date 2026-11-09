@@ -175,6 +175,8 @@ Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules
 
 - Node：下载、校验、替换二进制后重启 `orrery-agent`，`orrery-containerd`、`orrery-buildkitd` 只在变了时重启；不带 `--runtime` 或 `--` 参数时保留 Agent 现有的启动参数。允许装旧版本，Control Plane 会把它标为 `outdated`。
 
+从自带用户系统切到 Polaris（ADR-0029）的那次升级前，先按 `docs/polaris-migration.md` 把现有 User 迁到 Polaris。
+
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 
 `registry/config.yml` 同样只在首次安装时生成，升级不覆盖；其中开启了 `storage.delete`，purge 靠它删掉已删除 Snapshot 和 SnapshotVersion 的 registry manifest（#151）。只删 manifest，不回收 blob；blob GC 仍是运维流程（ADR-0014）。

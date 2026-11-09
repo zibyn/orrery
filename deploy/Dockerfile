@@ -19,11 +19,13 @@ COPY . .
 COPY --from=web /web/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags embed -trimpath \
     -ldflags="-s -w -X github.com/zibyn/orrery/internal/buildinfo.version=${VERSION}" \
-    -o /out/orrery-server ./cmd/orrery-server
+    -o /out/orrery-server ./cmd/orrery-server \
+ && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" \
+    -o /out/orrery-polaris-migrate ./cmd/orrery-polaris-migrate
 
 FROM alpine:3.22
 RUN adduser -D -u 10001 orrery
-COPY --from=build /out/orrery-server /usr/local/bin/orrery-server
+COPY --from=build /out/orrery-server /out/orrery-polaris-migrate /usr/local/bin/
 USER orrery
 ENTRYPOINT ["orrery-server"]
 CMD ["serve"]
