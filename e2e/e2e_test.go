@@ -18,11 +18,7 @@ import (
 	"time"
 )
 
-const (
-	adminUsername = "admin"
-	adminEmail    = "admin@example.com"
-	adminPassword = "admin-password-123"
-)
+const adminUsername = "admin"
 
 var (
 	adminOnce sync.Once
@@ -30,27 +26,22 @@ var (
 	adminErr  error
 )
 
-func TestBootstrapAndToken(t *testing.T) {
-	admin := adminToken(t)
-	adminCLI := newCLIRunner(t, admin)
+func TestMachineUserToken(t *testing.T) {
 	suffix := time.Now().UnixNano()
 	username := fmt.Sprintf("alice-%d", suffix)
 
-	created := adminCLI.run(t, "alice-password-123\n", "user", "create",
-		"--name", username, "--login-type", "password", "--password-stdin")
-	var user struct {
-		ID      string `json:"id"`
-		Name    string `json:"name"`
-		IsAdmin bool   `json:"is_admin"`
+	alice := userToken(t, "--name", username)
+	user := getMe(t, alice)
+	if user.Name != username || user.IsAdmin || !user.Machine {
+		t.Fatalf("machine User = %+v", user)
 	}
-	mustJSON(t, created, &user)
-	if user.Name != username || user.IsAdmin {
-		t.Fatalf("created user = %+v", user)
+	// Rerunning mints another token for the same User.
+	if again := getMe(t, userToken(t, "--name", username)); again.ID != user.ID {
+		t.Fatalf("rerun User = %s, want %s", again.ID, user.ID)
 	}
-
-	alice, status, data := login(t, username, "alice-password-123", fmt.Sprintf("first-%d", suffix), "user")
-	if status != http.StatusCreated {
-		t.Fatalf("login as %s: %d %s", username, status, data)
+	// An admin-scoped token needs an admin User, as through the API.
+	if out, err := userTokenRaw("--name", username, "--scope", "admin"); err == nil {
+		t.Fatalf("admin scope for a non-admin: %s, want an error", out)
 	}
 	aliceCLI := newCLIRunner(t, alice)
 
@@ -74,7 +65,7 @@ func TestBootstrapAndToken(t *testing.T) {
 
 	aliceCLI.run(t, "", "token", "revoke", tokenA.ID)
 
-	status, data = call(t, http.MethodGet, "/api/v1/users/me", tokenA.Token, nil)
+	status, data := call(t, http.MethodGet, "/api/v1/users/me", tokenA.Token, nil)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("revoked token: got %d, want 401 (%s)", status, data)
 	}
@@ -105,17 +96,8 @@ func TestAuditQuery(t *testing.T) {
 	suffix := time.Now().UnixNano()
 	username := fmt.Sprintf("bob-%d", suffix)
 
-	created := adminCLI.run(t, "bob-password-123\n", "user", "create",
-		"--name", username, "--login-type", "password", "--password-stdin")
-	var user struct {
-		ID string `json:"id"`
-	}
-	mustJSON(t, created, &user)
-
-	bob, status, data := login(t, username, "bob-password-123", fmt.Sprintf("bob-first-%d", suffix), "user")
-	if status != http.StatusCreated {
-		t.Fatalf("login as %s: %d %s", username, status, data)
-	}
+	bob := userToken(t, "--name", username)
+	user := getMe(t, bob)
 	bobCLI := newCLIRunner(t, bob)
 	made := bobCLI.run(t, "", "token", "create", "--name", fmt.Sprintf("bob-ci-%d", suffix), "--scope", "user")
 	var token struct {
@@ -152,261 +134,27 @@ func TestAuditQuery(t *testing.T) {
 	}
 }
 
-// TestPasswordSession is the "password-session" acceptance scenario (#48).
-func TestPasswordSession(t *testing.T) {
-	admin := adminToken(t)
-	adminCLI := newCLIRunner(t, admin)
-	suffix := time.Now().UnixNano()
-	username := fmt.Sprintf("carol-%d", suffix)
-	password := "carol-password-123"
-	var userID string
-	adminCLI.run(t, password+"\n", "user", "create",
-		"--name", username, "--login-type", "password", "--password-stdin")
-
-	// A password login sets the Session cookie, and the cookie authenticates.
-	resp, data := request(t, http.MethodPost, "/api/v1/sessions", nil, nil, map[string]any{
-		"username": username, "password": password,
+// shortcut: the Git link tests still need a password User for a browser
+// Session; e2e has no other Session source after ADR-0029. Replace before #231
+// removes POST /sessions.
+func login(t *testing.T, username, password, tokenName, scope string) (string, int, []byte) {
+	t.Helper()
+	status, data, err := postJSON(http.MethodPost, "/api/v1/sessions", "", map[string]any{
+		"username": username,
+		"password": password,
+		"token":    map[string]any{"name": tokenName, "scope": scope},
 	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("password login: %d %s", resp.StatusCode, data)
-	}
-	cookies := resp.Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "orrery_session" {
-		t.Fatalf("Set-Cookie = %v, want one orrery_session", resp.Header.Values("Set-Cookie"))
-	}
-	session := cookies[0]
-	if !session.HttpOnly || !session.Secure || session.SameSite != http.SameSiteLaxMode || session.Path != "/" || session.Domain != "" {
-		t.Fatalf("session cookie attributes = %+v", session)
-	}
-	if status, body := callWithCookie(t, http.MethodGet, "/api/v1/users/me", session, nil, nil); status != http.StatusOK {
-		t.Fatalf("GET /users/me with cookie: %d %s", status, body)
-	} else {
-		var me struct {
-			ID string `json:"id"`
-		}
-		mustJSON(t, body, &me)
-		userID = me.ID
-	}
-
-	// A cross-origin unsafe request carrying the cookie is rejected; the same
-	// request from the API's own origin is not.
-	crossOrigin := map[string]string{"Origin": "http://evil.example", "Sec-Fetch-Site": "cross-site"}
-	status, body := callWithCookie(t, http.MethodPost, "/api/v1/users/me/tokens", session, map[string]any{
-		"name": fmt.Sprintf("cross-%d", suffix), "scope": "user",
-	}, crossOrigin)
-	if status != http.StatusForbidden {
-		t.Fatalf("cross-origin POST: %d %s, want 403", status, body)
-	}
-	requireProblemCode(t, body, "permission_denied")
-
-	sameOrigin := map[string]string{"Origin": apiOrigin(), "Sec-Fetch-Site": "same-origin"}
-	status, body = callWithCookie(t, http.MethodPost, "/api/v1/users/me/tokens", session, map[string]any{
-		"name": fmt.Sprintf("same-%d", suffix), "scope": "user",
-	}, sameOrigin)
-	if status != http.StatusCreated {
-		t.Fatalf("same-origin POST: %d %s, want 201", status, body)
-	}
-
-	// A cookie-authenticated WebSocket upgrade must carry the API's origin.
-	upgrade := map[string]string{"Connection": "Upgrade", "Upgrade": "websocket", "Origin": "http://evil.example"}
-	status, body = callWithCookie(t, http.MethodGet, "/api/v1/users/me", session, nil, upgrade)
-	if status != http.StatusForbidden {
-		t.Fatalf("WebSocket upgrade with a foreign Origin: %d %s, want 403", status, body)
-	}
-	requireProblemCode(t, body, "permission_denied")
-	upgrade["Origin"] = apiOrigin()
-	if status, body = callWithCookie(t, http.MethodGet, "/api/v1/users/me", session, nil, upgrade); status != http.StatusOK {
-		t.Fatalf("WebSocket upgrade with the API Origin: %d %s, want 200", status, body)
-	}
-
-	// Changing the password revokes every Session of that User.
-	newPassword := "carol-new-password-456"
-	status, body = callWithCookie(t, http.MethodPut, "/api/v1/users/me/password", session, map[string]any{
-		"old": password, "new": newPassword,
-	}, sameOrigin)
-	if status != http.StatusOK {
-		t.Fatalf("change password: %d %s", status, body)
-	}
-	if status, body = callWithCookie(t, http.MethodGet, "/api/v1/users/me", session, nil, nil); status != http.StatusUnauthorized {
-		t.Fatalf("old Session after password change: %d %s, want 401", status, body)
-	}
-
-	// The new password logs in; DELETE /sessions/current ends that Session.
-	newSession := loginSession(t, username, newPassword)
-	status, body = callWithCookie(t, http.MethodDelete, "/api/v1/sessions/current", newSession, nil, sameOrigin)
-	if status != http.StatusAccepted {
-		t.Fatalf("logout: %d %s, want 202", status, body)
-	}
-	if status, body = callWithCookie(t, http.MethodGet, "/api/v1/users/me", newSession, nil, nil); status != http.StatusUnauthorized {
-		t.Fatalf("Session after logout: %d %s, want 401", status, body)
-	}
-
-	// An admin reset revokes Sessions too.
-	session3 := loginSession(t, username, newPassword)
-	status, body = call(t, http.MethodPut, "/api/v1/users/"+userID+"/password", admin, map[string]any{
-		"password": "carol-reset-password-789",
-	})
-	if status != http.StatusOK {
-		t.Fatalf("admin reset password: %d %s", status, body)
-	}
-	if status, body = callWithCookie(t, http.MethodGet, "/api/v1/users/me", session3, nil, nil); status != http.StatusUnauthorized {
-		t.Fatalf("Session after admin reset: %d %s, want 401", status, body)
-	}
-}
-
-// TestPasswordChangeRace is #123: a login that verified the old password must
-// never leave a Session that a concurrent password reset did not revoke.
-func TestPasswordChangeRace(t *testing.T) {
-	admin := adminToken(t)
-	adminCLI := newCLIRunner(t, admin)
-	suffix := time.Now().UnixNano()
-
-	const rounds = 4
-	const logins = 6
-
-	for round := 0; round < rounds; round++ {
-		username := fmt.Sprintf("grace-%d-%d", suffix, round)
-		password := fmt.Sprintf("grace-password-%d", round)
-		next := fmt.Sprintf("grace-new-password-%d", round)
-
-		created := adminCLI.run(t, password+"\n", "user", "create",
-			"--name", username, "--login-type", "password", "--password-stdin")
-		var user struct {
-			ID string `json:"id"`
-		}
-		mustJSON(t, created, &user)
-
-		// Start logins with the old password and the reset together: both
-		// spend about one argon2 verification before touching the database.
-		type loginResult struct {
-			status int
-			cookie *http.Cookie
-			err    error
-		}
-		results := make(chan loginResult, logins)
-		start := make(chan struct{})
-		for i := 0; i < logins; i++ {
-			go func() {
-				<-start
-				body, _ := json.Marshal(map[string]any{"username": username, "password": password})
-				resp, err := http.Post(apiURL()+"/api/v1/sessions", "application/json", bytes.NewReader(body))
-				if err != nil {
-					results <- loginResult{err: err}
-					return
-				}
-				defer resp.Body.Close()
-				_, _ = io.Copy(io.Discard, resp.Body)
-				var cookie *http.Cookie
-				if cookies := resp.Cookies(); len(cookies) == 1 {
-					cookie = cookies[0]
-				}
-				results <- loginResult{status: resp.StatusCode, cookie: cookie}
-			}()
-		}
-		changeStatus := 0
-		var changeBody []byte
-		var changeErr error
-		changed := make(chan struct{})
-		go func() {
-			defer close(changed)
-			changeStatus, changeBody, changeErr = postJSON(http.MethodPut,
-				"/api/v1/users/"+user.ID+"/password", admin, map[string]any{"password": next})
-		}()
-		close(start)
-		<-changed
-		if changeErr != nil {
-			t.Fatalf("round %d: reset password: %v", round, changeErr)
-		}
-		if changeStatus != http.StatusOK {
-			t.Fatalf("round %d: reset password: %d %s", round, changeStatus, changeBody)
-		}
-
-		successes := 0
-		for i := 0; i < logins; i++ {
-			r := <-results
-			if r.err != nil {
-				t.Fatalf("round %d: login: %v", round, r.err)
-			}
-			switch r.status {
-			case http.StatusCreated:
-				successes++
-				if r.cookie == nil {
-					t.Fatalf("round %d: a 201 login set no Session cookie", round)
-				}
-				// The login may have finished before or after the reset
-				// committed; either way its Session must already be revoked.
-				if status, body := callWithCookie(t, http.MethodGet, "/api/v1/users/me", r.cookie, nil, nil); status != http.StatusUnauthorized {
-					t.Fatalf("round %d: Session created from the old password survived the reset: %d %s", round, status, body)
-				}
-			case http.StatusUnauthorized:
-				// The reset landed first; the login is correctly refused.
-			default:
-				t.Fatalf("round %d: login with the old password = %d, want 201 or 401", round, r.status)
-			}
-		}
-		t.Logf("round %d: %d/%d logins completed before the reset", round, successes, logins)
-	}
-}
-
-func TestLoginRateLimit(t *testing.T) {
-	admin := adminToken(t)
-	adminCLI := newCLIRunner(t, admin)
-	suffix := time.Now().UnixNano()
-	username := fmt.Sprintf("dave-%d", suffix)
-	password := "dave-password-123"
-	adminCLI.run(t, password+"\n", "user", "create",
-		"--name", username, "--login-type", "password", "--password-stdin")
-
-	for i := 0; i < 10; i++ {
-		status, body := postSession(t, username, "wrong-password")
-		if status != http.StatusUnauthorized {
-			t.Fatalf("failed login %d: %d %s, want 401", i+1, status, body)
-		}
-	}
-	resp, body := request(t, http.MethodPost, "/api/v1/sessions", nil, nil, map[string]any{
-		"username": username, "password": "wrong-password",
-	})
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("over-limit login: %d %s, want 429", resp.StatusCode, body)
-	}
-	requireProblemCode(t, body, "rate_limited")
-	if retry := resp.Header.Get("Retry-After"); retry == "" {
-		t.Fatal("rate-limited response has no Retry-After")
-	}
-	// The limit is checked before the password, so even the right one waits.
-	if status, body := postSession(t, username, password); status != http.StatusTooManyRequests {
-		t.Fatalf("correct password during the block: %d %s, want 429", status, body)
-	}
-}
-
-func TestCLILogin(t *testing.T) {
-	admin := adminToken(t)
-	adminCLI := newCLIRunner(t, admin)
-	suffix := time.Now().UnixNano()
-	username := fmt.Sprintf("erin-%d", suffix)
-	password := "erin-password-123"
-	adminCLI.run(t, password+"\n", "user", "create",
-		"--name", username, "--login-type", "password", "--password-stdin")
-
-	config := filepath.Join(t.TempDir(), "config.json")
-	cmd := exec.Command(cliPath(t), "--config", config, "--api-url", apiURL(), "login",
-		"--username", username, "--name", fmt.Sprintf("cli-%d", suffix), "--password-stdin")
-	cmd.Stdin = strings.NewReader(password + "\n")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("orrery login: %v\n%s", err, out)
-	}
-
-	out, err := exec.Command(cliPath(t), "--config", config, "user", "get", "me").CombinedOutput()
 	if err != nil {
-		t.Fatalf("user get me with the stored token: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	var me struct {
-		Name string `json:"name"`
+	if status != http.StatusCreated {
+		return "", status, data
 	}
-	mustJSON(t, out, &me)
-	if me.Name != username {
-		t.Fatalf("logged-in User = %q, want %q", me.Name, username)
+	var out struct {
+		Token string `json:"token"`
 	}
+	mustJSON(t, data, &out)
+	return out.Token, status, data
 }
 
 func loginSession(t *testing.T, username, password string) *http.Cookie {
@@ -511,66 +259,62 @@ func adminToken(t *testing.T) string {
 }
 
 func ensureAdmin() (string, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		tok, status, data, err := loginRaw(adminUsername, adminPassword, "e2e-admin", "admin")
-		if err != nil {
-			return "", err
-		}
-		if status == http.StatusCreated {
-			return tok, nil
-		}
-		if status != http.StatusUnauthorized {
-			return "", fmt.Errorf("admin login: %d %s", status, data)
-		}
-		if attempt == 0 {
-			if err := bootstrap(); err != nil {
-				return "", err
-			}
-		}
+	out, err := userTokenRaw("--name", adminUsername, "--admin", "--scope", "admin")
+	if err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("admin login failed after bootstrap")
+	var created struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(out, &created); err != nil {
+		return "", fmt.Errorf("user-token output: %v\n%s", err, out)
+	}
+	return created.Token, nil
 }
 
-// bootstrap runs the server-side CLI inside the server container. Running it
-// twice against an already bootstrapped database is harmless for the test.
-func bootstrap() error {
-	args := append(composeArgs(), "exec", "-T", "server",
-		"orrery-server", "bootstrap",
-		"--username", adminUsername, "--email", adminEmail, "--password-stdin")
-	cmd := exec.Command("docker", args...)
-	cmd.Stdin = strings.NewReader(adminPassword + "\n")
-	out, err := cmd.CombinedOutput()
-	if err != nil && !strings.Contains(string(out), "a User already exists") {
-		return fmt.Errorf("bootstrap: %v\n%s", err, out)
-	}
-	return nil
-}
-
-func login(t *testing.T, username, password, tokenName, scope string) (string, int, []byte) {
+// userToken mints an API Token with orrery-server user-token inside the
+// server container, the only way e2e creates Users (ADR-0029).
+func userToken(t *testing.T, args ...string) string {
 	t.Helper()
-	tok, status, data, err := loginRaw(username, password, tokenName, scope)
+	out, err := userTokenRaw(args...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tok, status, data
-}
-
-func loginRaw(username, password, tokenName, scope string) (string, int, []byte, error) {
-	status, data, err := postJSON(http.MethodPost, "/api/v1/sessions", "", map[string]any{
-		"username": username,
-		"password": password,
-		"token":    map[string]any{"name": tokenName, "scope": scope},
-	})
-	if err != nil || status != http.StatusCreated {
-		return "", status, data, err
-	}
-	var out struct {
+	var created struct {
 		Token string `json:"token"`
 	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return "", status, data, err
+	mustJSON(t, out, &created)
+	return created.Token
+}
+
+func userTokenRaw(args ...string) ([]byte, error) {
+	full := append(composeArgs(), append([]string{"exec", "-T", "server", "orrery-server", "user-token"}, args...)...)
+	cmd := exec.Command("docker", full...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return out, fmt.Errorf("orrery-server user-token %s: %v\n%s", strings.Join(args, " "), err, stderr.Bytes())
 	}
-	return out.Token, status, data, nil
+	return out, nil
+}
+
+type meUser struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	IsAdmin bool   `json:"is_admin"`
+	Machine bool   `json:"machine"`
+}
+
+func getMe(t *testing.T, token string) meUser {
+	t.Helper()
+	status, data := call(t, http.MethodGet, "/api/v1/users/me", token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /users/me: %d %s", status, data)
+	}
+	var me meUser
+	mustJSON(t, data, &me)
+	return me
 }
 
 type cliRunner struct {

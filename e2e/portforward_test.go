@@ -87,13 +87,7 @@ func TestPortForward(t *testing.T) {
 	}
 
 	username := "port-" + time.Now().Format("150405.000000000")
-	adminCLI := newCLIRunner(t, admin)
-	adminCLI.run(t, "port-password-123\n", "user", "create",
-		"--name", username, "--login-type", "password", "--password-stdin")
-	other, status, data := login(t, username, "port-password-123", "port-"+time.Now().Format("150405.000000000"), "user")
-	if status != http.StatusCreated {
-		t.Fatalf("login as %s: %d %s", username, status, data)
-	}
+	other := userToken(t, "--name", username)
 	status, data = call(t, http.MethodPost, "/api/v1/sandboxes/"+sandboxID+"/ports/8000/ticket", other, nil)
 	if status != http.StatusNotFound {
 		t.Fatalf("non-owner ticket = %d %s, want 404", status, data)
@@ -112,12 +106,7 @@ func TestPortForward(t *testing.T) {
 	// An admin may use the port too: the check is owner-or-admin, as for every
 	// other Sandbox endpoint.
 	adminName := "port-admin-" + time.Now().Format("150405.000000000")
-	adminCLI.run(t, "port-password-123\n", "user", "create",
-		"--name", adminName, "--login-type", "password", "--password-stdin", "--is-admin")
-	otherAdmin, status, data := login(t, adminName, "port-password-123", "port-admin-"+time.Now().Format("150405.000000000"), "admin")
-	if status != http.StatusCreated {
-		t.Fatalf("login as %s: %d %s", adminName, status, data)
-	}
+	otherAdmin := userToken(t, "--name", adminName, "--admin", "--scope", "admin")
 	status, data = call(t, http.MethodPost, "/api/v1/sandboxes/"+sandboxID+"/ports/8000/ticket", otherAdmin, nil)
 	if status != http.StatusOK {
 		t.Fatalf("admin ticket = %d %s, want 200", status, data)
