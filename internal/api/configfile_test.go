@@ -24,7 +24,7 @@ func writeConfigYAML(t *testing.T, body string) string {
 }
 
 // testOIDCYAML is the required oidc block (ADR-0029); every loadable file needs it.
-const testOIDCYAML = "oidc: {issuer_url: https://idp.test, client_id: c, client_secret: s, audience: api://orrery}\n"
+const testOIDCYAML = "oidc: {issuer_url: https://idp.test, client_id: c, client_secret: s, audience: api://orrery, webhook_secret: w}\n"
 
 // setTestOIDCEnv sets the environment-only equivalent of testOIDCYAML.
 func setTestOIDCEnv(t *testing.T) {
@@ -37,6 +37,7 @@ func setTestOIDCEnv(t *testing.T) {
 	t.Setenv("ORRERY_OIDC_CLIENT_ID", "c")
 	t.Setenv("ORRERY_OIDC_CLIENT_SECRET_FILE", secret)
 	t.Setenv("ORRERY_OIDC_AUDIENCE", "api://orrery")
+	t.Setenv("ORRERY_OIDC_WEBHOOK_SECRET", "w")
 }
 
 // ADR-0029: Polaris is the only login, so every oidc key is required, and the
@@ -45,12 +46,13 @@ func TestLoadConfigYAMLRequiresPolaris(t *testing.T) {
 	base := "database: {host: h, user: u, password: p, name: n}\ns3: {secret_key: s}\n"
 	for name, tt := range map[string]struct{ oidc, want string }{
 		"no oidc block": {"", "oidc.issuer_url"},
-		"no issuer":     {"oidc: {client_id: c, client_secret: s, audience: a}\n", "oidc.issuer_url"},
-		"no client id":  {"oidc: {issuer_url: https://i, client_secret: s, audience: a}\n", "oidc.client_id"},
-		"no secret":     {"oidc: {issuer_url: https://i, client_id: c, audience: a}\n", "oidc.client_secret"},
-		"no audience":   {"oidc: {issuer_url: https://i, client_id: c, client_secret: s}\n", "oidc.audience"},
-		"allow_signups": {"oidc: {issuer_url: https://i, client_id: c, client_secret: s, audience: a, allow_signups: true}\n", "require Role"},
-		"email_domains": {"oidc: {issuer_url: https://i, client_id: c, client_secret: s, audience: a, email_domains: [x.com]}\n", "require Role"},
+		"no issuer":     {"oidc: {client_id: c, client_secret: s, audience: a, webhook_secret: w}\n", "oidc.issuer_url"},
+		"no client id":  {"oidc: {issuer_url: https://i, client_secret: s, audience: a, webhook_secret: w}\n", "oidc.client_id"},
+		"no secret":     {"oidc: {issuer_url: https://i, client_id: c, audience: a, webhook_secret: w}\n", "oidc.client_secret"},
+		"no audience":   {"oidc: {issuer_url: https://i, client_id: c, client_secret: s, webhook_secret: w}\n", "oidc.audience"},
+		"no webhook":    {"oidc: {issuer_url: https://i, client_id: c, client_secret: s, audience: a}\n", "oidc.webhook_secret"},
+		"allow_signups": {"oidc: {issuer_url: https://i, client_id: c, client_secret: s, audience: a, webhook_secret: w, allow_signups: true}\n", "require Role"},
+		"email_domains": {"oidc: {issuer_url: https://i, client_id: c, client_secret: s, audience: a, webhook_secret: w, email_domains: [x.com]}\n", "require Role"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			writeConfigYAML(t, base+tt.oidc)
@@ -66,11 +68,12 @@ func TestLoadConfigYAMLRequiresPolaris(t *testing.T) {
 	t.Setenv("ORRERY_OIDC_CLIENT_ID", "env-id")
 	t.Setenv("ORRERY_OIDC_CLIENT_SECRET", "env-secret")
 	t.Setenv("ORRERY_OIDC_AUDIENCE", "api://env")
+	t.Setenv("ORRERY_OIDC_WEBHOOK_SECRET", "env-webhook")
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.OIDC != (OIDCConfig{IssuerURL: "https://env.idp", ClientID: "env-id", ClientSecret: "env-secret", Audience: "api://env"}) {
+	if cfg.OIDC != (OIDCConfig{IssuerURL: "https://env.idp", ClientID: "env-id", ClientSecret: "env-secret", Audience: "api://env", WebhookSecret: "env-webhook"}) {
 		t.Fatalf("OIDC = %+v", cfg.OIDC)
 	}
 }
@@ -82,7 +85,7 @@ func TestConfigFromEnvRequiresPolaris(t *testing.T) {
 	if _, err := ConfigFromEnv(); err != nil {
 		t.Fatalf("ConfigFromEnv: %v", err)
 	}
-	for _, key := range []string{"ORRERY_OIDC_ISSUER_URL", "ORRERY_OIDC_CLIENT_ID", "ORRERY_OIDC_CLIENT_SECRET_FILE", "ORRERY_OIDC_AUDIENCE"} {
+	for _, key := range []string{"ORRERY_OIDC_ISSUER_URL", "ORRERY_OIDC_CLIENT_ID", "ORRERY_OIDC_CLIENT_SECRET_FILE", "ORRERY_OIDC_AUDIENCE", "ORRERY_OIDC_WEBHOOK_SECRET"} {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv(key, "")
 			if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), key) {
@@ -253,7 +256,7 @@ encryption_keys:
 git_providers:
   - {id: gitea, type: gitea, client_id: cid, client_secret: inline-secret,
      base_url: https://git.example.com, scopes: [read:user]}
-oidc: {issuer_url: https://idp.test, client_id: oidc-id, client_secret: oidc-secret, audience: api://orrery}
+oidc: {issuer_url: https://idp.test, client_id: oidc-id, client_secret: oidc-secret, audience: api://orrery, webhook_secret: oidc-webhook}
 registry: {addr: cp.example.com:9443, username: orrery, password: registry-secret}
 platform_snapshots:
   - {name: default, ref: alpine@`+configTestDigest+`, default: true}

@@ -1,12 +1,17 @@
 package api
 
 import (
+	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,7 +27,10 @@ import (
 type fakePolaris struct {
 	*httptest.Server
 	ClientID, Audience string
-	key                *rsa.PrivateKey
+	// WebhookSecret is the Application's webhook secret, in Polaris's
+	// whsec_<base64> form.
+	WebhookSecret string
+	key           *rsa.PrivateKey
 
 	mu     sync.Mutex
 	logins map[string]polarisLogin // by authorization code
@@ -46,7 +54,8 @@ func newFakePolaris(t *testing.T) *fakePolaris {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakePolaris{ClientID: "orrery", Audience: "api://orrery", key: key, logins: map[string]polarisLogin{}}
+	f := &fakePolaris{ClientID: "orrery", Audience: "api://orrery", key: key,
+		WebhookSecret: "whsec_" + base64.StdEncoding.EncodeToString([]byte(uuid.NewString())), logins: map[string]polarisLogin{}}
 	mux := http.NewServeMux()
 	f.Server = httptest.NewServer(mux)
 	t.Cleanup(f.Close)
@@ -161,4 +170,71 @@ func sessionCookie(t *testing.T, resp *http.Response) *http.Cookie {
 	}
 	t.Fatalf("login answered %d with no Session cookie", resp.StatusCode)
 	return nil
+}
+
+// webhookSignature mirrors Polaris's sign (internal/webhook/webhook.go): a
+// Standard Webhooks v1 HMAC-SHA256 over "id.ts.body"; a whsec_ secret is
+// base64 after the prefix, any other is used as its bytes.
+func webhookSignature(secret, id, ts string, body []byte) string {
+	key := []byte(secret)
+	if k, ok := strings.CutPrefix(secret, "whsec_"); ok {
+		if raw, err := base64.StdEncoding.DecodeString(k); err == nil {
+			key = raw
+		}
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(id + "." + ts + "."))
+	mac.Write(body)
+	return "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// polarisEvent is one Polaris User event.
+type polarisEvent struct {
+	Type string
+	Sub  string
+	// At is the event's creation time; zero means now.
+	At      time.Time
+	Changed []string
+}
+
+// body is the exact JSON Polaris sends for e (its eventBody).
+func (e polarisEvent) body() []byte {
+	at := e.At
+	if at.IsZero() {
+		at = time.Now()
+	}
+	type data struct {
+		Sub     string   `json:"sub"`
+		Changed []string `json:"changed,omitempty"`
+	}
+	b, err := json.Marshal(struct {
+		Type      string `json:"type"`
+		Timestamp string `json:"timestamp"`
+		Data      data   `json:"data"`
+	}{e.Type, at.UTC().Format("2006-01-02T15:04:05Z"), data{e.Sub, e.Changed}})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// WebhookRequest is a delivery of e signed with secret at sendTime.
+func (f *fakePolaris) WebhookRequest(e polarisEvent, secret string, sendTime time.Time) *http.Request {
+	body := e.body()
+	id, ts := "msg_"+uuid.NewString(), strconv.FormatInt(sendTime.Unix(), 10)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/polaris/webhook", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("webhook-id", id)
+	req.Header.Set("webhook-timestamp", ts)
+	req.Header.Set("webhook-signature", webhookSignature(secret, id, ts, body))
+	return req
+}
+
+// Webhook delivers e to h signed with the shared secret and returns the
+// status Polaris would see.
+func (f *fakePolaris) Webhook(t *testing.T, h http.Handler, e polarisEvent) int {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, f.WebhookRequest(e, f.WebhookSecret, time.Now()))
+	return rec.Code
 }

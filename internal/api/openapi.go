@@ -375,6 +375,23 @@ func schemas() map[string]any {
 				"provider": map[string]any{"type": "string", "description": "A provider id from GET /git-providers."},
 			},
 		},
+		"PolarisWebhookEvent": map[string]any{
+			"type":        "object",
+			"description": "A Polaris User event, signed the Standard Webhooks way (webhook-id, webhook-timestamp, webhook-signature) with oidc.webhook_secret. An unknown type or sub, a stale event or a machine User is acknowledged with 204 and ignored.",
+			"required":    []string{"type", "timestamp", "data"},
+			"properties": map[string]any{
+				"type":      map[string]any{"type": "string", "description": "user.disabled, user.enabled, user.deleted or user.updated."},
+				"timestamp": map[string]any{"type": "string", "format": "date-time", "description": "When the event happened; older events than the last applied one are ignored."},
+				"data": map[string]any{
+					"type":     "object",
+					"required": []string{"sub"},
+					"properties": map[string]any{
+						"sub":     map[string]any{"type": "string"},
+						"changed": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "For user.updated; roles clears admin."},
+					},
+				},
+			},
+		},
 		"GitCredential": map[string]any{
 			"type":     "object",
 			"required": []string{"username", "password"},

@@ -61,10 +61,11 @@ type fileConfig struct {
 	EncryptionKeys []encryptionKeyFile `yaml:"encryption_keys"`
 	GitProviders   []gitProviderYAML   `yaml:"git_providers"`
 	OIDC           struct {
-		IssuerURL    string `yaml:"issuer_url"`
-		ClientID     string `yaml:"client_id"`
-		ClientSecret string `yaml:"client_secret"`
-		Audience     string `yaml:"audience"`
+		IssuerURL     string `yaml:"issuer_url"`
+		ClientID      string `yaml:"client_id"`
+		ClientSecret  string `yaml:"client_secret"`
+		Audience      string `yaml:"audience"`
+		WebhookSecret string `yaml:"webhook_secret"`
 		// Removed (ADR-0029); kept only to reject them with a clear message.
 		EmailDomains any `yaml:"email_domains"`
 		AllowSignups any `yaml:"allow_signups"`
@@ -308,6 +309,9 @@ func (o envOverride) apply(f *fileConfig) error {
 	if v, ok := o.get("oidc.audience", "ORRERY_OIDC_AUDIENCE"); ok {
 		f.OIDC.Audience = v
 	}
+	if v, ok := o.get("oidc.webhook_secret", "ORRERY_OIDC_WEBHOOK_SECRET"); ok {
+		f.OIDC.WebhookSecret = v
+	}
 	if v, ok := o.get("oidc.allow_signups", "ORRERY_OIDC_ALLOW_SIGNUPS"); ok {
 		f.OIDC.AllowSignups = v
 	}
@@ -543,6 +547,7 @@ func (f *fileConfig) oidc(cfg *Config) error {
 	cfg.OIDC.ClientID = f.OIDC.ClientID
 	cfg.OIDC.ClientSecret = f.OIDC.ClientSecret
 	cfg.OIDC.Audience = f.OIDC.Audience
+	cfg.OIDC.WebhookSecret = f.OIDC.WebhookSecret
 	if f.OIDC.AllowSignups != nil {
 		return fmt.Errorf("oidc.allow_signups is %s", errRemovedSignupPolicy)
 	}
@@ -552,6 +557,7 @@ func (f *fileConfig) oidc(cfg *Config) error {
 	for _, kv := range [][2]string{
 		{"oidc.issuer_url", cfg.OIDC.IssuerURL}, {"oidc.client_id", cfg.OIDC.ClientID},
 		{"oidc.client_secret", cfg.OIDC.ClientSecret}, {"oidc.audience", cfg.OIDC.Audience},
+		{"oidc.webhook_secret", cfg.OIDC.WebhookSecret},
 	} {
 		if kv[1] == "" {
 			return fmt.Errorf("%s is required", kv[0])

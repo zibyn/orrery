@@ -48,6 +48,7 @@ func (s *Server) routes() []route {
 		{http.MethodGet, "/oidc/callback", "", "oidcCallback", "Finish an OIDC login", "", "", []string{"code", "state", "error"}, http.StatusFound, s.handleOIDCCallback},
 		{http.MethodGet, "/oidc/account", "", "oidcAccount", "Open the Polaris account center", "", "", nil, http.StatusFound, s.handleOIDCAccount},
 		{http.MethodPost, "/polaris/backchannel-logout", "", "polarisBackchannelLogout", "Receive a Polaris Back-Channel Logout", "BackchannelLogoutForm", "", nil, http.StatusOK, s.handleBackchannelLogout},
+		{http.MethodPost, "/polaris/webhook", "", "polarisWebhook", "Receive a Polaris User event", "PolarisWebhookEvent", "", nil, http.StatusNoContent, s.handlePolarisWebhook},
 		{http.MethodGet, "/audit", "admin", "listAudit", "List Audit Records", "", "AuditList", []string{"actor", "action", "target", "target_type", "from", "to", "limit", "cursor"}, http.StatusOK, s.handleListAudit},
 		{http.MethodPost, "/enrollment-packets", "admin", "createEnrollmentPacket", "Issue an Enrollment Packet", "", "EnrollmentPacket", nil, http.StatusCreated, s.handleCreateEnrollmentPacket},
 		{http.MethodGet, "/nodes", "admin", "listNodes", "List Nodes", "", "NodeList", []string{"limit", "cursor"}, http.StatusOK, s.handleListNodes},
