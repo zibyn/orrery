@@ -548,22 +548,13 @@ func (f *fileConfig) oidc(cfg *Config) error {
 	cfg.OIDC.ClientSecret = f.OIDC.ClientSecret
 	cfg.OIDC.Audience = f.OIDC.Audience
 	cfg.OIDC.WebhookSecret = f.OIDC.WebhookSecret
-	if f.OIDC.AllowSignups != nil {
-		return fmt.Errorf("oidc.allow_signups is %s", errRemovedSignupPolicy)
-	}
-	if f.OIDC.EmailDomains != nil {
-		return fmt.Errorf("oidc.email_domains is %s", errRemovedSignupPolicy)
-	}
-	for _, kv := range [][2]string{
-		{"oidc.issuer_url", cfg.OIDC.IssuerURL}, {"oidc.client_id", cfg.OIDC.ClientID},
-		{"oidc.client_secret", cfg.OIDC.ClientSecret}, {"oidc.audience", cfg.OIDC.Audience},
-		{"oidc.webhook_secret", cfg.OIDC.WebhookSecret},
-	} {
-		if kv[1] == "" {
-			return fmt.Errorf("%s is required", kv[0])
-		}
-	}
-	return nil
+	return checkOIDCKeys([]oidcKey{
+		{"oidc.allow_signups", f.OIDC.AllowSignups != nil}, {"oidc.email_domains", f.OIDC.EmailDomains != nil},
+	}, []oidcKey{
+		{"oidc.issuer_url", cfg.OIDC.IssuerURL != ""}, {"oidc.client_id", cfg.OIDC.ClientID != ""},
+		{"oidc.client_secret", cfg.OIDC.ClientSecret != ""}, {"oidc.audience", cfg.OIDC.Audience != ""},
+		{"oidc.webhook_secret", cfg.OIDC.WebhookSecret != ""},
+	})
 }
 
 func (f *fileConfig) s3(cfg *Config) error {

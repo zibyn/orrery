@@ -92,6 +92,12 @@ func (s *Server) UserToken(ctx context.Context, opts UserTokenOptions) (CreatedT
 	return CreatedToken{tokenDTO: tokenToDTO(token), Token: raw}, nil
 }
 
+// isMachineUser reports whether u has no Polaris identity; migration 000029
+// keeps issuer and subject null together.
+func isMachineUser(u store.User) bool {
+	return u.OidcIssuer == nil && u.OidcSubject == nil
+}
+
 // machineUser finds or creates the machine User called name; admin makes it,
 // or keeps it, an admin.
 func (s *Server) machineUser(ctx context.Context, name string, admin bool) (store.User, error) {
@@ -122,7 +128,7 @@ func (s *Server) machineUser(ctx context.Context, name string, admin bool) (stor
 	if err != nil {
 		return store.User{}, err
 	}
-	if user.OidcIssuer != nil || user.OidcSubject != nil {
+	if !isMachineUser(user) {
 		return store.User{}, fmt.Errorf("%q is a Polaris-linked User; use --sub", name)
 	}
 	if admin && !user.IsAdmin {

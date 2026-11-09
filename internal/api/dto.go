@@ -131,7 +131,7 @@ func userToDTO(u store.User) userDTO {
 		Name:      u.Name,
 		Email:     u.Email,
 		IsAdmin:   u.IsAdmin,
-		Machine:   u.OidcIssuer == nil && u.OidcSubject == nil,
+		Machine:   isMachineUser(u),
 		Quota:     quotaDTO{GPUs: u.GpuQuota, Sandboxes: u.SandboxQuota},
 		CreatedAt: u.CreatedAt.Time.UTC(),
 		DeletedAt: timePtr(u.DeletedAt),

@@ -47,6 +47,8 @@ type user struct {
 
 // run links every live User to a Polaris User (ADR-0029). It only ever reads
 // the pre-switch schema, and writes only oidc_issuer and oidc_subject.
+// Raw SQL, not sqlc: login_type and password_hash are gone from the current
+// schema (migration 000029), so the generated queries cannot name them.
 func run(ctx context.Context, pool *pgxpool.Pool, client *http.Client, issuer string) (report, error) {
 	rows, err := pool.Query(ctx, `SELECT id::text, name, login_type, email, oidc_issuer, oidc_subject, is_admin
 		FROM users WHERE deleted_at IS NULL ORDER BY name`)

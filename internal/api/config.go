@@ -137,6 +137,28 @@ type OIDCConfig struct {
 // errRemovedSignupPolicy names where allow_signups and email_domains went.
 const errRemovedSignupPolicy = "removed: who may use Orrery is decided in Polaris by turning on require Role for the Orrery Application (ADR-0029)"
 
+// oidcKey is one OIDC configuration key and whether it is set.
+type oidcKey struct {
+	name string
+	set  bool
+}
+
+// checkOIDCKeys enforces ADR-0029 on either configuration source: every
+// removed key is unset and every required key is set.
+func checkOIDCKeys(removed, required []oidcKey) error {
+	for _, k := range removed {
+		if k.set {
+			return fmt.Errorf("%s is %s", k.name, errRemovedSignupPolicy)
+		}
+	}
+	for _, k := range required {
+		if !k.set {
+			return fmt.Errorf("%s is required", k.name)
+		}
+	}
+	return nil
+}
+
 // ConfigFromEnv reads the environment-only configuration used by tests and CI
 // when ORRERY_CONFIG_FILE is unset (defaults.md). It is not the deployment
 // contract; LoadConfig reads config.yaml.
@@ -291,24 +313,20 @@ func parsePlatformSnapshots(raw string) ([]PlatformSnapshot, error) {
 
 // loadOIDC reads Polaris, the deployment's only identity provider (ADR-0029).
 func (c *Config) loadOIDC() error {
-	for _, key := range []string{"ORRERY_OIDC_ALLOW_SIGNUPS", "ORRERY_OIDC_EMAIL_DOMAINS"} {
-		if os.Getenv(key) != "" {
-			return fmt.Errorf("%s is %s", key, errRemovedSignupPolicy)
-		}
-	}
 	c.OIDC.IssuerURL = os.Getenv("ORRERY_OIDC_ISSUER_URL")
 	c.OIDC.ClientID = os.Getenv("ORRERY_OIDC_CLIENT_ID")
 	c.OIDC.Audience = os.Getenv("ORRERY_OIDC_AUDIENCE")
 	c.OIDC.WebhookSecret = os.Getenv("ORRERY_OIDC_WEBHOOK_SECRET")
 	path := os.Getenv("ORRERY_OIDC_CLIENT_SECRET_FILE")
-	for _, kv := range [][2]string{
-		{"ORRERY_OIDC_ISSUER_URL", c.OIDC.IssuerURL}, {"ORRERY_OIDC_CLIENT_ID", c.OIDC.ClientID},
-		{"ORRERY_OIDC_CLIENT_SECRET_FILE", path}, {"ORRERY_OIDC_AUDIENCE", c.OIDC.Audience},
-		{"ORRERY_OIDC_WEBHOOK_SECRET", c.OIDC.WebhookSecret},
-	} {
-		if kv[1] == "" {
-			return fmt.Errorf("%s is required", kv[0])
-		}
+	if err := checkOIDCKeys([]oidcKey{
+		{"ORRERY_OIDC_ALLOW_SIGNUPS", os.Getenv("ORRERY_OIDC_ALLOW_SIGNUPS") != ""},
+		{"ORRERY_OIDC_EMAIL_DOMAINS", os.Getenv("ORRERY_OIDC_EMAIL_DOMAINS") != ""},
+	}, []oidcKey{
+		{"ORRERY_OIDC_ISSUER_URL", c.OIDC.IssuerURL != ""}, {"ORRERY_OIDC_CLIENT_ID", c.OIDC.ClientID != ""},
+		{"ORRERY_OIDC_CLIENT_SECRET_FILE", path != ""}, {"ORRERY_OIDC_AUDIENCE", c.OIDC.Audience != ""},
+		{"ORRERY_OIDC_WEBHOOK_SECRET", c.OIDC.WebhookSecret != ""},
+	}); err != nil {
+		return err
 	}
 	secret, err := os.ReadFile(path)
 	if err != nil {
