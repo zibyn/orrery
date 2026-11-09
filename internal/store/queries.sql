@@ -93,6 +93,24 @@ SET deleted_at = now(), updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
+-- ApplyPolarisEvent records a Polaris webhook event on the Polaris-linked
+-- User it names, unless a newer event was already applied. Ties apply: event
+-- times have second precision (ADR-0029). A null disabled keeps disabled_at.
+-- name: ApplyPolarisEvent :one
+UPDATE users
+SET disabled_at = CASE sqlc.narg('disabled')::boolean
+        WHEN true THEN coalesce(disabled_at, now())
+        WHEN false THEN NULL
+        ELSE disabled_at
+    END,
+    is_admin = is_admin AND NOT sqlc.arg('clear_admin')::boolean,
+    polaris_event_at = sqlc.arg('event_at'),
+    updated_at = now()
+WHERE oidc_issuer = sqlc.arg('issuer') AND oidc_subject = sqlc.arg('subject')
+  AND deleted_at IS NULL
+  AND (polaris_event_at IS NULL OR polaris_event_at <= sqlc.arg('event_at'))
+RETURNING *;
+
 -- API tokens
 
 -- name: CreateToken :one
@@ -130,7 +148,7 @@ SELECT t.id, t.user_id, t.kind, t.name, t.secret_hash, t.scope,
        u.is_admin AS user_is_admin
 FROM api_tokens t
 JOIN users u ON u.id = t.user_id
-WHERE t.id = $1 AND u.deleted_at IS NULL;
+WHERE t.id = $1 AND u.deleted_at IS NULL AND u.disabled_at IS NULL;
 
 -- name: GetTokenByIdempotencyKey :one
 SELECT * FROM api_tokens WHERE user_id = $1 AND idempotency_key = $2;

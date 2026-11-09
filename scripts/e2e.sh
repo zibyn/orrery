@@ -149,6 +149,7 @@ export ORRERY_REGISTRY_CREDENTIAL="${ORRERY_REGISTRY_CREDENTIAL:-{\"auths\":{\"1
 export ORRERY_OIDC_ISSUER_URL="${ORRERY_OIDC_ISSUER_URL:-http://dex:5556/dex}"
 export ORRERY_OIDC_CLIENT_ID="${ORRERY_OIDC_CLIENT_ID:-orrery}"
 export ORRERY_OIDC_AUDIENCE="${ORRERY_OIDC_AUDIENCE:-api://orrery}"
+export ORRERY_OIDC_WEBHOOK_SECRET="${ORRERY_OIDC_WEBHOOK_SECRET:-orrery-e2e-webhook-secret}"
 export ORRERY_OIDC_ACCESS_URL="${ORRERY_OIDC_ACCESS_URL:-http://${HOST_GATEWAY}:18082}"
 mkdir -p .e2e/oidc .e2e/dex
 E2E_OIDC_SECRET="orrery-oidc-secret"
@@ -342,6 +343,7 @@ oidc:
   client_id: ${ORRERY_OIDC_CLIENT_ID}
   client_secret: ${E2E_OIDC_SECRET}
   audience: ${ORRERY_OIDC_AUDIENCE}
+  webhook_secret: ${ORRERY_OIDC_WEBHOOK_SECRET}
 s3:
   endpoint: ${ORRERY_S3_ENDPOINT}
   public_endpoint: ${ORRERY_S3_PUBLIC_ENDPOINT}

@@ -89,12 +89,13 @@ ADR-0028 移除了自动更新（取代 ADR-0023 的 `--auto-update`）。升级
 Polaris 是唯一的登录方式（ADR-0029），`config.yaml` 的 `oidc` 段必填，缺了 Control Plane 不启动。在 Polaris 控制台里按顺序建：
 
 1. **API**：标识 `api://orrery`（即 `oidc.audience`），在它下面加 Permission `orrery:admin`。
-2. **Role**：例如「Orrery 管理员」，挂在这个 API 上，包含 `orrery:admin`。持有它的人下次登录时成为 Orrery admin；收回后下次登录失去 admin。
+2. **Role**：例如「Orrery 管理员」，挂在这个 API 上，包含 `orrery:admin`。持有它的人下次登录时成为 Orrery admin；收回后经 Webhook 立即失去 admin。
 3. **Web Application**（confidential）：
    - default API 设为 `api://orrery`。Polaris 不支持 `resource` 参数，access token 的 `aud` 只由 default API 决定；设错了登录会失败。
    - callback URL 填 `https://cp.example.com/api/v1/oidc/callback`（公开地址加这个路径）。
    - 只让指定的人用 Orrery 时，打开 require Role。
-4. 把 issuer、client id、client secret 和 audience 写进 `config.yaml`：
+   - Webhook URL 填 `https://cp.example.com/api/v1/polaris/webhook`，再生成一个 Webhook secret（`whsec_...`）。在 Polaris 停用、启用、删除一个人或改他的 Role 时，Orrery 据此立即生效：停用拒绝他的全部凭据，改 Role 收回 admin，直到下次登录重新判定。
+4. 把 issuer、client id、client secret、audience 和 Webhook secret 写进 `config.yaml`：
 
 ```yaml
 oidc:
@@ -102,6 +103,7 @@ oidc:
   client_id: ...
   client_secret: ...
   audience: api://orrery
+  webhook_secret: whsec_...
 ```
 
 旧的 `oidc.allow_signups` 和 `oidc.email_domains` 已移除，配置里还有它们时拒绝启动。

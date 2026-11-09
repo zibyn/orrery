@@ -129,6 +129,9 @@ type OIDCConfig struct {
 	// Audience is the Orrery API's identifier in Polaris (api://orrery), the
 	// `aud` of the access token a login returns.
 	Audience string
+	// WebhookSecret is the Orrery Application's Polaris webhook secret; the
+	// webhook endpoint verifies every delivery against it.
+	WebhookSecret string
 }
 
 // errRemovedSignupPolicy names where allow_signups and email_domains went.
@@ -296,10 +299,12 @@ func (c *Config) loadOIDC() error {
 	c.OIDC.IssuerURL = os.Getenv("ORRERY_OIDC_ISSUER_URL")
 	c.OIDC.ClientID = os.Getenv("ORRERY_OIDC_CLIENT_ID")
 	c.OIDC.Audience = os.Getenv("ORRERY_OIDC_AUDIENCE")
+	c.OIDC.WebhookSecret = os.Getenv("ORRERY_OIDC_WEBHOOK_SECRET")
 	path := os.Getenv("ORRERY_OIDC_CLIENT_SECRET_FILE")
 	for _, kv := range [][2]string{
 		{"ORRERY_OIDC_ISSUER_URL", c.OIDC.IssuerURL}, {"ORRERY_OIDC_CLIENT_ID", c.OIDC.ClientID},
 		{"ORRERY_OIDC_CLIENT_SECRET_FILE", path}, {"ORRERY_OIDC_AUDIENCE", c.OIDC.Audience},
+		{"ORRERY_OIDC_WEBHOOK_SECRET", c.OIDC.WebhookSecret},
 	} {
 		if kv[1] == "" {
 			return fmt.Errorf("%s is required", kv[0])

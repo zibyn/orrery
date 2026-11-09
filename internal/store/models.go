@@ -295,6 +295,8 @@ type User struct {
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
 	DeletedAt      pgtype.Timestamptz
+	DisabledAt     pgtype.Timestamptz
+	PolarisEventAt pgtype.Timestamptz
 }
 
 type Workspace struct {

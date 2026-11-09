@@ -6,7 +6,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 - **前缀**：`/api/v1`。`api` 监听面上另有 `/metrics`（`admin`）、端口转发子域名（§6）和 `/` 下的 Web 控制台（§8）。
 - **ID**：服务端生成的 UUIDv7，不带类型前缀。Sandbox 的 `name` 每个 User 内唯一，只用于过滤，不进路径。
-- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `orr_<id>_<secret>`，Sandbox Token 形如 `ors_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。
+- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `orr_<id>_<secret>`，Sandbox Token 形如 `ors_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。User 在 Polaris 被停用（`disabled_at` 非空）期间，它的 Session、API Token 和它拥有的 Sandbox 的 Sandbox Token 都按 `401` 拒绝（ADR-0029）。
 - **Session cookie**：`orrery_session; HttpOnly; Secure; SameSite=Lax; Path=/`，不带 `Domain`，端口转发子域名收不到。值的格式同 API Token，对应 `api_tokens` 里 `kind=session` 的一行。cookie 与 Bearer 等价；用 cookie 认证时，非安全方法要过 `http.CrossOriginProtection`，WebSocket 升级要求 `Origin` 等于 `api` 自己的源（ADR-0020）。
 - **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
@@ -61,7 +61,8 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `POST /sessions` | `{username, password}` → `Set-Cookie` 一个 Session。带 `token: {name, scope, expires_at?}` 时改为返回一枚具名 API Token，不设 cookie（`orrery login` 用）。用户名不存在和密码错误都返回同一个 `401`；失败超限返回 `429 rate_limited` |
 | `DELETE /sessions/current` | 退出登录，删掉当前 Session |
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
-| `GET /oidc/callback` | 只按 (`issuer`, `sub`) 匹配 User，匹配不到就建号，用部署默认 Quota（ADR-0029）。每次登录都从 claims 复制 name 和 email：name 被占用时用 `sub` 消歧，email 被占用时保留已存的值。用 `oidc.audience` 校验 code exchange 拿到的 access token，`entitlements` 含 `orrery:admin` 就设 `is_admin`，否则清掉；access token 无效或 audience 不对时 `400`。Session 记下 ID token 的 `sid`。成功后设 Session cookie 并 302 回 `return` |
+| `GET /oidc/callback` | 只按 (`issuer`, `sub`) 匹配 User，匹配不到就建号，用部署默认 Quota（ADR-0029）。每次登录都从 claims 复制 name 和 email：name 被占用时用 `sub` 消歧，email 被占用时保留已存的值。用 `oidc.audience` 校验 code exchange 拿到的 access token，`entitlements` 含 `orrery:admin` 就设 `is_admin`，否则清掉；access token 无效或 audience 不对时 `400`。Session 记下 ID token 的 `sid`。已停用的 User 返回 `403`，不发 Session。成功后设 Session cookie 并 302 回 `return` |
+| `POST /polaris/webhook` | Polaris 的 User 事件（ADR-0029）。按 Standard Webhooks 校验 `webhook-id`、`webhook-timestamp`、`webhook-signature`（HMAC-SHA256，密钥为 `oidc.webhook_secret`，`whsec_` 前缀后是 base64，否则按原字节），时间戳偏差超过 5 分钟或签名不符返回 `401`。按 (`oidc.issuer_url`, `data.sub`) 找 User：`user.disabled` 设 `disabled_at`，`user.enabled` 清掉，`user.deleted` 逻辑删除，`user.updated` 的 `changed` 含 `roles` 时清掉 `is_admin`（下次登录重新判定）。每个应用的事件写审计记录。未知 `sub`、未知类型、比已应用事件更早的事件、Machine User 一律 `204` 并忽略；Polaris 会重试任何非 2xx。事件时间只到秒，同一秒内的停用和启用可能乱序 |
 
 **Workspace**
 

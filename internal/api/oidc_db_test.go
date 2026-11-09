@@ -34,10 +34,12 @@ func polarisTestServer(t *testing.T) (http.Handler, *fakePolaris, *pgxpool.Pool)
 	op := newFakePolaris(t)
 	cfg := Config{
 		AccessURL:           "https://orrery.test",
+		EncryptionKeys:      testKeyring(t),
 		DefaultGPUQuota:     3,
 		DefaultSandboxQuota: 4,
 		OIDC: OIDCConfig{
 			IssuerURL: op.URL, ClientID: op.ClientID, ClientSecret: "secret", Audience: op.Audience,
+			WebhookSecret: op.WebhookSecret,
 		},
 	}
 	return New(cfg, pool, slog.New(slog.DiscardHandler)).Handler(), op, pool
