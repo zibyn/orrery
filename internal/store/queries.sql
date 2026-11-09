@@ -69,8 +69,9 @@ WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
 -- ApplyPolarisEvent records a Polaris webhook event on the Polaris-linked
--- User it names, unless a newer event was already applied. Ties apply: event
--- times have second precision (ADR-0029). A null disabled keeps disabled_at.
+-- User it names, unless a newer event was already applied. Event times have
+-- second precision, so ties apply but fail closed: an enable never undoes a
+-- disable of the same second (ADR-0029). A null disabled keeps disabled_at.
 -- name: ApplyPolarisEvent :one
 UPDATE users
 SET disabled_at = CASE sqlc.narg('disabled')::boolean
@@ -78,13 +79,22 @@ SET disabled_at = CASE sqlc.narg('disabled')::boolean
         WHEN false THEN NULL
         ELSE disabled_at
     END,
+    polaris_disabled_at = CASE WHEN sqlc.narg('disabled')::boolean
+        THEN sqlc.arg('event_at') ELSE polaris_disabled_at END,
     is_admin = is_admin AND NOT sqlc.arg('clear_admin')::boolean,
     polaris_event_at = sqlc.arg('event_at'),
     updated_at = now()
 WHERE oidc_issuer = sqlc.arg('issuer') AND oidc_subject = sqlc.arg('subject')
   AND deleted_at IS NULL
   AND (polaris_event_at IS NULL OR polaris_event_at <= sqlc.arg('event_at'))
+  AND (sqlc.narg('disabled')::boolean IS DISTINCT FROM false
+       OR polaris_disabled_at IS NULL OR polaris_disabled_at < sqlc.arg('event_at'))
 RETURNING *;
+
+-- RecordPolarisDelivery claims a webhook-id; no row means a redelivery.
+-- shortcut: rows are never pruned (one per applied event); prune by received_at if it grows.
+-- name: RecordPolarisDelivery :execrows
+INSERT INTO polaris_webhook_deliveries (id) VALUES ($1) ON CONFLICT DO NOTHING;
 
 -- API tokens
 

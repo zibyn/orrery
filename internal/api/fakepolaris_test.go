@@ -195,6 +195,8 @@ type polarisEvent struct {
 	// At is the event's creation time; zero means now.
 	At      time.Time
 	Changed []string
+	// ID is the webhook-id, stable across Polaris retries; empty means a new one.
+	ID string
 }
 
 // body is the exact JSON Polaris sends for e (its eventBody).
@@ -221,7 +223,10 @@ func (e polarisEvent) body() []byte {
 // WebhookRequest is a delivery of e signed with secret at sendTime.
 func (f *fakePolaris) WebhookRequest(e polarisEvent, secret string, sendTime time.Time) *http.Request {
 	body := e.body()
-	id, ts := "msg_"+uuid.NewString(), strconv.FormatInt(sendTime.Unix(), 10)
+	id, ts := e.ID, strconv.FormatInt(sendTime.Unix(), 10)
+	if id == "" {
+		id = "msg_" + uuid.NewString()
+	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/polaris/webhook", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("webhook-id", id)

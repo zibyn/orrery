@@ -78,7 +78,24 @@ func (s *Server) handlePolarisWebhook(w http.ResponseWriter, r *http.Request, _ 
 		return
 	}
 	ctx := r.Context()
-	user, err := s.q.ApplyPolarisEvent(ctx, params)
+	// One transaction: a failure leaves no trace, so the retry (same
+	// webhook-id) applies the event afresh.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.internal(w, "begin transaction", err)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	if n, err := q.RecordPolarisDelivery(ctx, r.Header.Get("webhook-id")); err != nil || n == 0 {
+		if err != nil {
+			s.internal(w, "record Polaris delivery", err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent) // a redelivery
+		return
+	}
+	user, err := q.ApplyPolarisEvent(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) { // unknown sub, machine User or stale event
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -88,10 +105,14 @@ func (s *Server) handlePolarisWebhook(w http.ResponseWriter, r *http.Request, _ 
 		return
 	}
 	if e.Type == "user.deleted" {
-		if _, err := s.q.SoftDeleteUser(ctx, user.ID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if _, err := q.SoftDeleteUser(ctx, user.ID); err != nil {
 			s.internal(w, "delete user", err)
 			return
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.internal(w, "commit Polaris event", err)
+		return
 	}
 	s.auditAs(ctx, nil, nil, action, "user", user.ID.String(), map[string]any{
 		"via": "polaris_webhook", "event": e.Type, "is_admin": user.IsAdmin,

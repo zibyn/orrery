@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,7 +141,8 @@ func TestPolarisWebhookDisableAndEnable(t *testing.T) {
 	}
 	noSessionCookie(t, resp)
 
-	if code := op.Webhook(t, h, polarisEvent{Type: "user.enabled", Sub: sub}); code != http.StatusNoContent {
+	// A later second: at the same second the disable would win.
+	if code := op.Webhook(t, h, polarisEvent{Type: "user.enabled", Sub: sub, At: time.Now().Add(time.Second)}); code != http.StatusNoContent {
 		t.Fatalf("user.enabled webhook = %d, want 204", code)
 	}
 	if code := callBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusOK {
@@ -191,6 +193,102 @@ func TestPolarisWebhookRolesChangeClearsAdmin(t *testing.T) {
 	}
 	if code := callBearer(h, token, http.MethodGet, "/api/v1/users", ""); code != http.StatusForbidden {
 		t.Errorf("admin token GET /users after a Role change = %d, want 403", code)
+	}
+}
+
+// Polaris stamps events to the second and delivers them in any order, so at
+// one second a disable beats an enable whichever arrives first (ADR-0029).
+func TestPolarisWebhookSameSecondDisableBeatsEnable(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	at := time.Now().Truncate(time.Second)
+	for name, order := range map[string][]string{
+		"disable first": {"user.disabled", "user.enabled"},
+		"enable first":  {"user.enabled", "user.disabled"},
+	} {
+		sub := "tie-" + uuid.NewString()
+		token := scopedToken(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub})), "user")
+		for _, typ := range order {
+			if code := op.Webhook(t, h, polarisEvent{Type: typ, Sub: sub, At: at}); code != http.StatusNoContent {
+				t.Fatalf("%s: %s webhook = %d, want 204", name, typ, code)
+			}
+		}
+		if code := callBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusUnauthorized {
+			t.Errorf("%s: API Token = %d, want 401 (disabled)", name, code)
+		}
+	}
+}
+
+// auditActions lists the actions of the User's Audit Records.
+func auditActions(t *testing.T, h http.Handler, admin *http.Cookie, userID string) []string {
+	t.Helper()
+	var list auditList
+	if code := asSession(t, h, admin, "/api/v1/audit?target_type=user&target="+userID, &list); code != http.StatusOK {
+		t.Fatalf("GET /audit = %d", code)
+	}
+	var actions []string
+	for _, a := range list.Items {
+		actions = append(actions, a.Action)
+	}
+	return actions
+}
+
+// A redelivery (the same webhook-id) changes nothing, even while its event is
+// still current: it leaves no second Audit Record.
+func TestPolarisWebhookRedeliveryChangesNothing(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	admin := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "adm-" + uuid.NewString(), Entitlements: []string{adminEntitlement}}))
+	sub := "redeliver-" + uuid.NewString()
+	user := me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Entitlements: []string{adminEntitlement}})))
+	roles := polarisEvent{Type: "user.updated", Sub: sub, Changed: []string{"roles"}, At: time.Now(), ID: "msg_" + uuid.NewString()}
+
+	if code := op.Webhook(t, h, roles); code != http.StatusNoContent {
+		t.Fatalf("user.updated webhook = %d, want 204", code)
+	}
+	if code := op.Webhook(t, h, roles); code != http.StatusNoContent {
+		t.Fatalf("redelivered webhook = %d, want 204", code)
+	}
+	if got := auditActions(t, h, admin, user.ID); !slices.Equal(got, []string{"user.update", "user.create"}) {
+		t.Errorf("Audit Records = %v, want one user.update after user.create", got)
+	}
+}
+
+// A user.deleted whose delete fails leaves no trace, so Polaris's retry (the
+// same webhook-id) still deletes the User.
+func TestPolarisWebhookDeleteRetryAfterFailure(t *testing.T) {
+	h, op, pool := polarisTestServer(t)
+	admin := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "adm-" + uuid.NewString(), Entitlements: []string{adminEntitlement}}))
+	sub := "delretry-" + uuid.NewString()
+	user := me(t, h, sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub})))
+	ctx := context.Background()
+	// The trigger fails the soft delete of this one User only.
+	suffix := strings.ReplaceAll(user.ID, "-", "")
+	fn, trg := "fail_delete_"+suffix, "fail_delete_"+suffix
+	for _, sql := range []string{
+		`CREATE FUNCTION ` + fn + `() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+			IF NEW.id = '` + user.ID + `' AND NEW.deleted_at IS NOT NULL THEN RAISE EXCEPTION 'injected'; END IF;
+			RETURN NEW; END $$`,
+		`CREATE TRIGGER ` + trg + ` BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION ` + fn + `()`,
+	} {
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drop := func() {
+		pool.Exec(ctx, `DROP TRIGGER IF EXISTS `+trg+` ON users`) //nolint:errcheck // test cleanup
+		pool.Exec(ctx, `DROP FUNCTION IF EXISTS `+fn+`()`)        //nolint:errcheck // test cleanup
+	}
+	t.Cleanup(drop)
+
+	del := polarisEvent{Type: "user.deleted", Sub: sub, At: time.Now(), ID: "msg_" + uuid.NewString()}
+	if code := op.Webhook(t, h, del); code != http.StatusInternalServerError {
+		t.Fatalf("failing user.deleted webhook = %d, want 500", code)
+	}
+	drop()
+	if code := op.Webhook(t, h, del); code != http.StatusNoContent {
+		t.Fatalf("retried user.deleted webhook = %d, want 204", code)
+	}
+	if code := asSession(t, h, admin, "/api/v1/users/"+user.ID, nil); code != http.StatusNotFound {
+		t.Errorf("GET /users/{id} after the retried delete = %d, want 404", code)
 	}
 }
 

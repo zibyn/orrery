@@ -79,31 +79,36 @@ SET disabled_at = CASE $1::boolean
         WHEN false THEN NULL
         ELSE disabled_at
     END,
-    is_admin = is_admin AND NOT $2::boolean,
-    polaris_event_at = $3,
+    polaris_disabled_at = CASE WHEN $1::boolean
+        THEN $2 ELSE polaris_disabled_at END,
+    is_admin = is_admin AND NOT $3::boolean,
+    polaris_event_at = $2,
     updated_at = now()
 WHERE oidc_issuer = $4 AND oidc_subject = $5
   AND deleted_at IS NULL
-  AND (polaris_event_at IS NULL OR polaris_event_at <= $3)
-RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at
+  AND (polaris_event_at IS NULL OR polaris_event_at <= $2)
+  AND ($1::boolean IS DISTINCT FROM false
+       OR polaris_disabled_at IS NULL OR polaris_disabled_at < $2)
+RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
 `
 
 type ApplyPolarisEventParams struct {
 	Disabled   *bool
-	ClearAdmin bool
 	EventAt    pgtype.Timestamptz
+	ClearAdmin bool
 	Issuer     *string
 	Subject    *string
 }
 
 // ApplyPolarisEvent records a Polaris webhook event on the Polaris-linked
-// User it names, unless a newer event was already applied. Ties apply: event
-// times have second precision (ADR-0029). A null disabled keeps disabled_at.
+// User it names, unless a newer event was already applied. Event times have
+// second precision, so ties apply but fail closed: an enable never undoes a
+// disable of the same second (ADR-0029). A null disabled keeps disabled_at.
 func (q *Queries) ApplyPolarisEvent(ctx context.Context, arg ApplyPolarisEventParams) (User, error) {
 	row := q.db.QueryRow(ctx, applyPolarisEvent,
 		arg.Disabled,
-		arg.ClearAdmin,
 		arg.EventAt,
+		arg.ClearAdmin,
 		arg.Issuer,
 		arg.Subject,
 	)
@@ -124,6 +129,7 @@ func (q *Queries) ApplyPolarisEvent(ctx context.Context, arg ApplyPolarisEventPa
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
@@ -698,7 +704,7 @@ const createMachineUser = `-- name: CreateMachineUser :one
 
 INSERT INTO users (id, name, is_admin, gpu_quota, sandbox_quota)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at
+RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
 `
 
 type CreateMachineUserParams struct {
@@ -737,6 +743,7 @@ func (q *Queries) CreateMachineUser(ctx context.Context, arg CreateMachineUserPa
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
@@ -798,7 +805,7 @@ INSERT INTO users (
     id, name, email, is_admin, oidc_issuer, oidc_subject,
     gpu_quota, sandbox_quota
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at
+RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
 `
 
 type CreateOIDCUserParams struct {
@@ -842,6 +849,7 @@ func (q *Queries) CreateOIDCUser(ctx context.Context, arg CreateOIDCUserParams) 
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
@@ -2918,7 +2926,7 @@ func (q *Queries) GetUpload(ctx context.Context, id uuid.UUID) (Upload, error) {
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at FROM users WHERE id = $1 AND deleted_at IS NULL
+SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at FROM users WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
@@ -2940,12 +2948,13 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
 
 const getUserByName = `-- name: GetUserByName :one
-SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at FROM users WHERE name = $1 AND deleted_at IS NULL
+SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at FROM users WHERE name = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserByName(ctx context.Context, name string) (User, error) {
@@ -2967,12 +2976,13 @@ func (q *Queries) GetUserByName(ctx context.Context, name string) (User, error) 
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
 
 const getUserByOIDCIdentity = `-- name: GetUserByOIDCIdentity :one
-SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at FROM users
+SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at FROM users
 WHERE oidc_issuer = $1 AND oidc_subject = $2 AND deleted_at IS NULL
 `
 
@@ -3000,6 +3010,7 @@ func (q *Queries) GetUserByOIDCIdentity(ctx context.Context, arg GetUserByOIDCId
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
@@ -5008,7 +5019,7 @@ func (q *Queries) ListUnavailableVersionsReferencing(ctx context.Context, arg Li
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at FROM users
+SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at FROM users
 WHERE deleted_at IS NULL
   AND ($1::uuid IS NULL OR id > $1)
 ORDER BY id
@@ -5045,6 +5056,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 			&i.DeletedAt,
 			&i.DisabledAt,
 			&i.PolarisEventAt,
+			&i.PolarisDisabledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -5138,7 +5150,7 @@ func (q *Queries) LockResource(ctx context.Context, id uuid.UUID) (Resource, err
 }
 
 const lockUser = `-- name: LockUser :one
-SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `
 
 // LockUser serializes quota checks of one User: concurrent creates and starts
@@ -5162,6 +5174,7 @@ func (q *Queries) LockUser(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
@@ -5842,6 +5855,20 @@ func (q *Queries) PurgeWorkspaceIdempotencyKeys(ctx context.Context) error {
 	return err
 }
 
+const recordPolarisDelivery = `-- name: RecordPolarisDelivery :execrows
+INSERT INTO polaris_webhook_deliveries (id) VALUES ($1) ON CONFLICT DO NOTHING
+`
+
+// RecordPolarisDelivery claims a webhook-id; no row means a redelivery.
+// shortcut: rows are never pruned (one per applied event); prune by received_at if it grows.
+func (q *Queries) RecordPolarisDelivery(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, recordPolarisDelivery, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const redeemEnrollmentPacket = `-- name: RedeemEnrollmentPacket :one
 UPDATE enrollment_packets
 SET used_at = now()
@@ -6199,7 +6226,7 @@ const setUserQuota = `-- name: SetUserQuota :one
 UPDATE users
 SET gpu_quota = $2, sandbox_quota = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at
+RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
 `
 
 type SetUserQuotaParams struct {
@@ -6227,6 +6254,7 @@ func (q *Queries) SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (Use
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
@@ -6304,7 +6332,7 @@ const softDeleteUser = `-- name: SoftDeleteUser :one
 UPDATE users
 SET deleted_at = now(), updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at
+RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
 `
 
 func (q *Queries) SoftDeleteUser(ctx context.Context, id uuid.UUID) (User, error) {
@@ -6326,6 +6354,7 @@ func (q *Queries) SoftDeleteUser(ctx context.Context, id uuid.UUID) (User, error
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
@@ -6432,7 +6461,7 @@ const syncOIDCUser = `-- name: SyncOIDCUser :one
 UPDATE users
 SET name = $2, email = $3, is_admin = $4, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at
+RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
 `
 
 type SyncOIDCUserParams struct {
@@ -6467,6 +6496,7 @@ func (q *Queries) SyncOIDCUser(ctx context.Context, arg SyncOIDCUserParams) (Use
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }
@@ -6580,7 +6610,7 @@ SET name = $2,
     sandbox_quota = $6,
     updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at
+RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
 `
 
 type UpdateUserParams struct {
@@ -6618,6 +6648,7 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.DeletedAt,
 		&i.DisabledAt,
 		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
 	)
 	return i, err
 }

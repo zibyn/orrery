@@ -160,6 +160,11 @@ type Node struct {
 	SandboxSubnet  *string
 }
 
+type PolarisWebhookDelivery struct {
+	ID         string
+	ReceivedAt pgtype.Timestamptz
+}
+
 type Resource struct {
 	ID               uuid.UUID
 	OwnerID          uuid.UUID
@@ -280,21 +285,22 @@ type Upload struct {
 }
 
 type User struct {
-	ID             uuid.UUID
-	Name           string
-	Email          *string
-	IsAdmin        bool
-	OidcIssuer     *string
-	OidcSubject    *string
-	GpuQuota       int32
-	SandboxQuota   int32
-	IdempotencyKey *string
-	CreatedBy      *uuid.UUID
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	DeletedAt      pgtype.Timestamptz
-	DisabledAt     pgtype.Timestamptz
-	PolarisEventAt pgtype.Timestamptz
+	ID                uuid.UUID
+	Name              string
+	Email             *string
+	IsAdmin           bool
+	OidcIssuer        *string
+	OidcSubject       *string
+	GpuQuota          int32
+	SandboxQuota      int32
+	IdempotencyKey    *string
+	CreatedBy         *uuid.UUID
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+	DeletedAt         pgtype.Timestamptz
+	DisabledAt        pgtype.Timestamptz
+	PolarisEventAt    pgtype.Timestamptz
+	PolarisDisabledAt pgtype.Timestamptz
 }
 
 type Workspace struct {
