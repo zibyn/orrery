@@ -76,7 +76,7 @@
 | 名称 | 默认值 | 谁能改 | 说明 |
 |---|---|---|---|
 | Session 闲置期限 | 24 小时 | 常量 | 每次使用顺延；与 Coder 浏览器 session 一致 |
-| 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}` | 部署 | Polaris 首次登录建号和 `user-token` 建 Machine User 时都用它 |
+| 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}`；`install.sh` 写入 `{gpus: 1, sandboxes: 5}` | 部署 | Polaris 首次登录建号和 `user-token` 建 Machine User 时都用它 |
 
 ## 部署配置
 

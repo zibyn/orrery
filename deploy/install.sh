@@ -436,6 +436,12 @@ registry:
 encryption_keys:
   - {id: k1, key: $(openssl rand -base64 32)}
 
+# User Quota for a new User (first Polaris login or user-token); existing
+# Users keep theirs, change them with orrery user quota. 0 allows none.
+quotas:
+  default_gpu: 1
+  default_sandbox: 5
+
 # Git OAuth applications (defaults.md):
 # git_providers:
 #   - {id: gitea, type: gitea, client_id: ..., client_secret: ...,
