@@ -46,6 +46,10 @@ func TestCapacityPools(t *testing.T) {
 		if !fit.admitsGPU(4.5, 18*gib, 3) {
 			t.Fatal("admitsGPU refused the GPU pool's remainder")
 		}
+		// One unit past the share of the 3 free cards does not fit.
+		if fit.admitsGPU(4.6, 18*gib, 3) || fit.admitsGPU(4.5, 18*gib+1, 3) {
+			t.Fatal("admitsGPU admitted more than the GPU pool's remainder")
+		}
 	})
 
 	t.Run("GPU-less Node has only the general pool", func(t *testing.T) {
@@ -68,6 +72,24 @@ func TestCapacityPools(t *testing.T) {
 		fit, _ := fitFor(node, used)
 		if !fit.admitsNonGPU(1, 10*gib) || fit.admitsNonGPU(1.1, 1) {
 			t.Fatal("admitsNonGPU disagrees with the general pool's remainder")
+		}
+	})
+
+	t.Run("full pool shows nothing left and admits nothing more", func(t *testing.T) {
+		node := store.Node{
+			Hardware: mustHardware(t, nodeHardware{CPUCores: 4, MemoryBytes: 8 * gib, DiskFree: 50, DiskTotal: 100}),
+		}
+		used := store.NodePlacementRow{UsedCpu: 4, UsedMemory: 8 * gib, UsedCpuNoGpu: 4, UsedMemoryNoGpu: 8 * gib}
+		c := capacityFor(node, used)
+		if left := c.CPU.GeneralPool.Total - c.CPU.GeneralPool.Allocated; left != 0 {
+			t.Fatalf("cpu left = %v, want 0", left)
+		}
+		if left := c.Memory.GeneralPool.Total - c.Memory.GeneralPool.Allocated; left != 0 {
+			t.Fatalf("memory left = %v, want 0", left)
+		}
+		fit, _ := fitFor(node, used)
+		if fit.admitsNonGPU(1, 0) || fit.admitsNonGPU(0, 1) {
+			t.Fatal("admitsNonGPU admitted a unit into a full pool")
 		}
 	})
 
