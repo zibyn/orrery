@@ -1,4 +1,4 @@
-import type { CapacityNode, CapacityPools, Node } from '@/api'
+import type { CapacityNode, CapacityPools } from '@/api'
 import { formatBytes } from '@/lib/files'
 import { diskBelowWatermark } from '@/lib/nodes'
 import { m } from '@/paraglide/messages'
@@ -51,12 +51,6 @@ export function NodeCapacity({
       )}
     </div>
   )
-}
-
-export const NODE_STATUS_REASONS: Record<NonNullable<Node['status_reason']>, () => string> = {
-  heartbeat_stale: m.nodes_reason_heartbeat_stale,
-  runtime_unhealthy: m.nodes_reason_runtime_unhealthy,
-  capability_missing: m.nodes_reason_capability_missing,
 }
 
 function formatCores(cores: number): string {

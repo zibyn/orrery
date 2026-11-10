@@ -53,6 +53,13 @@ const CAUSE_LABELS: Record<string, () => string> = {
   publish_failed: m.cause_publish_failed,
 }
 
+// Why an `unavailable` Node takes no new allocations (Node.status_reason).
+export const NODE_STATUS_REASONS: Record<string, () => string> = {
+  heartbeat_stale: m.nodes_reason_heartbeat_stale,
+  runtime_unhealthy: m.nodes_reason_runtime_unhealthy,
+  capability_missing: m.nodes_reason_capability_missing,
+}
+
 const PROBLEM_TITLES: Record<string, () => string> = {
   invalid_request: m.problem_invalid_request,
   unauthenticated: m.problem_unauthenticated,

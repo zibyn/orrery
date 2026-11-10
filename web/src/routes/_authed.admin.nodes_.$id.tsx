@@ -4,7 +4,7 @@ import { Pause, Play, Server, Trash } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
 import { api, ApiError, type CapacityNode, type ListResponse, type Node } from '@/api'
-import { NODE_STATUS_REASONS, NodeCapacity } from '@/components/node-capacity'
+import { NodeCapacity } from '@/components/node-capacity'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -40,8 +40,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useLocale } from '@/lib/i18n'
+import { NODE_STATUS_REASONS } from '@/lib/labels'
 import { nodeCapabilities, nodeGPUs } from '@/lib/node-detail'
-import { mergeNodeCapacity, nodeListPollInterval } from '@/lib/nodes'
+import { nodeListPollInterval, totalsFromInventory } from '@/lib/nodes'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
@@ -76,12 +77,18 @@ function NodeDetailPage() {
     queryFn: () => api<Node>('GET', `/nodes/${id}`),
     // A missing or deleted Node stays missing.
     retry: (count, error) => !(error instanceof ApiError && error.status === 404) && count < 3,
-    refetchInterval: (query) => nodeListPollInterval(query.state.data && [query.state.data]),
+    refetchInterval: (query) =>
+      query.state.error instanceof ApiError && query.state.error.status === 404
+        ? false
+        : nodeListPollInterval(query.state.data && [query.state.data]),
   })
+  const notFound = node.error instanceof ApiError && node.error.status === 404
+  // react-query keeps the last data after a failed refetch; a deleted Node is gone.
+  const current = notFound ? undefined : node.data
   const capacity = useQuery({
     queryKey: ['capacity'],
     queryFn: () => api<ListResponse<CapacityNode>>('GET', '/capacity'),
-    refetchInterval: nodeListPollInterval(node.data && [node.data]),
+    refetchInterval: nodeListPollInterval(current && [current]),
   })
 
   const invalidate = () =>
@@ -102,8 +109,6 @@ function NodeDetailPage() {
     },
   })
 
-  const current = node.data
-  const notFound = node.error instanceof ApiError && node.error.status === 404
   const usage = capacity.data?.items.find((entry) => entry.node_id === id)
   const capabilities = nodeCapabilities(current?.capabilities)
   const gpus = current ? nodeGPUs(current.gpus, current.hardware) : []
@@ -291,7 +296,7 @@ function NodeDetailPage() {
             <CardContent className="flex flex-col gap-1.5">
               {/* Same block as the Nodes list row; GPU totals fall back to the inventory. */}
               <NodeCapacity
-                gpus={usage?.gpus ?? mergeNodeCapacity([current], [])[0].gpus}
+                gpus={usage?.gpus ?? totalsFromInventory(current)}
                 cpu={usage?.cpu ?? null}
                 memory={usage?.memory ?? null}
                 disk={usage?.disk ?? null}

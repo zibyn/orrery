@@ -234,7 +234,7 @@
   "nodes_cpu": "CPU",
   "nodes_memory": "Memory",
   "nodes_disk": "Disk",
-  "nodes_pool_gpu": "GPU sandbox share",
+  "nodes_pool_gpu": "GPU sandboxes",
   "nodes_pool_general": "Non-GPU sandboxes",
   "nodes_allocated": "{allocated} / {total} allocated",
   "nodes_disk_used": "{used} / {total} used",

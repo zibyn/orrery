@@ -1,4 +1,5 @@
 import type { Node } from '@/api'
+import { gpuHealth } from '@/lib/nodes'
 
 export type NodeCapability = { name: string; value: string }
 
@@ -18,8 +19,6 @@ export function nodeGPUs(
   gpus: Node['gpus'],
   hardware: unknown,
 ): { uuid: string; model: string; health: string | null }[] {
-  const reported = (hardware as { gpu_health?: { uuid: string; state: string }[] | null } | null)
-    ?.gpu_health
-  const health = new Map((reported ?? []).map((gpu) => [gpu.uuid, gpu.state]))
+  const health = new Map(gpuHealth(hardware).map((gpu) => [gpu.uuid, gpu.state]))
   return gpus.map((gpu) => ({ ...gpu, health: health.get(gpu.uuid) ?? null }))
 }

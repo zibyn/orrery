@@ -67,16 +67,23 @@ export function nodeListPollInterval(
 
 // Fallback for a Node with no capacity row (for example a race between the two
 // requests): the Node reports which GPUs it has, but not their usage.
-function totalsFromInventory(node: Node): CapacityGPU[] {
+export function totalsFromInventory(node: Pick<Node, 'gpus'>): CapacityGPU[] {
   const totals = new Map<string, number>()
   for (const gpu of node.gpus) totals.set(gpu.model, (totals.get(gpu.model) ?? 0) + 1)
   return Array.from(totals, ([model, total]) => ({ model, total, allocated: 0 }))
 }
 
-// The last Heartbeat's per-card health, stored as nodes.hardware.gpu_health.
+export type GPUHealth = { uuid: string; state: string }
+
+// The last Heartbeat's per-card health, stored as nodes.hardware.gpu_health;
+// empty before the first Heartbeat reports it.
+export function gpuHealth(hardware: unknown): GPUHealth[] {
+  const health = (hardware as { gpu_health?: unknown } | null)?.gpu_health
+  return Array.isArray(health) ? (health as GPUHealth[]) : []
+}
+
 function unhealthyGPUs(hardware: unknown): number {
-  const health = (hardware as { gpu_health?: { state?: string }[] } | null)?.gpu_health
-  return Array.isArray(health) ? health.filter((gpu) => gpu.state !== 'healthy').length : 0
+  return gpuHealth(hardware).filter((gpu) => gpu.state !== 'healthy').length
 }
 
 // "3 minutes ago" in the console's language; refreshed by the 5 s list poll.

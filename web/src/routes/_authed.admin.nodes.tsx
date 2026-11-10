@@ -4,7 +4,7 @@ import { Pause, Play, Server, Trash } from 'lucide-react'
 import { useState } from 'react'
 
 import { api, type CapacityNode, type ListResponse, type Node } from '@/api'
-import { NODE_STATUS_REASONS, NodeCapacity } from '@/components/node-capacity'
+import { NodeCapacity } from '@/components/node-capacity'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -45,6 +45,7 @@ import {
 import { Spinner } from '@/components/ui/spinner'
 import { formatSince, mergeNodeCapacity, nodeListPollInterval } from '@/lib/nodes'
 import { useLocale } from '@/lib/i18n'
+import { NODE_STATUS_REASONS } from '@/lib/labels'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 import { getLocale } from '@/paraglide/runtime'
@@ -67,6 +68,7 @@ function NodesPage() {
   const capacity = useQuery({
     queryKey: ['capacity'],
     queryFn: () => api<ListResponse<CapacityNode>>('GET', '/capacity'),
+    refetchInterval: nodeListPollInterval(nodes.data?.items),
   })
 
   const invalidate = () => {
@@ -146,7 +148,7 @@ function NodesPage() {
                   <StatusBadge state={row.status} />
                   {row.status === 'unavailable' && row.statusReason && (
                     <span className="text-xs font-normal text-muted-foreground">
-                      {NODE_STATUS_REASONS[row.statusReason]()}
+                      {NODE_STATUS_REASONS[row.statusReason]?.() ?? row.statusReason}
                     </span>
                   )}
                 </ItemTitle>
