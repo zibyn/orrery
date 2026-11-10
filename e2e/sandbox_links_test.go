@@ -32,7 +32,7 @@ func TestSandboxLinks(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
 	suffix := time.Now().UnixNano()
-	node := startAgentNode(t, admin, fmt.Sprintf("e2e-links-%d", suffix))
+	node, _ := startAgentNode(t, admin, fmt.Sprintf("e2e-links-%d", suffix))
 	if got := capabilityValues(node)["sandbox_links"]; got != "enforced" {
 		t.Fatalf("sandbox_links = %q, want enforced (capabilities %v)", got, node.Capabilities)
 	}

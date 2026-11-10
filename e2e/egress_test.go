@@ -27,7 +27,7 @@ func TestEgressRules(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
 	suffix := time.Now().UnixNano()
-	node := startAgentNode(t, admin, fmt.Sprintf("e2e-egress-%d", suffix))
+	node, agent := startAgentNode(t, admin, fmt.Sprintf("e2e-egress-%d", suffix))
 	if got := capabilityValues(node)["egress_policy"]; got != "enforced" {
 		t.Fatalf("egress_policy = %q, want enforced (capabilities %v)", got, node.Capabilities)
 	}
@@ -44,7 +44,7 @@ func TestEgressRules(t *testing.T) {
 	// No Rules: the e2e deployment is fully open.
 	assertReach(t, admin, b, sandboxAddress(t, admin, a), 28001, true)
 
-	setEgressRules(t, nil, recommendedDeny)
+	setEgressRules(t, agent, nil, recommendedDeny)
 	// A running Sandbox keeps the Policy it was created with.
 	assertReach(t, admin, b, sandboxAddress(t, admin, a), 28001, true)
 	restartSandbox(t, admin, a)
@@ -60,7 +60,7 @@ func TestEgressRules(t *testing.T) {
 	assertReach(t, admin, a, "127.0.0.1", 28001, true)
 
 	// allow wins over deny, for just the port it names.
-	setEgressRules(t, []string{"10.213.0.0/16:28001"}, recommendedDeny)
+	setEgressRules(t, agent, []string{"10.213.0.0/16:28001"}, recommendedDeny)
 	restartSandbox(t, admin, b)
 	assertReach(t, admin, b, addrA, 28001, true)
 	assertReach(t, admin, b, addrA, 28002, false)
@@ -68,8 +68,9 @@ func TestEgressRules(t *testing.T) {
 
 // setEgressRules rewrites the e2e config.yaml's egress section and restarts
 // the Control Plane: Rules change only with a restart (node-protocol.md
-// HelloAck). Cleanup restores the original file.
-func setEgressRules(t *testing.T, allow, deny []string) {
+// HelloAck). It returns once agent has reported Runtime Capabilities on its new
+// stream, so admission places on its Node again. Cleanup restores the file.
+func setEgressRules(t *testing.T, agent *agentProcess, allow, deny []string) {
 	t.Helper()
 	path := filepath.Join(os.Getenv("ORRERY_CONFIG_DIR"), "config.yaml")
 	original, err := os.ReadFile(path)
@@ -96,7 +97,9 @@ func setEgressRules(t *testing.T, allow, deny []string) {
 	if err := os.WriteFile(path, []byte(base+section), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	before := agent.capabilityReports()
 	restartControlPlane(t)
+	agent.waitForCapabilityReport(t, before)
 }
 
 func restartControlPlane(t *testing.T) {

@@ -23,12 +23,12 @@ import (
 
 // startAgentNode enrolls and starts one Agent, waits for its Node to become
 // ready and returns the Node. Cleanup kills the process with the test.
-func startAgentNode(t *testing.T, admin, name string, extra ...string) nodeView {
+func startAgentNode(t *testing.T, admin, name string, extra ...string) (nodeView, *agentProcess) {
 	t.Helper()
 	state, dataRoot := enrollAgent(t, admin, name)
-	startAgentWith(t, state, dataRoot, extra...)
+	agent := startAgentWith(t, state, dataRoot, extra...)
 	waitForNodeReady(t, admin, name)
-	return findNode(t, admin, name)
+	return findNode(t, admin, name), agent
 }
 
 func getNode(t *testing.T, admin, id string) nodeView {
@@ -133,7 +133,7 @@ func TestUnhealthyRuntime(t *testing.T) {
 	healthyName := fmt.Sprintf("e2e-healthy-node-%d", suffix)
 	unhealthyName := fmt.Sprintf("e2e-unhealthy-node-%d", suffix)
 
-	healthy := startAgentNode(t, admin, healthyName)
+	healthy, _ := startAgentNode(t, admin, healthyName)
 
 	state, dataRoot := enrollAgent(t, admin, unhealthyName)
 	startAgentWith(t, state, dataRoot, "--containerd", filepath.Join(t.TempDir(), "unreachable.sock"))

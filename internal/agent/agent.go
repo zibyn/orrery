@@ -509,6 +509,8 @@ func runControlStream(ctx context.Context, conn *grpc.ClientConn, rt *Runtime, i
 	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
 		Capabilities: capabilitiesMessage(report, gpus),
 	}})
+	// e2e waits on this line after a Control Plane restart (#239).
+	slog.Info("capabilities reported")
 	host := hostHardware()
 	heartbeat := func() *nodev1.AgentMessage {
 		return heartbeatMessage(health, host, opts, gpuHealth(streamCtx, gpus))

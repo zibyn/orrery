@@ -26,7 +26,7 @@ func TestEgressMode(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
 	suffix := time.Now().UnixNano()
-	node := startAgentNode(t, admin, fmt.Sprintf("e2e-egress-mode-%d", suffix))
+	node, agent := startAgentNode(t, admin, fmt.Sprintf("e2e-egress-mode-%d", suffix))
 	if got := capabilityValues(node)["egress_policy"]; got != "enforced" {
 		t.Fatalf("egress_policy = %q, want enforced (capabilities %v)", got, node.Capabilities)
 	}
@@ -63,7 +63,7 @@ func TestEgressMode(t *testing.T) {
 	assertReach(t, admin, listed, addr, 28002, false)
 
 	// Rules allow applies to none too (runtime.md §13).
-	setEgressRules(t, []string{addr + ":28002"}, nil)
+	setEgressRules(t, agent, []string{addr + ":28002"}, nil)
 	restartSandbox(t, admin, none)
 	assertEgress(t, admin, none, egressView{Mode: "none"})
 	assertReach(t, admin, none, addr, 28002, true)

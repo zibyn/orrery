@@ -109,8 +109,7 @@ func TestGvisorParity(t *testing.T) {
 		if composeArgs() == nil || os.Getenv("ORRERY_CONFIG_DIR") == "" {
 			t.Skip("needs the Compose stack and its config.yaml (scripts/e2e.sh)")
 		}
-		setEgressRules(t, []string{"10.213.0.0/16:28001"}, recommendedDeny)
-		waitForNodeReady(t, admin, nodeName)
+		setEgressRules(t, agent, []string{"10.213.0.0/16:28001"}, recommendedDeny)
 		a := createReadySandbox(t, admin, fmt.Sprintf("runsc-egress-a-%d", suffix), 64<<20)
 		b := createReadySandbox(t, admin, fmt.Sprintf("runsc-egress-b-%d", suffix), 64<<20)
 		t.Cleanup(func() {

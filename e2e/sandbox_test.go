@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -266,7 +267,44 @@ func enrollAgent(t *testing.T, admin, name string) (state, dataRoot string) {
 // identity and data root.
 type agentProcess struct {
 	cmd *exec.Cmd
-	log *bytes.Buffer
+	log *lockedBuffer
+}
+
+// lockedBuffer is the Agent log, read while the exec copy goroutine writes it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// capabilityReports counts the Control streams on which this Agent sent its
+// Runtime Capabilities; admission places on the Node only after that (ADR-0014).
+func (p *agentProcess) capabilityReports() int {
+	return strings.Count(p.log.String(), "capabilities reported")
+}
+
+// waitForCapabilityReport waits until the Agent has reported Runtime Capabilities on a
+// stream after the before-th report, e.g. once the Control Plane restarted.
+func (p *agentProcess) waitForCapabilityReport(t *testing.T, before int) {
+	t.Helper()
+	deadline := time.Now().Add(120 * time.Second)
+	for p.capabilityReports() <= before {
+		if time.Now().After(deadline) {
+			t.Fatalf("the Agent never reported Runtime Capabilities on a new stream:\n%s", p.log.String())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func startAgent(t *testing.T, state, dataRoot string) *agentProcess {
@@ -281,7 +319,7 @@ func startAgentWith(t *testing.T, state, dataRoot string, extra ...string) *agen
 	args := append([]string{"--ca", nodeCA(), "--state", state, "--data-root", dataRoot}, extra...)
 	p := &agentProcess{
 		cmd: runAgentCommand(t, args...),
-		log: &bytes.Buffer{},
+		log: &lockedBuffer{},
 	}
 	p.cmd.Stdout, p.cmd.Stderr = p.log, p.log
 	if err := p.cmd.Start(); err != nil {
