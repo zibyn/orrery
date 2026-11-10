@@ -262,6 +262,10 @@ _Avoid_: Reservation, quota
 A held amount of compute capacity associated with an accepted request before the Sandbox is ready.
 _Avoid_: Allocation, lease
 
+**Node Utilization**:
+How busy a Node's hardware actually is, as observed on the host. The Scheduler places CPU, memory and GPUs by Resource Allocations, never by utilization, so a Node can be fully allocated yet idle, or lightly allocated yet busy. Disk is the one exception: observed free disk below the Node's watermark stops new allocations there.
+_Avoid_: load, usage (unqualified), allocated
+
 **GPU UUID**:
 The stable platform-visible identity of one physical GPU on a Node.
 _Avoid_: GPU index, device ordinal
@@ -293,5 +297,7 @@ The console's Chinese locale (`web/messages/zh.json`) uses these names for the t
 | Enrollment Packet | 注册包 |
 | Git Account Link | Git 账号 |
 | User Quota | 配额 |
+| Resource Allocation | 已分配 (as a Node's amount; never 使用) |
+| Node Utilization | 使用率 |
 | Audit Record | 审计记录 |
 | image ref / tag / digest / registry | 镜像地址 / 标签 / 摘要 / 镜像仓库 |
