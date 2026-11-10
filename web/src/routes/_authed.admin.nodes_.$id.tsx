@@ -3,14 +3,8 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Pause, Play, Server, Trash } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
-import {
-  api,
-  ApiError,
-  type CapacityNode,
-  type CapacityPools,
-  type ListResponse,
-  type Node,
-} from '@/api'
+import { api, ApiError, type CapacityNode, type ListResponse, type Node } from '@/api'
+import { NODE_STATUS_REASONS, NodeCapacity } from '@/components/node-capacity'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -45,22 +39,15 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatBytes } from '@/lib/files'
 import { useLocale } from '@/lib/i18n'
 import { nodeCapabilities, nodeGPUs } from '@/lib/node-detail'
-import { nodeListPollInterval } from '@/lib/nodes'
+import { mergeNodeCapacity, nodeListPollInterval } from '@/lib/nodes'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/admin/nodes_/$id')({
   component: NodeDetailPage,
 })
-
-const REASON_LABELS: Record<NonNullable<Node['status_reason']>, () => string> = {
-  heartbeat_stale: m.node_reason_heartbeat_stale,
-  runtime_unhealthy: m.node_reason_runtime_unhealthy,
-  capability_missing: m.node_reason_capability_missing,
-}
 
 const CAPABILITY_LEVELS: Record<string, { label: () => string; variant: 'success' | 'warning' | 'secondary' }> = {
   enforced: { label: m.capability_enforced, variant: 'success' },
@@ -73,23 +60,6 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
     <div className="flex min-w-0 flex-col gap-0.5">
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-sm">{children}</dd>
-    </div>
-  )
-}
-
-function Pools({ pools, format }: { pools: CapacityPools | null; format: (allocated: number, total: number) => string }) {
-  if (!pools) return <>{m.node_not_reported()}</>
-  return (
-    <div className="flex flex-col gap-0.5">
-      {pools.gpu_pool && (
-        <span>
-          {m.node_gpu_pool()} <span className="font-mono">{format(pools.gpu_pool.allocated, pools.gpu_pool.total)}</span>
-        </span>
-      )}
-      <span>
-        {m.node_general_pool()}{' '}
-        <span className="font-mono">{format(pools.general_pool.allocated, pools.general_pool.total)}</span>
-      </span>
     </div>
   )
 }
@@ -262,7 +232,7 @@ function NodeDetailPage() {
                     <StatusBadge state={current.status} data-testid="node-status" />
                     {current.status_reason && (
                       <span className="text-muted-foreground" data-testid="node-status-reason">
-                        {REASON_LABELS[current.status_reason]?.() ?? current.status_reason}
+                        {NODE_STATUS_REASONS[current.status_reason]?.() ?? current.status_reason}
                       </span>
                     )}
                   </span>
@@ -318,46 +288,17 @@ function NodeDetailPage() {
               <CardTitle>{m.node_capacity()}</CardTitle>
               <CardDescription>{m.node_capacity_description()}</CardDescription>
             </CardHeader>
-            <CardContent>
-              <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-4">
-                <Detail label={m.node_cpu()}>
-                  <Pools
-                    pools={usage?.cpu ?? null}
-                    format={(allocated, total) => m.node_cores({ allocated, total })}
-                  />
-                </Detail>
-                <Detail label={m.node_memory()}>
-                  <Pools
-                    pools={usage?.memory ?? null}
-                    format={(allocated, total) => `${formatBytes(allocated)} / ${formatBytes(total)}`}
-                  />
-                </Detail>
-                <Detail label={m.node_disk()}>
-                  {usage?.disk
-                    ? m.node_disk_value({
-                        free: formatBytes(usage.disk.free),
-                        total: formatBytes(usage.disk.total),
-                        watermark: Math.round(usage.disk.watermark * 100),
-                      })
-                    : m.node_not_reported()}
-                </Detail>
-                <Detail label="GPU">
-                  {!usage || usage.gpus.length === 0 ? (
-                    m.nodes_no_gpu()
-                  ) : (
-                    <div className="flex flex-col gap-0.5">
-                      {usage.gpus.map((gpu) => (
-                        <span key={gpu.model}>
-                          {gpu.model}{' '}
-                          <span className="font-mono">
-                            {gpu.allocated}/{gpu.total}
-                          </span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </Detail>
-              </dl>
+            <CardContent className="flex flex-col gap-1.5">
+              {/* Same block as the Nodes list row; GPU totals fall back to the inventory. */}
+              <NodeCapacity
+                gpus={usage?.gpus ?? mergeNodeCapacity([current], [])[0].gpus}
+                cpu={usage?.cpu ?? null}
+                memory={usage?.memory ?? null}
+                disk={usage?.disk ?? null}
+              />
+              {!usage?.cpu && (
+                <p className="text-xs text-muted-foreground">{m.node_not_reported()}</p>
+              )}
             </CardContent>
           </Card>
 
