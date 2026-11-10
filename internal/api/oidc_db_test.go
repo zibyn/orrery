@@ -149,6 +149,13 @@ func TestPolarisLoginAdminFromEntitlements(t *testing.T) {
 			t.Fatalf("GET /users after admin removed = %d, want 403", code)
 		}
 	}
+
+	// A later login that grants admin again reaches the Session started
+	// without it: the console shows admin pages from the User's status.
+	sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub, Entitlements: []string{"orrery:admin"}}))
+	if code := asSession(t, h, plain, "/api/v1/users", nil); code != http.StatusOK {
+		t.Fatalf("earlier Session GET /users after admin regranted = %d, want 200", code)
+	}
 }
 
 func TestPolarisLoginRejectsAccessTokenForAnotherAudience(t *testing.T) {

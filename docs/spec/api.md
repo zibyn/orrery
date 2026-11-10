@@ -8,7 +8,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 - **ID**：服务端生成的 UUIDv7，不带类型前缀。Sandbox 的 `name` 每个 User 内唯一，只用于过滤，不进路径。
 - **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `orr_<id>_<secret>`，Sandbox Token 形如 `ors_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。User 在 Polaris 被停用（`disabled_at` 非空）期间，它的 Session、API Token 和它拥有的 Sandbox 的 Sandbox Token 都按 `401` 拒绝（ADR-0029）。
 - **Session cookie**：`orrery_session; HttpOnly; Secure; SameSite=Lax; Path=/`，不带 `Domain`，端口转发子域名收不到。值的格式同 API Token，对应 `api_tokens` 里 `kind=session` 的一行。cookie 与 Bearer 等价；用 cookie 认证时，非安全方法要过 `http.CrossOriginProtection`，WebSocket 升级要求 `Origin` 等于 `api` 自己的源（ADR-0020）。
-- **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`。Sandbox Token 只能调用 `POST /git/credential`。
+- **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`；Session 的 admin 权限始终随 User 当前的 admin 状态，不受创建时 scope 限制。Sandbox Token 只能调用 `POST /git/credential`。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
 - **创建**返回 `201` 和初始状态的资源；**动作**（`POST /{资源}/{id}/{动词}`）返回 `202` 和当前资源；删除用 `DELETE`，返回 `202`，资源进入 `deleting`。
 - **幂等**：创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。例外是 `POST /enrollment-packets`：响应里的 secret 只存哈希，重试拿不回旧值，只能新发一个，所以不读该头。

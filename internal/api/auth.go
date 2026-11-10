@@ -22,9 +22,11 @@ type principal struct {
 }
 
 // isAdmin is the effective authority: an admin-scoped token only acts as admin
-// while its User is still an admin.
+// while its User is still an admin. A Session follows its User's admin status
+// either way, so one started before a later login granted admin gets it too
+// (ADR-0029).
 func (p *principal) isAdmin() bool {
-	return p.sandbox == nil && p.token.UserIsAdmin && p.token.Scope == "admin"
+	return p.sandbox == nil && p.token.UserIsAdmin && (p.token.Scope == "admin" || p.token.Kind == "session")
 }
 
 func (s *Server) wrapAuth(level string, next handlerFunc) http.HandlerFunc {
