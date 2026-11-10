@@ -249,6 +249,9 @@ func (r *Runtime) streamExec(ctx context.Context, sandboxID, execID uuid.UUID, d
 // deliverExec is one ExecOutput stream: it returns nil once the exit frame is
 // acknowledged and the record removed.
 func (r *Runtime) deliverExec(ctx context.Context, sandboxID, execID uuid.UUID, dir string) error {
+	// A stream that ends without a final Recv is released only by its context.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	stream, err := r.execStream(ctx)
 	if err != nil {
 		return err
