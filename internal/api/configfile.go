@@ -113,9 +113,10 @@ type gitProviderYAML struct {
 }
 
 type platformSnapshotFile struct {
-	Name    string `yaml:"name"`
-	Ref     string `yaml:"ref"`
-	Default bool   `yaml:"default"`
+	Name       string `yaml:"name"`
+	Ref        string `yaml:"ref"`
+	Default    bool   `yaml:"default"`
+	DefaultGPU bool   `yaml:"default_gpu"`
 }
 
 func defaultFileConfig() *fileConfig {
@@ -609,7 +610,7 @@ func (f *fileConfig) registryCredential(cfg *Config) error {
 
 func (f *fileConfig) platformSnapshots(cfg *Config) error {
 	seen := map[string]bool{}
-	defaults := 0
+	defaults, gpuDefaults := 0, 0
 	for n, s := range f.PlatformSnapshots {
 		if !registry.ValidPlatformName(s.Name) {
 			return fmt.Errorf("platform_snapshots[%d]: name %q must be lowercase alphanumeric with . _ - separators", n, s.Name)
@@ -625,10 +626,17 @@ func (f *fileConfig) platformSnapshots(cfg *Config) error {
 			defaults++
 			cfg.DefaultSnapshot = s.Name
 		}
+		if s.DefaultGPU {
+			gpuDefaults++
+			cfg.DefaultGPUSnapshot = s.Name
+		}
 		cfg.PlatformSnapshots = append(cfg.PlatformSnapshots, PlatformSnapshot{Name: s.Name, Ref: s.Ref})
 	}
 	if defaults > 1 {
 		return fmt.Errorf("platform_snapshots: at most one entry may set default: true")
+	}
+	if gpuDefaults > 1 {
+		return fmt.Errorf("platform_snapshots: at most one entry may set default_gpu: true")
 	}
 	return nil
 }

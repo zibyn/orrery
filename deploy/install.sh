@@ -76,6 +76,32 @@ oidc_block() {
   printf '  webhook_secret: %s\n' "$(yaml_str "$5")"
 }
 
+# sandbox_ref IMAGE VERSION prints ghcr.io/OWNER/IMAGE@sha256:… for the
+# release's tag (CI tags vX.Y.Z, as compose pulls). platform_snapshots is
+# digest-only (ADR-0012), so the tag is resolved now, never at Sandbox create.
+sandbox_ref() {
+  local repo="${REPO%%/*}/$1" tag="$2" token digest
+  local accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
+  token="$(curl -fsSL "https://ghcr.io/token?scope=repository:$repo:pull" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')" || token=""
+  digest="$(curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" \
+    "https://ghcr.io/v2/$repo/manifests/$tag" | tr -d '\r' |
+    awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')" || digest=""
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "could not resolve the digest of ghcr.io/$repo:$tag; check this host reaches ghcr.io and that $tag is published"
+  printf 'ghcr.io/%s@%s' "$repo" "$digest"
+}
+
+# platform_snapshots_block prints the config.yaml platform_snapshots section:
+# Orrery's sandbox images for VERSION, the CPU and the GPU default (#235).
+platform_snapshots_block() {
+  local base cuda
+  base="$(sandbox_ref orrery-sandbox "$1")" || exit 1
+  cuda="$(sandbox_ref orrery-sandbox-cuda "$1")" || exit 1
+  printf 'platform_snapshots:\n'
+  printf '  - {name: ubuntu-24.04, ref: %s, default: true}\n' "$base"
+  printf '  - {name: cuda-12.8-ubuntu-24.04, ref: %s, default_gpu: true}\n' "$cuda"
+}
+
 check_version() {
   [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] ||
     die "--version must be a release tag such as v1.2.3"
@@ -201,8 +227,12 @@ server() {
     [ -n "$oidc_client_secret" ] || die "--oidc-client-secret (or ORRERY_OIDC_CLIENT_SECRET) is required on first install"
     [ -n "$oidc_audience" ] || die "--oidc-audience must not be empty"
     [ -n "$oidc_webhook_secret" ] || die "--oidc-webhook-secret (or ORRERY_OIDC_WEBHOOK_SECRET) is required on first install"
+    # Resolved before anything is written: a failed lookup leaves no install.
+    local snapshots
+    snapshots="$(platform_snapshots_block "$version")"
     first_install "$version" "$host" "$port" "$tls" "$cert" "$key" "$ca" "$access_url" "$registry_addr" "$s3_url" "$bind" \
-      "$(oidc_block "$oidc_issuer" "$oidc_client_id" "$oidc_client_secret" "$oidc_audience" "$oidc_webhook_secret")"
+      "$(oidc_block "$oidc_issuer" "$oidc_client_id" "$oidc_client_secret" "$oidc_audience" "$oidc_webhook_secret")" \
+      "$snapshots"
   else
     [ -f nginx/orrery.conf ] ||
       die "nginx/orrery.conf is missing; recreate it from deploy/release/nginx.conf at this release tag"
@@ -264,7 +294,7 @@ server() {
 # and .env. None of it is ever regenerated.
 first_install() {
   local version="$1" host="$2" port="$3" tls="$4" cert="$5" key="$6" ca="$7" \
-    access_url="$8" registry_addr="$9" s3_url="${10}" bind="${11}" oidc="${12}"
+    access_url="$8" registry_addr="$9" s3_url="${10}" bind="${11}" oidc="${12}" snapshots="${13}"
   local pair s3_host s3_port listen public_bind resolve
 
   # The public URL is the source of truth; --public-host/--public-port fill it.
@@ -450,9 +480,10 @@ quotas:
 # Polaris, the only login (ADR-0029, docs/deploy.md).
 $oidc
 
-# A Sandbox needs a Platform Snapshot, referenced by digest:
-# platform_snapshots:
-#   - {name: default, ref: docker.io/library/ubuntu:24.04@sha256:..., default: true}
+# Platform Snapshots, by digest (defaults.md): Orrery's sandbox images for
+# this release. A create without snapshot pins default, or default_gpu when it
+# asks for GPUs.
+$snapshots
 EOF
   chown 10001:10001 tls/server.key config config/config.yaml
   chmod 700 config

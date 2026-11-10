@@ -78,6 +78,8 @@ curl -fsSL https://raw.githubusercontent.com/zibyn/orrery/main/deploy/install.sh
 
 首次安装在 `/etc/orrery/` 生成 `config/`、`tls/`、`ca/`、`registry/`、`nginx/orrery.conf` 和 `.env`，此后不再重新生成。
 
+`config/config.yaml` 的 `platform_snapshots` 写入本版本的两个沙箱镜像，按 digest 固定：`ubuntu-24.04`（默认）和 `cuda-12.8-ubuntu-24.04`（GPU Sandbox 的默认，`defaults.md`）。digest 在安装时向 ghcr.io 查询，主机连不上 ghcr.io 时安装直接失败，不会写出没有 Snapshot 的配置。升级不改这两项；要换成新版本的镜像，手动更新 `ref`。
+
 - **`--tls self-signed`（默认）**：生成 CA 和一张证书，SAN 同时覆盖公开入口和对象存储域名。Node 安装时带 `--ca`，并用 `--trust-registry` 把 CA 放进 Node 的系统信任库；Control Plane 和 registry 也信任它。证书有效期十年，没有自动轮换。
 - **`--tls cert`**：用 `--tls-cert FILE --tls-key FILE` 提供证书；私有 CA 再加 `--ca FILE`。同一张证书必须覆盖两个域名，脚本会检查并警告。
 
@@ -223,7 +225,8 @@ services:
 
 推送 tag `vX.Y.Z` 后 CI 在门禁通过时：
 
-- 推送镜像 `ghcr.io/zibyn/orrery-server:X.Y.Z` 和 `:latest`（main 上的每次推送对应 `:main`）。
+- 推送镜像 `ghcr.io/zibyn/orrery-server:vX.Y.Z`（与 git tag 相同，release compose 按 `.env` 的 `ORRERY_VERSION` 拉取）和 `:latest`（main 上的每次推送对应 `:main`）。
+- 用同样的 tag 推送沙箱镜像 `ghcr.io/zibyn/orrery-sandbox`（amd64、arm64）和 `ghcr.io/zibyn/orrery-sandbox-cuda`（amd64），来自 `deploy/sandbox/Dockerfile`。
 - 创建 GitHub Release，资产为 `orrery-node_vX.Y.Z_linux_{amd64,arm64}.tar.gz`（`bin/` 下的 Agent、CLI 与捆绑的 containerd、runc、buildkitd、runsc，ADR-0028）、`orrery_vX.Y.Z_darwin_{amd64,arm64}.tar.gz`（CLI）和 `SHA256SUMS`。带 `-` 的 tag（如 `v1.2.0-rc.1`）标记为 prerelease，`releases/latest` 会跳过它。
 
 GHCR 包首次推送后默认是私有的，需要在 GitHub 的 package 设置里手动改为 public 一次，服务器才能免登录拉取。

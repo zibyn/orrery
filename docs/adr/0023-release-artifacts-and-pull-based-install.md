@@ -1,6 +1,6 @@
 # ADR-0023: Release artifacts and a pull-based install script
 
-- Status: accepted; amended in place by #135, #136 and #179 (CI gate runs once, on the pull request); deployment configuration layout amended by ADR-0024; automatic updates removed by ADR-0028
+- Status: accepted; amended in place by #135, #136 and #179 (CI gate runs once, on the pull request); deployment configuration layout amended by ADR-0024; automatic updates removed by ADR-0028; sandbox images and the `vX.Y.Z` image tag (was `X.Y.Z`) amended in place by #235
 - Date: 2026-10-19
 
 ## Context
@@ -9,9 +9,10 @@
 
 ## Decision
 
-**Artifacts.** A tag `vX.Y.Z` produces one GitHub Release and one image:
+**Artifacts.** A tag `vX.Y.Z` produces one GitHub Release and the images below (amended in place by #235: the sandbox images are new):
 
-- `ghcr.io/zibyn/orrery-server:X.Y.Z` (and `:latest`), public, linux amd64 and arm64, with the Web console embedded. Every push to `main` also publishes `:main`.
+- `ghcr.io/zibyn/orrery-server:vX.Y.Z` (the git tag, which `.env`'s `ORRERY_VERSION` holds and the release compose pulls; amended in place by #235, the tag was `X.Y.Z`) and `:latest`, public, linux amd64 and arm64, with the Web console embedded. Every push to `main` also publishes `:main`.
+- `ghcr.io/zibyn/orrery-sandbox` (linux amd64 and arm64) and `ghcr.io/zibyn/orrery-sandbox-cuda` (linux amd64), with the same tags, from `deploy/sandbox/Dockerfile`: the Platform Snapshots `install.sh server` pins by digest.
 - The Node package: `orrery-agent` and `orrery` in one archive per linux architecture, because the Agent finds the CLI beside its own executable (`runtime.md`).
 - The CLI alone for darwin amd64 and arm64.
 - `SHA256SUMS` over every archive.

@@ -238,3 +238,48 @@ func TestOIDCBlock(t *testing.T) {
 		}
 	}
 }
+
+// A fresh server install pins both sandbox images by the digest ghcr reports
+// for the release (#235; platform_snapshots is digest-only, ADR-0012).
+func TestPlatformSnapshotsBlock(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	got := sh(t, `
+curl() {
+  case "$*" in
+    *ghcr.io/token*) echo '{"token":"tok"}' ;;
+    *"Bearer tok"*/v2/zibyn/orrery-sandbox/manifests/v1.2.3*|*"Bearer tok"*/v2/zibyn/orrery-sandbox-cuda/manifests/v1.2.3*)
+      printf 'HTTP/2 200\r\nDocker-Content-Digest: `+digest+`\r\n\r\n' ;;
+    *) return 22 ;;
+  esac
+}
+platform_snapshots_block v1.2.3`)
+	var parsed struct {
+		PlatformSnapshots []map[string]any `yaml:"platform_snapshots"`
+	}
+	if err := yaml.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("not YAML: %v\n%s", err, got)
+	}
+	want := []map[string]any{
+		{"name": "ubuntu-24.04", "ref": "ghcr.io/zibyn/orrery-sandbox@" + digest, "default": true},
+		{"name": "cuda-12.8-ubuntu-24.04", "ref": "ghcr.io/zibyn/orrery-sandbox-cuda@" + digest, "default_gpu": true},
+	}
+	if len(parsed.PlatformSnapshots) != len(want) {
+		t.Fatalf("platform_snapshots = %v", parsed.PlatformSnapshots)
+	}
+	for i, w := range want {
+		for k, v := range w {
+			if parsed.PlatformSnapshots[i][k] != v {
+				t.Errorf("entry %d %s = %v, want %v", i, k, parsed.PlatformSnapshots[i][k], v)
+			}
+		}
+	}
+}
+
+// A failed lookup stops the install instead of writing one with no Snapshot.
+func TestPlatformSnapshotsBlockLookupFails(t *testing.T) {
+	cmd := exec.Command("bash", "-c", "source ./install.sh\ncurl() { return 22; }\nblock=\"$(platform_snapshots_block v1.2.3)\"\necho wrote")
+	out, err := cmd.CombinedOutput()
+	if err == nil || strings.Contains(string(out), "wrote") || !strings.Contains(string(out), "orrery-sandbox") {
+		t.Fatalf("a failed lookup did not stop the install: %v\n%s", err, out)
+	}
+}

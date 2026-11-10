@@ -91,7 +91,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 name?, labels?
 runtime?: container|local       # 默认 container；调用方分不出 runc Node 和 runsc Node
 workspace?: {id, mode: rw|ro}     # 不写就隐式创建临时 Workspace，rw
-snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 `platform_snapshots` 的默认项，local 没有 Snapshot
+snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 `platform_snapshots` 的默认项（`gpu.count > 0` 时用 `default_gpu` 项，没有则退回 `default`），local 没有 Snapshot
 resources?: [{resource, version?, mount?}]   # 创建时解析成具体版本，只读挂载到 /resources/<mount>；mount 是单段名字，默认取 Resource 名
 secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}

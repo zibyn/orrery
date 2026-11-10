@@ -416,7 +416,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	snapshot := ""
 	if runtime == "container" {
 		var pinCode, pinDetail string
-		snapshot, pinCode, pinDetail = resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Snapshot)
+		snapshot, pinCode, pinDetail = resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Snapshot, gpuCount)
 		if pinCode != "" {
 			writeProblem(w, pinCode, pinDetail)
 			return

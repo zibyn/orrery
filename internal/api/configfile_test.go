@@ -259,7 +259,8 @@ git_providers:
 oidc: {issuer_url: https://idp.test, client_id: oidc-id, client_secret: oidc-secret, audience: api://orrery, webhook_secret: oidc-webhook}
 registry: {addr: cp.example.com:9443, username: orrery, password: registry-secret}
 platform_snapshots:
-  - {name: default, ref: alpine@`+configTestDigest+`, default: true}
+  - {name: ubuntu-24.04, ref: alpine@`+configTestDigest+`, default: true}
+  - {name: cuda-12.8-ubuntu-24.04, ref: ghcr.io/acme/cuda@`+configTestDigest+`, default_gpu: true}
 `)
 	cfg, err := LoadConfig(discardLogger())
 	if err != nil {
@@ -284,8 +285,8 @@ platform_snapshots:
 	if cfg.RegistryCredentialDoc == nil || !cfg.RegistryCredentialDoc.Has("cp.example.com:9443") {
 		t.Fatal("registry credential does not resolve the registry address")
 	}
-	if len(cfg.PlatformSnapshots) != 1 || cfg.DefaultSnapshot != "default" {
-		t.Fatalf("platform snapshots = %+v, default %q", cfg.PlatformSnapshots, cfg.DefaultSnapshot)
+	if len(cfg.PlatformSnapshots) != 2 || cfg.DefaultSnapshot != "ubuntu-24.04" || cfg.DefaultGPUSnapshot != "cuda-12.8-ubuntu-24.04" {
+		t.Fatalf("platform snapshots = %+v, default %q, GPU default %q", cfg.PlatformSnapshots, cfg.DefaultSnapshot, cfg.DefaultGPUSnapshot)
 	}
 }
 
@@ -341,6 +342,11 @@ platform_snapshots:
 platform_snapshots:
   - {name: one, ref: alpine@` + configTestDigest + `, default: true}
   - {name: two, ref: busybox@` + configTestDigest + `, default: true}
+`,
+		"two default_gpu snapshots": `
+platform_snapshots:
+  - {name: one, ref: alpine@` + configTestDigest + `, default_gpu: true}
+  - {name: two, ref: busybox@` + configTestDigest + `, default_gpu: true}
 `,
 		"unpinned snapshot ref": `
 platform_snapshots:

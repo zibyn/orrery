@@ -229,7 +229,7 @@ func (s *Server) createBuild(w http.ResponseWriter, r *http.Request, p *principa
 	var baseDigest string
 	if hasBase {
 		var code, detail string
-		baseDigest, code, detail = resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Base)
+		baseDigest, code, detail = resolveSnapshotPin(ctx, q, s.cfg, p.user.ID, req.Base, 0) // a build has no GPUs
 		if code != "" {
 			writeProblem(w, code, detail)
 			return

@@ -159,7 +159,7 @@ E2E_OIDC_WEBHOOK_SECRET="orrery-e2e-webhook-secret"
 if ! docker image inspect alpine:3.22 >/dev/null 2>&1; then
   docker pull alpine:3.22 >/dev/null
 fi
-export ORRERY_DEFAULT_SNAPSHOT="${ORRERY_DEFAULT_SNAPSHOT:-default}"
+export ORRERY_DEFAULT_SNAPSHOT="${ORRERY_DEFAULT_SNAPSHOT:-alpine-3.22}"
 
 CONSOLE_AGENT_PID=""
 cleanup() {
@@ -272,7 +272,8 @@ export ORRERY_E2E_ALPINE_REF
 SNAPSHOTS_YAML="  - {name: ${ORRERY_DEFAULT_SNAPSHOT}, ref: ${ORRERY_E2E_ALPINE_REF}, default: true}"
 # gpu-sandbox-ready runs nvidia-smi inside the Sandbox, which the default
 # Alpine image cannot (gpu_test.go). ORRERY_E2E_CUDA_IMAGE names a local image
-# to publish as the `cuda` platform Snapshot for GPU hosts.
+# to publish as the `cuda` platform Snapshot for GPU hosts; it is the GPU
+# default, so a GPU create without snapshot pins it.
 if [ -n "${ORRERY_E2E_CUDA_IMAGE:-}" ]; then
   docker tag "${ORRERY_E2E_CUDA_IMAGE}" "${SOURCE_REGISTRY}/e2e-cuda:latest"
   docker push "${SOURCE_REGISTRY}/e2e-cuda:latest" >/dev/null
@@ -283,7 +284,7 @@ if [ -n "${ORRERY_E2E_CUDA_IMAGE:-}" ]; then
     echo "the local source registry did not return a digest for the CUDA image" >&2
     exit 1
   fi
-  SNAPSHOTS_YAML+=$'\n'"  - {name: ${ORRERY_E2E_GPU_SNAPSHOT:-cuda}, ref: ${SOURCE_HOST}:5000/e2e-cuda@${CUDA_DIGEST}}"
+  SNAPSHOTS_YAML+=$'\n'"  - {name: ${ORRERY_E2E_GPU_SNAPSHOT:-cuda}, ref: ${SOURCE_HOST}:5000/e2e-cuda@${CUDA_DIGEST}, default_gpu: true}"
 fi
 
 # The Control Plane runs from config.yaml: the e2e scenario for ADR-0024.

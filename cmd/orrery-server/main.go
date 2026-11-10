@@ -64,6 +64,7 @@ environment:
   ORRERY_PORT_TICKET_KEY         signs port tickets and Gateway cookies
   ORRERY_PLATFORM_SNAPSHOTS      name=ref@sha256:…,… imported at startup (platform images)
   ORRERY_DEFAULT_SNAPSHOT        platform Snapshot used when a create omits snapshot
+  ORRERY_DEFAULT_GPU_SNAPSHOT    same, for a create with gpu.count > 0 (default ORRERY_DEFAULT_SNAPSHOT)
   ORRERY_REGISTRY_ADDR           Node-reachable registry address (e.g. 127.0.0.1:15000)
   ORRERY_REGISTRY_PUSH_ADDR      Control Plane push address (default ORRERY_REGISTRY_ADDR)
   ORRERY_REGISTRY_CREDENTIAL     Docker config.json for Nodes and pushes; list both hosts

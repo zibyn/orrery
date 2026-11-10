@@ -1,6 +1,6 @@
 # ADR-0024: A single deployment configuration file
 
-- Status: accepted
+- Status: accepted; GPU default Platform Snapshot (`default_gpu`) amended in place by #235
 - Date: 2026-10-19
 
 ## Context
@@ -17,7 +17,7 @@ We considered making Git Providers configurable from the admin console and rejec
 
 **Secrets inline.** Database credentials, object-store keys, registry credentials, the port-ticket key, the OIDC client secret, Git provider client secrets and the encryption keyring are values inside the file. TLS certificate and key stay file path references because nginx, the registry and Nodes consume the same material. The file is `0600` and owned by the server's user, and it is the only place where the application's platform secrets live; TLS and CA material remain separate files. This amends ADR-0010's "file path reference" wording, not its boundary: secrets still never enter PostgreSQL, backups or the API.
 
-**Structured schema.** Settings are grouped by feature (`access`, `database`, `oidc`, `s3`, `registry`, `logs`, `lifecycle`, `builds`, `quotas`) with list-valued `git_providers`, `encryption_keys` and `platform_snapshots`. Redundant settings are derived: registry auth JSON from username and password, the default Platform Snapshot from a per-entry flag, the access URL from the public host at install time, and the DSN from structured database fields unless `database.url` is set.
+**Structured schema.** Settings are grouped by feature (`access`, `database`, `oidc`, `s3`, `registry`, `logs`, `lifecycle`, `builds`, `quotas`) with list-valued `git_providers`, `encryption_keys` and `platform_snapshots`. Redundant settings are derived: registry auth JSON from username and password, the default Platform Snapshot and the GPU default from per-entry flags (`default`, `default_gpu`), the access URL from the public host at install time, and the DSN from structured database fields unless `database.url` is set.
 
 **Precedence.** Scalar leaves may be overridden by `ORRERY_*` environment variables; existing names are preserved. Lists and maps are file-only. Overridden keys are logged at startup. When `ORRERY_CONFIG_FILE` is unset the server keeps reading the existing environment variables, including the file-path variables for the keyring and Git providers; that path exists for tests and CI and is not a deployment contract.
 
