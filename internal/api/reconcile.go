@@ -487,7 +487,7 @@ func (r *reconciler) placeWorkspace(ctx context.Context, ws store.Workspace, now
 		return
 	}
 	for _, node := range r.hub.currentReports(nodes) {
-		if deriveNodeStatus(node, now) != "ready" || !r.hub.connected(node.ID) {
+		if !nodeReady(node, now) || !r.hub.connected(node.ID) {
 			continue
 		}
 		if _, err := r.s.q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{

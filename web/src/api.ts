@@ -245,17 +245,34 @@ export type CapacityGPU = {
   allocated: number
 }
 
+export type CapacityPool = {
+  total: number
+  allocated: number
+}
+
+// CPU cores or memory bytes, split as admission splits them (ADR-0015).
+// gpu_pool is null on a Node without GPUs.
+export type CapacityPools = {
+  gpu_pool: CapacityPool | null
+  general_pool: CapacityPool
+}
+
 export type CapacityNode = {
   node_id: string
   name: string
   status: string
   gpus: CapacityGPU[]
+  // null until the Node reports hardware
+  cpu: CapacityPools | null
+  memory: CapacityPools | null
+  disk: { total: number; free: number; watermark: number } | null
 }
 
 export type Node = {
   id: string
   name: string
   status: 'ready' | 'paused' | 'unavailable' | 'outdated' | 'lost'
+  status_reason: 'heartbeat_stale' | 'runtime_unhealthy' | 'capability_missing' | null
   paused: boolean
   lost_at: string | null
   agent_version: string | null

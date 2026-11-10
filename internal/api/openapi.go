@@ -448,6 +448,7 @@ func schemas() map[string]any {
 				"id":             map[string]any{"type": "string", "format": "uuid"},
 				"name":           map[string]any{"type": "string"},
 				"status":         map[string]any{"type": "string", "enum": []string{"ready", "paused", "unavailable", "outdated", "lost"}},
+				"status_reason":  map[string]any{"type": []string{"string", "null"}, "enum": []any{"heartbeat_stale", "runtime_unhealthy", "capability_missing", nil}, "description": "Why the Node is unavailable; null for every other status."},
 				"paused":         map[string]any{"type": "boolean"},
 				"lost_at":        nullableTime,
 				"agent_version":  nullableString,
@@ -478,14 +479,44 @@ func schemas() map[string]any {
 				"allocated": map[string]any{"type": "integer"},
 			},
 		},
+		"CapacityPool": map[string]any{
+			"type":     "object",
+			"required": []string{"total", "allocated"},
+			"properties": map[string]any{
+				"total":     map[string]any{"type": "number"},
+				"allocated": map[string]any{"type": "number", "description": "Sum of the Allocations in this pool, not utilization."},
+			},
+		},
+		"CapacityPools": map[string]any{
+			"type":        "object",
+			"description": "CPU cores or memory bytes, split as admission splits them (ADR-0015).",
+			"required":    []string{"gpu_pool", "general_pool"},
+			"properties": map[string]any{
+				"gpu_pool":     map[string]any{"description": "What the cards reserve (GPU count x per-card share); null on a Node without GPUs.", "anyOf": []any{schemaRef("CapacityPool"), map[string]any{"type": "null"}}},
+				"general_pool": schemaRef("CapacityPool"),
+			},
+		},
+		"CapacityDisk": map[string]any{
+			"type":        "object",
+			"description": "Observed, not allocated: admission gates on free space against the watermark.",
+			"required":    []string{"total", "free", "watermark"},
+			"properties": map[string]any{
+				"total":     map[string]any{"type": "integer", "description": "Bytes."},
+				"free":      map[string]any{"type": "integer", "description": "Bytes."},
+				"watermark": map[string]any{"type": "number", "description": "Fraction of total that must stay free."},
+			},
+		},
 		"CapacityNode": map[string]any{
 			"type":     "object",
-			"required": []string{"node_id", "name", "status", "gpus"},
+			"required": []string{"node_id", "name", "status", "gpus", "cpu", "memory", "disk"},
 			"properties": map[string]any{
 				"node_id": map[string]any{"type": "string", "format": "uuid"},
 				"name":    map[string]any{"type": "string"},
 				"status":  map[string]any{"type": "string", "enum": []string{"ready", "paused", "unavailable", "outdated", "lost"}},
 				"gpus":    map[string]any{"type": "array", "items": schemaRef("CapacityGPU")},
+				"cpu":     map[string]any{"description": "Null until the Node reports hardware.", "anyOf": []any{schemaRef("CapacityPools"), map[string]any{"type": "null"}}},
+				"memory":  map[string]any{"description": "Null until the Node reports hardware.", "anyOf": []any{schemaRef("CapacityPools"), map[string]any{"type": "null"}}},
+				"disk":    map[string]any{"description": "Null until the Node reports hardware.", "anyOf": []any{schemaRef("CapacityDisk"), map[string]any{"type": "null"}}},
 			},
 		},
 		"CapacityList": map[string]any{

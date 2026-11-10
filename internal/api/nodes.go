@@ -31,6 +31,7 @@ type nodeDTO struct {
 	ID            string          `json:"id"`
 	Name          string          `json:"name"`
 	Status        string          `json:"status"`
+	StatusReason  *string         `json:"status_reason"`
 	Paused        bool            `json:"paused"`
 	LostAt        *time.Time      `json:"lost_at"`
 	AgentVersion  *string         `json:"agent_version"`
@@ -261,10 +262,12 @@ func (s *Server) nodeToDTO(ctx context.Context, node store.Node, now time.Time) 
 	if err != nil {
 		return nodeDTO{}, err
 	}
+	status, reason := deriveNodeStatus(node, now)
 	dto := nodeDTO{
 		ID:            node.ID.String(),
 		Name:          node.Name,
-		Status:        deriveNodeStatus(node, now),
+		Status:        status,
+		StatusReason:  reason,
 		Paused:        node.Paused,
 		LostAt:        timePtr(node.LostAt),
 		AgentVersion:  node.AgentVersion,
@@ -382,26 +385,34 @@ func nodeReachable(node store.Node, connected bool, now time.Time) bool {
 	return connected || (node.LastSeenAt.Valid && now.Sub(node.LastSeenAt.Time) <= nodeUnreachableAfter)
 }
 
+// nodeReady reports whether a Node is fully schedulable.
+func nodeReady(node store.Node, now time.Time) bool {
+	status, _ := deriveNodeStatus(node, now)
+	return status == "ready"
+}
+
 // deriveNodeStatus computes the read-time status (api.md §3, ADR-0014).
 // `ready` is fully schedulable; `paused` takes no new Workspace but can still
 // run Sandboxes whose Workspace is bound there (ADR-0017). `outdated` is
-// accepted but flagged; `unavailable` covers both a stale heartbeat and a
-// Runtime that cannot take work.
-func deriveNodeStatus(node store.Node, now time.Time) string {
+// accepted but flagged; `unavailable` covers a stale heartbeat, a Runtime that
+// cannot take work and a missing required Capability, and only then is reason
+// non-nil, naming which.
+func deriveNodeStatus(node store.Node, now time.Time) (status string, reason *string) {
+	unavailable := func(why string) (string, *string) { return "unavailable", &why }
 	switch {
 	case node.LostAt.Valid:
-		return "lost"
+		return "lost", nil
 	case node.Paused:
-		return "paused"
+		return "paused", nil
 	case !node.LastSeenAt.Valid || now.Sub(node.LastSeenAt.Time) > nodeUnreachableAfter:
-		return "unavailable"
+		return unavailable("heartbeat_stale")
 	case node.RuntimeHealth == nil || *node.RuntimeHealth != "healthy":
-		return "unavailable"
+		return unavailable("runtime_unhealthy")
 	case !nodeproto.CoreEnforced(node.Capabilities):
-		return "unavailable"
+		return unavailable("capability_missing")
 	case node.ProtoMinor != nil && *node.ProtoMinor < int32(nodeproto.Minor):
-		return "outdated"
+		return "outdated", nil
 	default:
-		return "ready"
+		return "ready", nil
 	}
 }

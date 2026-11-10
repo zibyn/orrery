@@ -135,7 +135,11 @@ links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自�
 | `POST /enrollment-packets` | **admin**。返回一次性 Packet，写审计 |
 | `GET /nodes` · `GET /nodes/{id}` · `DELETE /nodes/{id}` | **admin**。删除见下 |
 | `POST /nodes/{id}/pause` · `/resume` · `/declare-lost` | **admin**。宣告 lost 见下 |
-| `GET /capacity` | 所有 scope 可读：每个 Node 的 GPU 型号、总数、已分配、状态（`ready`、`paused`、`unavailable`、`outdated`、`lost`） |
+| `GET /capacity` | 所有 scope 可读：每个 Node 的 GPU 型号、总数、已分配、状态（`ready`、`paused`、`unavailable`、`outdated`、`lost`），以及 CPU、内存、磁盘，见下 |
+
+Node 的 `status_reason` 说明它为什么 `unavailable`：`heartbeat_stale`（心跳过期或从未上报）、`runtime_unhealthy`、`capability_missing`（缺少必需的 Runtime Capability）；其余状态时为 `null`。
+
+**容量**（ADR-0015）：`cpu`、`memory` 是 Resource Allocation，不是使用率，形如 `{gpu_pool: {total, allocated}, general_pool: {total, allocated}}`，划分与准入一致：`gpu_pool.total` = GPU 数 × 每卡份额，`general_pool.total` = 扣除宿主预留后的可分配量 − `gpu_pool.total`；`allocated` 分别是有 GPU、无 GPU 的 Sandbox 的 Allocation 之和。没有 GPU 的 Node `gpu_pool` 为 `null`，`general_pool` 即全部可分配量。CPU 单位是核，内存是字节。`disk` 是 `{total, free, watermark}`（字节、字节、比例），没有 `allocated`：磁盘按观测到的剩余空间与 watermark 把关。尚未上报硬件的 Node 这三项都是 `null`。
 
 Paused Node 不接收新的 Workspace 和构建。
 

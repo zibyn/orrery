@@ -17,32 +17,39 @@ func TestDeriveNodeStatus(t *testing.T) {
 	unhealthy := "unhealthy"
 	ready := readyNode(t, now)
 	weakCaps := capabilityReport(t, true)
+	oldMinor := int32(nodeproto.Minor) - 1
 
 	tests := []struct {
-		name string
-		node store.Node
-		want string
+		name   string
+		node   store.Node
+		want   string
+		reason string // empty: status_reason is null
 	}{
 		{"lost wins over everything", mutate(ready, func(n *store.Node) {
 			n.LostAt = pgtype.Timestamptz{Time: now, Valid: true}
-		}), "lost"},
-		{"paused", mutate(ready, func(n *store.Node) { n.Paused = true }), "paused"},
+		}), "lost", ""},
+		{"paused", mutate(ready, func(n *store.Node) { n.Paused = true }), "paused", ""},
 		{"never seen", mutate(ready, func(n *store.Node) {
 			n.LastSeenAt = pgtype.Timestamptz{}
-		}), "unavailable"},
+		}), "unavailable", "heartbeat_stale"},
 		{"stale heartbeat", mutate(ready, func(n *store.Node) {
 			n.LastSeenAt = pgtype.Timestamptz{Time: now.Add(-31 * time.Second), Valid: true}
-		}), "unavailable"},
-		{"unhealthy runtime", mutate(ready, func(n *store.Node) { n.RuntimeHealth = &unhealthy }), "unavailable"},
-		{"no runtime health yet", mutate(ready, func(n *store.Node) { n.RuntimeHealth = nil }), "unavailable"},
-		{"no capabilities yet", mutate(ready, func(n *store.Node) { n.Capabilities = nil }), "unavailable"},
-		{"required capability unsupported", mutate(ready, func(n *store.Node) { n.Capabilities = weakCaps }), "unavailable"},
-		{"ready", ready, "ready"},
+		}), "unavailable", "heartbeat_stale"},
+		{"unhealthy runtime", mutate(ready, func(n *store.Node) { n.RuntimeHealth = &unhealthy }), "unavailable", "runtime_unhealthy"},
+		{"no runtime health yet", mutate(ready, func(n *store.Node) { n.RuntimeHealth = nil }), "unavailable", "runtime_unhealthy"},
+		{"no capabilities yet", mutate(ready, func(n *store.Node) { n.Capabilities = nil }), "unavailable", "capability_missing"},
+		{"required capability unsupported", mutate(ready, func(n *store.Node) { n.Capabilities = weakCaps }), "unavailable", "capability_missing"},
+		{"outdated", mutate(ready, func(n *store.Node) { n.ProtoMinor = &oldMinor }), "outdated", ""},
+		{"ready", ready, "ready", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := deriveNodeStatus(tt.node, now); got != tt.want {
+			got, reason := deriveNodeStatus(tt.node, now)
+			if got != tt.want {
 				t.Fatalf("deriveNodeStatus = %q, want %q", got, tt.want)
+			}
+			if (reason == nil) != (tt.reason == "") || (reason != nil && *reason != tt.reason) {
+				t.Fatalf("status_reason = %v, want %q", reason, tt.reason)
 			}
 		})
 	}

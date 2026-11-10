@@ -39,14 +39,24 @@ type nodeFit struct {
 // admits reports whether a request of cpu cores and bytes of memory fits. The
 // disk watermark gates new allocations before the resource comparison.
 func (f nodeFit) admits(cpu float64, memory int64) bool {
-	watermark := f.diskWatermark
-	if watermark <= 0 {
-		watermark = defaultDiskWatermark
-	}
-	if f.diskTotal > 0 && f.diskFree < uint64(float64(f.diskTotal)*watermark) {
+	if f.diskTotal > 0 && f.diskFree < uint64(float64(f.diskTotal)*f.watermark()) {
 		return false
 	}
 	return f.cpu-f.usedCPU >= cpu && f.memory-f.usedMemory >= float64(memory)
+}
+
+// watermark is the Node's reported disk watermark, or the default.
+func (f nodeFit) watermark() float64 {
+	if f.diskWatermark <= 0 {
+		return defaultDiskWatermark
+	}
+	return f.diskWatermark
+}
+
+// gpuReserved is the CPU and memory the Node's cards reserve: the GPU pool.
+// The rest of the allocatable amount is the GPU-less pool (ADR-0015).
+func (f nodeFit) gpuReserved() (cpu, memory float64) {
+	return float64(f.gpuTotal) * f.cpuPerGPU, float64(f.gpuTotal) * f.memoryPerGPU
 }
 
 // gpuShare reports the CPU and memory that count cards reserve on this Node
@@ -79,8 +89,8 @@ func (f nodeFit) admitsNonGPU(cpu float64, memory int64) bool {
 	if f.gpuTotal == 0 {
 		return true
 	}
-	freeCPU := f.cpu - float64(f.gpuTotal)*f.cpuPerGPU
-	freeMemory := f.memory - float64(f.gpuTotal)*f.memoryPerGPU
+	gpuCPU, gpuMemory := f.gpuReserved()
+	freeCPU, freeMemory := f.cpu-gpuCPU, f.memory-gpuMemory
 	return f.usedCPUNoGPU+cpu <= freeCPU && f.usedMemNoGPU+float64(memory) <= freeMemory
 }
 
@@ -321,14 +331,14 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 // still be reachable, healthy and compatible, so clear the flag and derive the
 // rest of the status.
 func nodeSchedulable(node store.Node, now time.Time, workspaceHere bool) bool {
-	if deriveNodeStatus(node, now) == "ready" {
+	if nodeReady(node, now) {
 		return true
 	}
 	if !workspaceHere || !node.Paused {
 		return false
 	}
 	node.Paused = false
-	return deriveNodeStatus(node, now) == "ready"
+	return nodeReady(node, now)
 }
 
 // placementNode is a feasible Node and the cards it offers. gpus is the

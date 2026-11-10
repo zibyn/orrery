@@ -9,6 +9,7 @@ function node(overrides: Partial<Node>): Node {
     id: 'node-1',
     name: 'node-1',
     status: 'ready',
+    status_reason: null,
     paused: false,
     lost_at: null,
     agent_version: null,
@@ -30,6 +31,9 @@ function capacity(overrides: Partial<CapacityNode>): CapacityNode {
     name: 'node-1',
     status: 'ready',
     gpus: [],
+    cpu: null,
+    memory: null,
+    disk: null,
     ...overrides,
   }
 }

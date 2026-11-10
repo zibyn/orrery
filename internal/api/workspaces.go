@@ -325,7 +325,7 @@ func (s *Server) workspaceToDTO(ctx context.Context, ws store.Workspace) workspa
 		if err != nil {
 			dto.Unavailable = true
 		} else {
-			status := deriveNodeStatus(node, time.Now())
+			status, _ := deriveNodeStatus(node, time.Now())
 			dto.Unavailable = status == "unavailable" || status == "lost"
 		}
 	}
