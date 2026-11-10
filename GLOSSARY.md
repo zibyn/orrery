@@ -9,12 +9,8 @@ A short-lived isolated execution instance that runs commands and interactive ses
 _Avoid_: Workspace, container (when referring to the platform resource)
 
 **Workspace**:
-A mutable working directory for an agent. It may contain arbitrary files and zero or more Git repositories, and is permanently bound to one compute Node for its lifetime. It is either persistent, deleted only explicitly, or ephemeral, created with one Sandbox and deleted with it. It may become temporarily unavailable or permanently lost with that Node. A Workspace is not owned by a Sandbox; multiple Sandboxes may access it subject to their attachment mode and the single-writer rule.
-_Avoid_: Sandbox filesystem
-
-**Workspace Attachment**:
-The relationship between a Sandbox and a Workspace, with either read-only or read-write access. An attachment does not transfer ownership of the Workspace.
-_Avoid_: Workspace lease
+A mutable working directory for an agent. It may contain arbitrary files and zero or more Git repositories, and is permanently bound to one compute Node for its lifetime. It is either persistent, deleted only explicitly, or ephemeral, created with one Sandbox and deleted with it. It may become temporarily unavailable or permanently lost with that Node. A Workspace is not owned by a Sandbox. A Sandbox mounts one Workspace, read-only or read-write, and mounting does not transfer ownership. Single-writer rule: at most one active Sandbox mounts a Workspace read-write at a time. A Sandbox holds the write from `pending` until it stops, fails, or finishes deleting; deleting a `stopped` or `failed` Sandbox does not take it back.
+_Avoid_: Sandbox filesystem, Workspace Attachment, Workspace lease
 
 **Resource**:
 A stable named collection of persisted content whose current version may be mounted, copied, or referenced by execution.
@@ -167,7 +163,7 @@ The facts a Node Agent self-checks and reports about what a Runtime Provider can
 _Avoid_: provider promise, static feature list
 
 **Lease**:
-A fenced claim over a mutable Workspace or schedulable compute resource. It ends by an explicit act, never by expiry; its fencing token rejects work from a holder that has been superseded. Workspace Attachment and Resource Allocation generations are monotonic counters, not fences: the Control Plane is their only writer. Admission compares `sandboxes.generation` as its CAS guard.
+A fenced claim over a mutable Workspace or schedulable compute resource. It ends by an explicit act, never by expiry; its fencing token rejects work from a holder that has been superseded. Resource Allocation generations are monotonic counters, not fences: the Control Plane is its only writer. Admission compares `sandboxes.generation` as its CAS guard.
 _Avoid_: timed lock, TTL
 
 **User**:

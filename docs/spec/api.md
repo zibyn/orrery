@@ -144,7 +144,7 @@ Paused Node 不接收新的 Workspace 和构建。
 - Node 当前可达时返回 `409`；存活 Node 的存储坏了，用 Workspace 级的 `declare-lost`。
 - 不可撤回：同时清空 Node Token 并置 `paused`。Agent 重连时收到 `UNAUTHENTICATED`，清掉本地身份；这台宿主只能作为新 Node 重新注册。
 - 级联在一个事务里完成：
-  - 这台 Node 上所有未 `deleted` 的 Sandbox（含 `stopped`，以及已绑定到这台 Node 的 `pending`）变成 `failed/node_lost`，释放 Allocation 和 GPU，结束读写 Attachment；
+  - 这台 Node 上所有未 `deleted` 的 Sandbox（含 `stopped`，以及已绑定到这台 Node 的 `pending`）变成 `failed/node_lost`，释放 Allocation 和 GPU，读写挂载随状态一并释放；
   - 未结束的 Exec 以 `node_lost` 结束；
   - `deleting` 的 Workspace 直接变成 `deleted`，其余非终态的 Workspace 变成 `lost`；
   - 进行中的构建变成 `failed/node_lost`；

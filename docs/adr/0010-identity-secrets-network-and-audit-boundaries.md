@@ -1,6 +1,6 @@
 # ADR-0010: Identity, secrets, network, and audit boundaries
 
-- Status: accepted; Capability Channel, Egress and Audit superseded by ADR-0016; Node identity, Ingress, Deletion and caller tokens amended by ADR-0017; caller identity amended by ADR-0020 (password and OIDC login) and again by ADR-0029 (Polaris is the only identity provider; machine Users from `orrery-server user-token`); platform secret storage amended by ADR-0024; Ingress amended by ADR-0027 (a Sandbox accepts its linked Sandboxes)
+- Status: accepted; Capability Channel, Egress and Audit superseded by ADR-0016; Node identity, Ingress, Deletion and caller tokens amended by ADR-0017; caller identity amended by ADR-0020 (password and OIDC login) and again by ADR-0029 (Polaris is the only identity provider; machine Users from `orrery-server user-token`); platform secret storage amended by ADR-0024; Ingress amended by ADR-0027 (a Sandbox accepts its linked Sandboxes); Deletion's "live Attachment" reworded to a live read-write mount in place by #220
 - Date: 2026-10-17
 
 ## Context
@@ -23,7 +23,7 @@ The platform has to answer who a caller is, how a Node becomes trusted, where th
 
 **Ingress.** Callers enter only through the Control Plane and the Gateway. Sandboxes listen on no ports and are never connected into. The cost is honest and documented: a service running inside a Sandbox is not reachable from outside.
 
-**Deletion.** Ownership is the authorization: a User may delete what it owns, and `admin` is the only path that bypasses that. A deletion that would collide with a live Attachment or an unfinished Exec returns a conflict instead of implicitly cancelling. Deletion is logical before physical and leaves an audit fact.
+**Deletion.** Ownership is the authorization: a User may delete what it owns, and `admin` is the only path that bypasses that. A deletion that would collide with a live read-write mount or an unfinished Exec returns a conflict instead of implicitly cancelling. Deletion is logical before physical and leaves an audit fact.
 
 **Audit.** An append-only table in PostgreSQL, in the same transaction as the state it describes, so audit and state cannot diverge in a crash. It records control-plane mutations, Lease mint and revoke, Node enroll/renew/revoke, egress policy and Egress Opening changes, deletions, and every Gateway authorization decision. It does not record per-request data-plane reads and writes, nor Sandbox output, which is the Execution Log with its own retention.
 

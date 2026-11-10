@@ -1,6 +1,6 @@
 # ADR-0011: The Sandbox Capability Channel
 
-- Status: superseded by ADR-0016
+- Status: superseded by ADR-0016; Workspace write fencing withdrawn in place by #220 (never implemented)
 - Date: 2026-10-17
 
 ## Context
@@ -17,9 +17,9 @@ ADR-0010 settled that a Sandbox reaches platform capabilities through a credenti
 
 **Wire protocol.** HTTP/1.1 with JSON bodies, reusing the REST error model of `#31`, so `curl --unix-socket` is a sufficient client.
 
-**Authorization.** The Control Plane decides every request: the Sandbox is `ready`, the verb is on the list, and the target lies in the Sandbox's scope (such as a Git account linked by the Sandbox's owner). The decision is written as an Audit Record in the same transaction, as for Gateway authorizations. A verb that mutates the Workspace additionally requires the Sandbox to hold the current read-write Attachment, whose fencing token the Node Agent checks locally at execution (`#32`). An unreachable Control Plane fails the request closed with `unavailable`; there is no cached authorization.
+**Authorization.** The Control Plane decides every request: the Sandbox is `ready`, the verb is on the list, and the target lies in the Sandbox's scope (such as a Git account linked by the Sandbox's owner). The decision is written as an Audit Record in the same transaction, as for Gateway authorizations. ~~A verb that mutates the Workspace additionally requires the Sandbox to hold the current read-write Attachment, whose fencing token the Node Agent checks locally at execution (`#32`).~~ Withdrawn by #220: no verb mutates the Workspace and no fencing token exists; a future write verb would need a ready Sandbox that mounts its Workspace read-write. An unreachable Control Plane fails the request closed with `unavailable`; there is no cached authorization.
 
-**Fencing and teardown.** When the read-write Attachment is fenced, Workspace-mutating verbs are refused with `conflict` and in-flight ones are terminated before the next writer is admitted, as `#32` does for write-dependent processes; read-only verbs continue. When the Sandbox enters `stopping` or `deleting`, new requests are refused, in-flight ones are cancelled, and the socket goes with the Runtime. A Node Agent restart rebuilds the socket mapping and fails in-flight requests. Channel requests are not durable intents: no Reconciler, no automatic retry.
+**Teardown.** ~~When the read-write Attachment is fenced, Workspace-mutating verbs are refused with `conflict` and in-flight ones are terminated before the next writer is admitted, as `#32` does for write-dependent processes; read-only verbs continue.~~ (withdrawn by #220, as above.) When the Sandbox enters `stopping` or `deleting`, new requests are refused, in-flight ones are cancelled, and the socket goes with the Runtime. A Node Agent restart rebuilds the socket mapping and fails in-flight requests. Channel requests are not durable intents: no Reconciler, no automatic retry.
 
 **Egress.** The channel does not use the network stack, so it is reachable under every Egress Policy including `none`. Egress Policy governs the Sandbox's network only; channel verbs are governed by their own authorization and reach only platform-registered targets.
 

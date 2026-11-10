@@ -159,18 +159,14 @@ func finalizeGone(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) er
 	return nil
 }
 
-// releaseRuntime drops the Allocation, the GPU claims and the Attachment,
-// which exist only while a runtime does. Both are attempted so one failure
-// does not hide the other.
+// releaseRuntime drops the Allocation and the GPU claims, which exist only
+// while a runtime does. The write on the Workspace follows the Sandbox state
+// (sandboxes_workspace_rw), so there is nothing else to release.
 func releaseRuntime(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) error {
-	var errs []error
 	if err := q.ReleaseCompute(ctx, sandboxID); err != nil {
-		errs = append(errs, fmt.Errorf("release allocation: %w", err))
+		return fmt.Errorf("release allocation: %w", err)
 	}
-	if err := q.DeleteAttachment(ctx, sandboxID); err != nil {
-		errs = append(errs, fmt.Errorf("release attachment: %w", err))
-	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // ExecCause is the platform cause of an Exec's terminal result (api.md §4).

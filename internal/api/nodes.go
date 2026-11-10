@@ -328,9 +328,6 @@ func (s *Server) handleDeclareNodeLost(w http.ResponseWriter, r *http.Request, p
 	if _, err := q.FailSandboxesOnNodeLost(ctx, &id); step("fail Sandboxes", err) {
 		return
 	}
-	if _, err := q.DeleteSandboxAttachmentsOnNodeLost(ctx, &id); step("delete Attachments", err) {
-		return
-	}
 	if _, err := q.DeleteGPUAllocationsOnNodeLost(ctx, &id); step("release GPU allocations", err) {
 		return
 	}

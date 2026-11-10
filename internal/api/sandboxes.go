@@ -444,10 +444,10 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !ok {
 		return
 	}
-	// An explicit Workspace is attached as requested; otherwise the Sandbox
+	// An explicit Workspace is mounted as requested; otherwise the Sandbox
 	// gets an implicit ephemeral one (ADR-0018).
 	var attached *store.Workspace
-	attachMode := "rw"
+	workspaceMode := "rw"
 	if req.Workspace != nil {
 		workspaceID, err := uuid.Parse(req.Workspace.ID)
 		if err != nil {
@@ -477,7 +477,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 				writeProblem(w, "invalid_request", "workspace.mode must be rw or ro")
 				return
 			}
-			attachMode = req.Workspace.Mode
+			workspaceMode = req.Workspace.Mode
 		}
 	}
 	// The first start's Secret snapshot is written with the row: creation is a
@@ -535,24 +535,17 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			return
 		}
 	}
-	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
-		SandboxID: sandbox.ID, WorkspaceID: workspaceID, Mode: attachMode,
-		Generation: sandbox.Generation,
+	// A second rw mount of the Workspace fails sandboxes_workspace_rw.
+	if err := q.SetSandboxWorkspace(ctx, store.SetSandboxWorkspaceParams{
+		ID: sandbox.ID, WorkspaceID: &workspaceID, WorkspaceMode: workspaceMode,
 	}); err != nil {
 		if writeConstraintProblem(w, err) {
 			return
 		}
-		s.internal(w, "create Attachment", err)
-		return
-	}
-	// The Attachment is released on stop, so the Sandbox remembers the mount.
-	if err := q.SetSandboxWorkspace(ctx, store.SetSandboxWorkspaceParams{
-		ID: sandbox.ID, WorkspaceID: &workspaceID, WorkspaceMode: attachMode,
-	}); err != nil {
 		s.internal(w, "record Sandbox Workspace", err)
 		return
 	}
-	sandbox.WorkspaceID, sandbox.WorkspaceMode = &workspaceID, attachMode
+	sandbox.WorkspaceID, sandbox.WorkspaceMode = &workspaceID, workspaceMode
 	if err := s.enqueueAdmission(ctx, q, sandbox.ID); err != nil {
 		s.internal(w, "enqueue admission request", err)
 		return
@@ -869,12 +862,17 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		s.internal(w, "count active Sandboxes", err)
 		return
 	}
+	// Entering pending re-acquires an rw mount: another writer fails
+	// sandboxes_workspace_rw (ADR-0018).
 	started, err := q.StartSandbox(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeProblem(w, "conflict", "the Sandbox state changed; retry")
 		return
 	}
 	if err != nil {
+		if writeConstraintProblem(w, err) {
+			return
+		}
 		s.internal(w, "start Sandbox", err)
 		return
 	}
@@ -914,18 +912,7 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		writeProblem(w, "conflict", "the Workspace is not usable")
 		return
 	}
-	// Stopping released the Attachment; start re-acquires it with the mode the
-	// Sandbox was created with (ADR-0018). Admission re-acquires the
-	// Allocation.
-	if _, err := q.CreateAttachment(ctx, store.CreateAttachmentParams{
-		SandboxID: id, WorkspaceID: ws.ID, Mode: sb.WorkspaceMode, Generation: started.Generation,
-	}); err != nil {
-		if writeConstraintProblem(w, err) {
-			return
-		}
-		s.internal(w, "re-create Attachment", err)
-		return
-	}
+	// Admission re-acquires the Allocation.
 	// Every start re-resolves the Secret snapshot by name, so a Secret changed
 	// or deleted while stopped is visible only from this start on
 	// (schema.md). A deleted Secret fails the start instead of silently

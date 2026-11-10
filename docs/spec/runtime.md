@@ -17,7 +17,7 @@ Supervisor 是同一个平台二进制，有四种模式：
 
 | 容器内 | 来源 | 模式 |
 |---|---|---|
-| `/workspace` | Workspace | 按 Attachment 的模式，读写或只读 |
+| `/workspace` | Workspace | 按 Sandbox 的挂载模式，读写或只读 |
 | `/.orrery/bin` | Supervisor 二进制和外部 CLI `orrery` | 只读 |
 | `/.orrery/run` | 宿主 `/var/lib/orrery/sandboxes/<sandbox_id>/run` | 读写 |
 | `/resources/<mount>` | Node 的 Resource 缓存（§11） | 只读 |

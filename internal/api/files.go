@@ -2,14 +2,12 @@ package api
 
 import (
 	"bufio"
-	"errors"
 	"io"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // fileHandler reverse-proxies one Workspace file endpoint to the Sandbox's Node
@@ -30,20 +28,13 @@ func (s *Server) fileHandler(suffix string, write bool) handlerFunc {
 			return
 		}
 		if write {
-			// Only the read-write Attachment may write (ADR-0018).
-			// ponytail: its generation is not forwarded as a fence; OpenTunnel
-			// carries none. Add one if a writer-revoke race ever matters.
-			att, err := s.q.GetAttachment(r.Context(), id)
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeProblem(w, "conflict", "the Sandbox has no Workspace attachment")
+			// Only a Sandbox mounting its Workspace rw may write (ADR-0018).
+			if sb.WorkspaceID == nil {
+				writeProblem(w, "conflict", "the Sandbox has no Workspace")
 				return
 			}
-			if err != nil {
-				s.internal(w, "get Attachment", err)
-				return
-			}
-			if att.Mode != "rw" {
-				writeProblem(w, "conflict", "the Workspace is attached read-only")
+			if sb.WorkspaceMode != "rw" {
+				writeProblem(w, "conflict", "the Workspace is mounted read-only")
 				return
 			}
 		}

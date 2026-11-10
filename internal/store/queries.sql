@@ -420,9 +420,13 @@ SELECT * FROM sandboxes
 WHERE kind = 'user' AND state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
 ORDER BY id;
 
+-- DeleteSandbox records a stopped or failed Sandbox read-only: it holds no
+-- write, and deleting must not take it back. The states are the complement of
+-- the sandboxes_workspace_rw predicate (#220).
 -- name: DeleteSandbox :one
 UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
+    workspace_mode = CASE WHEN state IN ('stopped', 'failed') THEN 'ro' ELSE workspace_mode END,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
 RETURNING *;
@@ -596,7 +600,7 @@ SELECT * FROM workspaces
 WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
 
 -- GetSandboxWorkspace is the Sandbox's Workspace through the durable
--- association; the Attachment row exists only while the Sandbox runs.
+-- association.
 -- name: GetSandboxWorkspace :one
 SELECT w.* FROM workspaces w
 JOIN sandboxes s ON s.workspace_id = w.id
@@ -643,19 +647,6 @@ WHERE id = $1 AND state <> 'deleted';
 UPDATE workspaces
 SET state = 'deleted', deleted_at = now(), updated_at = now()
 WHERE id = $1 AND generation = $2;
-
--- Attachments
-
--- name: CreateAttachment :one
-INSERT INTO attachments (sandbox_id, workspace_id, mode, generation)
-VALUES ($1, $2, $3, $4)
-RETURNING *;
-
--- name: GetAttachment :one
-SELECT * FROM attachments WHERE sandbox_id = $1;
-
--- name: DeleteAttachment :exec
-DELETE FROM attachments WHERE sandbox_id = $1;
 
 -- name: SetSandboxWorkspace :exec
 UPDATE sandboxes
@@ -1437,12 +1428,6 @@ UPDATE sandboxes
 SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
     conditions = NULL, address = NULL, updated_at = now()
 WHERE node_id = $1 AND state <> 'deleted';
-
--- name: DeleteSandboxAttachmentsOnNodeLost :execrows
-DELETE FROM attachments
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-);
 
 -- name: DeleteGPUAllocationsOnNodeLost :execrows
 DELETE FROM gpu_allocations

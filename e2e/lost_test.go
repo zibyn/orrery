@@ -87,10 +87,6 @@ func TestNodeUnreachableLost(t *testing.T) {
 		"SELECT count(*) FROM allocations WHERE sandbox_id = '%s'", sb.ID)); n != "0" {
 		t.Fatalf("allocations after Node loss = %s, want 0", n)
 	}
-	if n := psqlCount(t, fmt.Sprintf(
-		"SELECT count(*) FROM attachments WHERE sandbox_id = '%s'", sb.ID)); n != "0" {
-		t.Fatalf("Attachments after Node loss = %s, want 0", n)
-	}
 
 	// The revoked identity is rejected and the Agent clears it.
 	restarted := runAgentCommand(t, "--ca", nodeCA(), "--state", state,

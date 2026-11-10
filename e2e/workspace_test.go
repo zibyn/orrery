@@ -177,10 +177,11 @@ func TestIdleStopRestart(t *testing.T) {
 	}
 }
 
-// TestWriteAttachmentConflict is the "write-attachment-conflict" acceptance
-// scenario (#39 M1 item 14, #59): one read-write Attachment at a time, and
-// stopping the holder releases it.
-func TestWriteAttachmentConflict(t *testing.T) {
+// TestWorkspaceWriteConflict is the "write-attachment-conflict" acceptance
+// scenario (#39 M1 item 14, #59, #220): at most one active Sandbox mounts a
+// Workspace read-write, stopping the writer releases it, and deleting a
+// stopped writer does not take it back.
+func TestWorkspaceWriteConflict(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
 	suffix := time.Now().UnixNano()
@@ -199,14 +200,14 @@ func TestWriteAttachmentConflict(t *testing.T) {
 	mustJSON(t, data, &first)
 	waitForSandboxReady(t, admin, first.ID)
 
-	// A second read-write Attachment is refused.
+	// A second read-write mount is refused.
 	status, data = createSandboxWithWorkspace(t, admin, fmt.Sprintf("second-%d", suffix), ws.ID, "rw", 0)
 	if status != http.StatusConflict {
 		t.Fatalf("second rw Sandbox: %d %s, want 409", status, data)
 	}
 	requireProblemCode(t, data, "conflict")
 
-	// Read-only attachments are allowed alongside the writer.
+	// Read-only mounts are allowed alongside the writer.
 	status, data = createSandboxWithWorkspace(t, admin, fmt.Sprintf("reader-%d", suffix), ws.ID, "ro", 0)
 	if status != http.StatusCreated {
 		t.Fatalf("ro Sandbox: %d %s", status, data)
@@ -229,6 +230,15 @@ func TestWriteAttachmentConflict(t *testing.T) {
 	mustJSON(t, data, &second)
 	waitForSandboxReady(t, admin, second.ID)
 
+	// The stopped writer cannot start while the new one holds the write.
+	status, data = call(t, http.MethodPost, "/api/v1/sandboxes/"+first.ID+"/start", admin, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("start first beside second: %d %s, want 409", status, data)
+	}
+	requireProblemCode(t, data, "conflict")
+
+	// Deleting the stopped writer leaves the ready one alone; first goes
+	// first, while second still holds the write.
 	for _, id := range []string{first.ID, reader.ID, second.ID} {
 		if status, data := call(t, http.MethodDelete, "/api/v1/sandboxes/"+id, admin, nil); status != http.StatusAccepted {
 			t.Fatalf("cleanup delete %s: %d %s", id, status, data)

@@ -299,13 +299,8 @@ func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
 }
 
 func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
-	att, err := r.s.q.GetAttachment(ctx, sb.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if sb.WorkspaceID == nil {
 		r.fail(ctx, sb, "runtime_create_failed")
-		return
-	}
-	if err != nil {
-		r.s.log.Warn("reconcile: attachment lookup", "sandbox_id", sb.ID, "error", err)
 		return
 	}
 	if sb.NodeID == nil {
@@ -331,7 +326,7 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 		resources = append(resources, &nodev1.ResourceMount{Address: *mount.Address, Mount: mount.Mount})
 	}
 	id := commandID("create-sandbox", sb.ID, sb.Generation)
-	workspace := &nodev1.WorkspaceMount{WorkspaceId: att.WorkspaceID.String(), Mode: att.Mode}
+	workspace := &nodev1.WorkspaceMount{WorkspaceId: sb.WorkspaceID.String(), Mode: sb.WorkspaceMode}
 	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{
 		CreateSandbox: createSandboxCommand(id, sb, workspace, gpus, resources),
 	}})
@@ -382,7 +377,7 @@ func (r *reconciler) sendStopRuntime(ctx context.Context, sb store.Sandbox) {
 	}})
 }
 
-// finalizeStopped releases the compute and the Attachment once the runtime is
+// finalizeStopped releases the compute once the runtime is
 // gone. It runs in the observed handler and for a never-placed Sandbox.
 func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 	tx, err := r.s.pool.Begin(ctx)

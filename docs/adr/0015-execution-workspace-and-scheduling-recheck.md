@@ -1,6 +1,6 @@
 # ADR-0015: Execution, Workspace and scheduling rechecked against Coder and Daytona
 
-- Status: accepted; Runtime death, PTY logging and Paused Node amended by ADR-0017; per-GPU share default amended by `docs/spec/defaults.md`; placement among feasible Nodes amended in place by #92
+- Status: accepted; Runtime death, PTY logging and Paused Node amended by ADR-0017; per-GPU share default amended by `docs/spec/defaults.md`; placement among feasible Nodes amended in place by #92; read-write Workspace Attachment replaced by the Sandbox's read-write mount in place by #220
 - Date: 2026-10-17
 
 ## Context
@@ -11,7 +11,7 @@ Three kinds of gap did not survive the recheck: TTL leases that contradict our o
 
 ## Decision
 
-**Leases end by an act, never by expiry.** The read-write Workspace Attachment and the Compute Lease lose their TTL and renewal. `#34` already keeps `unknown` allocations and ADR-0014 never declares a Node lost by timer, so an expiring lease could only either double-allocate a GPU or do nothing. Each carries a monotonic generation counter; it is not a fencing token, because the Control Plane is the only writer and no superseded holder exists. At most one read-write Workspace Attachment stays; revoking it terminates every Exec in the Sandbox that holds it. Daytona's GPU reservation likewise *"stays reserved ... until it is fully destroyed"*.
+**Leases end by an act, never by expiry.** The read-write Workspace mount and the Compute Lease lose their TTL and renewal. `#34` already keeps `unknown` allocations and ADR-0014 never declares a Node lost by timer, so an expiring lease could only either double-allocate a GPU or do nothing. The Compute Lease carries a monotonic generation counter; it is not a fencing token, because the Control Plane is the only writer and no superseded holder exists. At most one read-write mount of a Workspace stays; revoking it terminates every Exec in the Sandbox that holds it. Amended in place by #220: the read-write mount has no row and no generation of its own. It is the Sandbox's `workspace_mode = 'rw'` while the Sandbox is `pending`, `provisioning`, `ready`, `stopping` or `deleting`, enforced by a partial unique index; it is revoked only by leaving those states. Daytona's GPU reservation likewise *"stays reserved ... until it is fully destroyed"*.
 
 **Exec is one row.** ExecAttempt, Attempt Identity, Execution Retry and Exec Result Aggregation are removed. A Sandbox never leaves its Node, so a new Attempt and a redelivery of the same Exec are indistinguishable. The Exec stores timestamps and its Execution Result, and its state is derived from them, as Coder derives a build's. There is no automatic retry: a failure before start ends the Exec with a retryable error code and the caller decides whether to create another. The Idempotency Key is a unique constraint on the caller-supplied key that returns the existing Exec, not a general idempotency table.
 

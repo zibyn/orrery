@@ -274,7 +274,7 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 		}
 		ws, err := q.GetSandboxWorkspace(ctx, sb.ID)
 		if sb.Kind == string(SandboxKindBuild) {
-			// A build row has no Workspace or Attachment (schema.md, ADR-0021).
+			// A build row has no Workspace (schema.md, ADR-0021).
 			placed, err := r.tryAdmit(ctx, q, sb, store.Workspace{}, nodes, now)
 			if err != nil {
 				return err

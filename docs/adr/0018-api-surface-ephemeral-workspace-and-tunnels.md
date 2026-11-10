@@ -1,11 +1,11 @@
 # ADR-0018: Ephemeral Workspaces follow their Sandbox, and the Gateway reaches Nodes through reverse tunnels
 
-- Status: accepted
+- Status: accepted; read-write Attachment replaced by the Sandbox's read-write mount in place by #220
 - Date: 2026-10-17
 
 ## Context
 
-`#42` locked the public API, the Node protocol and the schema (`docs/spec/`). Two of its decisions change the model rather than only spelling it out. `#32` started an ephemeral Workspace's grace window whenever it had no Attachment, while ADR-0017 releases a Sandbox's read-write Attachment on stop. Together, an Idle Stop followed by the grace window would delete an ephemeral Workspace that its Sandbox was still going to start again. Separately, the Gateway has to reach files, PTYs and ports on Nodes that dial out and may sit behind NAT.
+`#42` locked the public API, the Node protocol and the schema (`docs/spec/`). Two of its decisions change the model rather than only spelling it out. `#32` started an ephemeral Workspace's grace window whenever it had no Attachment, while ADR-0017 releases a Sandbox's read-write mount on stop. Together, an Idle Stop followed by the grace window would delete an ephemeral Workspace that its Sandbox was still going to start again. Separately, the Gateway has to reach files, PTYs and ports on Nodes that dial out and may sit behind NAT.
 
 ## Decision
 
@@ -13,7 +13,7 @@
 
 **Reverse tunnels.** The Node protocol has three RPCs besides enrollment: one `Control` stream, one `ExecOutput` stream per Exec, and `Tunnel`, a raw byte stream the Agent dials back when `Control` asks it to. Through a tunnel the Gateway either reverse-proxies to the Agent's internal HTTP surface (file API, PTY WebSocket) or reaches a Sandbox port. Coder and Daytona alike run an HTTP surface in their agent or daemon and proxy to it.
 
-**Files go through a ready Sandbox.** The file API lives under `/sandboxes/{id}/files`, touches only the Workspace, needs the Sandbox `ready`, and writes only through a read-write Attachment, as in both vendors. `#32`'s rule that every file mutation goes through the read-write Attachment stands.
+**Files go through a ready Sandbox.** The file API lives under `/sandboxes/{id}/files`, touches only the Workspace, needs the Sandbox `ready`, and writes only when the Sandbox mounts the Workspace read-write, as in both vendors. `#32`'s rule that every file mutation goes through the single writer stands (amended in place by #220: the read-write mount, not an Attachment row).
 
 ## Consequences
 

@@ -340,10 +340,6 @@ func waitForSandboxDeleted(t *testing.T, id string, timeout time.Duration) strin
 			"SELECT count(*) FROM workspaces WHERE sandbox_id = '%s' AND state = 'deleted'", id)) == "1"
 		if sandboxDeleted && workspaceDeleted {
 			if n := psqlCount(t, fmt.Sprintf(
-				"SELECT count(*) FROM attachments WHERE sandbox_id = '%s'", id)); n != "0" {
-				t.Fatalf("Attachment rows left after delete: %s", n)
-			}
-			if n := psqlCount(t, fmt.Sprintf(
 				"SELECT count(*) FROM allocations WHERE sandbox_id = '%s'", id)); n != "0" {
 				t.Fatalf("Allocation rows left after delete: %s", n)
 			}

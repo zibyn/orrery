@@ -1,6 +1,6 @@
 # ADR-0014: Control Plane and Node operations
 
-- Status: accepted; amended by ADR-0016 and ADR-0017; one Runtime per Node, lost, deletion and paused builds amended in place by #92; MCP Tool API placement amended in place by #107; advisory lock scope amended in place by #128
+- Status: accepted; amended by ADR-0016 and ADR-0017; one Runtime per Node, lost, deletion and paused builds amended in place by #92; MCP Tool API placement amended in place by #107; advisory lock scope amended in place by #128; read-write mount release amended in place by #220
 - Date: 2026-10-17
 
 ## Context
@@ -19,7 +19,7 @@
 
 **Liveness.** The Node Agent heartbeats on its stream and the Control Plane records `last_seen_at`. Node Unreachable is derived when read (no heartbeat for twice the interval), never stored. The heartbeat carries Runtime health, and an unhealthy Runtime receives no new placement. Unreachable stops new placement only; running Execs follow `#33` and are not failed. A Node is never declared `lost` by a timer: `lost` is an explicit `admin` act, because `#32` requires confirmation that it cannot recover.
 
-Declaring a reachable Node lost is refused with `conflict`; a live Node whose storage failed uses the per-Workspace declaration instead. The declaration is irreversible: it clears the Node's token and pauses it, so a reconnecting Agent receives `UNAUTHENTICATED` and drops its identity, and the host can only come back by enrolling as a new Node. In one transaction it fails every non-deleted Sandbox on the Node (`stopped` ones and `pending` ones bound there included) with `node_lost`, releasing their Allocations and GPUs and ending their read-write Attachments; ends unfinished Execs with `node_lost`; moves `deleting` Workspaces to `deleted` and every other non-terminal Workspace to `lost`; fails running builds with `node_lost`; and fails the ResourceVersion of every running publish with cause `node_lost`. Deleting a `lost` Workspace makes it `deleted` without a command to the Node.
+Declaring a reachable Node lost is refused with `conflict`; a live Node whose storage failed uses the per-Workspace declaration instead. The declaration is irreversible: it clears the Node's token and pauses it, so a reconnecting Agent receives `UNAUTHENTICATED` and drops its identity, and the host can only come back by enrolling as a new Node. In one transaction it fails every non-deleted Sandbox on the Node (`stopped` ones and `pending` ones bound there included) with `node_lost`, releasing their Allocations and GPUs, which also ends their read-write mounts (amended in place by #220: the write follows the Sandbox state); ends unfinished Execs with `node_lost`; moves `deleting` Workspaces to `deleted` and every other non-terminal Workspace to `lost`; fails running builds with `node_lost`; and fails the ResourceVersion of every running publish with cause `node_lost`. Deleting a `lost` Workspace makes it `deleted` without a command to the Node.
 
 Deleting a Node is a separate act. It requires the Node to be paused with no non-terminal Workspace and no non-terminal Sandbox, build rows included. The row stays as a tombstone with `deleted_at` and no token, its GPU rows are removed, and it is hidden from the Node list and the capacity view; tombstones are never purged. A still-connected Agent receives `UNAUTHENTICATED` and its stream is closed.
 

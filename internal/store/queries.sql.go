@@ -484,39 +484,6 @@ func (q *Queries) CreateAllocation(ctx context.Context, arg CreateAllocationPara
 	return err
 }
 
-const createAttachment = `-- name: CreateAttachment :one
-
-INSERT INTO attachments (sandbox_id, workspace_id, mode, generation)
-VALUES ($1, $2, $3, $4)
-RETURNING sandbox_id, workspace_id, mode, generation, created_at
-`
-
-type CreateAttachmentParams struct {
-	SandboxID   uuid.UUID
-	WorkspaceID uuid.UUID
-	Mode        string
-	Generation  int64
-}
-
-// Attachments
-func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentParams) (Attachment, error) {
-	row := q.db.QueryRow(ctx, createAttachment,
-		arg.SandboxID,
-		arg.WorkspaceID,
-		arg.Mode,
-		arg.Generation,
-	)
-	var i Attachment
-	err := row.Scan(
-		&i.SandboxID,
-		&i.WorkspaceID,
-		&i.Mode,
-		&i.Generation,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const createBuildSandbox = `-- name: CreateBuildSandbox :one
 INSERT INTO sandboxes (
     id, owner_id, kind, name, labels, desired_state, state, snapshot_digest,
@@ -1349,15 +1316,6 @@ func (q *Queries) DeleteAllocationsOnNodeLost(ctx context.Context, nodeID *uuid.
 	return result.RowsAffected(), nil
 }
 
-const deleteAttachment = `-- name: DeleteAttachment :exec
-DELETE FROM attachments WHERE sandbox_id = $1
-`
-
-func (q *Queries) DeleteAttachment(ctx context.Context, sandboxID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deleteAttachment, sandboxID)
-	return err
-}
-
 const deleteCASObject = `-- name: DeleteCASObject :exec
 DELETE FROM cas_objects WHERE owner_id = $1 AND sha256 = $2
 `
@@ -1500,11 +1458,15 @@ func (q *Queries) DeleteResourceVersionObjects(ctx context.Context, versionID uu
 const deleteSandbox = `-- name: DeleteSandbox :one
 UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
+    workspace_mode = CASE WHEN state IN ('stopped', 'failed') THEN 'ro' ELSE workspace_mode END,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
 RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
 `
 
+// DeleteSandbox records a stopped or failed Sandbox read-only: it holds no
+// write, and deleting must not take it back. The states are the complement of
+// the sandboxes_workspace_rw predicate (#220).
 func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
 	row := q.db.QueryRow(ctx, deleteSandbox, id)
 	var i Sandbox
@@ -1544,21 +1506,6 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.LinksPorts,
 	)
 	return i, err
-}
-
-const deleteSandboxAttachmentsOnNodeLost = `-- name: DeleteSandboxAttachmentsOnNodeLost :execrows
-DELETE FROM attachments
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-)
-`
-
-func (q *Queries) DeleteSandboxAttachmentsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteSandboxAttachmentsOnNodeLost, nodeID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const deleteSecret = `-- name: DeleteSecret :one
@@ -1919,23 +1866,6 @@ func (q *Queries) FinishSandboxExecs(ctx context.Context, arg FinishSandboxExecs
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const getAttachment = `-- name: GetAttachment :one
-SELECT sandbox_id, workspace_id, mode, generation, created_at FROM attachments WHERE sandbox_id = $1
-`
-
-func (q *Queries) GetAttachment(ctx context.Context, sandboxID uuid.UUID) (Attachment, error) {
-	row := q.db.QueryRow(ctx, getAttachment, sandboxID)
-	var i Attachment
-	err := row.Scan(
-		&i.SandboxID,
-		&i.WorkspaceID,
-		&i.Mode,
-		&i.Generation,
-		&i.CreatedAt,
-	)
-	return i, err
 }
 
 const getCASObject = `-- name: GetCASObject :one
@@ -2588,7 +2518,7 @@ WHERE s.id = $1 AND w.state <> 'deleted'
 `
 
 // GetSandboxWorkspace is the Sandbox's Workspace through the durable
-// association; the Attachment row exists only while the Sandbox runs.
+// association.
 func (q *Queries) GetSandboxWorkspace(ctx context.Context, id uuid.UUID) (Workspace, error) {
 	row := q.db.QueryRow(ctx, getSandboxWorkspace, id)
 	var i Workspace

@@ -24,47 +24,8 @@ func TestMigrateRefusesUnlinkedPasswordUsers(t *testing.T) {
 		t.Skip("ORRERY_TEST_DATABASE_URL is not set")
 	}
 	ctx := context.Background()
-	admin, err := Open(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := "migrate_guard_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if a, err := Open(context.Background(), dsn); err == nil {
-			a.Exec(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)") //nolint:errcheck
-			a.Close()
-		}
-	})
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.Database = name
-	dbDSN := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		cfg.ConnConfig.User, cfg.ConnConfig.Password, cfg.ConnConfig.Host, cfg.ConnConfig.Port, name)
-
 	// The schema as the release before the switch left it.
-	src, err := iofs.New(store.Migrations, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, err := migrate.NewWithSourceInstance("iofs", src, migrateDSN(dbDSN))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.Migrate(dropPasswordsVersion - 2); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		t.Fatal(err)
-	}
-	m.Close()
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool, dbDSN := scratchDatabaseAt(t, ctx, dsn, dropPasswordsVersion-2)
 	id := uuid.New()
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, login_type, password_hash) VALUES ($1, 'alice', 'password', 'x')`, id); err != nil {
 		t.Fatal(err)
@@ -73,7 +34,7 @@ func TestMigrateRefusesUnlinkedPasswordUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = Migrate(ctx, pool, dbDSN)
+	err := Migrate(ctx, pool, dbDSN)
 	if err == nil || !strings.Contains(err.Error(), "orrery-polaris-migrate") || !strings.Contains(err.Error(), "alice") {
 		t.Fatalf("Migrate with an unlinked password User = %v, want a refusal naming alice and the script", err)
 	}
@@ -90,4 +51,50 @@ func TestMigrateRefusesUnlinkedPasswordUsers(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, oidc_issuer) VALUES ($1, 'half', 'https://polaris.test')`, uuid.New()); err == nil {
 		t.Fatal("a User with an issuer but no subject was accepted")
 	}
+}
+
+// scratchDatabaseAt creates a throwaway database migrated to version, so a
+// migration test can seed the schema a release before left and then Migrate.
+func scratchDatabaseAt(t *testing.T, ctx context.Context, dsn string, version uint) (*pgxpool.Pool, string) {
+	t.Helper()
+	admin, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	name := "migrate_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if a, err := Open(context.Background(), dsn); err == nil {
+			a.Exec(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)") //nolint:errcheck
+			a.Close()
+		}
+	})
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.Database = name
+	dbDSN := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		cfg.ConnConfig.User, cfg.ConnConfig.Password, cfg.ConnConfig.Host, cfg.ConnConfig.Port, name)
+	src, err := iofs.New(store.Migrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", src, migrateDSN(dbDSN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Migrate(version); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatal(err)
+	}
+	m.Close()
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool, dbDSN
 }

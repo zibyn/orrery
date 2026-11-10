@@ -45,14 +45,6 @@ type ApiToken struct {
 	Sid            *string
 }
 
-type Attachment struct {
-	SandboxID   uuid.UUID
-	WorkspaceID uuid.UUID
-	Mode        string
-	Generation  int64
-	CreatedAt   pgtype.Timestamptz
-}
-
 type AuditRecord struct {
 	ID            int64
 	At            pgtype.Timestamptz
