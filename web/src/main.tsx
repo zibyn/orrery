@@ -1,14 +1,19 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createRouter, RouterProvider } from '@tanstack/react-router'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
+import { Toaster } from './components/ui/sonner'
 import { LocaleProvider } from './lib/i18n'
+import { notifyError } from './lib/notify'
 import { getLocale } from './paraglide/runtime'
 import { routeTree } from './routeTree.gen'
 import './index.css'
 
-const queryClient = new QueryClient()
+const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: notifyError }),
+  mutationCache: new MutationCache({ onError: notifyError }),
+})
 const router = createRouter({ routeTree, context: { queryClient } })
 
 // Set the document language before the first render so assistive technology
@@ -26,6 +31,7 @@ createRoot(document.getElementById('root')!).render(
     <LocaleProvider>
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
+        <Toaster closeButton />
       </QueryClientProvider>
     </LocaleProvider>
   </StrictMode>,

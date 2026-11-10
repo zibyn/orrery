@@ -12,7 +12,7 @@ import {
   frameEnd,
   frameText,
 } from '@/lib/exec-stream'
-import { messageOf } from '@/lib/labels'
+import { notifyError } from '@/lib/notify'
 import { buildExecPollInterval, buildLogView } from '@/lib/snapshots'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
@@ -35,14 +35,12 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
   const streaming = view === 'follow' || view === 'stored'
   const [terminal, setTerminal] = useState<Terminal | null>(null)
   const [result, setResult] = useState<ExecResultFrame | null>(null)
-  const [error, setError] = useState('')
   const [loading, setLoading] = useState(view === 'stored')
 
   useEffect(() => {
     if (!terminal || !streaming) return
     terminal.reset()
     setResult(null)
-    setError('')
     setLoading(true)
 
     if (view === 'follow') {
@@ -53,7 +51,7 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
           result: setResult,
           error: (message) => {
             setLoading(false)
-            setError(message)
+            notifyError(message)
           },
           open: () => setLoading(false),
         },
@@ -83,7 +81,7 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
         // The cached Exec may predate the finish; refresh it for the result line.
         await queryClient.refetchQueries({ queryKey: ['exec', execId] })
       } catch (err) {
-        if (!cancelled) setError(messageOf(err))
+        if (!cancelled) notifyError(err)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -121,10 +119,6 @@ export function BuildLog({ execId, mode }: BuildLogProps) {
           <Hourglass className="size-4" />
           {m.build_log_queued()}
         </p>
-      )}
-      {exec.error && <p className="text-sm whitespace-pre-line text-destructive">{messageOf(exec.error)}</p>}
-      {error && (
-        <p className="text-sm whitespace-pre-line text-destructive">{error}</p>
       )}
       {/* Hidden, not unmounted, so the follow stream reuses the same terminal. */}
       <TerminalView

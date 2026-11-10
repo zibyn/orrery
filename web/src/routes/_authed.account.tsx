@@ -7,9 +7,7 @@ import { z } from 'zod'
 
 import { api, type CreatedToken, type ListResponse, type Token } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { TokenReveal } from '@/components/token-reveal'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,7 +44,7 @@ import {
 } from '@/components/ui/sheet'
 import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
-import { messageOf, scopeLabel } from '@/lib/labels'
+import { scopeLabel } from '@/lib/labels'
 import { expiresAtFromInput, formatTimestamp, scopeOptions } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
@@ -94,10 +92,8 @@ function AccountPage() {
         window.location.assign('/login')
         return
       }
-      setTokenError('')
       void queryClient.invalidateQueries({ queryKey: ['tokens'] })
     },
-    onError: (err) => setTokenError(messageOf(err)),
   })
 
   const apiTokens = (tokens.data?.items ?? []).filter((token) => token.kind === 'token')
@@ -137,8 +133,8 @@ function AccountPage() {
         setCreated(token)
         createForm.reset()
         setTokenOpen(false)
-      } catch (err) {
-        setTokenError(messageOf(err))
+      } catch {
+        // The failure is already a toast; the dialog stays open to retry.
       }
     },
   })
@@ -263,18 +259,6 @@ function AccountPage() {
           <Spinner />
           {m.common_loading()}
         </div>
-      )}
-      {tokens.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.account_tokens_load_error()}: <Problem error={tokens.error} />
-          </AlertDescription>
-        </Alert>
-      )}
-      {tokenError && !tokenOpen && (
-        <Alert variant="destructive">
-          <AlertDescription className="whitespace-pre-line">{tokenError}</AlertDescription>
-        </Alert>
       )}
 
       {tokens.data && (

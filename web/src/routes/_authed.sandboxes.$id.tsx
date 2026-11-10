@@ -5,11 +5,9 @@ import { type ReactNode, useState } from 'react'
 
 import { api, type ListResponse, type Sandbox, type Snapshot } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { SandboxFiles } from '@/components/sandbox-files'
 import { SandboxPorts } from '@/components/sandbox-ports'
 import { StatusBadge } from '@/components/status-badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -94,7 +92,6 @@ function SandboxDetailPage() {
 
   const current = sandbox.data
   const busy = current?.state === 'stopping' || current?.state === 'deleting' || current?.state === 'deleted'
-  const error = sandbox.error ?? action.error ?? remove.error
 
   return (
     <div className="flex flex-col gap-6">
@@ -207,13 +204,6 @@ function SandboxDetailPage() {
           <Spinner />
           {m.sandbox_loading()}
         </div>
-      )}
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            <Problem error={error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {current && (

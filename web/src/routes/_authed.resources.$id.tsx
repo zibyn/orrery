@@ -11,9 +11,7 @@ import {
   type ResourceVersion,
 } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -174,39 +172,11 @@ function ResourceDetailPage() {
         }
       />
 
-      {remove.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            <Problem error={remove.error} />
-          </AlertDescription>
-        </Alert>
-      )}
-      {setCurrent.error && (
-        <Alert variant="destructive" data-testid="version-action-error">
-          <AlertDescription>
-            <Problem error={setCurrent.error} />
-          </AlertDescription>
-        </Alert>
-      )}
       {resource.isPending && (
         <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
           <Spinner />
           {m.common_loading()}
         </div>
-      )}
-      {resource.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.resource_load_error()}: <Problem error={resource.error} />
-          </AlertDescription>
-        </Alert>
-      )}
-      {versions.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.snapshot_versions_load_error()}: <Problem error={versions.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       <Card>
@@ -380,20 +350,6 @@ function VersionFiles({ resourceId, versionId }: { resourceId: string; versionId
             <Spinner />
             {m.common_loading()}
           </div>
-        )}
-        {manifest.error && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              <Problem error={manifest.error} />
-            </AlertDescription>
-          </Alert>
-        )}
-        {download.error && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              <Problem error={download.error} />
-            </AlertDescription>
-          </Alert>
         )}
         {manifest.data && entries.length === 0 && (
           <Empty className="border">

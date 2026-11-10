@@ -123,7 +123,7 @@ test('console: create a Snapshot with its first version, reject a duplicate name
   await page.getByLabel('Source').selectOption('import')
   await page.getByLabel('Image ref').fill(ref)
   await page.getByRole('button', { name: 'Create version' }).click()
-  await expect(page.getByRole('alert')).not.toBeEmpty()
+  await expect(page.locator('[data-sonner-toast]')).not.toBeEmpty()
   await expect(page).toHaveURL(/\/snapshots\/new$/)
 
   // Deleting after confirming returns to the list, without the Snapshot.
@@ -255,7 +255,7 @@ test('console: set a version as current, and delete only a non-current one', asy
   await setCurrent(second)
   await page.getByTestId(`version-delete-${second}`).click()
   await page.getByTestId('confirm-action').click()
-  await expect(page.getByTestId('version-action-error')).toContainText('current')
+  await expect(page.locator('[data-sonner-toast]')).toContainText('current')
   await expect(page.getByTestId(`version-${second}`)).toBeVisible()
 
   // Deleting a non-current version after confirming removes it from the table.
@@ -313,7 +313,7 @@ test('console: build a new version and land on its build log, one Idempotency-Ke
 
   await page.getByLabel('Dockerfile').fill('FROM scratch\n')
   await page.getByRole('button', { name: 'Create version' }).click()
-  await expect(page.getByRole('alert')).not.toBeEmpty()
+  await expect(page.locator('[data-sonner-toast]')).not.toBeEmpty()
   await page.getByRole('button', { name: 'Create version' }).click()
 
   await expect(page).toHaveURL(new RegExp(`/snapshots/${snapshotId}\\?version=${firstVersionId}`))

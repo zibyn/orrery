@@ -5,8 +5,6 @@ import { useState, type ChangeEvent } from 'react'
 
 import { api, type AuditRecord, type ListResponse } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -128,13 +126,6 @@ function AuditPage() {
           <Spinner />
           {m.audit_loading()}
         </div>
-      )}
-      {records.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.audit_load_error()}: <Problem error={records.error} />
-          </AlertDescription>
-        </Alert>
       )}
       {records.data?.items.length === 0 && (
         <p className="text-sm text-muted-foreground">{m.audit_empty()}</p>

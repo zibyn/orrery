@@ -4,9 +4,7 @@ import { useState } from 'react'
 
 import { api, type CreatedToken } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { TokenReveal } from '@/components/token-reveal'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Card, CardContent } from '@/components/ui/card'
 import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/components/ui/item'
 import { useLocale } from '@/lib/i18n'
@@ -32,16 +30,12 @@ export const Route = createFileRoute('/_authed/cli-auth')({
   errorComponent: CliAuthError,
 })
 
-function CliAuthError({ error }: { error: unknown }) {
+function CliAuthError() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-3 py-6">
       <PageHeader title={m.cli_title()} />
-      <Alert variant="destructive">
-        <AlertDescription>
-          {m.cli_create_error()}: <Problem error={error} />
-        </AlertDescription>
-      </Alert>
+      <p className="text-sm text-muted-foreground">{m.cli_create_error()}</p>
     </div>
   )
 }

@@ -5,9 +5,7 @@ import { useState } from 'react'
 
 import { api, type ListResponse, type Workspace } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import {
@@ -72,25 +70,11 @@ function WorkspacesPage() {
         }
       />
 
-      {create.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            <Problem error={create.error} />
-          </AlertDescription>
-        </Alert>
-      )}
       {workspaces.isPending && (
         <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
           <Spinner />
           {m.common_loading()}
         </div>
-      )}
-      {workspaces.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.workspaces_load_error()}: <Problem error={workspaces.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {workspaces.data?.items.length === 0 && (

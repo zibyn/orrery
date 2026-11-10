@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { messageOf } from '@/lib/labels'
+import { notifyError } from '@/lib/notify'
 import { m } from '@/paraglide/messages'
 
 export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
@@ -28,7 +28,7 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
     // navigate it to the ticket URL once the request returns.
     const popup = window.open('', '_blank')
     if (!popup) {
-      setError(m.ports_blocked())
+      notifyError(m.ports_blocked())
       setLocked(true)
       return
     }
@@ -39,7 +39,7 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
       popup.location.href = ticket.url
     } catch (err) {
       popup.close()
-      setError(err instanceof Error ? messageOf(err) : m.ports_failed())
+      notifyError(err instanceof Error ? err : m.ports_failed())
       setLocked(true)
     } finally {
       setOpening(false)

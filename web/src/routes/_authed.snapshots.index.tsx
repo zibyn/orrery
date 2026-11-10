@@ -4,8 +4,6 @@ import { Layers, Plus } from 'lucide-react'
 
 import { api, type ListResponse, type Snapshot } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { buttonVariants } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import {
@@ -66,13 +64,6 @@ function SnapshotsPage() {
           <Spinner />
           {m.snapshots_loading()}
         </div>
-      )}
-      {snapshots.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.snapshots_load_error()}: <Problem error={snapshots.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {snapshots.data?.items.length === 0 && (

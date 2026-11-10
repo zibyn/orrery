@@ -4,7 +4,7 @@ import { Plus, Upload, X } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
 import { api, type ListResponse, type Secret, type Snapshot } from '@/api'
-import { Problem } from '@/components/problem'
+import { notifyError } from '@/lib/notify'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardFooter } from '@/components/ui/card'
 import {
@@ -44,7 +44,7 @@ export function SnapshotVersionForm({
   onSubmit: (values: SnapshotVersionFormValues) => Promise<void>
   onCancel: () => void
 }) {
-  const [error, setError] = useState<unknown>()
+  const [error, setError] = useState<string>()
   const snapshots = useQuery({
     queryKey: ['snapshots'],
     queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots?limit=200'),
@@ -66,7 +66,7 @@ export function SnapshotVersionForm({
       try {
         await onSubmit(parsed.data)
       } catch (err) {
-        setError(err)
+        notifyError(err)
       }
     },
   })
@@ -76,7 +76,6 @@ export function SnapshotVersionForm({
       {secret.name}
     </NativeSelectOption>
   ))
-  const loadError = snapshots.error ?? secrets.error
 
   return (
     <form
@@ -296,9 +295,9 @@ export function SnapshotVersionForm({
         </CardFooter>
       </Card>
 
-      {(error !== undefined || loadError) && (
+      {error && (
         <FieldError>
-          <Problem error={error ?? loadError} />
+          {error}
         </FieldError>
       )}
     </form>

@@ -5,8 +5,6 @@ import { useState } from 'react'
 
 import { api, type GitLink, type GitProvider, type ListResponse } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -78,20 +76,6 @@ function GitPage() {
           <Spinner />
           {m.git_loading()}
         </div>
-      )}
-      {(providers.error ?? links.error) && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.git_load_error()}: <Problem error={providers.error ?? links.error} />
-          </AlertDescription>
-        </Alert>
-      )}
-      {unlink.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.git_unlink_error()}: <Problem error={unlink.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {providers.data?.items.length === 0 && (

@@ -4,9 +4,7 @@ import { ArrowUp, Download, File, Folder, PackagePlus, Upload } from 'lucide-rea
 import { useRef, useState } from 'react'
 
 import { api, apiRaw, type FileEntry, type ResourceVersion } from '@/api'
-import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
@@ -38,7 +36,7 @@ import {
   joinPath,
   parentPath,
 } from '@/lib/files'
-import { causeLabel, messageOf } from '@/lib/labels'
+import { causeLabel } from '@/lib/labels'
 import { resourceVersionPollInterval } from '@/lib/resources'
 import { formatLocalDateTime } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
@@ -53,7 +51,6 @@ export function SandboxFiles({
   workspaceId?: string
 }) {
   const [path, setPath] = useState('')
-  const [uploadError, setUploadError] = useState('')
   const queryClient = useQueryClient()
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -66,10 +63,8 @@ export function SandboxFiles({
     mutationFn: (file: File) =>
       apiRaw('PUT', fileContentPath(sandboxId, joinPath(path, file.name)), file),
     onSuccess: () => {
-      setUploadError('')
       queryClient.invalidateQueries({ queryKey: ['files', sandboxId] })
     },
-    onError: (err) => setUploadError(messageOf(err)),
   })
 
   // Publishing walks the Workspace on its Node; the version starts pending
@@ -151,26 +146,7 @@ export function SandboxFiles({
             {m.common_loading()}
           </div>
         )}
-        {listing.error && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              <Problem error={listing.error} />
-            </AlertDescription>
-          </Alert>
-        )}
-        {uploadError && (
-          <Alert variant="destructive">
-            <AlertDescription className="whitespace-pre-line">{uploadError}</AlertDescription>
-          </Alert>
-        )}
 
-        {publish.error && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              <Problem error={publish.error} />
-            </AlertDescription>
-          </Alert>
-        )}
         {publish.data && publish.variables && (
           <PublishStatus version={publish.data} name={publish.variables.resource} />
         )}
@@ -327,11 +303,6 @@ function PublishStatus({ version: accepted, name }: { version: ResourceVersion; 
       >
         {m.files_publish_open()}
       </Link>
-      {version.error && (
-        <span className="text-destructive" role="alert">
-          <Problem error={version.error} />
-        </span>
-      )}
     </p>
   )
 }

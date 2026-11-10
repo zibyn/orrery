@@ -5,8 +5,6 @@ import { useState } from 'react'
 
 import { api, type ListResponse, type QuotaUsage, type User } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,7 +27,6 @@ import {
 import { Button } from '@/components/ui/button'
 import {
   Field,
-  FieldError,
   FieldGroup,
   FieldLabel,
   FieldLegend,
@@ -114,13 +111,6 @@ function UsersPage() {
           {m.users_loading()}
         </div>
       )}
-      {users.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.users_load_error()}: <Problem error={users.error} />
-          </AlertDescription>
-        </Alert>
-      )}
 
       {users.data && users.data.items.length > 0 && (
         <ItemGroup className="gap-2">
@@ -198,11 +188,6 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
             <span data-testid="user-identity">{identityLabel(user)}</span> ·{' '}
             {m.users_limits({ gpus: user.quota.gpus, sandboxes: user.quota.sandboxes })}
           </ItemDescription>
-          {remove.error && (
-            <FieldError>
-              <Problem error={remove.error} />
-            </FieldError>
-          )}
         </ItemContent>
         {!user.deleted_at && (
           <ItemActions>
@@ -295,11 +280,6 @@ function UserRow({ user, isSelf }: { user: User; isSelf: boolean }) {
                   </div>
                 </FieldSet>
 
-                {save.error && (
-                  <FieldError data-testid="user-row-error">
-                    <Problem error={save.error} />
-                  </FieldError>
-                )}
                 <Field orientation="horizontal">
                   <Button type="submit" disabled={save.isPending || !quotaValid}>
                     {m.users_save()}

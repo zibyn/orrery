@@ -5,9 +5,7 @@ import { useState } from 'react'
 
 import { api, type ListResponse, type Sandbox, type User } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { buttonVariants } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldLabel } from '@/components/ui/field'
@@ -106,20 +104,6 @@ function SandboxesPage() {
           <Spinner />
           {m.sandboxes_loading()}
         </div>
-      )}
-      {sandboxes.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.sandboxes_load_error()}: <Problem error={sandboxes.error} />
-          </AlertDescription>
-        </Alert>
-      )}
-      {users.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.users_load_error()}: <Problem error={users.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {sandboxes.data?.items.length === 0 && (

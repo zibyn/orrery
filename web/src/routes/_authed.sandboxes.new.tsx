@@ -13,7 +13,7 @@ import {
   type Workspace,
 } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
+import { notifyError } from '@/lib/notify'
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -44,7 +44,7 @@ function NewSandboxPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const navigate = useNavigate()
   const prefill = Route.useSearch()
-  const [error, setError] = useState<unknown>()
+  const [error, setError] = useState<string>()
 
   const snapshots = useQuery({
     queryKey: ['snapshots'],
@@ -99,12 +99,10 @@ function NewSandboxPage() {
         )
         navigate({ to: '/sandboxes/$id', params: { id: created.id } })
       } catch (err) {
-        setError(err)
+        notifyError(err)
       }
     },
   })
-
-  const loadError = snapshots.error ?? capacity.error ?? workspaces.error
 
   return (
     <div className="flex max-w-3xl flex-col gap-6">
@@ -341,9 +339,9 @@ function NewSandboxPage() {
           </CardFooter>
         </Card>
 
-        {(error !== undefined || loadError) && (
+        {error && (
           <FieldError>
-            <Problem error={error ?? loadError} />
+            {error}
           </FieldError>
         )}
       </form>

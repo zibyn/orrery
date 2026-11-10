@@ -126,11 +126,6 @@ export function problemOf(error: unknown): { title: string; detail?: string } {
   return { title: error instanceof Error ? error.message : String(error) }
 }
 
-export function messageOf(error: unknown): string {
-  const { title, detail } = problemOf(error)
-  return detail ? `${title}\n${detail}` : title
-}
-
 // Idle stop is stored in seconds; whole minutes read better (900 → 15 min).
 export function idleStopLabel(seconds: number): string {
   if (seconds === 0) return m.common_off()

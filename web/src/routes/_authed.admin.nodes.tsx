@@ -5,9 +5,7 @@ import { useState } from 'react'
 
 import { api, type CapacityNode, type ListResponse, type Node } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -85,7 +83,6 @@ function NodesPage() {
   const rows = mergeNodeCapacity(nodes.data?.items ?? [], capacity.data?.items ?? [])
   // The server's problem detail explains why a pause/resume/delete was refused
   // (for example delete preconditions, or resuming a lost Node).
-  const error = nodes.error ?? capacity.error ?? action.error ?? remove.error
 
   return (
     <div className="flex flex-col gap-6">
@@ -117,13 +114,6 @@ function NodesPage() {
           <Spinner />
           {m.nodes_loading()}
         </div>
-      )}
-      {error && (
-        <Alert variant="destructive" data-testid="node-error">
-          <AlertDescription>
-            <Problem error={error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {nodes.data && rows.length === 0 && (

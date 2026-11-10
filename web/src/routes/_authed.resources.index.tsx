@@ -4,8 +4,6 @@ import { Package } from 'lucide-react'
 
 import { api, type ListResponse, type Resource } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import {
   Item,
@@ -53,13 +51,6 @@ function ResourcesPage() {
           <Spinner />
           {m.common_loading()}
         </div>
-      )}
-      {resources.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.resources_load_error()}: <Problem error={resources.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {resources.data?.items.length === 0 && (

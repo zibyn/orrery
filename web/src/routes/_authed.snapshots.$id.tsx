@@ -6,9 +6,7 @@ import { useState } from 'react'
 import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
 import { BuildLog } from '@/components/build-log'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -212,41 +210,13 @@ function SnapshotDetailPage() {
         }
       />
 
-      {remove.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            <Problem error={remove.error} />
-          </AlertDescription>
-        </Alert>
-      )}
 
-      {versionAction.error && (
-        <Alert variant="destructive" data-testid="version-action-error">
-          <AlertDescription>
-            <Problem error={versionAction.error} />
-          </AlertDescription>
-        </Alert>
-      )}
 
       {snapshot.isPending && (
         <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
           <Spinner />
           {m.snapshot_loading()}
         </div>
-      )}
-      {snapshot.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.snapshot_load_error()}: <Problem error={snapshot.error} />
-          </AlertDescription>
-        </Alert>
-      )}
-      {versions.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.snapshot_versions_load_error()}: <Problem error={versions.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       <Card>

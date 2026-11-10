@@ -5,9 +5,7 @@ import { type ReactNode, useState } from 'react'
 
 import { api, type Workspace } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -138,25 +136,11 @@ function WorkspaceDetailPage() {
         }
       />
 
-      {remove.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            <Problem error={remove.error} />
-          </AlertDescription>
-        </Alert>
-      )}
       {workspace.isPending && (
         <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
           <Spinner />
           {m.common_loading()}
         </div>
-      )}
-      {workspace.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.workspace_load_error()}: <Problem error={workspace.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {current && (

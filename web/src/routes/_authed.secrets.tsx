@@ -5,8 +5,6 @@ import { useState, type FormEvent } from 'react'
 
 import { api, type ListResponse, type Secret } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,7 +45,6 @@ import {
 } from '@/components/ui/sheet'
 import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
-import { messageOf } from '@/lib/labels'
 import { secretNameError } from '@/lib/secrets'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
@@ -62,7 +59,6 @@ function SecretsPage() {
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
   const [error, setError] = useState('')
-  const [removeError, setRemoveError] = useState('')
   const [open, setOpen] = useState(false)
   // Set when the drawer replaces an existing Secret: the name is fixed.
   const [replacing, setReplacing] = useState(false)
@@ -86,17 +82,14 @@ function SecretsPage() {
       setOpen(false)
       void queryClient.invalidateQueries({ queryKey: ['secrets'] })
     },
-    onError: (err) => setError(messageOf(err)),
   })
 
   const remove = useMutation({
     mutationFn: (secretName: string) =>
       api<Secret>('DELETE', `/secrets/${encodeURIComponent(secretName)}`),
     onSuccess: () => {
-      setRemoveError('')
       void queryClient.invalidateQueries({ queryKey: ['secrets'] })
     },
-    onError: (err) => setRemoveError(messageOf(err)),
   })
 
   function submit(event: FormEvent) {
@@ -189,18 +182,6 @@ function SecretsPage() {
           <Spinner />
           {m.secrets_loading()}
         </div>
-      )}
-      {secrets.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.secrets_load_error()}: <Problem error={secrets.error} />
-          </AlertDescription>
-        </Alert>
-      )}
-      {removeError && (
-        <Alert variant="destructive">
-          <AlertDescription>{removeError}</AlertDescription>
-        </Alert>
       )}
 
       {secrets.data?.items.length === 0 && (

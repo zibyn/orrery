@@ -18,11 +18,11 @@ import {
 } from '@/components/ui/breadcrumb'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { consoleWebSocketUrl, formatExecResult, parseArgv } from '@/lib/exec-stream'
 import { useLocale } from '@/lib/i18n'
-import { messageOf } from '@/lib/labels'
+import { notifyError } from '@/lib/notify'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
@@ -47,7 +47,6 @@ function TerminalPage() {
   const [terminal, setTerminal] = useState<XTerminal | null>(null)
   const [status, setStatus] = useState<Status>('connecting')
   const [exit, setExit] = useState('')
-  const [error, setError] = useState('')
   const socketRef = useRef<WebSocket | null>(null)
   // Shares the detail page's cache, so the breadcrumb shows the name.
   const sandbox = useQuery({
@@ -64,17 +63,14 @@ function TerminalPage() {
       return api<Exec>('POST', `/sandboxes/${id}/execs`, body)
     },
     onSuccess: (exec) => {
-      setError('')
       setExecId(exec.id)
     },
-    onError: (err) => setError(messageOf(err)),
   })
 
   useEffect(() => {
     if (!terminal || !execId) return
     terminal.reset()
     setExit('')
-    setError('')
     setStatus('connecting')
 
     let canceled = false
@@ -97,12 +93,12 @@ function TerminalPage() {
           exec = await api<Exec>('GET', `/execs/${execId}`)
         }
       } catch (err) {
-        if (!canceled) setError(messageOf(err))
+        if (!canceled) notifyError(err)
         return
       }
       if (canceled) return
       if (exec.state === 'pending') {
-        setError(m.terminal_start_timeout())
+        notifyError(m.terminal_start_timeout())
         return
       }
 
@@ -140,7 +136,7 @@ function TerminalPage() {
       }
       socket.onerror = () => {
         if (canceled) return
-        setError(
+        notifyError(
           existingExec
             ? m.terminal_connect_failed_attached()
             : m.terminal_connect_failed(),
@@ -215,11 +211,6 @@ function TerminalPage() {
               {m.terminal_exited({ result: exit })}
             </span>
           )}
-          {error && (
-            <span className="whitespace-pre-line text-xs text-destructive" role="alert">
-              {error}
-            </span>
-          )}
         </div>
       ) : (
         <Card>
@@ -247,7 +238,6 @@ function TerminalPage() {
                     {m.terminal_open()}
                   </Button>
                 </div>
-                {error && <FieldError className="whitespace-pre-line">{error}</FieldError>}
               </FieldGroup>
             </form>
           </CardContent>

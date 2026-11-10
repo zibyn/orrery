@@ -6,10 +6,8 @@ import type { Terminal as XTerminal } from '@xterm/xterm'
 
 import { api, type Exec, type ExecResultFrame, type ListResponse, type Sandbox } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -32,7 +30,8 @@ import {
 import { Spinner } from '@/components/ui/spinner'
 import { execListPollInterval, followExecOutput, formatExecResult } from '@/lib/exec-stream'
 import { useLocale } from '@/lib/i18n'
-import { messageOf, stateLabel } from '@/lib/labels'
+import { stateLabel } from '@/lib/labels'
+import { notifyError } from '@/lib/notify'
 import { formatLocalDateTime } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
@@ -61,15 +60,12 @@ function ExecsPage() {
     refetchInterval: (query) => execListPollInterval(query.state.data?.items),
   })
   const selected = execs.data?.items.find((exec) => exec.id === selectedId)
-  const [cancelError, setCancelError] = useState('')
 
   const cancel = useMutation({
     mutationFn: (execId: string) => api<Exec>('POST', `/execs/${execId}/cancel`),
     onSuccess: () => {
-      setCancelError('')
       queryClient.invalidateQueries({ queryKey: ['execs', id] })
     },
-    onError: (err) => setCancelError(messageOf(err)),
   })
 
   return (
@@ -112,13 +108,6 @@ function ExecsPage() {
           <Spinner />
           {m.execs_loading()}
         </div>
-      )}
-      {execs.error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {m.execs_load_error()}: <Problem error={execs.error} />
-          </AlertDescription>
-        </Alert>
       )}
 
       {execs.data?.items.length === 0 && (
@@ -211,11 +200,6 @@ function ExecsPage() {
                   )}
                 </CardHeader>
                 <CardContent>
-                  {cancelError && (
-                    <Alert variant="destructive" className="mb-2">
-                      <AlertDescription className="whitespace-pre-line">{cancelError}</AlertDescription>
-                    </Alert>
-                  )}
                   <ExecLog exec={selected} />
                 </CardContent>
               </Card>
@@ -242,20 +226,18 @@ function ExecsPage() {
 function ExecLog({ exec }: { exec: Exec }) {
   const [terminal, setTerminal] = useState<XTerminal | null>(null)
   const [result, setResult] = useState<ExecResultFrame | null>(null)
-  const [error, setError] = useState('')
 
   useEffect(() => {
     if (!terminal) return
     terminal.reset()
     setResult(null)
-    setError('')
 
     return followExecOutput(
       exec.id,
       {
         write: (text) => terminal.write(text),
         result: setResult,
-        error: setError,
+        error: notifyError,
       },
       {
         // A disconnected socket is retried twice; the offset is kept so the
@@ -275,7 +257,6 @@ function ExecLog({ exec }: { exec: Exec }) {
             ? m.execs_result_finished({ result: formatExecResult(exec.result) })
             : m.execs_result_state({ state: stateLabel(exec.state) })}
       </p>
-      {error && <p className="text-sm text-destructive">{error}</p>}
       <TerminalView readOnly onReady={setTerminal} className="h-[28rem]" />
     </div>
   )

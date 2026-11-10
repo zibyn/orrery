@@ -4,9 +4,7 @@ import { useState } from 'react'
 
 import { api, type Snapshot, type SnapshotVersion } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { Problem } from '@/components/problem'
 import { SnapshotVersionForm } from '@/components/snapshot-version-form'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -46,7 +44,6 @@ function NewSnapshotVersionPage() {
     enabled: from !== undefined,
   })
   const name = snapshot.data?.name ?? id
-  const loadError = snapshot.error ?? source.error
 
   return (
     <div className="flex max-w-3xl flex-col gap-6">
@@ -76,13 +73,6 @@ function NewSnapshotVersionPage() {
         }
       />
 
-      {loadError && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            <Problem error={loadError} />
-          </AlertDescription>
-        </Alert>
-      )}
 
       {(from === undefined || source.data) && (
         <SnapshotVersionForm
