@@ -382,7 +382,12 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 		return false, err
 	}
 	defer conn.Close() //nolint:errcheck // stream ends first
+	return runControlStream(ctx, conn, rt, id, opts, version)
+}
 
+// runControlStream runs one Control stream on conn: Hello, the self-check, then
+// heartbeats until the stream or ctx ends.
+func runControlStream(ctx context.Context, conn *grpc.ClientConn, rt *Runtime, id Identity, opts RunOptions, version string) (bool, error) {
 	streamCtx, cancel := context.WithCancel(metadata.AppendToOutgoingContext(ctx,
 		"authorization", "Bearer "+id.NodeToken))
 	defer cancel()
@@ -451,6 +456,9 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 			msg, err := stream.Recv()
 			if err != nil {
 				recvErr <- err
+				// A dead stream stops the self-check and everything else on it
+				// at once, so the Agent reconnects without waiting (#233).
+				cancel()
 				return
 			}
 			runner.handle(msg)
@@ -490,6 +498,14 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	// The inventory is a hardware fact; placement still requires the CDI
 	// capability above, so a Node without working CDI shows GPUs it cannot attach.
 	gpus := enumerateGPUs(streamCtx)
+	if streamCtx.Err() != nil {
+		// The stream ended during the self-check: nothing goes out on it, and
+		// the placements it held back stay held.
+		if ctx.Err() != nil {
+			return true, nil
+		}
+		return true, <-recvErr
+	}
 	send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_Capabilities{
 		Capabilities: capabilitiesMessage(report, gpus),
 	}})

@@ -51,7 +51,8 @@ func (c *commandRunner) selfChecked() { close(c.checked) }
 func (c *commandRunner) afterSelfCheck() error {
 	select {
 	case <-c.checked:
-		return nil
+		// A stream that ended after its self-check releases nothing.
+		return c.ctx.Err()
 	case <-c.ctx.Done():
 		return c.ctx.Err()
 	}

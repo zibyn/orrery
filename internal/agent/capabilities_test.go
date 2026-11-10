@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -92,5 +95,18 @@ func TestOnlyRejectionClearsIdentity(t *testing.T) {
 		if clearsIdentity(status.Error(code, "x")) {
 			t.Errorf("%s must preserve identity", code)
 		}
+	}
+}
+
+// runsc resolves container IDs by prefix, so an exec into the source probe is
+// ambiguous once a target whose ID starts with the source's exists (#237).
+func TestProbeTargetIsNotPrefixedBySource(t *testing.T) {
+	source := probePrefix + uuid.NewString()
+	target := probeTargetName(source)
+	if strings.HasPrefix(target, source) || strings.HasPrefix(source, target) {
+		t.Fatalf("probeTargetName(%q) = %q: one ID prefixes the other", source, target)
+	}
+	if target == source {
+		t.Fatalf("probeTargetName(%q) is the source itself", source)
 	}
 }

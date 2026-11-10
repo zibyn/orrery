@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"strings"
+
 	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/supervisor"
 )
@@ -11,11 +13,15 @@ const (
 	probeWorkspace  = "/workspace"
 	probeSupervisor = "/.orrery/bin/supervisor"
 	probeLinkPort   = 8080 // the Link self-check target listens here
+	probePrefix     = "orrery-probe-"
 )
 
 // probeTargetName is the Link self-check's target probe, named after the
-// source probe so adopt leaves both alone.
-func probeTargetName(probe string) string { return probe + "-target" }
+// source probe so adopt leaves both alone. The source's ID must not prefix
+// the target's: runsc resolves container IDs by prefix (#237).
+func probeTargetName(probe string) string {
+	return strings.Replace(probe, probePrefix, probePrefix+"target-", 1)
+}
 
 // withSnapshotBuild adds the BuildKit endpoint self-check to a Runtime report.
 // It is independent of the Runtime type (runtime.md §12): a Local Node with a

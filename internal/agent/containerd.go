@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	eventtypes "github.com/containerd/containerd/api/events"
@@ -475,7 +476,7 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	binDir, workspace := filepath.Join(dir, "bin"), filepath.Join(dir, "workspace")
 	const cpu = 0.5
 	id := uuid.New()
-	name := "orrery-probe-" + id.String()
+	name := probePrefix + id.String()
 	// The egress self-check starts at Mode none, without the operator's Rules
 	// (runtime.md §13).
 	none, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressNone})
@@ -558,7 +559,7 @@ func (d *containerdDriver) linksEnforced(ctx context.Context, img containerd.Ima
 	// The target may still be binding, so the linked dial gets a few tries;
 	// once it connects, the listener is up and the gateway's refusal counts.
 	linked := false
-	for attempt := 0; attempt < 10 && !linked; attempt++ {
+	for attempt := 0; attempt < 10 && !linked && ctx.Err() == nil; attempt++ {
 		if attempt > 0 {
 			time.Sleep(300 * time.Millisecond)
 		}
@@ -667,6 +668,10 @@ func (d *containerdDriver) execProbe(ctx context.Context, c containerd.Container
 		return 0, nil, "", fmt.Errorf("start probe exec: %w", err)
 	}
 	status := <-statusC
+	if ctx.Err() != nil {
+		// Wait gave up, not the process: kill it so its IO closes now.
+		p.Kill(context.WithoutCancel(ctx), syscall.SIGKILL) //nolint:errcheck // best effort
+	}
 	p.IO().Wait()
 	code, _, err := status.Result()
 	return int(code), stdout.Bytes(), strings.TrimSpace(stderr.String()), err
