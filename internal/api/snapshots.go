@@ -650,9 +650,10 @@ func (s *Server) takeSnapshotCancel(versionID uuid.UUID) (context.CancelFunc, bo
 
 // resolveSnapshotPin resolves a create request's `snapshot` (a
 // SnapshotVersion id or a Snapshot name, own first and then platform) to the
-// digest to pin. A missing or unusable Snapshot returns a problem code.
-func resolveSnapshotPin(ctx context.Context, q *store.Queries, cfg Config, owner uuid.UUID, raw *string) (string, string, string) {
-	ref := cfg.DefaultSnapshot
+// digest to pin; an omitted one takes the default for gpuCount. A missing or
+// unusable Snapshot returns a problem code.
+func resolveSnapshotPin(ctx context.Context, q *store.Queries, cfg Config, owner uuid.UUID, raw *string, gpuCount int32) (string, string, string) {
+	ref := cfg.defaultSnapshotFor(gpuCount)
 	platformOnly := true
 	if raw != nil && *raw != "" {
 		ref = *raw

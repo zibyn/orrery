@@ -84,6 +84,30 @@ func TestGPUSandboxReady(t *testing.T) {
 	}
 }
 
+// TestGPUSandboxDefaultSnapshot creates a GPU Sandbox without `snapshot`: it
+// pins the default_gpu platform Snapshot (scripts/e2e.sh marks the CUDA entry),
+// not the Alpine CPU default, so nvidia-smi runs (#235).
+func TestGPUSandboxDefaultSnapshot(t *testing.T) {
+	if os.Getenv("ORRERY_E2E_CUDA_IMAGE") == "" {
+		t.Skip("ORRERY_E2E_CUDA_IMAGE is not set; scripts/e2e.sh adds the default_gpu entry only with it")
+	}
+	admin := adminToken(t)
+	host := startGPUHost(t, "e2e-gpu-default")
+	waitForNodeReady(t, admin, host.nodeName)
+	node := findNode(t, admin, host.nodeName)
+	cards := requireGPUs(t, node)
+	setGPUQuota(t, admin, int32(cards), int32(cards)+2)
+
+	body := gpuSandboxBody(t, node, 1)
+	delete(body, "snapshot")
+	sb := createSandbox(t, admin, body)
+	t.Cleanup(func() { deleteSandbox(t, admin, sb.ID) })
+	waitForSandboxReady(t, admin, sb.ID)
+	if seen := remoteGPUUUIDs(t, host, sb.ID); len(seen) != 1 {
+		t.Fatalf("nvidia-smi in a default-Snapshot GPU Sandbox lists %v, want one card", seen)
+	}
+}
+
 // TestGPUQueueAndDeadline is the GPU form of "queue-and-deadline" (#57): when
 // every card is held, the next request waits and its deadline releases the
 // quota hold.

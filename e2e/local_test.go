@@ -58,7 +58,7 @@ func TestLocalRuntime(t *testing.T) {
 
 	// Local has no Snapshot: naming one is 422 unsupported, before placement.
 	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
-		"cpu": 0.5, "memory": 64 << 20, "runtime": "local", "snapshot": "default",
+		"cpu": 0.5, "memory": 64 << 20, "runtime": "local", "snapshot": os.Getenv("ORRERY_E2E_PLATFORM_SNAPSHOT"),
 	})
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("local with a Snapshot: status = %d, want 422 (%s)", status, data)

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,9 @@ type Config struct {
 	// DefaultSnapshot is the platform Snapshot name used when a Sandbox
 	// create omits snapshot (defaults.md, ORRERY_DEFAULT_SNAPSHOT).
 	DefaultSnapshot string
+	// DefaultGPUSnapshot is used instead when the create asks for GPUs;
+	// empty falls back to DefaultSnapshot (ORRERY_DEFAULT_GPU_SNAPSHOT).
+	DefaultGPUSnapshot string
 	// ExecLogCap bounds an Execution Log (defaults.md, 16 MiB).
 	ExecLogCap int64
 	// ExecLogRetention keeps an Execution Log this long after its Exec is
@@ -100,6 +104,15 @@ type Config struct {
 	// every Node in HelloAck (defaults.md "egress"); config.yaml only.
 	EgressAllow []string
 	EgressDeny  []string
+}
+
+// defaultSnapshotFor names the platform Snapshot a create without
+// `snapshot` pins: the GPU default when it asks for GPUs and one is set.
+func (c Config) defaultSnapshotFor(gpuCount int32) string {
+	if gpuCount > 0 && c.DefaultGPUSnapshot != "" {
+		return c.DefaultGPUSnapshot
+	}
+	return c.DefaultSnapshot
 }
 
 // PlatformSnapshot is one ORRERY_PLATFORM_SNAPSHOTS entry.
@@ -263,16 +276,14 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.DefaultSnapshot = os.Getenv("ORRERY_DEFAULT_SNAPSHOT")
-	if cfg.DefaultSnapshot != "" {
-		found := false
-		for _, snapshot := range cfg.PlatformSnapshots {
-			if snapshot.Name == cfg.DefaultSnapshot {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return Config{}, fmt.Errorf("ORRERY_DEFAULT_SNAPSHOT must name an entry of ORRERY_PLATFORM_SNAPSHOTS")
+	cfg.DefaultGPUSnapshot = os.Getenv("ORRERY_DEFAULT_GPU_SNAPSHOT")
+	for _, d := range [][2]string{
+		{"ORRERY_DEFAULT_SNAPSHOT", cfg.DefaultSnapshot},
+		{"ORRERY_DEFAULT_GPU_SNAPSHOT", cfg.DefaultGPUSnapshot},
+	} {
+		env, name := d[0], d[1]
+		if name != "" && !slices.ContainsFunc(cfg.PlatformSnapshots, func(p PlatformSnapshot) bool { return p.Name == name }) {
+			return Config{}, fmt.Errorf("%s must name an entry of ORRERY_PLATFORM_SNAPSHOTS", env)
 		}
 	}
 	return cfg, nil

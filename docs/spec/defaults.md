@@ -215,10 +215,12 @@ egress:
 
 ### `platform_snapshots`
 
-列表，每项 `{name, ref, default}`。`ref` 形如 `…@sha256:…`，`name` 是 registry 里的 `platform/<name>`。Control Plane 启动时导入其中还没导入的条目；导入失败不影响启动，只让用到它的 Sandbox 创建失败。平台 Snapshot 所有 User 可读，API 不能增删（ADR-0021）。`default: true` 最多一项，多于一项启动失败；它是不带 `snapshot` 的 `runtime: container` 创建请求的默认值；没有默认项时该请求返回错误，`runtime: local` 不用 Snapshot。空列表表示没有平台 Snapshot。
+列表，每项 `{name, ref, default, default_gpu}`。`ref` 形如 `…@sha256:…`，`name` 是 registry 里的 `platform/<name>`。Control Plane 启动时导入其中还没导入的条目；导入失败不影响启动，只让用到它的 Sandbox 创建失败。平台 Snapshot 所有 User 可读，API 不能增删（ADR-0021）。`default: true` 最多一项，多于一项启动失败；它是不带 `snapshot` 的 `runtime: container` 创建请求的默认值；没有默认项时该请求返回错误，`runtime: local` 不用 Snapshot。`default_gpu: true` 同样最多一项，多于一项启动失败；`gpu.count > 0` 且不带 `snapshot` 的创建请求用它，没有这一项时退回 `default`。名字描述镜像内容（如 `ubuntu-24.04`），是否默认只看这两个标志。空列表表示没有平台 Snapshot。
+
+`install.sh server` 首次安装写两项，都按 digest 固定到该版本发布的 Orrery 沙箱镜像（`deploy/sandbox/Dockerfile`）：`ubuntu-24.04`（`ghcr.io/zibyn/orrery-sandbox`，Ubuntu 24.04 加 bash、git、curl、jq、ripgrep、build-essential、python3、uv、nodejs 等工具，`default: true`）和 `cuda-12.8-ubuntu-24.04`（`ghcr.io/zibyn/orrery-sandbox-cuda`，同样的工具层，基于 `nvidia/cuda:12.8.1-runtime-ubuntu24.04`，仅 amd64，`default_gpu: true`）。digest 在安装时向 ghcr 查询，查不到则安装失败。
 
 **不出现在 `config.yaml` 的键**。`api_addr`、`node_addr`、`node_tls_cert`、`node_tls_key` 由代码默认值给出，只可用环境变量（`ORRERY_API_ADDR`、`ORRERY_NODE_ADDR`、`ORRERY_NODE_TLS_CERT`、`ORRERY_NODE_TLS_KEY`）覆盖。
 
-**环境变量模式**。`ORRERY_CONFIG_FILE` 未设置时保留现有变量名，包括 `ORRERY_ENCRYPTION_KEYS_FILE`、`ORRERY_GIT_PROVIDERS_FILE`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_PLATFORM_SNAPSHOTS`、`ORRERY_DEFAULT_SNAPSHOT`，用于测试和 CI。`ORRERY_TEST_PURGE_INTERVAL` 是测试钩子，不属于部署配置。
+**环境变量模式**。`ORRERY_CONFIG_FILE` 未设置时保留现有变量名，包括 `ORRERY_ENCRYPTION_KEYS_FILE`、`ORRERY_GIT_PROVIDERS_FILE`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_PLATFORM_SNAPSHOTS`、`ORRERY_DEFAULT_SNAPSHOT`、`ORRERY_DEFAULT_GPU_SNAPSHOT`，用于测试和 CI。`ORRERY_TEST_PURGE_INTERVAL` 是测试钩子，不属于部署配置。
 
 **对象存储布局**。只用一个 bucket：CAS 对象在 `cas/<owner_id>/sha256/<hex>`，manifest 在 `manifests/<owner_id>/<address>`，registry 的 s3 driver 用 `rootdirectory: /registry`。registry 里用户 Snapshot 在 `snapshots/<snapshot_id>`，平台 Snapshot 在 `platform/<name>`，一律按 digest 引用，不打 tag。e2e 和参考部署用 RustFS 1.0.2；安装脚本用一个一次性容器建 bucket。
