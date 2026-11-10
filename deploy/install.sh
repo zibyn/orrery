@@ -77,17 +77,17 @@ oidc_block() {
 }
 
 # sandbox_ref IMAGE VERSION prints ghcr.io/OWNER/IMAGE@sha256:… for the
-# release's tag (CI tags X.Y.Z without the v). platform_snapshots is
+# release's tag (CI tags vX.Y.Z, as compose pulls). platform_snapshots is
 # digest-only (ADR-0012), so the tag is resolved now, never at Sandbox create.
 sandbox_ref() {
-  local repo="${REPO%%/*}/$1" tag="${2#v}" token digest
+  local repo="${REPO%%/*}/$1" tag="$2" token digest
   local accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
   token="$(curl -fsSL "https://ghcr.io/token?scope=repository:$repo:pull" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')" || token=""
   digest="$(curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" \
     "https://ghcr.io/v2/$repo/manifests/$tag" | tr -d '\r' |
     awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')" || digest=""
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
-    die "could not resolve the digest of ghcr.io/$repo:$tag; check this host reaches ghcr.io and that $2 published it"
+    die "could not resolve the digest of ghcr.io/$repo:$tag; check this host reaches ghcr.io and that $tag is published"
   printf 'ghcr.io/%s@%s' "$repo" "$digest"
 }
 

@@ -183,9 +183,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/orrery-server
-          # semver also tags :latest; a push to main tags :main.
+          # semver also tags :latest; a push to main tags :main. The vX.Y.Z
+          # tag is what release compose.yaml pulls (ORRERY_VERSION is the git tag).
           tags: |
             type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}}
             type=ref,event=branch
       - uses: docker/build-push-action@v6
         with:
@@ -288,6 +290,7 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
             type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}}
             type=ref,event=branch
       - uses: docker/build-push-action@v6
         with:

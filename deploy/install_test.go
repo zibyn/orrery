@@ -247,7 +247,7 @@ func TestPlatformSnapshotsBlock(t *testing.T) {
 curl() {
   case "$*" in
     *ghcr.io/token*) echo '{"token":"tok"}' ;;
-    *"Bearer tok"*/v2/zibyn/orrery-sandbox/manifests/1.2.3*|*"Bearer tok"*/v2/zibyn/orrery-sandbox-cuda/manifests/1.2.3*)
+    *"Bearer tok"*/v2/zibyn/orrery-sandbox/manifests/v1.2.3*|*"Bearer tok"*/v2/zibyn/orrery-sandbox-cuda/manifests/v1.2.3*)
       printf 'HTTP/2 200\r\nDocker-Content-Digest: `+digest+`\r\n\r\n' ;;
     *) return 22 ;;
   esac
