@@ -310,3 +310,55 @@ func TestExecEnv(t *testing.T) {
 		t.Fatalf("empty PATH base = %q", got)
 	}
 }
+
+// failingExecOutput breaks on its first batch after the opening ack, like a
+// proxy that closes an idle stream.
+type failingExecOutput struct{ fakeExecOutput }
+
+func (f *failingExecOutput) Send(batch *nodev1.OutputBatch) error {
+	if len(batch.Frames) > 0 {
+		return errors.New("stream reset")
+	}
+	return nil
+}
+
+// TestStreamExecRetriesBrokenStream: a stream that breaks before the exit is
+// acknowledged is reopened, so the finished record still reaches the Control
+// Plane without waiting for an Agent reconnect.
+func TestStreamExecRetriesBrokenStream(t *testing.T) {
+	root := t.TempDir()
+	sandboxID, execID := uuid.New(), uuid.New()
+	dir := filepath.Join(sandboxRunPath(root, sandboxID), execID.String())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFrame(t, dir, []byte("done"))
+	raw, err := json.Marshal(supervisor.Exit{Cause: "exited", FinishedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "exit"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	good := &fakeExecOutput{ctx: context.Background(), exited: make(chan struct{})}
+	opened := 0
+	r := newTestRuntime(root, good)
+	r.execStream = func(context.Context) (nodev1.Node_ExecOutputClient, error) {
+		opened++
+		if opened == 1 {
+			return &failingExecOutput{fakeExecOutput{ctx: context.Background()}}, nil
+		}
+		return good, nil
+	}
+	go r.streamExec(context.Background(), sandboxID, execID, dir)
+
+	select {
+	case <-good.exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the exit was not delivered after the stream broke")
+	}
+	if opened != 2 {
+		t.Fatalf("opened %d streams, want 2", opened)
+	}
+}

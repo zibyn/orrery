@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/supervisor"
@@ -210,37 +213,66 @@ func (r *Runtime) sendExecObserved(execID, startedAt string) {
 
 // streamExec pushes the record to the Control Plane and resumes from the
 // stored_seq it acknowledges. Once the exit frame is acknowledged the record
-// is deleted (runtime.md §7).
+// is deleted (runtime.md §7). A broken stream is reopened while this Control
+// connection lives; a finished record left behind would otherwise keep its
+// Exec running until the Agent reconnects.
 func (r *Runtime) streamExec(ctx context.Context, sandboxID, execID uuid.UUID, dir string) {
 	if !r.beginExec(execID.String()) {
 		return
 	}
 	defer r.endExec(execID.String())
 
+	backoff := time.Second
+	for {
+		err := r.deliverExec(ctx, sandboxID, execID, dir)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		// The Control Plane refused this Exec; retrying cannot change that.
+		if code := status.Code(err); code == codes.NotFound || code == codes.PermissionDenied || code == codes.InvalidArgument {
+			slog.Warn("exec output refused", "exec_id", execID, "error", err)
+			return
+		}
+		if _, statErr := os.Stat(dir); statErr != nil {
+			return
+		}
+		slog.Warn("exec output stream failed", "exec_id", execID, "error", err, "retry_in", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, 30*time.Second)
+	}
+}
+
+// deliverExec is one ExecOutput stream: it returns nil once the exit frame is
+// acknowledged and the record removed.
+func (r *Runtime) deliverExec(ctx context.Context, sandboxID, execID uuid.UUID, dir string) error {
 	stream, err := r.execStream(ctx)
 	if err != nil {
-		return
+		return err
 	}
 	defer stream.CloseSend() //nolint:errcheck // best effort
 	if err := stream.Send(&nodev1.OutputBatch{ExecId: execID.String()}); err != nil {
-		return
+		return err
 	}
 	ack, err := stream.Recv()
 	if err != nil {
-		return
+		return err
 	}
 
 	// The output file appears only after a successful execve; start_failed
 	// writes just the exit record.
 	f, err := waitOpen(ctx, dir)
 	if err != nil {
-		return
+		return err
 	}
 	seq := ack.StoredSeq
 	if f != nil {
 		defer f.Close() //nolint:errcheck // read-only
 		if _, err := f.Seek(seq, io.SeekStart); err != nil {
-			return
+			return err
 		}
 	}
 
@@ -248,25 +280,25 @@ func (r *Runtime) streamExec(ctx context.Context, sandboxID, execID uuid.UUID, d
 		if f != nil {
 			frames, next, err := readBatches(f, seq)
 			if err != nil {
-				return
+				return err
 			}
 			// A partial trailing frame is consumed by the failed read; seek back
 			// to its first byte so the next pass parses it whole.
 			if _, err := f.Seek(next, io.SeekStart); err != nil {
-				return
+				return err
 			}
 			seq = next
 			if len(frames) > 0 {
 				if err := stream.Send(&nodev1.OutputBatch{ExecId: execID.String(), Frames: frames}); err != nil {
-					return
+					return err
 				}
 				ack, err := stream.Recv()
 				if err != nil {
-					return
+					return err
 				}
 				seq = ack.StoredSeq
 				if _, err := f.Seek(seq, io.SeekStart); err != nil {
-					return
+					return err
 				}
 				continue
 			}
@@ -283,23 +315,24 @@ func (r *Runtime) streamExec(ctx context.Context, sandboxID, execID uuid.UUID, d
 				frame.Signal = exit.Signal
 			}
 			if err := stream.Send(&nodev1.OutputBatch{ExecId: execID.String(), Frames: []*nodev1.OutputFrame{frame}}); err != nil {
-				return
+				return err
 			}
 			if _, err := stream.Recv(); err != nil {
-				return
+				return err
 			}
 			// A live attachment still reads `exit` to report the result on its
 			// WebSocket (api.md §4).
 			r.waitPTYDetached(ctx, execID.String())
 			_ = os.RemoveAll(dir)
-			return
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+	return ctx.Err()
 }
 
 // waitOpen waits for the output record. A nil file with a nil error means the
