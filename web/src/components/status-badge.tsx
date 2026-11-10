@@ -11,6 +11,7 @@ const VARIANTS: Record<string, 'success' | 'warning' | 'info' | 'destructive' | 
   connected: 'success',
   active: 'success',
   healthy: 'success',
+  unhealthy: 'destructive',
   finished: 'secondary',
   pending: 'info',
   provisioning: 'info',

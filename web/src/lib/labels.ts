@@ -28,6 +28,7 @@ const STATE_LABELS: Record<string, () => string> = {
   active: m.state_active,
   healthy: m.state_healthy,
   queued: m.state_queued,
+  unhealthy: m.state_unhealthy,
 }
 
 const CAUSE_LABELS: Record<string, () => string> = {

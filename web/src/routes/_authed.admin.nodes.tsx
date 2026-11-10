@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { Pause, Play, Server, Trash } from 'lucide-react'
 import { useState } from 'react'
 
@@ -137,7 +137,9 @@ function NodesPage() {
               </ItemMedia>
               <ItemContent>
                 <ItemTitle>
-                  {row.name}
+                  <Link to="/admin/nodes/$id" params={{ id: row.id }} className="hover:underline">
+                    {row.name}
+                  </Link>
                   <StatusBadge state={row.status} />
                 </ItemTitle>
                 <ItemDescription className="font-mono" title={row.id}>

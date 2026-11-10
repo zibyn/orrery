@@ -29,6 +29,7 @@ import { Route as AuthedSnapshotsIdRouteImport } from './routes/_authed.snapshot
 import { Route as AuthedSnapshotsNewRouteImport } from './routes/_authed.snapshots.new'
 import { Route as AuthedWorkspacesIndexRouteImport } from './routes/_authed.workspaces.index'
 import { Route as AuthedWorkspacesIdRouteImport } from './routes/_authed.workspaces.$id'
+import { Route as AuthedAdminNodesIdRouteImport } from './routes/_authed.admin.nodes_.$id'
 import { Route as AuthedSandboxesIdExecsRouteImport } from './routes/_authed.sandboxes.$id_.execs'
 import { Route as AuthedSandboxesIdTerminalRouteImport } from './routes/_authed.sandboxes.$id_.terminal'
 import { Route as AuthedSnapshotsIdVersionsNewRouteImport } from './routes/_authed.snapshots.$id_.versions.new'
@@ -132,6 +133,11 @@ const AuthedWorkspacesIdRoute = AuthedWorkspacesIdRouteImport.update({
   path: '/workspaces/$id',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedAdminNodesIdRoute = AuthedAdminNodesIdRouteImport.update({
+  id: '/admin/nodes_/$id',
+  path: '/admin/nodes/$id',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedSandboxesIdExecsRoute = AuthedSandboxesIdExecsRouteImport.update({
   id: '/sandboxes/$id_/execs',
   path: '/sandboxes/$id/execs',
@@ -170,6 +176,7 @@ export interface FileRoutesByFullPath {
   '/sandboxes/': typeof AuthedSandboxesIndexRoute
   '/snapshots/': typeof AuthedSnapshotsIndexRoute
   '/workspaces/': typeof AuthedWorkspacesIndexRoute
+  '/admin/nodes/$id': typeof AuthedAdminNodesIdRoute
   '/sandboxes/$id/execs': typeof AuthedSandboxesIdExecsRoute
   '/sandboxes/$id/terminal': typeof AuthedSandboxesIdTerminalRoute
   '/snapshots/$id/versions/new': typeof AuthedSnapshotsIdVersionsNewRoute
@@ -194,6 +201,7 @@ export interface FileRoutesByTo {
   '/sandboxes': typeof AuthedSandboxesIndexRoute
   '/snapshots': typeof AuthedSnapshotsIndexRoute
   '/workspaces': typeof AuthedWorkspacesIndexRoute
+  '/admin/nodes/$id': typeof AuthedAdminNodesIdRoute
   '/sandboxes/$id/execs': typeof AuthedSandboxesIdExecsRoute
   '/sandboxes/$id/terminal': typeof AuthedSandboxesIdTerminalRoute
   '/snapshots/$id/versions/new': typeof AuthedSnapshotsIdVersionsNewRoute
@@ -220,6 +228,7 @@ export interface FileRoutesById {
   '/_authed/sandboxes/': typeof AuthedSandboxesIndexRoute
   '/_authed/snapshots/': typeof AuthedSnapshotsIndexRoute
   '/_authed/workspaces/': typeof AuthedWorkspacesIndexRoute
+  '/_authed/admin/nodes_/$id': typeof AuthedAdminNodesIdRoute
   '/_authed/sandboxes/$id_/execs': typeof AuthedSandboxesIdExecsRoute
   '/_authed/sandboxes/$id_/terminal': typeof AuthedSandboxesIdTerminalRoute
   '/_authed/snapshots/$id_/versions/new': typeof AuthedSnapshotsIdVersionsNewRoute
@@ -246,6 +255,7 @@ export interface FileRouteTypes {
     | '/sandboxes/'
     | '/snapshots/'
     | '/workspaces/'
+    | '/admin/nodes/$id'
     | '/sandboxes/$id/execs'
     | '/sandboxes/$id/terminal'
     | '/snapshots/$id/versions/new'
@@ -270,6 +280,7 @@ export interface FileRouteTypes {
     | '/sandboxes'
     | '/snapshots'
     | '/workspaces'
+    | '/admin/nodes/$id'
     | '/sandboxes/$id/execs'
     | '/sandboxes/$id/terminal'
     | '/snapshots/$id/versions/new'
@@ -295,6 +306,7 @@ export interface FileRouteTypes {
     | '/_authed/sandboxes/'
     | '/_authed/snapshots/'
     | '/_authed/workspaces/'
+    | '/_authed/admin/nodes_/$id'
     | '/_authed/sandboxes/$id_/execs'
     | '/_authed/sandboxes/$id_/terminal'
     | '/_authed/snapshots/$id_/versions/new'
@@ -448,6 +460,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedWorkspacesIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/admin/nodes_/$id': {
+      id: '/_authed/admin/nodes_/$id'
+      path: '/admin/nodes/$id'
+      fullPath: '/admin/nodes/$id'
+      preLoaderRoute: typeof AuthedAdminNodesIdRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/sandboxes/$id_/execs': {
       id: '/_authed/sandboxes/$id_/execs'
       path: '/sandboxes/$id/execs'
@@ -490,6 +509,7 @@ interface AuthedRouteChildren {
   AuthedSandboxesIndexRoute: typeof AuthedSandboxesIndexRoute
   AuthedSnapshotsIndexRoute: typeof AuthedSnapshotsIndexRoute
   AuthedWorkspacesIndexRoute: typeof AuthedWorkspacesIndexRoute
+  AuthedAdminNodesIdRoute: typeof AuthedAdminNodesIdRoute
   AuthedSandboxesIdExecsRoute: typeof AuthedSandboxesIdExecsRoute
   AuthedSandboxesIdTerminalRoute: typeof AuthedSandboxesIdTerminalRoute
   AuthedSnapshotsIdVersionsNewRoute: typeof AuthedSnapshotsIdVersionsNewRoute
@@ -513,6 +533,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSandboxesIndexRoute: AuthedSandboxesIndexRoute,
   AuthedSnapshotsIndexRoute: AuthedSnapshotsIndexRoute,
   AuthedWorkspacesIndexRoute: AuthedWorkspacesIndexRoute,
+  AuthedAdminNodesIdRoute: AuthedAdminNodesIdRoute,
   AuthedSandboxesIdExecsRoute: AuthedSandboxesIdExecsRoute,
   AuthedSandboxesIdTerminalRoute: AuthedSandboxesIdTerminalRoute,
   AuthedSnapshotsIdVersionsNewRoute: AuthedSnapshotsIdVersionsNewRoute,
