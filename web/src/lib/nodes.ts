@@ -1,25 +1,41 @@
-import type { CapacityGPU, CapacityNode, Node } from '@/api'
+import type { CapacityGPU, CapacityNode, CapacityPools, Node } from '@/api'
 
 // The Node page needs one row per Node: identity and pause state from
-// GET /nodes, GPU totals and allocations from GET /capacity (api.md §8).
-// `paused` is null for a Node the (paginated) Node list did not return.
+// GET /nodes, GPU/CPU/memory allocations and disk from GET /capacity (api.md §3).
+// `paused` is null for a Node the (paginated) Node list did not return; such a
+// row also has no status reason, heartbeat time or GPU health.
 export type NodeRow = {
   id: string
   name: string
   status: string
   paused: boolean | null
+  statusReason: Node['status_reason']
+  lastSeenAt: string | null
+  unhealthyGPUs: number
   gpus: CapacityGPU[]
+  cpu: CapacityPools | null
+  memory: CapacityPools | null
+  disk: CapacityNode['disk']
 }
 
 export function mergeNodeCapacity(nodes: Node[], capacity: CapacityNode[]): NodeRow[] {
   const capacityByID = new Map(capacity.map((entry) => [entry.node_id, entry]))
-  const rows: NodeRow[] = nodes.map((node) => ({
-    id: node.id,
-    name: node.name,
-    status: node.status,
-    paused: node.paused,
-    gpus: capacityByID.get(node.id)?.gpus ?? totalsFromInventory(node),
-  }))
+  const rows: NodeRow[] = nodes.map((node) => {
+    const entry = capacityByID.get(node.id)
+    return {
+      id: node.id,
+      name: node.name,
+      status: node.status,
+      paused: node.paused,
+      statusReason: node.status_reason,
+      lastSeenAt: node.last_seen_at,
+      unhealthyGPUs: unhealthyGPUs(node.hardware),
+      gpus: entry?.gpus ?? totalsFromInventory(node),
+      cpu: entry?.cpu ?? null,
+      memory: entry?.memory ?? null,
+      disk: entry?.disk ?? null,
+    }
+  })
   const known = new Set(nodes.map((node) => node.id))
   for (const entry of capacity) {
     if (known.has(entry.node_id)) continue
@@ -28,7 +44,13 @@ export function mergeNodeCapacity(nodes: Node[], capacity: CapacityNode[]): Node
       name: entry.name,
       status: entry.status,
       paused: null,
+      statusReason: null,
+      lastSeenAt: null,
+      unhealthyGPUs: 0,
       gpus: entry.gpus,
+      cpu: entry.cpu,
+      memory: entry.memory,
+      disk: entry.disk,
     })
   }
   return rows
@@ -49,4 +71,28 @@ function totalsFromInventory(node: Node): CapacityGPU[] {
   const totals = new Map<string, number>()
   for (const gpu of node.gpus) totals.set(gpu.model, (totals.get(gpu.model) ?? 0) + 1)
   return Array.from(totals, ([model, total]) => ({ model, total, allocated: 0 }))
+}
+
+// The last Heartbeat's per-card health, stored as nodes.hardware.gpu_health.
+function unhealthyGPUs(hardware: unknown): number {
+  const health = (hardware as { gpu_health?: { state?: string }[] } | null)?.gpu_health
+  return Array.isArray(health) ? health.filter((gpu) => gpu.state !== 'healthy').length : 0
+}
+
+// "3 minutes ago" in the console's language; refreshed by the 5 s list poll.
+export function formatSince(value: string | null, now: number, locale: string): string {
+  if (!value) return '—'
+  const seconds = Math.max(0, Math.round((now - Date.parse(value)) / 1000))
+  if (Number.isNaN(seconds)) return value
+  const format = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' })
+  if (seconds < 60) return format.format(-seconds, 'second')
+  if (seconds < 3600) return format.format(-Math.floor(seconds / 60), 'minute')
+  if (seconds < 86400) return format.format(-Math.floor(seconds / 3600), 'hour')
+  return format.format(-Math.floor(seconds / 86400), 'day')
+}
+
+// api.md §3: a Node whose observed free disk is under its watermark takes no
+// new allocations.
+export function diskBelowWatermark(disk: CapacityNode['disk']): boolean {
+  return disk !== null && disk.free < disk.total * disk.watermark
 }
