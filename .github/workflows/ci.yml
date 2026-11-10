@@ -1,6 +1,6 @@
 # CI gate, images and releases (ADR-0023). Pull requests run the checks and
 # the Compose e2e suite once; a push to main or a v* tag only publishes (:main,
-# or :X.Y.Z, :latest and the GitHub Release), since the merged PR already
+# or :vX.Y.Z, :latest and the GitHub Release), since the merged PR already
 # passed the gate (#179). There is no scheduled run; workflow_dispatch runs
 # the full gate, and the Playwright console suite, by hand.
 name: ci
@@ -183,10 +183,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/orrery-server
-          # semver also tags :latest; a push to main tags :main. The vX.Y.Z
-          # tag is what release compose.yaml pulls (ORRERY_VERSION is the git tag).
+          # Only vX.Y.Z, the git tag that ORRERY_VERSION holds and release
+          # compose.yaml pulls; semver also tags :latest, a main push :main.
           tags: |
-            type=semver,pattern={{version}}
             type=semver,pattern=v{{version}}
             type=ref,event=branch
       - uses: docker/build-push-action@v6
@@ -289,7 +288,6 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
-            type=semver,pattern={{version}}
             type=semver,pattern=v{{version}}
             type=ref,event=branch
       - uses: docker/build-push-action@v6

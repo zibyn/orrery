@@ -225,7 +225,7 @@ services:
 
 推送 tag `vX.Y.Z` 后 CI 在门禁通过时：
 
-- 推送镜像 `ghcr.io/zibyn/orrery-server:X.Y.Z`、`:vX.Y.Z`（release compose 按 `.env` 的 `ORRERY_VERSION`，即 git tag 拉取）和 `:latest`（main 上的每次推送对应 `:main`）。
+- 推送镜像 `ghcr.io/zibyn/orrery-server:vX.Y.Z`（与 git tag 相同，release compose 按 `.env` 的 `ORRERY_VERSION` 拉取）和 `:latest`（main 上的每次推送对应 `:main`）。
 - 用同样的 tag 推送沙箱镜像 `ghcr.io/zibyn/orrery-sandbox`（amd64、arm64）和 `ghcr.io/zibyn/orrery-sandbox-cuda`（amd64），来自 `deploy/sandbox/Dockerfile`。
 - 创建 GitHub Release，资产为 `orrery-node_vX.Y.Z_linux_{amd64,arm64}.tar.gz`（`bin/` 下的 Agent、CLI 与捆绑的 containerd、runc、buildkitd、runsc，ADR-0028）、`orrery_vX.Y.Z_darwin_{amd64,arm64}.tar.gz`（CLI）和 `SHA256SUMS`。带 `-` 的 tag（如 `v1.2.0-rc.1`）标记为 prerelease，`releases/latest` 会跳过它。
 
