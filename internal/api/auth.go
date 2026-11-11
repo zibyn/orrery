@@ -150,14 +150,15 @@ func (s *Server) authenticateSandbox(w http.ResponseWriter, r *http.Request, par
 		writeUnauthenticated(w, "unknown or revoked Sandbox Token")
 		return nil, false
 	}
-	// A disabled owner's Sandbox Token is rejected like their other
-	// credentials (ADR-0029).
+	// A disabled or deleted owner's Sandbox Token is rejected like their
+	// other credentials (ADR-0029). owner_id references users, so no row
+	// means the owner was soft-deleted.
 	owner, err := s.q.GetUser(ctx, sb.OwnerID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.internal(w, "look up Sandbox owner", err)
 		return nil, false
 	}
-	if err == nil && owner.DisabledAt.Valid {
+	if err != nil || owner.DisabledAt.Valid {
 		writeUnauthenticated(w, "unknown or revoked Sandbox Token")
 		return nil, false
 	}

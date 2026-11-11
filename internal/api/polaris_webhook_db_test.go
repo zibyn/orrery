@@ -152,11 +152,18 @@ func TestPolarisWebhookDisableAndEnable(t *testing.T) {
 
 // Deleting a person in Polaris deletes their User as DELETE /users/{id} does.
 func TestPolarisWebhookDeleteRemovesUser(t *testing.T) {
-	h, op, _ := polarisTestServer(t)
+	h, op, pool := polarisTestServer(t)
 	admin := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "adm-" + uuid.NewString(), Entitlements: []string{adminEntitlement}}))
 	sub := "del-" + uuid.NewString()
 	session := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub}))
 	user := me(t, h, session)
+	sandbox := sandboxToken(t, pool, uuid.MustParse(user.ID))
+	credential := func() int {
+		return callBearer(h, sandbox, http.MethodPost, "/api/v1/git/credential", `{"provider":"none"}`)
+	}
+	if code := credential(); code != http.StatusNotFound {
+		t.Fatalf("Sandbox Token before delete = %d, want 404", code)
+	}
 
 	if code := op.Webhook(t, h, polarisEvent{Type: "user.deleted", Sub: sub}); code != http.StatusNoContent {
 		t.Fatalf("user.deleted webhook = %d, want 204", code)
@@ -166,6 +173,10 @@ func TestPolarisWebhookDeleteRemovesUser(t *testing.T) {
 	}
 	if code := asSession(t, h, session, "/api/v1/users/me", nil); code != http.StatusUnauthorized {
 		t.Errorf("Session of a deleted User = %d, want 401", code)
+	}
+	// The deleted User's Sandbox row outlives them; its token must not.
+	if code := credential(); code != http.StatusUnauthorized {
+		t.Errorf("Sandbox Token of a deleted User = %d, want 401", code)
 	}
 }
 
