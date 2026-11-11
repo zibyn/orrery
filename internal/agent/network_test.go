@@ -79,7 +79,8 @@ func ruleMatches(t *testing.T, r nftRule, p packet) bool {
 		r.established && !p.established,
 		r.arp && p.proto != "arp",
 		r.notIP && ip,
-		r.saddr.IsValid() && (!ip || !r.saddr.Contains(netip.MustParseAddr(p.src))),
+		r.saddr.IsValid() && (!ip || r.saddr.Contains(netip.MustParseAddr(p.src)) == r.notSaddr),
+		r.notArpSaddr.IsValid() && (ip || p.src == r.notArpSaddr.String()),
 		r.daddr.IsValid() && (!ip || !r.daddr.Contains(netip.MustParseAddr(p.dst))),
 		(r.port != 0 || r.tcpUDP) && p.proto != "tcp" && p.proto != "udp",
 		r.port != 0 && r.port != p.port:
@@ -241,16 +242,41 @@ func TestRenderNetworkSandboxLinks(t *testing.T) {
 			dst: "8.8.8.8", proto: "tcp", port: 8080}, false},
 		{"the target's replies pass", packet{hook: "forward", iif: "vethtarget", oif: "vethsource", src: "10.213.0.2",
 			dst: "10.213.0.3", proto: "tcp", port: 40000, established: true}, true},
-		{"the target still answers ARP", packet{hook: "forward", iif: "vethsource", oif: "vethtarget", proto: "arp"}, true},
+		{"the target still answers ARP", packet{hook: "forward", iif: "vethsource", oif: "vethtarget", src: "10.213.0.3", proto: "arp"}, true},
 		{"the Node's own processes cannot reach the target", routed("10.213.0.1", 8080), false},
 		{"a linked source routed in from the Mesh is checked in output", routed("10.213.1.7", 5432), true},
 		{"an unlinked address routed in is dropped", routed("10.213.1.8", 5432), false},
 		{"an unlinked Sandbox is not filtered inbound", packet{hook: "output", oif: "vethother", src: "10.213.0.1",
 			dst: "10.213.0.6", proto: "tcp", port: 22}, true},
+		// #249: a runc Sandbox keeps CAP_NET_RAW, so it can forge a source.
+		{"an open Sandbox forging the linked source's address is dropped", to("vethopen", "10.213.0.3", 8080), false},
+		{"so is one forging an address routed in from the Mesh", to("vethopen", "10.213.1.7", 8080), false},
+		{"a forged source cannot ride another Sandbox's connection", packet{hook: "input", iif: "vethother",
+			src: "10.213.0.5", dst: "8.8.8.8", proto: "udp", port: 53, established: true}, false},
+		{"a forged ARP sender is dropped", packet{hook: "forward", iif: "vethopen", oif: "vethtarget",
+			src: "10.213.0.3", proto: "arp"}, false},
+		{"an ARP for its own address passes", packet{hook: "forward", iif: "vethopen", oif: "vethtarget",
+			src: "10.213.0.5", proto: "arp"}, true},
 	}
 	for _, tt := range tests {
 		if got := evaluate(t, tables, tt.p); got != tt.accept {
 			t.Errorf("%s: accepted = %v, want %v", tt.name, got, tt.accept)
+		}
+	}
+}
+
+// A Sandbox whose recorded address does not parse sends nothing (#249).
+func TestRenderNetworkUnparsableAddressFailsClosed(t *testing.T) {
+	open, _ := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressOpen})
+	tables := renderNetwork(networkState{sandboxes: map[uuid.UUID]sandboxNetwork{
+		uuid.New(): {HostVeth: "vethbad", Address: "", Policy: open},
+	}})
+	for _, p := range []packet{
+		{hook: "input", iif: "vethbad", src: "10.213.0.9", dst: "8.8.8.8", proto: "tcp", port: 443},
+		{hook: "forward", iif: "vethbad", oif: "vethx", src: "10.213.0.9", proto: "arp"},
+	} {
+		if evaluate(t, tables, p) {
+			t.Errorf("%s %s from a Sandbox with no address was accepted", p.hook, p.proto)
 		}
 	}
 }

@@ -179,6 +179,8 @@ type nftRule struct {
 	arp         bool // ether type arp
 	notIP       bool // ether type != ip
 	saddr       netip.Prefix
+	notSaddr    bool       // ip saddr != saddr
+	notArpSaddr netip.Addr // ether type arp, arp saddr ip != notArpSaddr
 	daddr       netip.Prefix
 	notDaddr    bool   // ip daddr != daddr
 	port        uint16 // TCP or UDP destination port
@@ -199,6 +201,21 @@ func chainPrelude() []nftRule {
 }
 
 func linkChain(id uuid.UUID) string { return "link-" + id.String() }
+
+// antiSpoof drops what a Sandbox sends under an address that is not its own:
+// an IPv4 source or an ARP sender. Link accepts and conntrack trust the
+// source address, and a runc Sandbox keeps CAP_NET_RAW, so this runs first in
+// forward and input (runtime.md §13). An unparsable address drops everything.
+func antiSpoof(network sandboxNetwork) []nftRule {
+	addr, err := netip.ParseAddr(network.Address)
+	if err != nil || !addr.Is4() {
+		return []nftRule{{iif: network.HostVeth, verdict: "drop"}}
+	}
+	return []nftRule{
+		{iif: network.HostVeth, saddr: netip.PrefixFrom(addr, 32), notSaddr: true, verdict: "drop"},
+		{iif: network.HostVeth, notArpSaddr: addr, verdict: "drop"},
+	}
+}
 
 // linkEnds is a Link's two addresses as /32 prefixes; one that is empty or
 // not IPv4 is the zero Prefix. ok reports that both are set.
@@ -231,8 +248,9 @@ func linkRules(match nftRule, ports []uint32) []nftRule {
 	return rules
 }
 
-// renderNetwork is the whole bridge table orrery: forward and input jump on
-// each Sandbox's host-side veth into its chain, which accepts its Links and
+// renderNetwork is the whole bridge table orrery: forward and input first
+// drop each Sandbox's forged source addresses, then jump on each Sandbox's
+// host-side veth into its chain, which accepts its Links and
 // then applies its Egress Policy; forward and output jump on a Link target's
 // veth into its inbound chain, and in forward every inbound jump comes first
 // so an open source cannot bypass it (runtime.md §13).
@@ -247,6 +265,11 @@ func renderNetwork(state networkState) []nftTable {
 	output := nftChain{name: "output", hook: "output"}
 	var egressJumps []nftRule
 	table := nftTable{family: egressFamily, name: egressTableName}
+	for _, id := range ids {
+		guard := antiSpoof(state.sandboxes[id])
+		forward.rules = append(forward.rules, guard...)
+		input.rules = append(input.rules, guard...)
+	}
 	for _, id := range ids {
 		network := state.sandboxes[id]
 		jump := nftRule{iif: network.HostVeth, jump: egressChain(id)}

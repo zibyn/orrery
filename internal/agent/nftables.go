@@ -115,6 +115,12 @@ func (r nftRule) exprs(family nftables.TableFamily) [][]expr.Any {
 	if r.notIP {
 		etherType(true, unix.ETH_P_IP)
 	}
+	if r.notArpSaddr.IsValid() {
+		// The ARP sender protocol address of Ethernet/IPv4 ARP (RFC 826).
+		etherType(false, unix.ETH_P_ARP)
+		load(&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 14, Len: 4})
+		cmp(expr.CmpOpNeq, r.notArpSaddr.AsSlice())
+	}
 	if r.saddr.IsValid() || r.daddr.IsValid() {
 		switch family {
 		case nftables.TableFamilyBridge:
@@ -127,7 +133,7 @@ func (r nftRule) exprs(family nftables.TableFamily) [][]expr.Any {
 			offset uint32
 			prefix netip.Prefix
 			negate bool
-		}{{12, r.saddr, false}, {16, r.daddr, r.notDaddr}} {
+		}{{12, r.saddr, r.notSaddr}, {16, r.daddr, r.notDaddr}} {
 			if !m.prefix.IsValid() {
 				continue
 			}
