@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { type ResourceVersion, type Workspace } from '@/api'
+import { type ResourceVersion, type Sandbox, type Workspace } from '@/api'
 import {
   parseProvenance,
   resourceVersionPollInterval,
   resourceVersionsPollInterval,
   workspacePollInterval,
+  workspaceSandboxIds,
   workspacesPollInterval,
 } from './resources'
 
@@ -88,5 +89,28 @@ describe('parseProvenance', () => {
   it('treats anything else as an upload', () => {
     expect(parseProvenance({ source: 'upload' })).toEqual({ source: 'upload' })
     expect(parseProvenance({})).toEqual({ source: 'upload' })
+  })
+})
+
+describe('workspaceSandboxIds', () => {
+  const mounted = (id: string, state: Sandbox['state'], workspaceId = 'ws-1') =>
+    ({ id, state, workspace: { id: workspaceId, mode: 'ro' } }) as Sandbox
+
+  it('uses sandbox_id for an ephemeral Workspace', () => {
+    expect(workspaceSandboxIds(workspace({ kind: 'ephemeral', sandbox_id: 'sb-e' }), [])).toEqual(['sb-e'])
+  })
+
+  it('finds the Sandboxes mounting a persistent Workspace, ready first', () => {
+    const sandboxes = [
+      mounted('sb-stopped', 'stopped'),
+      mounted('sb-other', 'ready', 'ws-2'),
+      mounted('sb-ready', 'ready'),
+      { id: 'sb-none', state: 'ready' } as Sandbox,
+    ]
+    expect(workspaceSandboxIds(workspace({ id: 'ws-1' }), sandboxes)).toEqual(['sb-ready', 'sb-stopped'])
+  })
+
+  it('is empty before the Sandboxes load', () => {
+    expect(workspaceSandboxIds(workspace(), undefined)).toEqual([])
   })
 })
