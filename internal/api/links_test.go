@@ -210,3 +210,52 @@ func TestListSandboxLinkEndsSourcesStopped(t *testing.T) {
 		t.Fatalf("target Node links = %v, want %v", got, want)
 	}
 }
+
+// #252: a Link source placed after its target is constrained by the target's
+// Node too; a pending, failed or deleted target constrains nothing.
+func TestLinkPeerNodesIncludesPlacedTargets(t *testing.T) {
+	dsn := os.Getenv("ORRERY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("ORRERY_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	pool, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := Migrate(ctx, pool, dsn); err != nil {
+		t.Fatal(err)
+	}
+	user, placed, other := uuid.New(), uuid.New(), uuid.New()
+	source := uuid.New()
+	sandbox := `INSERT INTO sandboxes (id, owner_id, name, snapshot_digest, cpu, memory, node_id, state, deleted_at, links_from)
+		VALUES ($1, $2, $3, 'sha256:x', 1, 1, $4, $5, $6, $7)`
+	links := []uuid.UUID{source}
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO users (id, name) VALUES ($1, $2)`, []any{user, "u-" + user.String()}},
+		{`INSERT INTO nodes (id, name, token_hash) VALUES ($1, $2, '')`, []any{placed, "n-" + placed.String()}},
+		{`INSERT INTO nodes (id, name, token_hash) VALUES ($1, $2, '')`, []any{other, "n-" + other.String()}},
+		{sandbox, []any{source, user, "source", nil, "pending", nil, []uuid.UUID{}}},
+		{sandbox, []any{uuid.New(), user, "ready", placed, "ready", nil, links}},
+		{sandbox, []any{uuid.New(), user, "stopped", placed, "stopped", nil, links}},
+		{sandbox, []any{uuid.New(), user, "pending", other, "pending", nil, links}},
+		{sandbox, []any{uuid.New(), user, "failed", other, "failed", nil, links}},
+		{sandbox, []any{uuid.New(), user, "deleted", other, "stopped", time.Now(), links}},
+		{sandbox, []any{uuid.New(), user, "unrelated", other, "ready", nil, []uuid.UUID{}}},
+	} {
+		if _, err := pool.Exec(ctx, stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	got, err := linkPeerNodes(ctx, store.New(pool), store.Sandbox{ID: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != placed {
+		t.Fatalf("link peer Nodes = %v, want [%v]", got, placed)
+	}
+}

@@ -30,6 +30,7 @@
 | Idle Stop | 900 秒 | 部署给默认值，请求可覆盖 | `idle_stop`，`0` 表示关闭；与 Daytona 一致 |
 | Workspace provisioning 重试 | 5 次，间隔 1、2、4、8、16 秒 | 常量 | 第 3 次失败起挂上 `provisioning_stalled`，用尽后 `failed` |
 | Resource 拉取重试 | 5 次，间隔 1、2、4、8、16 秒 | 常量 | 与 Workspace provisioning 同一组退避；用尽后 Sandbox 以 `failed/resource_fetch_failed` 结束 |
+| MeshPeers / SandboxLinks 重新应用 | 间隔从 1 秒起翻倍，封顶 30 秒，直到成功 | 常量 | Agent 应用一份失败时重试最新一份；新的一份到达或控制流断开即停 |
 | 构建资源上限 | 4 CPU + 8 GiB | 部署 | 构建不计入 User Quota（ADR-0021） |
 | 构建超时 | 1 小时 | 部署 | 超时以 `failed/timed_out` 结束 |
 

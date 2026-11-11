@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -30,6 +31,47 @@ type commandRunner struct {
 	locks map[string]*sync.Mutex
 	// checked is closed once the startup self-check has reported Capabilities.
 	checked chan struct{}
+	// The Control Plane sends each set once, so a failed apply is retried here.
+	peers, links latestApply
+}
+
+// networkRetryMin and networkRetryMax bound the backoff between re-applies of
+// a failed MeshPeers or SandboxLinks set.
+var networkRetryMin, networkRetryMax = time.Second, 30 * time.Second
+
+// latestApply applies full sets in order and re-applies the latest one with
+// backoff until it succeeds, a newer set supersedes it, or ctx ends (#252).
+type latestApply struct {
+	mu    sync.Mutex
+	seq   int
+	timer *time.Timer
+}
+
+func (l *latestApply) apply(ctx context.Context, what string, fn func() error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.seq++
+	if l.timer != nil {
+		l.timer.Stop()
+	}
+	l.try(ctx, what, l.seq, networkRetryMin, fn)
+}
+
+// try runs fn under l.mu, so a retry cannot overtake a newer set.
+func (l *latestApply) try(ctx context.Context, what string, seq int, delay time.Duration, fn func() error) {
+	if seq != l.seq || ctx.Err() != nil {
+		return
+	}
+	err := fn()
+	if err == nil {
+		return
+	}
+	slog.Warn("apply "+what, "error", err, "retry_in", delay)
+	l.timer = time.AfterFunc(delay, func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.try(ctx, what, seq, min(delay*2, networkRetryMax), fn)
+	})
 }
 
 func newCommandRunner(ctx context.Context, rt *Runtime, send func(*nodev1.AgentMessage)) *commandRunner {
@@ -223,15 +265,11 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		// Applied inline so successive full sets land in order; a Node
 		// without Mesh ignores it (runtime.md §15).
 		if c.rt.mesh != nil {
-			if err := c.rt.mesh.apply(m.MeshPeers.Peers); err != nil {
-				slog.Warn("apply mesh peers", "error", err)
-			}
+			c.peers.apply(c.ctx, "mesh peers", func() error { return c.rt.mesh.apply(m.MeshPeers.Peers) })
 		}
 	case *nodev1.ControlMessage_SandboxLinks:
 		// Inline for the same reason: each set replaces the last whole.
-		if err := c.rt.driver.setLinks(c.ctx, m.SandboxLinks.Links); err != nil {
-			slog.Warn("apply sandbox links", "error", err)
-		}
+		c.links.apply(c.ctx, "sandbox links", func() error { return c.rt.driver.setLinks(c.ctx, m.SandboxLinks.Links) })
 	}
 }
 

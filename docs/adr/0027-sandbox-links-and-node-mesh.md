@@ -21,7 +21,7 @@ The vendor survey (`docs/research/on-demand-dependency-services-vendor-practice.
 
 **Masquerade moves to the Agent.** CNI `ipMasq` masquerades every destination outside the Node's subnet, so cross-Node traffic left the mesh with the Node's address and WireGuard dropped it. CNI runs with `ipMasq: false`, and the Agent's own nftables table masquerades what leaves its Sandbox subnet except through the WireGuard interface.
 
-**Placement.** When `links.from` is set, the Scheduler prefers the Node of the source Sandboxes. Otherwise it considers only Nodes with a live mesh path to every placed source's Node. A source still `pending` constrains nothing. There is no placement field.
+**Placement.** Each end of a Link considers only Nodes that are, or have a live mesh path to, the Node of every placed Sandbox at the other end: a target is constrained by its placed sources, and a source placed after its target by that target. Among those, the Scheduler prefers a Node where the other end runs. An end still `pending` constrains nothing, and a Sandbox already bound to a Node (its Workspace lives there) goes there regardless. There is no placement field.
 
 **Capability.** `sandbox_links` is `enforced` only after the registration self-check confirms that a linked probe connects and an unlinked one does not. Local Runtime has no netns and reports `unsupported`. A Sandbox with `links` is placed only where it is enforced. The mesh is not a Capability: whether two Nodes connect is the matrix, and a Node whose kernel lacks WireGuard simply has no paths.
 

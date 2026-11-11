@@ -3830,6 +3830,36 @@ func (q *Queries) ListLinkSourceNodes(ctx context.Context, id uuid.UUID) ([]uuid
 	return items, nil
 }
 
+const listLinkTargetNodes = `-- name: ListLinkTargetNodes :many
+SELECT DISTINCT t.node_id::uuid AS node_id
+FROM sandboxes t
+WHERE $1::uuid = ANY (t.links_from) AND t.deleted_at IS NULL AND t.node_id IS NOT NULL
+  AND t.state NOT IN ('pending', 'failed', 'deleted')
+`
+
+// ListLinkTargetNodes is the distinct Nodes of the placed Link targets that
+// list a Sandbox as a source: a source placed after its target needs a Mesh
+// path to it as much as the reverse (api.md §3).
+func (q *Queries) ListLinkTargetNodes(ctx context.Context, sourceID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listLinkTargetNodes, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var node_id uuid.UUID
+		if err := rows.Scan(&node_id); err != nil {
+			return nil, err
+		}
+		items = append(items, node_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNodeFreeGPUs = `-- name: ListNodeFreeGPUs :many
 SELECT g.uuid, g.node_id, g.model FROM gpus g
 LEFT JOIN gpu_allocations ga ON ga.gpu_uuid = g.uuid

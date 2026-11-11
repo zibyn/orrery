@@ -194,5 +194,5 @@ Node 之间的 WireGuard 网络，只承载跨 Node 的 Sandbox Link 流量（AD
 - **过滤**：Agent 在 `orrery_nat` 之外再独占一张 `inet` 表 `orrery_mesh`，`forward` 钩子：从 `orrery-wg` 进来的，只放行 `ct state established,related` 和「来源地址 → 本机 Link 目标地址:端口」；发往 `orrery-wg` 的，只放行 established 和「本机 Link 来源地址 → 目标地址:端口」；其余丢弃。`output` 钩子丢弃宿主自己发往 `orrery-wg` 的一切。这样 Mesh 只承载 Link 流量，与运维的 Egress Rules 无关。条目来自同一份 `SandboxLinks`。
 - **MSS**：`orrery_mesh` 在 `forward` 钩子上对经过 `orrery-wg` 的 TCP SYN 做 `tcp option maxseg size set rt mtu`。WireGuard 的封装开销是 60–80 字节，veth 是 1500；大包和 runsc 对 ICMP fragmentation-needed 的处理还没有实测（spike #183 §5）。
 - **通路上报**：Agent 每个上报间隔读一次每个 peer 的最近握手时间，发 `MeshReport`。Control Plane 只在内存里保存这张连通矩阵：两台 Node 之间，任一方报告的最近握手在判定时限内（`defaults.md`），就算有通路。Control Plane 重启后矩阵为空，直到下一轮上报；这期间跨 Node 放置只能等待。
-- **放置**：带 `links` 的 Sandbox 优先放在已放置来源所在的 Node 上；放不下时，只考虑与每个已放置来源的 Node 都有通路的 Node（ADR-0027）。已经运行的 Link 不因通路消失而被停止，只是连不上。
+- **放置**：Link 的一端只放到与另一端每个已放置 Sandbox 的 Node 相同或有通路的 Node 上，目标和来源谁先放置都一样；候选之中优先另一端所在的 Node（ADR-0027）。已经绑定 Node 的 Sandbox 不受这条约束。已经运行的 Link 不因通路消失而被停止，只是连不上。
 - Local Runtime 没有 netns，也不参加 Mesh。

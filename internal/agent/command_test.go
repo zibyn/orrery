@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,6 +72,77 @@ func TestCreateSandboxPassesLinkTarget(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Create did not run")
+	}
+}
+
+// linksRecorder is a driver whose setLinks reports each set and fails while
+// fail says so.
+type linksRecorder struct {
+	runtimeDriver
+	fail  func(port uint32) bool
+	calls chan uint32
+}
+
+func (d *linksRecorder) setLinks(_ context.Context, links []*nodev1.SandboxLink) error {
+	port := links[0].Ports[0]
+	d.calls <- port
+	if d.fail(port) {
+		return errors.New("render failed")
+	}
+	return nil
+}
+
+func linksMessage(port uint32) *nodev1.ControlMessage {
+	return &nodev1.ControlMessage{Message: &nodev1.ControlMessage_SandboxLinks{
+		SandboxLinks: &nodev1.SandboxLinks{Links: []*nodev1.SandboxLink{{Ports: []uint32{port}}}},
+	}}
+}
+
+// #252: the Control Plane sends a SandboxLinks set once, so a failed apply is
+// retried until it lands, and a newer set supersedes the retry.
+func TestSandboxLinksRetryUntilApplied(t *testing.T) {
+	oldMin, oldMax := networkRetryMin, networkRetryMax
+	networkRetryMin, networkRetryMax = time.Millisecond, 4*time.Millisecond
+	t.Cleanup(func() { networkRetryMin, networkRetryMax = oldMin, oldMax })
+
+	var failures atomic.Int32
+	driver := &linksRecorder{calls: make(chan uint32, 100), fail: func(port uint32) bool {
+		// Set 1 fails twice; set 2 always fails until set 3 replaces it.
+		return port == 2 || port == 1 && failures.Add(1) <= 2
+	}}
+	rt := newRuntime(ProviderContainerd, t.TempDir(), uuid.NewString())
+	rt.driver = driver
+	runner := newCommandRunner(t.Context(), rt, func(*nodev1.AgentMessage) {})
+
+	next := func() uint32 {
+		select {
+		case port := <-driver.calls:
+			return port
+		case <-time.After(5 * time.Second):
+			t.Fatal("no apply")
+			return 0
+		}
+	}
+	runner.handle(linksMessage(1))
+	for range 3 {
+		if got := next(); got != 1 {
+			t.Fatalf("applied set %d, want 1", got)
+		}
+	}
+	runner.handle(linksMessage(2))
+	if got := next(); got != 2 {
+		t.Fatalf("applied set %d, want 2", got)
+	}
+	runner.handle(linksMessage(3))
+	for {
+		if next() == 3 {
+			break
+		}
+	}
+	select {
+	case got := <-driver.calls:
+		t.Fatalf("applied set %d after set 3 landed", got)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

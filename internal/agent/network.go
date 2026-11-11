@@ -336,14 +336,24 @@ func (d *containerdDriver) setupNetwork(id uuid.UUID, dir string, policy []egres
 	if err := plugSandbox(id, bridge, network.HostVeth, netip.PrefixFrom(addr, subnet.Bits()), gateway); err != nil {
 		return sandboxNetwork{}, err
 	}
-	raw, _ := json.Marshal(network)
-	if err := os.WriteFile(filepath.Join(dir, "network.json"), raw, 0o644); err != nil {
-		return sandboxNetwork{}, fmt.Errorf("record network.json: %w", err)
+	if err := saveNetwork(dir, network); err != nil {
+		return sandboxNetwork{}, err
 	}
 	if err := writeSandboxEtc(filepath.Join(dir, "etc"), id.String(), network.Address); err != nil {
 		return sandboxNetwork{}, err
 	}
 	return network, nil
+}
+
+// saveNetwork records network.json atomically: a render reading it without
+// networkMu sees the old file or the new one, never a torn one.
+func saveNetwork(dir string, network sandboxNetwork) error {
+	raw, _ := json.Marshal(network)
+	tmp := filepath.Join(dir, "network.json.tmp")
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return fmt.Errorf("record network.json: %w", err)
+	}
+	return os.Rename(tmp, filepath.Join(dir, "network.json"))
 }
 
 // teardownNetwork drops the Sandbox's recorded network and re-renders the

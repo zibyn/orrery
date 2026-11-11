@@ -344,6 +344,15 @@ JOIN sandboxes s ON s.id = ANY (t.links_from)
 WHERE t.id = $1 AND s.deleted_at IS NULL AND s.node_id IS NOT NULL
   AND s.state NOT IN ('pending', 'failed', 'deleted');
 
+-- ListLinkTargetNodes is the distinct Nodes of the placed Link targets that
+-- list a Sandbox as a source: a source placed after its target needs a Mesh
+-- path to it as much as the reverse (api.md §3).
+-- name: ListLinkTargetNodes :many
+SELECT DISTINCT t.node_id::uuid AS node_id
+FROM sandboxes t
+WHERE sqlc.arg(source_id)::uuid = ANY (t.links_from) AND t.deleted_at IS NULL AND t.node_id IS NOT NULL
+  AND t.state NOT IN ('pending', 'failed', 'deleted');
+
 -- CreateBuildSandbox is the internal row that carries a Snapshot build's
 -- Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no
 -- Workspace and no Runtime; secret_env_ct holds the build's Secret snapshot.
