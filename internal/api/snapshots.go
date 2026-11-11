@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -417,34 +418,43 @@ func (s *Server) runImport(versionID, snapshotID uuid.UUID, repo string, source 
 		return
 	}
 
-	digest := source.DigestStr()
-	tx, err := s.pool.Begin(context.Background())
-	if err != nil {
-		s.log.Error("begin Snapshot import commit", "version", versionID, "error", err)
-		return
+	if err := s.commitImport(context.Background(), versionID, snapshotID, source.DigestStr()); err != nil {
+		s.log.Error("commit Snapshot import", "version", versionID, "error", err)
 	}
-	defer tx.Rollback(context.Background()) //nolint:errcheck // no-op after commit
+}
+
+// commitImport marks a copied import ready and makes it current, unless it
+// was deleted meanwhile: a tombstoned version still ends ready (purge needs
+// its digest) but never becomes current.
+func (s *Server) commitImport(ctx context.Context, versionID, snapshotID uuid.UUID, digest string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	q := s.q.WithTx(tx)
-	ready, err := q.MarkSnapshotVersionReady(context.Background(), store.MarkSnapshotVersionReadyParams{
+	// Taken first, so the tombstone read below is the one a delete committed.
+	if _, err := q.LockSnapshot(ctx, snapshotID); err != nil {
+		return fmt.Errorf("lock Snapshot: %w", err)
+	}
+	ready, err := q.MarkSnapshotVersionReady(ctx, store.MarkSnapshotVersionReadyParams{
 		ID: versionID, Digest: &digest,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return // cancelled while copying
+		return nil // cancelled while copying
 	}
 	if err != nil {
-		s.log.Error("mark Snapshot import ready", "version", versionID, "error", err)
-		return
+		return fmt.Errorf("mark ready: %w", err)
 	}
 	// A tombstoned Snapshot keeps its pointer; the version still ends ready.
-	if _, err := q.SetSnapshotCurrentVersion(context.Background(), store.SetSnapshotCurrentVersionParams{
-		ID: ready.SnapshotID, VersionID: &versionID,
-	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		s.log.Error("move Snapshot current pointer", "snapshot", ready.SnapshotID, "error", err)
-		return
+	if !ready.DeletedAt.Valid {
+		if _, err := q.SetSnapshotCurrentVersion(ctx, store.SetSnapshotCurrentVersionParams{
+			ID: snapshotID, VersionID: &versionID,
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("move current pointer: %w", err)
+		}
 	}
-	if err := tx.Commit(context.Background()); err != nil {
-		s.log.Error("commit Snapshot import", "version", versionID, "error", err)
-	}
+	return tx.Commit(ctx)
 }
 
 func (s *Server) handleListSnapshotVersions(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -472,12 +482,17 @@ func (s *Server) handleListSnapshotVersions(w http.ResponseWriter, r *http.Reque
 // loadVersion resolves {v} inside {id}, writing not_found when either is
 // missing.
 func (s *Server) loadVersion(ctx context.Context, w http.ResponseWriter, snap store.Snapshot, raw string) (store.SnapshotVersion, bool) {
+	return s.loadVersionWith(ctx, s.q, w, snap, raw)
+}
+
+// loadVersionWith is loadVersion inside a transaction.
+func (s *Server) loadVersionWith(ctx context.Context, q *store.Queries, w http.ResponseWriter, snap store.Snapshot, raw string) (store.SnapshotVersion, bool) {
 	id, err := uuid.Parse(raw)
 	if err != nil {
 		writeProblem(w, "not_found", "no such SnapshotVersion")
 		return store.SnapshotVersion{}, false
 	}
-	version, err := s.q.GetSnapshotVersion(ctx, store.GetSnapshotVersionParams{
+	version, err := q.GetSnapshotVersion(ctx, store.GetSnapshotVersionParams{
 		ID: id, SnapshotID: snap.ID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -541,8 +556,26 @@ func (s *Server) handleDeleteSnapshotVersion(w http.ResponseWriter, r *http.Requ
 	if cancel, ok := s.takeSnapshotCancel(version.ID); ok {
 		cancel()
 	}
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		s.internal(w, "begin transaction", err)
+		return
+	}
+	defer tx.Rollback(r.Context()) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	// The pointer read above may be stale: an import or set-current may have
+	// moved it since. Under the lock it is final until commit.
+	locked, err := q.LockSnapshot(r.Context(), snap.ID)
+	if err != nil {
+		s.internal(w, "lock Snapshot", err)
+		return
+	}
+	if locked.CurrentVersionID != nil && *locked.CurrentVersionID == version.ID {
+		writeProblem(w, "conflict", "the current SnapshotVersion cannot be deleted")
+		return
+	}
 	// purge removes the registry manifest, then the row (api.md §3, #151).
-	version, err := s.q.TombstoneSnapshotVersion(r.Context(), store.TombstoneSnapshotVersionParams{
+	version, err = q.TombstoneSnapshotVersion(r.Context(), store.TombstoneSnapshotVersionParams{
 		ID: version.ID, SnapshotID: snap.ID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -551,6 +584,10 @@ func (s *Server) handleDeleteSnapshotVersion(w http.ResponseWriter, r *http.Requ
 	}
 	if err != nil {
 		s.internal(w, "delete SnapshotVersion", err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.internal(w, "commit SnapshotVersion delete", err)
 		return
 	}
 	s.audit(r.Context(), p, "snapshot.version.delete", "snapshot", snap.ID.String(), map[string]any{
@@ -571,7 +608,20 @@ func (s *Server) handleSetSnapshotCurrent(w http.ResponseWriter, r *http.Request
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	version, ok := s.loadVersion(r.Context(), w, snap, req.Version)
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		s.internal(w, "begin transaction", err)
+		return
+	}
+	defer tx.Rollback(r.Context()) //nolint:errcheck // no-op after commit
+	q := s.q.WithTx(tx)
+	// Under the lock a concurrent delete has either tombstoned the version
+	// (loadVersion then says not_found) or waits until this commits.
+	if _, err := q.LockSnapshot(r.Context(), snap.ID); err != nil {
+		s.internal(w, "lock Snapshot", err)
+		return
+	}
+	version, ok := s.loadVersionWith(r.Context(), q, w, snap, req.Version)
 	if !ok {
 		return
 	}
@@ -579,11 +629,15 @@ func (s *Server) handleSetSnapshotCurrent(w http.ResponseWriter, r *http.Request
 		writeProblem(w, "conflict", "only a ready SnapshotVersion can be current")
 		return
 	}
-	updated, err := s.q.SetSnapshotCurrentVersion(r.Context(), store.SetSnapshotCurrentVersionParams{
+	updated, err := q.SetSnapshotCurrentVersion(r.Context(), store.SetSnapshotCurrentVersionParams{
 		ID: snap.ID, VersionID: &version.ID,
 	})
 	if err != nil {
 		s.internal(w, "set Snapshot current version", err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.internal(w, "commit Snapshot current version", err)
 		return
 	}
 	s.audit(r.Context(), p, "snapshot.current", "snapshot", snap.ID.String(), map[string]any{

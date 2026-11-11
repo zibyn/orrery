@@ -5079,6 +5079,27 @@ func (q *Queries) LockResource(ctx context.Context, id uuid.UUID) (Resource, err
 	return i, err
 }
 
+const lockSnapshot = `-- name: LockSnapshot :one
+SELECT id, owner_id, name, current_version_id, deleted_at, created_at, idempotency_key FROM snapshots WHERE id = $1 FOR UPDATE
+`
+
+// LockSnapshot serializes moving the current pointer against deleting a
+// version: each takes this lock before reading the pointer or the tombstone.
+func (q *Queries) LockSnapshot(ctx context.Context, id uuid.UUID) (Snapshot, error) {
+	row := q.db.QueryRow(ctx, lockSnapshot, id)
+	var i Snapshot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CurrentVersionID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.IdempotencyKey,
+	)
+	return i, err
+}
+
 const lockUser = `-- name: LockUser :one
 SELECT id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `

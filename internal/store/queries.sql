@@ -1140,6 +1140,11 @@ UPDATE snapshots SET deleted_at = now()
 WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL
 RETURNING *;
 
+-- LockSnapshot serializes moving the current pointer against deleting a
+-- version: each takes this lock before reading the pointer or the tombstone.
+-- name: LockSnapshot :one
+SELECT * FROM snapshots WHERE id = $1 FOR UPDATE;
+
 -- name: SetSnapshotCurrentVersion :one
 UPDATE snapshots SET current_version_id = sqlc.arg('version_id')
 WHERE id = sqlc.arg('id') AND deleted_at IS NULL
