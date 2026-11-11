@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
@@ -36,12 +38,32 @@ func sandboxLinksByNode(rows []store.ListSandboxLinkEndsRow) map[uuid.UUID][]*no
 	return out
 }
 
-// linkPlaceable reports whether a Link target may go to node, given the
-// distinct Nodes of its placed sources: each must be node itself or have a
-// live Mesh path to it (runtime.md §15).
-func linkPlaceable(sourceNodes []uuid.UUID, node uuid.UUID, live func(a, b uuid.UUID) bool) bool {
-	for _, source := range sourceNodes {
-		if source != node && !live(source, node) {
+// linkPeerNodes is the distinct Nodes of a Sandbox's placed Link peers: its
+// sources, and the targets that list it as one (api.md §3). A pending peer
+// constrains nothing.
+func linkPeerNodes(ctx context.Context, q *store.Queries, sb store.Sandbox) ([]uuid.UUID, error) {
+	var sources []uuid.UUID
+	if len(sb.LinksFrom) > 0 {
+		var err error
+		if sources, err = q.ListLinkSourceNodes(ctx, sb.ID); err != nil {
+			return nil, err
+		}
+	}
+	targets, err := q.ListLinkTargetNodes(ctx, sb.ID)
+	if err != nil {
+		return nil, err
+	}
+	nodes := append(sources, targets...)
+	slices.SortFunc(nodes, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	return slices.Compact(nodes), nil
+}
+
+// linkPlaceable reports whether a Sandbox may go to node, given the distinct
+// Nodes of its placed Link peers: each must be node itself or have a live
+// Mesh path to it (runtime.md §15).
+func linkPlaceable(peerNodes []uuid.UUID, node uuid.UUID, live func(a, b uuid.UUID) bool) bool {
+	for _, peer := range peerNodes {
+		if peer != node && !live(peer, node) {
 			return false
 		}
 	}

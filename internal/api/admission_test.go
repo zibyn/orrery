@@ -333,7 +333,7 @@ func TestOrderPlacementNodes(t *testing.T) {
 			sb: store.Sandbox{},
 			nodes: []placementNode{
 				mk(1, 10, 0, nil),
-				{node: store.Node{ID: uuid.UUID{2}, CreatedAt: at(20)}, gpus: 4, linkSource: true},
+				{node: store.Node{ID: uuid.UUID{2}, CreatedAt: at(20)}, gpus: 4, linkPeer: true},
 			},
 			want: []byte{2, 1},
 		},

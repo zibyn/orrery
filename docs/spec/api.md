@@ -123,7 +123,7 @@ links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自�
 - 这一对之间的流量不受来源的 Egress Mode 和运维的 Egress Rules 约束；双方其余的流量照旧受各自 Egress Policy 约束。目标收到的其他一切连接（包括 Node 自己的进程）都被丢弃。
 - 校验：`from` 非空，每个 id 都必须是调用方自己的、未删除的 Sandbox，否则 `400 invalid_request`（别人的 Sandbox 与不存在同样处理）；来源是 `runtime: local` 时 `422 unsupported`；`ports` 每项 1–65535；`from` 和 `ports` 的项数上限见 `defaults.md`。
 - 创建后不可改。来源被删除后，那一项就不再匹配任何地址。
-- 只放到 `sandbox_links` 为 `enforced` 的 Node 上，重启后仍作为准入约束；创建时没有这样的 Node 返回 `422 unsupported`，`runtime: local` 带 `links` 同样是 `422 unsupported`。放置时优先来源所在的 Node；放不下时只考虑与每个已放置来源的 Node 之间有 Mesh 通路的 Node（`runtime.md` §15）。还在 `pending` 的来源不约束放置。
+- 只放到 `sandbox_links` 为 `enforced` 的 Node 上，重启后仍作为准入约束；创建时没有这样的 Node 返回 `422 unsupported`，`runtime: local` 带 `links` 同样是 `422 unsupported`。放置时目标只考虑与每个已放置来源的 Node 相同或有 Mesh 通路的 Node；反过来，来源晚于目标放置时，也只考虑与每个已放置目标的 Node 相同或有通路的 Node（`runtime.md` §15）。候选之中优先已放置的另一端所在的 Node。还在 `pending` 的另一端不约束放置；已经绑定 Node 的 Sandbox（Workspace 已在某台 Node 上）只能去那台，不再要求通路，跨 Node 时连不上直到通路出现。
 - 地址不做 DNS，也不写 `/etc/hosts`：调用方用 `GET /sandboxes/{id}` 的 `address`，目标重启后要重新读。
 
 **Exec**：`GET /execs/{id}` · `POST /execs/{id}/cancel` · `GET /execs/{id}/output` · `GET /execs/{id}/pty`，见 §4。

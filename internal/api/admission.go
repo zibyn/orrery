@@ -345,11 +345,11 @@ func nodeSchedulable(node store.Node, now time.Time, workspaceHere bool) bool {
 // reported card count, used for the GPU-less preference, and free is the cards
 // still available for packing.
 type placementNode struct {
-	node       store.Node
-	gpus       int
-	free       []store.Gpu
-	gpuIDs     []string
-	linkSource bool // a placed Link source runs here
+	node     store.Node
+	gpus     int
+	free     []store.Gpu
+	gpuIDs   []string
+	linkPeer bool // a placed Link source or target runs here
 }
 
 // freeGPUs counts free cards of the requested model; an empty model counts
@@ -376,8 +376,8 @@ func freeGPUs(free []store.Gpu, model *string) int {
 func orderPlacementNodes(nodes []placementNode, sb store.Sandbox) {
 	sort.Slice(nodes, func(i, j int) bool {
 		a, b := nodes[i], nodes[j]
-		if a.linkSource != b.linkSource {
-			return a.linkSource
+		if a.linkPeer != b.linkPeer {
+			return a.linkPeer
 		}
 		if sb.GpuCount > 0 {
 			if fa, fb := freeGPUs(a.free, sb.GpuModel), freeGPUs(b.free, sb.GpuModel); fa != fb {
@@ -405,20 +405,20 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 	// admission request `unsatisfiable` instead.
 	isBuild := sb.Kind == string(SandboxKindBuild)
 	var resourceMounts int64
-	var linkSourceNodes []uuid.UUID
+	var linkNodes []uuid.UUID
 	if !isBuild {
 		var err error
 		resourceMounts, err = q.CountSandboxResources(ctx, sb.ID)
 		if err != nil {
 			return false, err
 		}
-		// A Link target waits for its sources' Node (api.md §3).
-		if len(sb.LinksFrom) > 0 {
-			if linkSourceNodes, err = q.ListLinkSourceNodes(ctx, sb.ID); err != nil {
-				return false, err
-			}
+		if linkNodes, err = linkPeerNodes(ctx, q, sb); err != nil {
+			return false, err
 		}
 	}
+	// A Sandbox bound to a Node can only go there: requiring a Mesh path
+	// would only keep it pending.
+	linkBound := sb.NodeID != nil || ws.NodeID != nil
 	meshLive := func(a, b uuid.UUID) bool { return r.s.mesh.live(a, b, now) }
 	var candidates []placementNode
 	for _, node := range nodes {
@@ -447,7 +447,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 			if !egressPlaceable(sb.EgressMode)(node) {
 				continue
 			}
-			if !linksCapable(sb.LinksFrom)(node) || !linkPlaceable(linkSourceNodes, node.ID, meshLive) {
+			if !linksCapable(sb.LinksFrom)(node) || !linkBound && !linkPlaceable(linkNodes, node.ID, meshLive) {
 				continue
 			}
 		}
@@ -462,7 +462,7 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		if !ok {
 			continue
 		}
-		candidate := placementNode{node: node, gpus: fit.gpuTotal, linkSource: slices.Contains(linkSourceNodes, node.ID)}
+		candidate := placementNode{node: node, gpus: fit.gpuTotal, linkPeer: slices.Contains(linkNodes, node.ID)}
 		if sb.GpuCount > 0 {
 			free, err := q.ListNodeFreeGPUs(ctx, node.ID)
 			if err != nil {
