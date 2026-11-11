@@ -513,7 +513,16 @@ func (s *Server) snapshotVersionGarbage(ctx context.Context, repo string, versio
 	if err != nil {
 		return false, false, fmt.Errorf("count Snapshot digest references: %w", err)
 	}
-	return true, shared == 0, nil
+	if shared > 0 {
+		return true, false, nil
+	}
+	// An import in flight may be copying this digest and would commit ready
+	// over a deleted manifest; the next tick retries once it ends (#251).
+	imports, err := s.q.CountBuildingSnapshotImports(ctx, version.SnapshotID)
+	if err != nil {
+		return false, false, fmt.Errorf("count building Snapshot imports: %w", err)
+	}
+	return imports == 0, true, nil
 }
 
 func (s *Server) deleteSnapshotManifest(repo string) func(context.Context, store.SnapshotVersion) error {

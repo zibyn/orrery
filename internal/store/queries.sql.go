@@ -271,6 +271,20 @@ func (q *Queries) CountActiveSandboxResources(ctx context.Context, ownerID uuid.
 	return i, err
 }
 
+const countBuildingSnapshotImports = `-- name: CountBuildingSnapshotImports :one
+SELECT count(*)::bigint FROM snapshot_versions
+WHERE snapshot_id = $1 AND state = 'building' AND source = 'import' AND deleted_at IS NULL
+`
+
+// An import has no digest until it is ready, so it may be copying any one
+// (#251).
+func (q *Queries) CountBuildingSnapshotImports(ctx context.Context, snapshotID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countBuildingSnapshotImports, snapshotID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countNodeNonTerminalSandboxes = `-- name: CountNodeNonTerminalSandboxes :one
 SELECT count(*)::bigint FROM sandboxes
 WHERE node_id = $1 AND state NOT IN ('deleted', 'failed')
@@ -372,12 +386,13 @@ func (q *Queries) CountSandboxResources(ctx context.Context, sandboxID uuid.UUID
 
 const countSandboxSnapshotReferences = `-- name: CountSandboxSnapshotReferences :one
 SELECT count(*)::bigint FROM sandboxes
-WHERE kind = 'user' AND state <> 'deleted'
+WHERE state <> 'deleted' AND (kind = 'user' OR state <> 'stopped')
   AND right(snapshot_digest, length($1::text)) = $1::text
 `
 
 // The suffix is "<repo>@<digest>"; matching the suffix avoids caring which
 // registry address a Sandbox was created against.
+// A build Sandbox pins its base until its build is done (#251).
 func (q *Queries) CountSandboxSnapshotReferences(ctx context.Context, ref string) (int64, error) {
 	row := q.db.QueryRow(ctx, countSandboxSnapshotReferences, ref)
 	var column_1 int64
