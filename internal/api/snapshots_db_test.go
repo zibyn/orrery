@@ -98,7 +98,7 @@ func purgeTestServer(t *testing.T) (*Server, *store.Queries) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if err := Migrate(ctx, pool, dsn); err != nil {
+	if err := Migrate(ctx, pool, dsn, ""); err != nil {
 		t.Fatal(err)
 	}
 	q := store.New(pool)

@@ -224,7 +224,7 @@ func TestLinkPeerNodesIncludesPlacedTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if err := Migrate(ctx, pool, dsn); err != nil {
+	if err := Migrate(ctx, pool, dsn, ""); err != nil {
 		t.Fatal(err)
 	}
 	user, placed, other := uuid.New(), uuid.New(), uuid.New()
