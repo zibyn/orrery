@@ -190,6 +190,48 @@ func TestInstallBins(t *testing.T) {
 	}
 }
 
+// A bundle that cannot be copied stops the install, so a partial one is
+// never restarted and recorded as the new version.
+func TestInstallBinsFailureStops(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory")
+	}
+	src, dst := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "containerd"), []byte("c1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dst, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dst, 0o755) })
+	cmd := exec.Command("bash", "-c", "source ./install.sh\nchanged=\"$(install_bins \"$1\" \"$2\")\"\necho installed", "test", src, dst)
+	out, err := cmd.CombinedOutput()
+	if err == nil || strings.Contains(string(out), "installed") {
+		t.Fatalf("a failed copy did not stop the install: %v\n%s", err, out)
+	}
+}
+
+// A target that cannot be written stops the install. Fed by a pipeline,
+// write_if_changed's die would end only the subshell and read as
+// "unchanged", so no call site may pipe into it.
+func TestWriteIfChangedFailureStops(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing", "unit")
+	cmd := exec.Command("bash", "-c", "source ./install.sh\nif write_if_changed \"$1\" < <(echo x); then echo changed; fi\necho continued", "test", missing)
+	out, err := cmd.CombinedOutput()
+	if err == nil || strings.Contains(string(out), "continued") || !strings.Contains(string(out), "cannot write") {
+		t.Fatalf("a failed write did not stop the install: %v\n%s", err, out)
+	}
+	src, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, l := range strings.Split(string(src), "\n") {
+		if strings.Contains(l, "| write_if_changed") {
+			t.Errorf("install.sh:%d pipes into write_if_changed: %s", i+1, strings.TrimSpace(l))
+		}
+	}
+}
+
 // Old deploy.md had operators pass the host's sockets; ADR-0028 leaves
 // install.sh no mode on the host daemons, so a rerun drops them. --buildkit=
 // stays: it turns Snapshot builds off.
