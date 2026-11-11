@@ -90,7 +90,7 @@ func serve(args []string, logger *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
-	if err := api.Migrate(ctx, pool, cfg.DatabaseURL); err != nil {
+	if err := api.Migrate(ctx, pool, cfg.DatabaseURL, cfg.OIDC.IssuerURL); err != nil {
 		return err
 	}
 	logger.Info("migrations applied")
@@ -123,7 +123,7 @@ func runUserToken(args []string, logger *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
-	if err := api.Migrate(ctx, pool, cfg.DatabaseURL); err != nil {
+	if err := api.Migrate(ctx, pool, cfg.DatabaseURL, cfg.OIDC.IssuerURL); err != nil {
 		return err
 	}
 	server := api.New(cfg, pool, logger)

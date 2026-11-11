@@ -32,7 +32,7 @@ func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 
 // Migrate runs forward-only migrations under pg_advisory_xact_lock. There are
 // no down migrations: rollback is restoring a backup (ADR-0014).
-func Migrate(ctx context.Context, pool *pgxpool.Pool, dsn string) error {
+func Migrate(ctx context.Context, pool *pgxpool.Pool, dsn, issuer string) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration connection: %w", err)
@@ -57,7 +57,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dsn string) error {
 		return fmt.Errorf("open migrations: %w", err)
 	}
 	defer m.Close()
-	if err := refuseUnlinkedUsers(ctx, m, pool); err != nil {
+	if err := refuseUnlinkedUsers(ctx, m, pool, issuer); err != nil {
 		return err
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
@@ -71,10 +71,11 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dsn string) error {
 const dropPasswordsVersion = 29
 
 // refuseUnlinkedUsers stops the password drop while a User who logs in is not
-// linked to Polaris: it would come out of the migration as a machine User and
+// linked to Polaris, or is linked to another issuer than the configured one
+// (compared byte for byte, as login does): it would come out of the migration as a machine User and
 // its person would log in as a new, empty one. Checked here rather than in the
 // SQL, because a failed migration leaves the schema dirty.
-func refuseUnlinkedUsers(ctx context.Context, m *migrate.Migrate, pool *pgxpool.Pool) error {
+func refuseUnlinkedUsers(ctx context.Context, m *migrate.Migrate, pool *pgxpool.Pool, issuer string) error {
 	version, _, err := m.Version()
 	if errors.Is(err, migrate.ErrNilVersion) || (err == nil && version >= dropPasswordsVersion) {
 		return nil
@@ -83,9 +84,9 @@ func refuseUnlinkedUsers(ctx context.Context, m *migrate.Migrate, pool *pgxpool.
 		return fmt.Errorf("read migration version: %w", err)
 	}
 	rows, err := pool.Query(ctx, `SELECT name FROM users
-		WHERE (deleted_at IS NULL AND login_type <> 'none' AND (oidc_issuer IS NULL OR oidc_subject IS NULL))
+		WHERE (deleted_at IS NULL AND login_type <> 'none' AND (oidc_issuer IS NULL OR oidc_subject IS NULL OR oidc_issuer <> $1))
 		   OR ((oidc_issuer IS NULL) <> (oidc_subject IS NULL))
-		ORDER BY name`)
+		ORDER BY name`, issuer)
 	if err != nil {
 		return fmt.Errorf("check unlinked Users: %w", err)
 	}
@@ -94,8 +95,8 @@ func refuseUnlinkedUsers(ctx context.Context, m *migrate.Migrate, pool *pgxpool.
 		return fmt.Errorf("check unlinked Users: %w", err)
 	}
 	if len(names) > 0 {
-		return fmt.Errorf("migrate: %d User(s) are not linked to Polaris (%s); run orrery-polaris-migrate with the previous release first (docs/deploy.md)",
-			len(names), strings.Join(names, ", "))
+		return fmt.Errorf("migrate: %d User(s) are not linked to Polaris issuer %q (%s); run orrery-polaris-migrate from this release's image before starting the server (docs/polaris-migration.md)",
+			len(names), issuer, strings.Join(names, ", "))
 	}
 	return nil
 }
