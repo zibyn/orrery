@@ -2,7 +2,9 @@
 
 已有部署切换到 Polaris（ADR-0029）前，用 `orrery-polaris-migrate` 把现有 User 关联到 Polaris User，这样没人要重设密码，每个人的 Sandbox、Resource、Secret 都还在。脚本一次性、可重跑，不属于 server。
 
-**顺序不能乱**：脚本必须在 Orrery 配置切到 Polaris 之前跑完、报告里没有 `failed`。先切配置的话，人们首次登录会被建成新的空 User。
+**顺序不能乱**：脚本必须在 Orrery 配置切到 Polaris、新版本 server 启动之前跑完、报告里没有 `failed`。先切配置的话，人们首次登录会被建成新的空 User。
+
+脚本只随切换后的版本发布：没有哪个已发布版本既带这个脚本又保留密码登录。所以它从目标版本的镜像以一次性容器运行，读的是旧版本留下的数据库结构；旧栈（包括旧 server）照常运行，不用先升级。
 
 ## 1. 配置 Polaris
 
@@ -14,16 +16,19 @@
 
 ## 2. 跑脚本，直到没有失败
 
-在 Control Plane 主机上，数据库密码取自 `/etc/orrery/config/config.yaml` 的 `database.password`：
+在 Control Plane 主机上，数据库密码取自 `/etc/orrery/config/config.yaml` 的 `database.password`，`vX.Y.Z` 是要升级到的版本：
 
 ```sh
 cd /etc/orrery
 export POLARIS_CLIENT_SECRET=<M2M secret>
-docker compose exec -T -e POLARIS_CLIENT_SECRET server orrery-polaris-migrate \
+ORRERY_VERSION=vX.Y.Z docker compose run --rm --no-deps -T -e POLARIS_CLIENT_SECRET \
+  --entrypoint orrery-polaris-migrate server \
   --database-url "postgres://orrery:<密码>@postgres:5432/orrery" \
   --issuer https://polaris.example.com \
   --client-id <M2M client id>
 ```
+
+命令行里的 `ORRERY_VERSION` 盖过 `.env` 里的旧版本，`docker compose run` 用 `server` 服务的定义拉起目标版本镜像 `ghcr.io/zibyn/orrery-server:vX.Y.Z` 的一次性容器，跑完即删；它和 `postgres` 在同一个 Compose 网络里，不发布端口，不动正在运行的 server。`--no-deps` 不启动依赖，`postgres` 必须已在运行。
 
 `--issuer` 必须和之后的 `oidc.issuer_url` 一字不差，脚本把它写进 User 的 `oidc_issuer`。
 
@@ -56,4 +61,4 @@ docker compose exec -T -e POLARIS_CLIENT_SECRET server orrery-polaris-migrate \
 
 ## 4. 切换 Orrery 配置
 
-在 `config.yaml` 里配好 `oidc.*`（见 `docs/spec/defaults.md`），升级到切换后的版本，`docker compose up -d`。切换后的版本删掉 `password_hash` 和 `login_type`；还有未关联的 `password` User 时，它拒绝迁移数据库、不启动，并列出这些 User：回到旧版本跑完脚本再升级。此后人们只能经 Polaris 登录，按 (issuer, sub) 落到原来的 User 上。已有的 API Token 继续可用。
+在 `config.yaml` 里配好 `oidc.*`（见 `docs/spec/defaults.md`），升级到切换后的版本，`docker compose up -d`。切换后的版本删掉 `password_hash` 和 `login_type`；还有登录用的 User 没关联到 `oidc.issuer_url` 这个 issuer（未关联的 `password` User，或仍链接上一个 OIDC issuer 的 User）时，它拒绝迁移数据库、不启动，并列出这些 User。这时数据库没被改动，不用回到旧版本：`docker compose stop server`，按第 2 步（`ORRERY_VERSION` 就是已升级到的版本）跑完脚本，再 `docker compose up -d`。此后人们只能经 Polaris 登录，按 (issuer, sub) 落到原来的 User 上。已有的 API Token 继续可用。
