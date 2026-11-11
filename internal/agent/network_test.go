@@ -524,3 +524,51 @@ func TestOrphanNetns(t *testing.T) {
 		t.Fatalf("orphans = %v, want [%v]", got, orphan)
 	}
 }
+
+// #252: a render reads every network.json without networkMu, so a Create
+// writing one must never expose a torn file, and the temp file is no record.
+func TestSaveNetworkIsAtomicForARender(t *testing.T) {
+	dataRoot := t.TempDir()
+	id := uuid.New()
+	dir := filepath.Join(dataRoot, "sandboxes", id.String())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var allow []string
+	for i := range 200 {
+		allow = append(allow, netip.AddrFrom4([4]byte{10, 1, byte(i), 0}).String()+"/24:443")
+	}
+	policy, err := resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressAllowlist, allow: allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	network := sandboxNetwork{HostVeth: "vethx", Address: "10.213.0.2", Policy: policy}
+	if err := saveNetwork(dir, network); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 500 {
+			if err := saveNetwork(dir, network); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			got, err := recordedNetworks(dataRoot)
+			if err != nil || len(got) != 1 || got[id].Address != network.Address {
+				t.Fatalf("recordedNetworks = %v, %v", got, err)
+			}
+			return
+		default:
+		}
+		if _, err := recordedNetworks(dataRoot); err != nil {
+			<-done
+			t.Fatalf("render read a torn network.json: %v", err)
+		}
+	}
+}
