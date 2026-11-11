@@ -1213,9 +1213,10 @@ WHERE state = 'building' AND source = 'import';
 
 -- The suffix is "<repo>@<digest>"; matching the suffix avoids caring which
 -- registry address a Sandbox was created against.
+-- A build Sandbox pins its base until its build is done (#251).
 -- name: CountSandboxSnapshotReferences :one
 SELECT count(*)::bigint FROM sandboxes
-WHERE kind = 'user' AND state <> 'deleted'
+WHERE state <> 'deleted' AND (kind = 'user' OR state <> 'stopped')
   AND right(snapshot_digest, length(sqlc.arg('ref')::text)) = sqlc.arg('ref')::text;
 
 -- name: GetSnapshotVersionByID :one
@@ -1373,6 +1374,12 @@ WHERE r.owner_id = $1 AND rv.address = $2 AND rv.id <> $3;
 -- name: CountSnapshotVersionDigestReferences :one
 SELECT count(*)::bigint FROM snapshot_versions
 WHERE snapshot_id = $1 AND digest = $2 AND id <> $3 AND deleted_at IS NULL;
+
+-- An import has no digest until it is ready, so it may be copying any one
+-- (#251).
+-- name: CountBuildingSnapshotImports :one
+SELECT count(*)::bigint FROM snapshot_versions
+WHERE snapshot_id = $1 AND state = 'building' AND source = 'import' AND deleted_at IS NULL;
 
 -- A building version still belongs to its build or import; the sweep takes
 -- it once terminal.
