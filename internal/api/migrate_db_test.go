@@ -34,7 +34,7 @@ func TestMigrateRefusesUnlinkedPasswordUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := Migrate(ctx, pool, dbDSN)
+	err := Migrate(ctx, pool, dbDSN, "https://polaris.test")
 	if err == nil || !strings.Contains(err.Error(), "orrery-polaris-migrate") || !strings.Contains(err.Error(), "alice") {
 		t.Fatalf("Migrate with an unlinked password User = %v, want a refusal naming alice and the script", err)
 	}
@@ -42,7 +42,7 @@ func TestMigrateRefusesUnlinkedPasswordUsers(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE users SET oidc_issuer = 'https://polaris.test', oidc_subject = 'sub-alice' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := Migrate(ctx, pool, dbDSN); err != nil {
+	if err := Migrate(ctx, pool, dbDSN, "https://polaris.test"); err != nil {
 		t.Fatalf("Migrate once every password User is linked: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name) VALUES ($1, 'bot')`, uuid.New()); err != nil {
@@ -50,6 +50,40 @@ func TestMigrateRefusesUnlinkedPasswordUsers(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, oidc_issuer) VALUES ($1, 'half', 'https://polaris.test')`, uuid.New()); err == nil {
 		t.Fatal("a User with an issuer but no subject was accepted")
+	}
+}
+
+// A User still linked to a previous issuer would log in to Polaris as a new,
+// empty User, so the password drop refuses them too (#255).
+func TestMigrateRefusesUsersOnAnotherIssuer(t *testing.T) {
+	dsn := os.Getenv("ORRERY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("ORRERY_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	pool, dbDSN := scratchDatabaseAt(t, ctx, dsn, dropPasswordsVersion-2)
+	id := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, login_type, oidc_issuer, oidc_subject) VALUES ($1, 'bob', 'oidc', 'https://old', 'sub-bob')`, id); err != nil {
+		t.Fatal(err)
+	}
+	// Neither a machine User nor a deleted one ever logs in.
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, login_type, oidc_issuer, oidc_subject) VALUES ($1, 'ci', 'none', 'https://old', 'sub-ci')`, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, name, login_type, oidc_issuer, oidc_subject, deleted_at) VALUES ($1, 'gone', 'oidc', 'https://old', 'sub-gone', now())`, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Migrate(ctx, pool, dbDSN, "https://polaris.test")
+	if err == nil || !strings.Contains(err.Error(), "(bob)") {
+		t.Fatalf("Migrate with a User on another issuer = %v, want a refusal naming only bob", err)
+	}
+	// Login compares the issuer byte for byte, so a trailing slash differs.
+	if err := Migrate(ctx, pool, dbDSN, "https://old/"); err == nil {
+		t.Fatal("Migrate accepted an issuer differing only by a trailing slash")
+	}
+	if err := Migrate(ctx, pool, dbDSN, "https://old"); err != nil {
+		t.Fatalf("Migrate with every User on the configured issuer: %v", err)
 	}
 }
 

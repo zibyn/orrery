@@ -203,7 +203,7 @@ Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules
 
 - Node：下载、校验、替换二进制后重启 `orrery-agent`，`orrery-containerd`、`orrery-buildkitd` 只在变了时重启；不带 `--runtime` 或 `--` 参数时保留 Agent 现有的启动参数。允许装旧版本，Control Plane 会把它标为 `outdated`。
 
-从自带用户系统切到 Polaris（ADR-0029）的那次升级前，先按 `docs/polaris-migration.md` 把现有 User 迁到 Polaris。去掉密码的那个版本在还有没关联 Polaris 的 `password` User 时拒绝迁移数据库，并列出这些 User。
+从自带用户系统切到 Polaris（ADR-0029）的那次升级前，先按 `docs/polaris-migration.md` 把现有 User 迁到 Polaris。去掉密码的那个版本在还有登录用的 User 没关联到所配置的 Polaris issuer 时拒绝迁移数据库，并列出这些 User。
 
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 

@@ -27,7 +27,7 @@ func TestAuditSurvivesCanceledRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if err := Migrate(ctx, pool, dsn); err != nil {
+	if err := Migrate(ctx, pool, dsn, ""); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{pool: pool, q: store.New(pool), log: slog.New(slog.DiscardHandler)}
@@ -62,7 +62,7 @@ func TestUpdateUserKeepsConcurrentQuotaChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if err := Migrate(ctx, pool, dsn); err != nil {
+	if err := Migrate(ctx, pool, dsn, ""); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{pool: pool, q: store.New(pool), log: slog.New(slog.DiscardHandler)}

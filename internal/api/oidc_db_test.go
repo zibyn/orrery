@@ -28,7 +28,7 @@ func polarisTestServer(t *testing.T) (http.Handler, *fakePolaris, *pgxpool.Pool)
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if err := Migrate(ctx, pool, dsn); err != nil {
+	if err := Migrate(ctx, pool, dsn, ""); err != nil {
 		t.Fatal(err)
 	}
 	op := newFakePolaris(t)
