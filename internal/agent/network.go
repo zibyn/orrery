@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
@@ -349,12 +350,15 @@ func (d *containerdDriver) setupNetwork(id uuid.UUID, dir string, policy []egres
 // tables without its chain, then deletes the veth, releases the address and
 // deletes the netns; every step is idempotent.
 func (d *containerdDriver) teardownNetwork(ctx context.Context, id uuid.UUID, dir string) error {
-	hostVeth := hostVethName(id)
+	hostVeth, address := hostVethName(id), ""
 	// A Sandbox from before #205 has the bridge plugin's veth name.
 	if raw, err := os.ReadFile(filepath.Join(dir, "network.json")); err == nil {
 		var network sandboxNetwork
-		if json.Unmarshal(raw, &network) == nil && network.HostVeth != "" {
-			hostVeth = network.HostVeth
+		if json.Unmarshal(raw, &network) == nil {
+			address = network.Address
+			if network.HostVeth != "" {
+				hostVeth = network.HostVeth
+			}
 		}
 	}
 	if err := os.Remove(filepath.Join(dir, "network.json")); err != nil && !os.IsNotExist(err) {
@@ -371,6 +375,7 @@ func (d *containerdDriver) teardownNetwork(ctx context.Context, id uuid.UUID, di
 	if err != nil && !errors.As(err, &netlink.LinkNotFoundError{}) {
 		return fmt.Errorf("delete veth %s: %w", hostVeth, err)
 	}
+	flushConntrack(address)
 	d.releaseAddress(id)
 	if _, err := os.Stat(netnsPath(id)); !errors.Is(err, os.ErrNotExist) {
 		if err := netns.DeleteNamed(netnsName(id)); err != nil {
@@ -546,4 +551,22 @@ func writeSandboxEtc(dir, hostname, address string) error {
 		}
 	}
 	return nil
+}
+
+// flushConntrack forgets the connections of a released address, so the next
+// Sandbox given it does not inherit them through ct state established
+// (runtime.md §13). Best effort: without nf_conntrack there is nothing to
+// forget.
+func flushConntrack(address string) {
+	ip := net.ParseIP(address).To4()
+	if ip == nil {
+		return
+	}
+	var from, to netlink.ConntrackFilter
+	if from.AddIP(netlink.ConntrackOrigSrcIP, ip) != nil || to.AddIP(netlink.ConntrackOrigDstIP, ip) != nil {
+		return
+	}
+	if _, err := netlink.ConntrackDeleteFilters(netlink.ConntrackTable, unix.AF_INET, &from, &to); err != nil {
+		slog.Warn("flush the conntrack entries of a released address", "address", address, "error", err)
+	}
 }

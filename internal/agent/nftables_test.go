@@ -64,6 +64,22 @@ func TestNftRuleExprs(t *testing.T) {
 				cat(ipDep, daddr, l4(6), []expr.Any{accept}),
 				cat(ipDep, daddr, l4(17), []expr.Any{accept}),
 			}},
+		{"ip saddr != on a veth", nftRule{iif: "vethabc", saddr: netip.MustParsePrefix("10.213.0.2/32"), notSaddr: true, verdict: "drop"},
+			nftables.TableFamilyBridge, [][]expr.Any{cat([]expr.Any{
+				&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: append([]byte("vethabc"), make([]byte, 9)...)},
+			}, ipDep, []expr.Any{
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{10, 213, 0, 2}},
+				&expr.Verdict{Kind: expr.VerdictDrop},
+			})}},
+		{"arp saddr ip !=", nftRule{notArpSaddr: netip.MustParseAddr("10.213.0.2"), verdict: "drop"}, nftables.TableFamilyBridge, [][]expr.Any{{
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseLLHeader, Offset: 12, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x08, 0x06}},
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 14, Len: 4},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{10, 213, 0, 2}},
+			&expr.Verdict{Kind: expr.VerdictDrop},
+		}}},
 		{"inet depends on nfproto", nftRule{saddr: netip.MustParsePrefix("10.213.1.4/32"), verdict: "accept"}, nftables.TableFamilyINet, [][]expr.Any{{
 			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{2}},
