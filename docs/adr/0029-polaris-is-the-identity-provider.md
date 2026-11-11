@@ -32,7 +32,7 @@ Orrery's `oidc.go` is already a standard RP, with authorization code, PKCE and n
 **Polaris notifies Orrery about changes.**
 
 - `POST /api/v1/polaris/backchannel-logout` verifies the logout token (`VerifyLogoutToken`) and revokes the Sessions carrying that `sid`.
-- `POST /api/v1/polaris/webhook` verifies the signature with the shared secret (`oidc.webhook_secret`), drops events older than the last one applied for that `sub`, and ignores unknown types. Polaris stamps events to the second, delivers them unordered and keeps the `webhook-id` across retries, so a `webhook-id` already applied changes nothing, and at the same second a `user.enabled` never undoes a `user.disabled`, whichever arrives first (fail closed). Each event, `user.deleted`'s logical deletion included, is applied in one transaction, so a failure leaves nothing behind and the retry applies it afresh:
+- `POST /api/v1/polaris/webhook` verifies the signature with the shared secret (`oidc.webhook_secret`), drops a `user.disabled` or `user.enabled` older than the last disable/enable applied for that `sub` (a Role change or a delete only ever removes access, so it applies whenever it lands and does not move that mark), and ignores unknown types. Polaris stamps events to the second, delivers them unordered and keeps the `webhook-id` across retries, so a `webhook-id` already applied changes nothing, and at the same second a `user.enabled` never undoes a `user.disabled`, whichever arrives first (fail closed). Each event, `user.deleted`'s logical deletion included, is applied in one transaction, so a failure leaves nothing behind and the retry applies it afresh:
   - `user.disabled` sets `users.disabled_at`, and `user.enabled` clears it. `authenticate` rejects every credential of a disabled User: Session, API Token and the User's Sandbox Tokens.
   - `user.deleted` runs the existing logical deletion of the User.
   - `user.updated` with `roles` in `changed` clears `is_admin`, and the next login sets it again. This fails closed: a newly granted admin must log in once. Pulling the current Roles through the Management API with an M2M Application is the upgrade path.
@@ -64,7 +64,7 @@ orrery-server user-token (--name <name> [--admin] | --sub <polaris sub>) --sessi
 **Schema.**
 
 - 000027: a nullable `api_tokens.sid`, only for `kind=session`, indexed.
-- 000028: `users.disabled_at`, and `users.polaris_event_at`, the time of the last Polaris event applied.
+- 000028: `users.disabled_at`, and `users.polaris_event_at`, the time of the last Polaris disable/enable applied.
 - 000029: drop `users.password_hash`, `users.login_type` and `users_password_hash_only_for_password`; add `CHECK ((oidc_issuer IS NULL) = (oidc_subject IS NULL))`, where null means a machine User.
 - 000030: `users.polaris_disabled_at`, the time of the last `user.disabled` applied, and `polaris_webhook_deliveries`, the `webhook-id`s applied.
 

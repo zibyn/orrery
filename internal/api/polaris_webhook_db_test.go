@@ -229,6 +229,27 @@ func TestPolarisWebhookSameSecondDisableBeatsEnable(t *testing.T) {
 	}
 }
 
+// A Role change only removes access, so a newer one never hides an older
+// disable or delete that Polaris delivers after it.
+func TestPolarisWebhookRoleChangeDoesNotHideOlderDisableOrDelete(t *testing.T) {
+	h, op, _ := polarisTestServer(t)
+	at := time.Now().Truncate(time.Second)
+	for _, typ := range []string{"user.disabled", "user.deleted"} {
+		sub := "order-" + uuid.NewString()
+		session := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub}))
+		token := scopedToken(t, h, session, "user")
+		if code := op.Webhook(t, h, polarisEvent{Type: "user.updated", Sub: sub, Changed: []string{"roles"}, At: at.Add(time.Second)}); code != http.StatusNoContent {
+			t.Fatalf("%s: user.updated webhook = %d, want 204", typ, code)
+		}
+		if code := op.Webhook(t, h, polarisEvent{Type: typ, Sub: sub, At: at}); code != http.StatusNoContent {
+			t.Fatalf("%s webhook = %d, want 204", typ, code)
+		}
+		if code := callBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusUnauthorized {
+			t.Errorf("API Token after an older %s behind a newer Role change = %d, want 401", typ, code)
+		}
+	}
+}
+
 // auditActions lists the actions of the User's Audit Records.
 func auditActions(t *testing.T, h http.Handler, admin *http.Cookie, userID string) []string {
 	t.Helper()

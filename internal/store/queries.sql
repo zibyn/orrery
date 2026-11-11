@@ -69,9 +69,12 @@ WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
 -- ApplyPolarisEvent records a Polaris webhook event on the Polaris-linked
--- User it names, unless a newer event was already applied. Event times have
--- second precision, so ties apply but fail closed: an enable never undoes a
--- disable of the same second (ADR-0029). A null disabled keeps disabled_at.
+-- User it names. Only disable/enable are ordered: one is dropped if a newer
+-- disable/enable was already applied, and only they advance polaris_event_at.
+-- Clearing admin and deleting fail closed whenever they land, so a newer Role
+-- change never hides an older disable or delete. Event times have second
+-- precision, so ties apply but fail closed: an enable never undoes a disable
+-- of the same second (ADR-0029). A null disabled keeps disabled_at.
 -- name: ApplyPolarisEvent :one
 UPDATE users
 SET disabled_at = CASE sqlc.narg('disabled')::boolean
@@ -82,11 +85,13 @@ SET disabled_at = CASE sqlc.narg('disabled')::boolean
     polaris_disabled_at = CASE WHEN sqlc.narg('disabled')::boolean
         THEN sqlc.arg('event_at') ELSE polaris_disabled_at END,
     is_admin = is_admin AND NOT sqlc.arg('clear_admin')::boolean,
-    polaris_event_at = sqlc.arg('event_at'),
+    polaris_event_at = CASE WHEN sqlc.narg('disabled')::boolean IS NULL
+        THEN polaris_event_at ELSE sqlc.arg('event_at') END,
     updated_at = now()
 WHERE oidc_issuer = sqlc.arg('issuer') AND oidc_subject = sqlc.arg('subject')
   AND deleted_at IS NULL
-  AND (polaris_event_at IS NULL OR polaris_event_at <= sqlc.arg('event_at'))
+  AND (sqlc.narg('disabled')::boolean IS NULL
+       OR polaris_event_at IS NULL OR polaris_event_at <= sqlc.arg('event_at'))
   AND (sqlc.narg('disabled')::boolean IS DISTINCT FROM false
        OR polaris_disabled_at IS NULL OR polaris_disabled_at < sqlc.arg('event_at'))
 RETURNING *;
