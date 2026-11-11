@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { HardDrive, Plus } from 'lucide-react'
 import { useState } from 'react'
 
-import { api, type ListResponse, type Workspace } from '@/api'
+import { api, type ListResponse, type Sandbox, type Workspace } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -20,7 +20,7 @@ import {
 import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { causeLabel, workspaceKindLabel } from '@/lib/labels'
-import { workspacesPollInterval } from '@/lib/resources'
+import { workspaceSandboxIds, workspacesPollInterval } from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
@@ -38,6 +38,11 @@ function WorkspacesPage() {
     queryKey: ['workspaces'],
     queryFn: () => api<ListResponse<Workspace>>('GET', '/workspaces?limit=200'),
     refetchInterval: (query) => workspacesPollInterval(query.state.data?.items),
+  })
+  // Same key and path as the Sandboxes page, so the two share one cache entry.
+  const sandboxes = useQuery({
+    queryKey: ['sandboxes', ''],
+    queryFn: () => api<ListResponse<Sandbox>>('GET', '/sandboxes'),
   })
   const create = useMutation({
     mutationFn: () =>
@@ -91,44 +96,49 @@ function WorkspacesPage() {
 
       {workspaces.data && workspaces.data.items.length > 0 && (
         <ItemGroup>
-          {workspaces.data.items.map((workspace) => (
+          {workspaces.data.items.map((workspace) => {
+            const sandboxIds = workspaceSandboxIds(workspace, sandboxes.data?.items)
             // The row itself is the link, so the listitem role goes on a wrapper.
-            <div key={workspace.id} role="listitem">
-              <Item
-                variant="outline"
-                data-testid={`workspace-${workspace.id}`}
-                render={<Link to="/workspaces/$id" params={{ id: workspace.id }} />}
-              >
-                <ItemMedia variant="icon">
-                  <HardDrive />
-                </ItemMedia>
-                <ItemContent>
-                  <ItemTitle className="font-mono">{workspace.id}</ItemTitle>
-                  <ItemDescription>
-                    {workspaceKindLabel(workspace.kind)} ·{' '}
-                    {m.common_created({ time: formatTimestamp(workspace.created_at) })}
-                    {workspace.cause && <> · {causeLabel(workspace.cause)}</>}
-                    {workspace.node_id && (
-                      <>
-                        {' '}
-                        · {m.sandbox_node()} <span className="font-mono">{workspace.node_id.slice(0, 8)}</span>
-                      </>
-                    )}
-                    {workspace.sandbox_id && (
-                      <>
-                        {' '}
-                        · {m.workspace_sandbox()}{' '}
-                        <span className="font-mono">{workspace.sandbox_id.slice(0, 8)}</span>
-                      </>
-                    )}
-                  </ItemDescription>
-                </ItemContent>
-                <ItemActions>
-                  <StatusBadge state={workspace.state} />
-                </ItemActions>
-              </Item>
-            </div>
-          ))}
+            return (
+              <div key={workspace.id} role="listitem">
+                <Item
+                  variant="outline"
+                  data-testid={`workspace-${workspace.id}`}
+                  render={<Link to="/workspaces/$id" params={{ id: workspace.id }} />}
+                >
+                  <ItemMedia variant="icon">
+                    <HardDrive />
+                  </ItemMedia>
+                  <ItemContent>
+                    <ItemTitle className="font-mono">{workspace.id}</ItemTitle>
+                    <ItemDescription>
+                      {workspaceKindLabel(workspace.kind)} ·{' '}
+                      {m.common_created({ time: formatTimestamp(workspace.created_at) })}
+                      {workspace.cause && <> · {causeLabel(workspace.cause)}</>}
+                      {workspace.node_id && (
+                        <>
+                          {' '}
+                          · {m.sandbox_node()} <span className="font-mono">{workspace.node_id.slice(0, 8)}</span>
+                        </>
+                      )}
+                      {sandboxIds.length > 0 && (
+                        <>
+                          {' '}
+                          · {m.workspace_sandbox()}{' '}
+                          <span className="font-mono">
+                            {sandboxIds.map((sandboxId) => sandboxId.slice(0, 8)).join(', ')}
+                          </span>
+                        </>
+                      )}
+                    </ItemDescription>
+                  </ItemContent>
+                  <ItemActions>
+                    <StatusBadge state={workspace.state} />
+                  </ItemActions>
+                </Item>
+              </div>
+            )
+          })}
         </ItemGroup>
       )}
     </div>

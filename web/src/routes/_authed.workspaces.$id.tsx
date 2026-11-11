@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Plus, Trash } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 
-import { api, type Workspace } from '@/api'
+import { api, type ListResponse, type Sandbox, type Workspace } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -30,7 +30,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { causeLabel, conditionLabel, workspaceKindLabel } from '@/lib/labels'
-import { workspacePollInterval } from '@/lib/resources'
+import { workspacePollInterval, workspaceSandboxIds } from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
@@ -60,6 +60,11 @@ function WorkspaceDetailPage() {
     queryFn: () => api<Workspace>('GET', `/workspaces/${id}`),
     refetchInterval: (query) => workspacePollInterval(query.state.data?.state),
   })
+  // Same key and path as the Sandboxes page, so the two share one cache entry.
+  const sandboxes = useQuery({
+    queryKey: ['sandboxes', ''],
+    queryFn: () => api<ListResponse<Sandbox>>('GET', '/sandboxes'),
+  })
   const remove = useMutation({
     mutationFn: () => api<Workspace>('DELETE', `/workspaces/${id}`),
     onSuccess: async () => {
@@ -68,6 +73,7 @@ function WorkspaceDetailPage() {
     },
   })
   const current = workspace.data
+  const sandboxIds = current ? workspaceSandboxIds(current, sandboxes.data?.items) : []
   // Ephemeral Workspaces go away with their Sandbox (ADR-0018).
   const deletable =
     current?.kind === 'persistent' && current.state !== 'deleting' && current.state !== 'deleted'
@@ -92,7 +98,7 @@ function WorkspaceDetailPage() {
         actions={
           current && (
             <>
-              {current.kind === 'persistent' && current.state === 'ready' && !current.sandbox_id && (
+              {current.kind === 'persistent' && current.state === 'ready' && (
                 <Link
                   to="/sandboxes/new"
                   search={{ workspace: id }}
@@ -163,15 +169,20 @@ function WorkspaceDetailPage() {
                 <span className="font-mono text-xs">{current.node_id ?? '—'}</span>
               </Detail>
               <Detail label={m.workspace_sandbox()}>
-                {current.sandbox_id ? (
-                  <Link
-                    to="/sandboxes/$id"
-                    params={{ id: current.sandbox_id }}
-                    className="font-mono text-xs hover:underline"
-                    data-testid="workspace-sandbox"
-                  >
-                    {current.sandbox_id}
-                  </Link>
+                {sandboxIds.length > 0 ? (
+                  <div className="flex flex-col gap-0.5">
+                    {sandboxIds.map((sandboxId) => (
+                      <Link
+                        key={sandboxId}
+                        to="/sandboxes/$id"
+                        params={{ id: sandboxId }}
+                        className="font-mono text-xs hover:underline"
+                        data-testid="workspace-sandbox"
+                      >
+                        {sandboxId}
+                      </Link>
+                    ))}
+                  </div>
                 ) : (
                   '—'
                 )}
