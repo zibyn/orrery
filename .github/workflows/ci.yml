@@ -185,8 +185,9 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/orrery-server
           # Only vX.Y.Z, the git tag that ORRERY_VERSION holds and release
           # compose.yaml pulls; semver also tags :latest, a main push :main.
+          # v is a prefix, not in pattern: a prerelease ignores pattern.
           tags: |
-            type=semver,pattern=v{{version}}
+            type=semver,pattern={{version}},prefix=v
             type=ref,event=branch
       - uses: docker/build-push-action@v6
         with:
@@ -288,7 +289,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
-            type=semver,pattern=v{{version}}
+            type=semver,pattern={{version}},prefix=v
             type=ref,event=branch
       - uses: docker/build-push-action@v6
         with:

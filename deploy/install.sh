@@ -738,16 +738,18 @@ install_bins() {
   while IFS= read -r rel; do
     rel="${rel#./}"
     cmp -s "$src/$rel" "$dst/$rel" && continue
-    mkdir -p "$(dirname "$dst/$rel")"
     new="$(dirname "$dst/$rel")/.$(basename "$rel").new"
-    install -m "$(stat -c %a "$src/$rel")" "$src/$rel" "$new"
-    mv -f "$new" "$dst/$rel"
+    # Callers run this in $(...), where errexit is off.
+    { mkdir -p "$(dirname "$dst/$rel")" &&
+      install -m "$(stat -c %a "$src/$rel")" "$src/$rel" "$new" &&
+      mv -f "$new" "$dst/$rel"; } || return 1
     printf '%s\n' "$rel"
   done < <(cd "$src" && find . -type f)
 }
 
 # write_if_changed DEST writes stdin to DEST, mode 0644, and succeeds only
-# when that changed DEST.
+# when that changed DEST. Feed it with < <(gen), not gen |: in a pipeline
+# its die would only end a subshell, and read as "unchanged".
 write_if_changed() {
   local t
   t="$(mktemp "$1.XXXXXX")" || die "cannot write $1"
@@ -856,7 +858,7 @@ node() {
   mkdir -p "$bin"
   # The whole bundle, runtimes included; the Agent finds the CLI beside its
   # own executable (runtime.md).
-  changed="$(install_bins "$tmp/bin" "$bin")"
+  changed="$(install_bins "$tmp/bin" "$bin")" || die "cannot install the $version binaries into $bin"
 
   if [ -n "$ca" ]; then
     install -m 0644 "$ca" "$conf/ca.crt"
@@ -892,15 +894,15 @@ node() {
   local reload=0 restart_ctrd=0 restart_bk=0 new_store=0
   if [ "$runtime" = containerd ]; then
     [ -d "$NODE_STATE/containerd" ] || new_store=1
-    if containerd_toml | write_if_changed "$conf/containerd.toml"; then restart_ctrd=1; fi
-    if containerd_unit | write_if_changed "$sd/orrery-containerd.service"; then restart_ctrd=1; reload=1; fi
+    if write_if_changed "$conf/containerd.toml" < <(containerd_toml); then restart_ctrd=1; fi
+    if write_if_changed "$sd/orrery-containerd.service" < <(containerd_unit); then restart_ctrd=1; reload=1; fi
     if grep -qx containerd <<<"$changed"; then restart_ctrd=1; fi
   fi
-  if buildkitd_toml "${trust_registry[@]}" | write_if_changed "$conf/buildkitd.toml"; then restart_bk=1; fi
-  if buildkitd_unit | write_if_changed "$sd/orrery-buildkitd.service"; then restart_bk=1; reload=1; fi
+  if write_if_changed "$conf/buildkitd.toml" < <(buildkitd_toml "${trust_registry[@]}"); then restart_bk=1; fi
+  if write_if_changed "$sd/orrery-buildkitd.service" < <(buildkitd_unit); then restart_bk=1; reload=1; fi
   if grep -qx buildkitd <<<"$changed"; then restart_bk=1; fi
   [ -n "$exec_start" ] || exec_start="$(drop_host_daemons "$bin/orrery-agent" run --runtime "$runtime" "${ca_flag[@]}" "${extra[@]}")"
-  if agent_unit "$runtime" "$exec_start" | write_if_changed "$unit"; then reload=1; fi
+  if write_if_changed "$unit" < <(agent_unit "$runtime" "$exec_start"); then reload=1; fi
   [ "$reload" = 0 ] || systemctl daemon-reload
 
   [ "$runtime" != containerd ] || start_unit orrery-containerd "$restart_ctrd"
