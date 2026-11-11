@@ -82,11 +82,13 @@ SET disabled_at = CASE $1::boolean
     polaris_disabled_at = CASE WHEN $1::boolean
         THEN $2 ELSE polaris_disabled_at END,
     is_admin = is_admin AND NOT $3::boolean,
-    polaris_event_at = $2,
+    polaris_event_at = CASE WHEN $1::boolean IS NULL
+        THEN polaris_event_at ELSE $2 END,
     updated_at = now()
 WHERE oidc_issuer = $4 AND oidc_subject = $5
   AND deleted_at IS NULL
-  AND (polaris_event_at IS NULL OR polaris_event_at <= $2)
+  AND ($1::boolean IS NULL
+       OR polaris_event_at IS NULL OR polaris_event_at <= $2)
   AND ($1::boolean IS DISTINCT FROM false
        OR polaris_disabled_at IS NULL OR polaris_disabled_at < $2)
 RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
@@ -101,9 +103,12 @@ type ApplyPolarisEventParams struct {
 }
 
 // ApplyPolarisEvent records a Polaris webhook event on the Polaris-linked
-// User it names, unless a newer event was already applied. Event times have
-// second precision, so ties apply but fail closed: an enable never undoes a
-// disable of the same second (ADR-0029). A null disabled keeps disabled_at.
+// User it names. Only disable/enable are ordered: one is dropped if a newer
+// disable/enable was already applied, and only they advance polaris_event_at.
+// Clearing admin and deleting fail closed whenever they land, so a newer Role
+// change never hides an older disable or delete. Event times have second
+// precision, so ties apply but fail closed: an enable never undoes a disable
+// of the same second (ADR-0029). A null disabled keeps disabled_at.
 func (q *Queries) ApplyPolarisEvent(ctx context.Context, arg ApplyPolarisEventParams) (User, error) {
 	row := q.db.QueryRow(ctx, applyPolarisEvent,
 		arg.Disabled,
