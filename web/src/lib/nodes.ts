@@ -60,7 +60,7 @@ export function mergeNodeCapacity(nodes: Node[], capacity: CapacityNode[]): Node
 // is the only terminal Node status; a ready/paused/unavailable/outdated Node
 // can still change.
 export function nodeListPollInterval(
-  nodes: Pick<Node, 'status'>[] | undefined,
+  nodes: { status: string }[] | undefined,
 ): number | false {
   return nodes?.some((node) => node.status !== 'lost') ? 5000 : false
 }
@@ -86,7 +86,7 @@ function unhealthyGPUs(hardware: unknown): number {
   return gpuHealth(hardware).filter((gpu) => gpu.state !== 'healthy').length
 }
 
-// "3 minutes ago" in the console's language; refreshed by the 5 s list poll.
+// "3 minutes ago" in the console's language. Pass the query's dataUpdatedAt as `now`: an unchanged poll does not re-render otherwise.
 export function formatSince(value: string | null, now: number, locale: string): string {
   if (!value) return '—'
   const seconds = Math.max(0, Math.round((now - Date.parse(value)) / 1000))

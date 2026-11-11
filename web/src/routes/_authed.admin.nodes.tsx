@@ -68,7 +68,9 @@ function NodesPage() {
   const capacity = useQuery({
     queryKey: ['capacity'],
     queryFn: () => api<ListResponse<CapacityNode>>('GET', '/capacity'),
-    refetchInterval: nodeListPollInterval(nodes.data?.items),
+    // A live Node beyond the Node list's first page still shows (mergeNodeCapacity), so its own rows count too.
+    refetchInterval: (query) =>
+      nodeListPollInterval([...(nodes.data?.items ?? []), ...(query.state.data?.items ?? [])]),
   })
 
   const invalidate = () => {
@@ -160,7 +162,7 @@ function NodesPage() {
                     <>
                       {' · '}
                       <span title={formatTimestamp(row.lastSeenAt)}>
-                        {m.nodes_last_seen({ time: formatSince(row.lastSeenAt, Date.now(), getLocale()) })}
+                        {m.nodes_last_seen({ time: formatSince(row.lastSeenAt, nodes.dataUpdatedAt, getLocale()) })}
                       </span>
                     </>
                   )}
