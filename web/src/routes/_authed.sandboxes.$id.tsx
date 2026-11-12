@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Play, ScrollText, Square, Terminal, Trash } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 
-import { api, type ListResponse, type Sandbox, type Snapshot } from '@/api'
+import { api, listAll, type Sandbox, type Snapshot } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { SandboxFiles } from '@/components/sandbox-files'
 import { SandboxPorts } from '@/components/sandbox-ports'
@@ -72,7 +72,7 @@ function SandboxDetailPage() {
 
   const snapshots = useQuery({
     queryKey: ['snapshots'],
-    queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots?limit=200'),
+    queryFn: () => listAll<Snapshot>('/snapshots'),
   })
 
   const action = useMutation({
@@ -258,7 +258,7 @@ function SandboxDetailPage() {
                   </span>
                 </Detail>
               )}
-              <SnapshotDetail refName={current.snapshot} snapshots={snapshots.data?.items ?? []} />
+              <SnapshotDetail refName={current.snapshot} snapshots={snapshots.data ?? []} />
             </dl>
           </CardContent>
         </Card>

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Plus, Upload, X } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
-import { api, type ListResponse, type Secret, type Snapshot } from '@/api'
+import { api, listAll, type ListResponse, type Secret, type Snapshot } from '@/api'
 import { notifyError } from '@/lib/notify'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardFooter } from '@/components/ui/card'
@@ -47,7 +47,7 @@ export function SnapshotVersionForm({
   const [error, setError] = useState<string>()
   const snapshots = useQuery({
     queryKey: ['snapshots'],
-    queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots?limit=200'),
+    queryFn: () => listAll<Snapshot>('/snapshots'),
   })
   const secrets = useQuery({
     queryKey: ['secrets'],
@@ -168,7 +168,7 @@ export function SnapshotVersionForm({
                             onChange={(e) => field.handleChange(e.target.value)}
                           >
                             <NativeSelectOption value="">{m.version_new_base_none()}</NativeSelectOption>
-                            {baseSnapshotOptions(snapshots.data?.items ?? [], snapshotId).map((item) => (
+                            {baseSnapshotOptions(snapshots.data ?? [], snapshotId).map((item) => (
                               <NativeSelectOption key={item.id} value={item.name}>
                                 {item.name}
                                 {item.owner_id === null ? m.new_platform_suffix() : ''}

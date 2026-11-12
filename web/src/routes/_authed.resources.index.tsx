@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { Package } from 'lucide-react'
 
-import { api, type ListResponse, type Resource } from '@/api'
+import { listAll, type Resource } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import {
@@ -27,10 +27,10 @@ function ResourcesPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const resources = useQuery({
     queryKey: ['resources'],
-    queryFn: () => api<ListResponse<Resource>>('GET', '/resources?limit=200'),
+    queryFn: () => listAll<Resource>('/resources'),
   })
 
-  const count = resources.data?.items.length
+  const count = resources.data?.length
 
   return (
     <div className="flex flex-col gap-6">
@@ -53,7 +53,7 @@ function ResourcesPage() {
         </div>
       )}
 
-      {resources.data?.items.length === 0 && (
+      {resources.data?.length === 0 && (
         <Empty className="border">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -65,9 +65,9 @@ function ResourcesPage() {
         </Empty>
       )}
 
-      {resources.data && resources.data.items.length > 0 && (
+      {resources.data && resources.data.length > 0 && (
         <ItemGroup>
-          {resources.data.items.map((resource) => (
+          {resources.data.map((resource) => (
             // The row itself is the link, so the listitem role goes on a wrapper.
             <div key={resource.id} role="listitem">
               <Item
