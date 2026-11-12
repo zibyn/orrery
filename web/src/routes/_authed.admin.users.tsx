@@ -3,7 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Pencil, ShieldCheck, Trash } from 'lucide-react'
 import { useState } from 'react'
 
-import { api, type ListResponse, type QuotaUsage, type User } from '@/api'
+import { api, listAll, type QuotaUsage, type User } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import {
   AlertDialog,
@@ -66,7 +66,7 @@ function UsersPage() {
 
   const users = useQuery({
     queryKey: ['users'],
-    queryFn: () => api<ListResponse<User>>('GET', '/users'),
+    queryFn: () => listAll<User>('/users'),
   })
   // The public API exposes per-User usage only for the caller (GET /users/me/quota);
   // another User's used counts are not available to the console.
@@ -112,9 +112,9 @@ function UsersPage() {
         </div>
       )}
 
-      {users.data && users.data.items.length > 0 && (
+      {users.data && users.data.length > 0 && (
         <ItemGroup className="gap-2">
-          {users.data.items.map((user) => (
+          {users.data.map((user) => (
             <UserRow key={user.id} user={user} isSelf={user.id === me.id} />
           ))}
         </ItemGroup>

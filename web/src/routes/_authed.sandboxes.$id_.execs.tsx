@@ -4,7 +4,7 @@ import { Terminal } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Terminal as XTerminal } from '@xterm/xterm'
 
-import { api, type Exec, type ExecResultFrame, type ListResponse, type Sandbox } from '@/api'
+import { api, type Exec, type ExecResultFrame, listAll, type Sandbox } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
@@ -56,10 +56,10 @@ function ExecsPage() {
   })
   const execs = useQuery({
     queryKey: ['execs', id],
-    queryFn: () => api<ListResponse<Exec>>('GET', `/sandboxes/${id}/execs`),
-    refetchInterval: (query) => execListPollInterval(query.state.data?.items),
+    queryFn: () => listAll<Exec>(`/sandboxes/${id}/execs`),
+    refetchInterval: (query) => execListPollInterval(query.state.data),
   })
-  const selected = execs.data?.items.find((exec) => exec.id === selectedId)
+  const selected = execs.data?.find((exec) => exec.id === selectedId)
 
   const cancel = useMutation({
     mutationFn: (execId: string) => api<Exec>('POST', `/execs/${execId}/cancel`),
@@ -110,7 +110,7 @@ function ExecsPage() {
         </div>
       )}
 
-      {execs.data?.items.length === 0 && (
+      {execs.data?.length === 0 && (
         <Empty className="border">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -122,7 +122,7 @@ function ExecsPage() {
         </Empty>
       )}
 
-      {execs.data && execs.data.items.length > 0 && (
+      {execs.data && execs.data.length > 0 && (
         <div className="grid items-start gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
           <Card className="overflow-hidden">
             <CardHeader>
@@ -131,7 +131,7 @@ function ExecsPage() {
             </CardHeader>
             <CardContent>
               <ItemGroup className="gap-1">
-                {execs.data.items.map((exec) => (
+                {execs.data.map((exec) => (
                   <Item
                     key={exec.id}
                     role="listitem"

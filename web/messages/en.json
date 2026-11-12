@@ -187,6 +187,7 @@
   "audit_empty": "No audit records match.",
   "audit_newest": "Newest",
   "audit_older": "Older records",
+  "audit_newer": "Newer records",
   "nodes_title": "Nodes",
   "nodes_description": "Compute hosts and their GPU capacity. Enrolling a Node or declaring one lost is done with the CLI.",
   "nodes_count_one": "{count} node",

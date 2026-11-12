@@ -3,7 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { KeyRound, Pencil, Plus, Trash } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
-import { api, type ListResponse, type Secret } from '@/api'
+import { api, listAll, type Secret } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import {
   AlertDialog,
@@ -67,7 +67,7 @@ function SecretsPage() {
 
   const secrets = useQuery({
     queryKey: ['secrets'],
-    queryFn: () => api<ListResponse<Secret>>('GET', '/secrets'),
+    queryFn: () => listAll<Secret>('/secrets'),
   })
 
   const save = useMutation({
@@ -184,7 +184,7 @@ function SecretsPage() {
         </div>
       )}
 
-      {secrets.data?.items.length === 0 && (
+      {secrets.data?.length === 0 && (
         <Empty className="border">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -196,9 +196,9 @@ function SecretsPage() {
         </Empty>
       )}
 
-      {secrets.data && secrets.data.items.length > 0 && (
+      {secrets.data && secrets.data.length > 0 && (
         <ItemGroup className="gap-2">
-          {secrets.data.items.map((secret) => (
+          {secrets.data.map((secret) => (
             <Item key={secret.name} variant="outline" role="listitem">
               <ItemMedia variant="icon">
                 <KeyRound />

@@ -3,7 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Box, ChevronRight, Plus } from 'lucide-react'
 import { useState } from 'react'
 
-import { api, type ListResponse, type Sandbox, type User } from '@/api'
+import { listAll, type Sandbox, type User } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { buttonVariants } from '@/components/ui/button'
@@ -40,19 +40,16 @@ function SandboxesPage() {
   const sandboxes = useQuery({
     queryKey: ['sandboxes', owner],
     queryFn: () =>
-      api<ListResponse<Sandbox>>(
-        'GET',
-        `/sandboxes${owner ? `?owner=${encodeURIComponent(owner)}` : ''}`,
-      ),
-    refetchInterval: (query) => sandboxListPollInterval(query.state.data?.items),
+      listAll<Sandbox>(`/sandboxes${owner ? `?owner=${encodeURIComponent(owner)}` : ''}`),
+    refetchInterval: (query) => sandboxListPollInterval(query.state.data),
   })
   const users = useQuery({
     queryKey: ['users'],
-    queryFn: () => api<ListResponse<User>>('GET', '/users'),
+    queryFn: () => listAll<User>('/users'),
     enabled: user.is_admin,
   })
 
-  const count = sandboxes.data?.items.length
+  const count = sandboxes.data?.length
 
   return (
     <div className="flex flex-col gap-6">
@@ -80,7 +77,7 @@ function SandboxesPage() {
                   onChange={(e) => setOwner(e.target.value)}
                 >
                   <NativeSelectOption value="">{m.sandboxes_owner_me({ name: user.name })}</NativeSelectOption>
-                  {users.data?.items.map((item) => (
+                  {users.data?.map((item) => (
                     <NativeSelectOption key={item.id} value={item.id}>
                       {item.name}
                     </NativeSelectOption>
@@ -106,7 +103,7 @@ function SandboxesPage() {
         </div>
       )}
 
-      {sandboxes.data?.items.length === 0 && (
+      {sandboxes.data?.length === 0 && (
         <Empty className="border">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -118,9 +115,9 @@ function SandboxesPage() {
         </Empty>
       )}
 
-      {sandboxes.data && sandboxes.data.items.length > 0 && (
+      {sandboxes.data && sandboxes.data.length > 0 && (
         <ItemGroup>
-          {sandboxes.data.items.map((sandbox) => (
+          {sandboxes.data.map((sandbox) => (
             // The listitem wraps the row so the row itself keeps its link role.
             <div key={sandbox.id} role="listitem">
               <Item

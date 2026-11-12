@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { HardDrive, Plus } from 'lucide-react'
 import { useState } from 'react'
 
-import { api, listAll, type ListResponse, type Sandbox, type Workspace } from '@/api'
+import { api, listAll, type Sandbox, type Workspace } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -42,7 +42,7 @@ function WorkspacesPage() {
   // Same key and path as the Sandboxes page, so the two share one cache entry.
   const sandboxes = useQuery({
     queryKey: ['sandboxes', ''],
-    queryFn: () => api<ListResponse<Sandbox>>('GET', '/sandboxes'),
+    queryFn: () => listAll<Sandbox>('/sandboxes'),
   })
   const create = useMutation({
     mutationFn: () =>
@@ -97,7 +97,7 @@ function WorkspacesPage() {
       {workspaces.data && workspaces.data.length > 0 && (
         <ItemGroup>
           {workspaces.data.map((workspace) => {
-            const sandboxIds = workspaceSandboxIds(workspace, sandboxes.data?.items)
+            const sandboxIds = workspaceSandboxIds(workspace, sandboxes.data)
             // The row itself is the link, so the listitem role goes on a wrapper.
             return (
               <div key={workspace.id} role="listitem">

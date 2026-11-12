@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Plus, Trash } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 
-import { api, type ListResponse, type Sandbox, type Workspace } from '@/api'
+import { api, listAll, type Sandbox, type Workspace } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -63,7 +63,7 @@ function WorkspaceDetailPage() {
   // Same key and path as the Sandboxes page, so the two share one cache entry.
   const sandboxes = useQuery({
     queryKey: ['sandboxes', ''],
-    queryFn: () => api<ListResponse<Sandbox>>('GET', '/sandboxes'),
+    queryFn: () => listAll<Sandbox>('/sandboxes'),
   })
   const remove = useMutation({
     mutationFn: () => api<Workspace>('DELETE', `/workspaces/${id}`),
@@ -73,7 +73,7 @@ function WorkspaceDetailPage() {
     },
   })
   const current = workspace.data
-  const sandboxIds = current ? workspaceSandboxIds(current, sandboxes.data?.items) : []
+  const sandboxIds = current ? workspaceSandboxIds(current, sandboxes.data) : []
   // Ephemeral Workspaces go away with their Sandbox (ADR-0018).
   const deletable =
     current?.kind === 'persistent' && current.state !== 'deleting' && current.state !== 'deleted'

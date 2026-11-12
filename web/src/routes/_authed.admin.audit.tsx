@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { Filter } from 'lucide-react'
 import { useState, type ChangeEvent } from 'react'
@@ -34,12 +34,15 @@ function AuditPage() {
   const [draft, setDraft] = useState<AuditFilters>(EMPTY)
   const [applied, setApplied] = useState<AuditFilters>(EMPTY)
   // The cursor is opaque and only ever comes from the server's next_cursor.
-  // Applying a new filter starts again at the newest record.
-  const [cursor, setCursor] = useState<string | null>(null)
+  // Applying a new filter starts again at the newest record. The stack holds
+  // the cursor of every page visited so far, so "newer" can step back one.
+  const [cursors, setCursors] = useState<(string | null)[]>([null])
+  const cursor = cursors[cursors.length - 1]
 
   const records = useQuery({
     queryKey: ['audit', applied, cursor],
     queryFn: () => api<ListResponse<AuditRecord>>('GET', auditPath(applied, cursor)),
+    placeholderData: keepPreviousData,
   })
 
   const field = (key: keyof AuditFilters) => ({
@@ -82,7 +85,7 @@ function AuditPage() {
                 from: toRfc3339(draft.from),
                 to: toRfc3339(draft.to),
               })
-              setCursor(null)
+              setCursors([null])
             }}
           >
             <FieldGroup className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -158,13 +161,22 @@ function AuditPage() {
       )}
 
       <div className="flex gap-2">
-        {cursor && (
-          <Button variant="outline" onClick={() => setCursor(null)}>
-            {m.audit_newest()}
-          </Button>
+        {cursors.length > 1 && (
+          <>
+            <Button variant="outline" onClick={() => setCursors([null])}>
+              {m.audit_newest()}
+            </Button>
+            <Button variant="outline" onClick={() => setCursors((stack) => stack.slice(0, -1))}>
+              {m.audit_newer()}
+            </Button>
+          </>
         )}
         {records.data?.next_cursor && (
-          <Button variant="outline" onClick={() => setCursor(records.data?.next_cursor ?? null)}>
+          <Button
+            variant="outline"
+            disabled={records.isPlaceholderData}
+            onClick={() => setCursors((stack) => [...stack, records.data?.next_cursor ?? null])}
+          >
             {m.audit_older()}
           </Button>
         )}

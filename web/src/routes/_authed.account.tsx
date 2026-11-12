@@ -5,7 +5,7 @@ import { KeyRound, Monitor, Plus, UserPen } from 'lucide-react'
 import { useState } from 'react'
 import { z } from 'zod'
 
-import { api, type CreatedToken, type ListResponse, type Token } from '@/api'
+import { api, listAll, type CreatedToken, type Token } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { TokenReveal } from '@/components/token-reveal'
 import {
@@ -77,7 +77,7 @@ function AccountPage() {
 
   const tokens = useQuery({
     queryKey: ['tokens'],
-    queryFn: () => api<ListResponse<Token>>('GET', '/users/me/tokens'),
+    queryFn: () => listAll<Token>('/users/me/tokens'),
   })
 
   const createToken = useMutation({
@@ -88,7 +88,7 @@ function AccountPage() {
   const revokeToken = useMutation({
     mutationFn: (id: string) => api<Token>('DELETE', `/users/me/tokens/${id}`),
     onSuccess: (revoked) => {
-      if (tokens.data?.items.find((token) => token.id === revoked.id)?.current) {
+      if (tokens.data?.find((token) => token.id === revoked.id)?.current) {
         window.location.assign('/login')
         return
       }
@@ -96,9 +96,9 @@ function AccountPage() {
     },
   })
 
-  const apiTokens = (tokens.data?.items ?? []).filter((token) => token.kind === 'token')
+  const apiTokens = (tokens.data ?? []).filter((token) => token.kind === 'token')
   // The browser in use first, then the most recent sign-ins.
-  const sessions = (tokens.data?.items ?? [])
+  const sessions = (tokens.data ?? [])
     .filter((token) => token.kind === 'session')
     .sort(
       (a, b) =>
