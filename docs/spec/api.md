@@ -97,7 +97,7 @@ secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}
 idle_stop?: 秒数，默认 900，0 表示关闭
 egress?: {mode: open|none|allowlist, allow?: [CIDR[:port]]}   # 不写等于 {mode: open}
-links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自己的 Sandbox 连进来；不写就谁也连不进来
+links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自己的 Sandbox 连进来；写了就只有这些来源能连进来。不写时没有入站链，别的 Node 上的 Sandbox 经 Mesh 连不进来，同一 Node 上的连不连得进来取决于运维是否在 Egress Rules 的 `deny` 里列了 Sandbox 子网（`defaults.md`，`runtime.md` §13）
 ```
 
 每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
