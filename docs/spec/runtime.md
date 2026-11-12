@@ -172,7 +172,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 
   Egress Policy 由一个纯函数从（Egress Rules，Egress Mode）算出有序条目，nftables 程序由它的输出渲染。条目是 `CIDR` 时匹配 `ip daddr`，任何协议；带 `:port` 时只匹配该端口的 TCP 和 UDP。
 - **生效时机**：Rules 取 Agent 当前持有的那份（`node-protocol.md` 的 `HelloAck`），Mode 取 `CreateSandbox` 里的 `egress`，都在 Create 时渲染。运行中的 Sandbox 不因 Rules 变化而改写；Stop 再 start 后按新 Rules 重建。
-- **自检 `sandbox_links`**：注册时用两个探针容器。一个作为目标监听 TCP 端口，只链接另一个；被链接的那个必须连得上，Agent 从宿主（网桥网关地址）连必须连不上。都符合才报 `enforced`。
+- **自检 `sandbox_links`**：注册时用两个探针容器。一个作为目标监听 TCP 端口，只链接另一个；被链接的那个必须连得上，Agent 从宿主（网桥网关地址）连必须连不上；随后把这条 Link 的来源换成一个没人用的地址，并把来源探针的出网放开（`open`），它再连必须超时。都符合才报 `enforced`。
 - **自检 `egress_policy`**：注册时在探针容器上做。Agent 在网桥网关地址上临时监听一个 TCP 端口；探针容器先按 Mode `none`（不带 Rules）建网，由 Supervisor 拨这个端口，必须连不上；再按 `allowlist`、只列这个地址和端口建网，必须连得上。两步都符合才报 `enforced`，否则 `unsupported`。自检不用运维的 Rules，结果与它们无关。
 
 ## 14. 端口转发（containerd）
