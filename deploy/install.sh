@@ -587,6 +587,7 @@ NODE_BIN=/opt/orrery/bin
 NODE_CONF=/etc/orrery-agent
 NODE_STATE=/var/lib/orrery-agent
 NODE_RUN=/run/orrery
+NODE_UNITS=/etc/systemd/system
 # The Agent's defaults (internal/agent) name the same two sockets.
 NODE_CTRD_SOCK=$NODE_RUN/containerd/containerd.sock
 NODE_BK_ADDR=unix://$NODE_RUN/buildkit/buildkitd.sock
@@ -816,8 +817,8 @@ node() {
   need curl tar sha256sum systemctl flock cmp
   case "$version" in "" | latest) version="$(latest_version)" ;; esac
   check_version "$version"
-  local bin="$NODE_BIN" conf="$NODE_CONF" sd=/etc/systemd/system
-  local state="$NODE_STATE/identity.json" unit=/etc/systemd/system/orrery-agent.service exec_start=""
+  local bin="$NODE_BIN" conf="$NODE_CONF" sd="$NODE_UNITS"
+  local state="$NODE_STATE/identity.json" unit="$NODE_UNITS/orrery-agent.service" exec_start=""
   mkdir -p "$conf"
   # Concurrent install.sh runs share one lock.
   exec 9>"$conf/.install.lock"
@@ -855,6 +856,7 @@ node() {
   curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
   (cd "$tmp" && grep "  $pkg\$" SHA256SUMS | sha256sum -c --quiet -) || die "$pkg does not match SHA256SUMS"
   tar -C "$tmp" -xzf "$tmp/$pkg"
+  [ -d "$tmp/bin" ] || die "$pkg has no bin/: $version predates ADR-0028; install it with the install.sh from that release"
   mkdir -p "$bin"
   # The whole bundle, runtimes included; the Agent finds the CLI beside its
   # own executable (runtime.md).
