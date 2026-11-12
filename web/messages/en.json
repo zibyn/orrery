@@ -380,6 +380,8 @@
   "snapshot_form_dockerfile_required": "Enter a Dockerfile",
   "snapshot_form_ref_required": "Enter an image ref",
   "snapshot_form_secret_incomplete": "Each build Secret needs both an id and a Secret",
+  "snapshot_form_secret_duplicate": "This id is already used by another build Secret",
+  "version_new_base_unlisted": "{value} (not listed)",
   "snapshot_new_version": "New version",
   "snapshot_version_new_from": "New version from this",
   "version_new_description": "Build from a Dockerfile, or import an existing image by tag or digest.",

@@ -79,7 +79,8 @@ func runGitCredential(c *client, args []string, stdout, stderr io.Writer) error 
 	if err != nil {
 		// A missing link is not a helper failure: name the console page on
 		// stderr and answer nothing. This is the Exec's only helper, so git
-		// then fails authentication (api.md §3).
+		// runs no other one: in a PTY Exec it prompts interactively, otherwise
+		// it fails authentication (api.md §3).
 		var problem *orreryclient.Error
 		if errors.As(err, &problem) && problem.Status == http.StatusNotFound {
 			if problem.AuthorizeURL != "" {

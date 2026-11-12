@@ -582,7 +582,32 @@ func (d *containerdDriver) linksEnforced(ctx context.Context, img containerd.Ima
 		slog.Warn("link self-check: the bridge gateway was not dropped", "error", err)
 		return false
 	}
+	// The forward path: with the Link moved to an unused source address and
+	// the source's own egress open, the source must now be dropped too.
+	sourceNet.Policy, _ = resolveEgressPolicy(nil, nil, egressMode{name: nodeproto.EgressOpen})
+	d.setProbe(sourceID, &sourceNet)
+	d.setProbeLink(&nodev1.SandboxLink{TargetId: id.String(), TargetAddress: network.Address,
+		SourceId: uuid.NewString(), SourceAddress: probeUnusedSource, Ports: []uint32{probeLinkPort}})
+	if err := d.applyNetwork(ctx); err != nil {
+		slog.Warn("link self-check: move the Link away", "error", err)
+		return false
+	}
+	code, _, stderr, err := d.execProbe(ctx, source, "link-unlinked", probeSupervisor, "dial", target)
+	if !probeDialDropped(code, stderr, err) {
+		slog.Warn("link self-check: a source without a Link was not dropped", "code", code, "error", err, "stderr", stderr)
+		return false
+	}
 	return true
+}
+
+// probeUnusedSource is the Link source of the negative probe: TEST-NET-1,
+// never a Sandbox address.
+const probeUnusedSource = "192.0.2.1"
+
+// probeDialDropped reports whether a probe dial timed out, which is how a
+// drop looks; a connect, a refusal or a failed exec does not count.
+func probeDialDropped(code int, stderr string, err error) bool {
+	return err == nil && code != 0 && strings.Contains(stderr, "i/o timeout")
 }
 
 // egressEnforced is the egress_policy self-check (runtime.md §13): under
@@ -686,9 +711,10 @@ func (d *containerdDriver) healthy(ctx context.Context) bool {
 // managed container in the namespace with its network (runtime.md §8).
 func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)) {
 	// Every render below, the teardowns included, sees the last SandboxLinks.
-	links := loadSandboxLinks(d.r.dataRoot)
+	// Read under networkMu so a concurrent setLinks cannot be overwritten
+	// by an older snapshot.
 	d.networkMu.Lock()
-	d.links = links
+	d.links = loadSandboxLinks(d.r.dataRoot)
 	d.networkMu.Unlock()
 	containers, err := d.client.Containers(ctx, `labels."`+labelManaged+`"==true`)
 	if err != nil {

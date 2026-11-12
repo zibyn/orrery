@@ -65,6 +65,7 @@
 | `wait_for` 最长挂起 | 60 秒 | 常量 | |
 | 分页 | 默认 50，上限 200 | 常量 | |
 | Idempotency Key 保留期 | 24 小时 | 常量 | |
+| import 解析 tag 期限 | 20 秒 | 常量 | 源 registry 不响应时返回 `unavailable`；短于 CLI 的 30 秒请求超时 |
 | Gateway 端口票据有效期 | 60 秒 | 常量 | ADR-0017 |
 | 每个 User 的 Secret | 最多 50 个，每个最大 24 KiB | 常量 | ADR-0017 |
 | `links.from` 项数 | 最多 16 项 | 常量 | 创建请求里的 Sandbox Link 来源（`api.md` §3） |

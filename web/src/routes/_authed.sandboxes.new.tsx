@@ -7,6 +7,7 @@ import {
   api,
   type CapacityNode,
   type CreateSandboxRequest,
+  listAll,
   type ListResponse,
   type Sandbox,
   type Snapshot,
@@ -48,7 +49,7 @@ function NewSandboxPage() {
 
   const snapshots = useQuery({
     queryKey: ['snapshots'],
-    queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots?limit=200'),
+    queryFn: () => listAll<Snapshot>('/snapshots'),
   })
   const capacity = useQuery({
     queryKey: ['capacity'],
@@ -56,7 +57,7 @@ function NewSandboxPage() {
   })
   const workspaces = useQuery({
     queryKey: ['workspaces'],
-    queryFn: () => api<ListResponse<Workspace>>('GET', '/workspaces'),
+    queryFn: () => listAll<Workspace>('/workspaces'),
   })
 
   const gpuModels = Array.from(
@@ -66,7 +67,7 @@ function NewSandboxPage() {
       ),
     ),
   )
-  const attachable = (workspaces.data?.items ?? []).filter(
+  const attachable = (workspaces.data ?? []).filter(
     (workspace) =>
       workspace.kind === 'persistent' &&
       (workspace.state === 'ready' || workspace.state === 'provisioning'),
@@ -164,7 +165,7 @@ function NewSandboxPage() {
                       onChange={(e) => field.handleChange(e.target.value)}
                     >
                       <NativeSelectOption value="">{m.new_deployment_default()}</NativeSelectOption>
-                      {snapshots.data?.items.map((snapshot) => (
+                      {snapshots.data?.map((snapshot) => (
                         <NativeSelectOption key={snapshot.id} value={snapshot.name}>
                           {snapshot.name}
                           {snapshot.owner_id === null ? m.new_platform_suffix() : ''}

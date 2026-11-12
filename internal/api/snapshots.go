@@ -302,7 +302,13 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 		writeProblem(w, code, detail)
 		return
 	}
-	source, err := registry.Resolve(ctx, ref, sourceAuth)
+	resolveCtx, cancel := context.WithTimeout(ctx, importResolveTimeout)
+	source, err := registry.Resolve(resolveCtx, ref, sourceAuth)
+	cancel()
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeProblem(w, "unavailable", fmt.Sprintf("the source registry did not answer within %s: %v", importResolveTimeout, err))
+		return
+	}
 	if err != nil {
 		writeProblem(w, "invalid_request", err.Error())
 		return
@@ -339,6 +345,10 @@ func (s *Server) handleCreateSnapshotVersion(w http.ResponseWriter, r *http.Requ
 	go s.runImport(version.ID, snap.ID, registry.Repo(snap.ID, platformName(snap)), source, sourceAuth)
 	writeJSON(w, http.StatusCreated, snapshotVersionToDTO(version))
 }
+
+// importResolveTimeout bounds the tag lookup well inside the client's 30s
+// timeout, so a registry that never answers gets a controlled problem.
+var importResolveTimeout = 20 * time.Second
 
 // platformName returns the registry repository name for a platform Snapshot,
 // and "" for a user Snapshot (whose repository is keyed by id).

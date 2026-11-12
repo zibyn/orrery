@@ -75,10 +75,11 @@ func (c *Conn) pump() {
 			c.pumpErr = errors.New("tunnel frame for a different tunnel")
 			return
 		}
+		// After Close nobody reads incoming: drop frames until the peer ends
+		// the stream, so the owner never cancels it with data in flight.
 		select {
 		case c.incoming <- frame.GetData():
 		case <-c.done:
-			return
 		}
 	}
 }
@@ -87,8 +88,8 @@ func (c *Conn) pump() {
 // it and then returns, which ends the RPC.
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
-// Ended closes once no more frames will be read: the peer ended the RPC, or
-// a frame arrived after Close.
+// Ended closes once no more frames will be read: the peer ended the RPC or
+// sent a frame for another tunnel. Frames after Close are read and dropped.
 func (c *Conn) Ended() <-chan struct{} { return c.ended }
 
 func (c *Conn) Read(p []byte) (int, error) {

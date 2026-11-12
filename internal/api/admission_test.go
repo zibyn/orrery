@@ -77,8 +77,14 @@ func TestNodeFitDiskWatermark(t *testing.T) {
 }
 
 func TestAdmissionExhausted(t *testing.T) {
+	values := map[string]string{}
+	for _, name := range nodeproto.RequiredFor("containerd") {
+		values[name] = nodeproto.ValueEnforced
+	}
+	caps := capabilitySnapshot(t, "containerd", values)
 	small := store.Node{
 		ID:             uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+		Capabilities:   caps,
 		ReservedCpu:    1,
 		ReservedMemory: 2 << 30,
 		Hardware: mustHardware(t, nodeHardware{
@@ -87,6 +93,7 @@ func TestAdmissionExhausted(t *testing.T) {
 	}
 	big := store.Node{
 		ID:             uuid.MustParse("00000000-0000-0000-0000-000000000002"),
+		Capabilities:   caps,
 		ReservedCpu:    1,
 		ReservedMemory: 2 << 30,
 		Hardware: mustHardware(t, nodeHardware{
@@ -95,6 +102,9 @@ func TestAdmissionExhausted(t *testing.T) {
 	}
 	noHardware := store.Node{}
 	request := store.Sandbox{Cpu: 4, Memory: 8 << 30}
+	// A reconnected Node keeps its old Hardware until it reports again.
+	reconnected := small
+	reconnected.Capabilities = nil
 
 	for _, tt := range []struct {
 		name          string
@@ -108,6 +118,7 @@ func TestAdmissionExhausted(t *testing.T) {
 		{"unknown hardware beside a small Node is not proof", []store.Node{small, noHardware}, request, nil, false},
 		{"one Node is large enough", []store.Node{small, big}, request, nil, false},
 		{"every Node is too small", []store.Node{small}, request, nil, true},
+		{"unreported Capabilities are not proof", []store.Node{reconnected}, request, nil, false},
 		{
 			"a bound Sandbox only considers its Node",
 			[]store.Node{small, big},

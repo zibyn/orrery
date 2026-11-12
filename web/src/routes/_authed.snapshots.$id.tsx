@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Ban, Box, Copy, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
 import { useState } from 'react'
 
-import { api, type ListResponse, type Snapshot, type SnapshotVersion } from '@/api'
+import { api, listAll, type Snapshot, type SnapshotVersion } from '@/api'
 import { BuildLog } from '@/components/build-log'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
@@ -73,14 +73,24 @@ function SnapshotDetailPage() {
 
   const versions = useQuery({
     queryKey: ['snapshot-versions', id],
-    queryFn: () => api<ListResponse<SnapshotVersion>>('GET', `/snapshots/${id}/versions?limit=200`),
-    refetchInterval: (query) => snapshotVersionsPollInterval(query.state.data?.items),
+    queryFn: () => listAll<SnapshotVersion>(`/snapshots/${id}/versions`),
+    refetchInterval: (query) => snapshotVersionsPollInterval(query.state.data),
   })
+  const listed = versions.data?.find((item) => item.id === selectedId)
+  // A ?version= the list does not hold (it may have been created since) is read on its own.
+  const unlisted = useQuery({
+    queryKey: ['snapshot-version', id, selectedId],
+    queryFn: () => api<SnapshotVersion>('GET', `/snapshots/${id}/versions/${selectedId}`),
+    enabled: selectedId !== undefined && versions.isSuccess && !listed,
+    retry: false,
+    refetchInterval: (query) => snapshotVersionsPollInterval(query.state.data && [query.state.data]),
+  })
+  const selected = listed ?? unlisted.data
   const snapshot = useQuery({
     queryKey: ['snapshot', id],
     queryFn: () => api<Snapshot>('GET', `/snapshots/${id}`),
     // The current pointer moves when a build becomes ready.
-    refetchInterval: versions.data?.items.some(
+    refetchInterval: [...(versions.data ?? []), ...(selected ? [selected] : [])].some(
       (version) => !isSnapshotVersionTerminal(version.state),
     )
       ? 2000
@@ -108,7 +118,6 @@ function SnapshotDetailPage() {
         queryClient.invalidateQueries({ queryKey: ['snapshot-versions', id] }),
       ]),
   })
-  const selected = versions.data?.items.find((item) => item.id === selectedId)
   const logMode = selected ? buildLogMode(selected) : 'none'
 
   return (
@@ -231,7 +240,7 @@ function SnapshotDetailPage() {
               {m.snapshot_versions_loading()}
             </div>
           )}
-          {versions.data?.items.length === 0 && (
+          {versions.data?.length === 0 && (
             <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon">
@@ -242,7 +251,7 @@ function SnapshotDetailPage() {
               </EmptyHeader>
             </Empty>
           )}
-          {versions.data && versions.data.items.length > 0 && (
+          {versions.data && versions.data.length > 0 && (
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
@@ -255,7 +264,7 @@ function SnapshotDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {versions.data.items.map((version) => (
+                {versions.data.map((version) => (
                   <TableRow key={version.id} data-testid={`version-${version.id}`}>
                     <TableCell className="pl-5">
                       <div className="flex items-center gap-2">
@@ -317,7 +326,7 @@ function SnapshotDetailPage() {
         </CardContent>
       </Card>
 
-      {selectedId && !selected && !versions.isPending && (
+      {selectedId && !selected && unlisted.isError && (
         <p className="text-sm text-muted-foreground">{m.snapshot_not_in_list()}</p>
       )}
 
@@ -340,7 +349,7 @@ function SnapshotDetailPage() {
           </CardHeader>
           <CardContent>
             {logMode !== 'none' && selected.build_exec_id ? (
-              <BuildLog execId={selected.build_exec_id} mode={logMode} />
+              <BuildLog key={selected.build_exec_id} execId={selected.build_exec_id} mode={logMode} />
             ) : (
               <p className="text-sm text-muted-foreground">{m.snapshot_no_build_log()}</p>
             )}

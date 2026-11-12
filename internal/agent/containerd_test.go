@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // runtime.md §2: the Sandbox's loopback is not the host's, so loopback
 // nameservers are dropped and everything else is kept.
@@ -27,5 +30,26 @@ func TestSandboxResolvConf(t *testing.T) {
 				t.Fatalf("sandboxResolvConf(%q) = %q, want %q", tt.host, got, tt.want)
 			}
 		})
+	}
+}
+
+// #252: the sandbox_links negative probe counts only a dial that timed out
+// as dropped; a connect, a refusal or a failed exec says nothing.
+func TestProbeDialDropped(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		code   int
+		stderr string
+		err    error
+		want   bool
+	}{
+		{"connected", 0, "", nil, false},
+		{"timed out", 1, "dial tcp 10.213.0.3:7: i/o timeout", nil, true},
+		{"refused", 1, "dial tcp 10.213.0.3:7: connect: connection refused", nil, false},
+		{"exec failed", 0, "", errors.New("create probe exec"), false},
+	} {
+		if got := probeDialDropped(tt.code, tt.stderr, tt.err); got != tt.want {
+			t.Errorf("%s: probeDialDropped = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

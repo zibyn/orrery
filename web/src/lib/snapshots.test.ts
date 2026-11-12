@@ -139,12 +139,12 @@ describe('snapshotOwnerLabel', () => {
 })
 
 describe('baseSnapshotOptions', () => {
-  it('offers other Snapshots that have a current version', () => {
+  it('offers every Snapshot that has a current version, the caller itself included', () => {
     const self = snapshot({ id: 'self', current_version_id: 'v1' })
     const ready = snapshot({ id: 'ready', current_version_id: 'v2' })
     const platform = snapshot({ id: 'platform', owner_id: null, current_version_id: 'v3' })
     const empty = snapshot({ id: 'empty', current_version_id: null })
-    expect(baseSnapshotOptions([self, ready, platform, empty], 'self')).toEqual([ready, platform])
+    expect(baseSnapshotOptions([self, ready, platform, empty])).toEqual([self, ready, platform])
   })
 })
 

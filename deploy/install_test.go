@@ -325,3 +325,121 @@ func TestPlatformSnapshotsBlockLookupFails(t *testing.T) {
 		t.Fatalf("a failed lookup did not stop the install: %v\n%s", err, out)
 	}
 }
+
+// fakeNode is a Node host in a temp dir for running install.sh node as a
+// non-root user: curl serves release archives from rel, and systemctl and
+// trust_ca only log to $d/log.
+type fakeNode struct {
+	t      *testing.T
+	d, rel string
+}
+
+func newFakeNode(t *testing.T) *fakeNode {
+	n := &fakeNode{t: t, d: t.TempDir(), rel: t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(n.d, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An enrolled Node: install.sh skips orrery-agent enroll.
+	if err := os.WriteFile(filepath.Join(n.d, "state", "identity.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// release packs files (archive path to content) as version's Node archive.
+func (n *fakeNode) release(version string, files map[string]string) {
+	n.t.Helper()
+	src := n.t.TempDir()
+	for rel, body := range files {
+		p := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			n.t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			n.t.Fatal(err)
+		}
+	}
+	dir := filepath.Join(n.rel, version)
+	pkg := "orrery-node_" + version + "_linux_amd64.tar.gz"
+	script := `set -e; mkdir -p "$2"; tar -C "$1" -czf "$2/$3" .; cd "$2"; sha256sum "$3" > SHA256SUMS`
+	if out, err := exec.Command("bash", "-c", script, "pack", src, dir, pkg).CombinedOutput(); err != nil {
+		n.t.Fatalf("pack %s: %v\n%s", version, err, out)
+	}
+}
+
+// run runs install.sh node with args and returns its output.
+func (n *fakeNode) run(args ...string) (string, error) {
+	if out, err := exec.Command("uname", "-m").Output(); err != nil || strings.TrimSpace(string(out)) != "x86_64" {
+		n.t.Skip("the fake release is amd64")
+	}
+	script := `source ./install.sh
+d="$1" rel="$2"; shift 2
+NODE_BIN="$d/bin" NODE_CONF="$d/conf" NODE_STATE="$d/state" NODE_UNITS="$d/units"
+mkdir -p "$NODE_UNITS"
+id() { echo 0; }
+curl() { local url="$2"; cp "$rel/$(basename "$(dirname "$url")")/$(basename "$url")" "$4"; }
+systemctl() { echo "systemctl $*" >> "$d/log"; }
+trust_ca() { echo "trust_ca $(cat "$1")" >> "$d/log"; }
+node "$@"`
+	out, err := exec.Command("bash", append([]string{"-c", script, "test", n.d, n.rel}, args...)...).CombinedOutput()
+	return string(out), err
+}
+
+// log returns and clears what systemctl and trust_ca logged.
+func (n *fakeNode) log() string {
+	p := filepath.Join(n.d, "log")
+	b, _ := os.ReadFile(p)
+	os.Remove(p)
+	return string(b)
+}
+
+// An archive from before ADR-0028 has no bin/: install.sh would install
+// nothing, restart the old binaries and record the new version.
+func TestNodeRefusesArchiveWithoutBin(t *testing.T) {
+	n := newFakeNode(t)
+	n.release("v0.9.0", map[string]string{"orrery-agent": "old"})
+	out, err := n.run("--version", "v0.9.0", "--runtime", "local")
+	if err == nil || !strings.Contains(out, "ADR-0028") {
+		t.Fatalf("an archive without bin/ did not stop the install: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(n.d, "conf", "version")); !os.IsNotExist(err) {
+		t.Errorf("conf/version written: %v", err)
+	}
+	if l := n.log(); l != "" {
+		t.Errorf("install went on:\n%s", l)
+	}
+}
+
+// A rerun that rotates --ca without --trust-registry puts the new CA in the
+// host trust store and restarts buildkitd; one with the same CA does neither.
+func TestNodeRotatesCA(t *testing.T) {
+	n := newFakeNode(t)
+	n.release("v1.0.0", map[string]string{"bin/orrery-agent": "a", "bin/buildkitd": "b"})
+	ca := filepath.Join(t.TempDir(), "ca.crt")
+	install := func(body string, extra ...string) string {
+		t.Helper()
+		if err := os.WriteFile(ca, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, err := n.run(append([]string{"--version", "v1.0.0", "--runtime", "local", "--ca", ca}, extra...)...)
+		if err != nil {
+			t.Fatalf("install: %v\n%s", err, out)
+		}
+		return n.log()
+	}
+
+	first := install("ca1", "--trust-registry", "registry.example:8443")
+	wantLines(t, "first install", first, "trust_ca ca1", "systemctl restart orrery-buildkitd")
+
+	same := install("ca1")
+	if strings.Contains(same, "trust_ca") || !strings.Contains(same, "systemctl start orrery-buildkitd") ||
+		strings.Contains(same, "restart orrery-buildkitd") {
+		t.Errorf("rerun with the same CA:\n%s", same)
+	}
+
+	rotated := install("ca2")
+	wantLines(t, "rerun with a new CA", rotated, "trust_ca ca2", "systemctl restart orrery-buildkitd")
+	if b, _ := os.ReadFile(filepath.Join(n.d, "conf", "buildkitd.toml")); !strings.Contains(string(b), `[registry."registry.example:8443"]`) {
+		t.Errorf("the rerun dropped the trusted host:\n%s", b)
+	}
+}

@@ -345,6 +345,21 @@ export async function api<T>(
   return (await res.json()) as T
 }
 
+// listAll follows next_cursor until the server reports no more pages, so a
+// list is complete however many items it holds (api.md pagination).
+export async function listAll<T>(path: string): Promise<T[]> {
+  const items: T[] = []
+  let cursor: string | null = null
+  do {
+    const params = new URLSearchParams({ limit: '200' })
+    if (cursor) params.set('cursor', cursor)
+    const page: ListResponse<T> = await api('GET', `${path}${path.includes('?') ? '&' : '?'}${params}`)
+    items.push(...page.items)
+    cursor = page.next_cursor
+  } while (cursor)
+  return items
+}
+
 // File uploads send the File itself as the raw request body; the server
 // answers 204, so the caller has no JSON to parse (api.md §5).
 export async function apiRaw(method: string, path: string, body?: BodyInit): Promise<void> {

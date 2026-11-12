@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { HardDrive, Plus } from 'lucide-react'
 import { useState } from 'react'
 
-import { api, type ListResponse, type Sandbox, type Workspace } from '@/api'
+import { api, listAll, type ListResponse, type Sandbox, type Workspace } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -36,8 +36,8 @@ function WorkspacesPage() {
   const [idempotencyKey] = useState(() => crypto.randomUUID())
   const workspaces = useQuery({
     queryKey: ['workspaces'],
-    queryFn: () => api<ListResponse<Workspace>>('GET', '/workspaces?limit=200'),
-    refetchInterval: (query) => workspacesPollInterval(query.state.data?.items),
+    queryFn: () => listAll<Workspace>('/workspaces'),
+    refetchInterval: (query) => workspacesPollInterval(query.state.data),
   })
   // Same key and path as the Sandboxes page, so the two share one cache entry.
   const sandboxes = useQuery({
@@ -53,7 +53,7 @@ function WorkspacesPage() {
     },
   })
 
-  const count = workspaces.data?.items.length
+  const count = workspaces.data?.length
 
   return (
     <div className="flex flex-col gap-6">
@@ -82,7 +82,7 @@ function WorkspacesPage() {
         </div>
       )}
 
-      {workspaces.data?.items.length === 0 && (
+      {workspaces.data?.length === 0 && (
         <Empty className="border">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -94,9 +94,9 @@ function WorkspacesPage() {
         </Empty>
       )}
 
-      {workspaces.data && workspaces.data.items.length > 0 && (
+      {workspaces.data && workspaces.data.length > 0 && (
         <ItemGroup>
-          {workspaces.data.items.map((workspace) => {
+          {workspaces.data.map((workspace) => {
             const sandboxIds = workspaceSandboxIds(workspace, sandboxes.data?.items)
             // The row itself is the link, so the listitem role goes on a wrapper.
             return (

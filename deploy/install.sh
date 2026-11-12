@@ -587,6 +587,7 @@ NODE_BIN=/opt/orrery/bin
 NODE_CONF=/etc/orrery-agent
 NODE_STATE=/var/lib/orrery-agent
 NODE_RUN=/run/orrery
+NODE_UNITS=/etc/systemd/system
 # The Agent's defaults (internal/agent) name the same two sockets.
 NODE_CTRD_SOCK=$NODE_RUN/containerd/containerd.sock
 NODE_BK_ADDR=unix://$NODE_RUN/buildkit/buildkitd.sock
@@ -758,6 +759,22 @@ write_if_changed() {
   { chmod 0644 "$t" && mv -f "$t" "$1"; } || die "cannot write $1"
 }
 
+# trust_ca CA puts CA in the host trust store as orrery-ca.crt. The Agent
+# pulls with that store, which it reads at start; the object store is a
+# redirect target, so it needs the same CA. One CA covers every
+# --trust-registry host.
+trust_ca() {
+  if command -v update-ca-certificates >/dev/null; then
+    install -D -m 0644 "$1" /usr/local/share/ca-certificates/orrery-ca.crt
+    update-ca-certificates >/dev/null
+  elif command -v update-ca-trust >/dev/null; then
+    install -D -m 0644 "$1" /etc/pki/ca-trust/source/anchors/orrery-ca.crt
+    update-ca-trust extract
+  else
+    die "--trust-registry needs update-ca-certificates or update-ca-trust"
+  fi
+}
+
 # start_unit NAME RESTART enables NAME and restarts it when RESTART is 1,
 # otherwise only makes sure it runs.
 start_unit() {
@@ -816,8 +833,8 @@ node() {
   need curl tar sha256sum systemctl flock cmp
   case "$version" in "" | latest) version="$(latest_version)" ;; esac
   check_version "$version"
-  local bin="$NODE_BIN" conf="$NODE_CONF" sd=/etc/systemd/system
-  local state="$NODE_STATE/identity.json" unit=/etc/systemd/system/orrery-agent.service exec_start=""
+  local bin="$NODE_BIN" conf="$NODE_CONF" sd="$NODE_UNITS"
+  local state="$NODE_STATE/identity.json" unit="$NODE_UNITS/orrery-agent.service" exec_start=""
   mkdir -p "$conf"
   # Concurrent install.sh runs share one lock.
   exec 9>"$conf/.install.lock"
@@ -855,31 +872,25 @@ node() {
   curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
   (cd "$tmp" && grep "  $pkg\$" SHA256SUMS | sha256sum -c --quiet -) || die "$pkg does not match SHA256SUMS"
   tar -C "$tmp" -xzf "$tmp/$pkg"
+  [ -d "$tmp/bin" ] || die "$pkg has no bin/: $version predates ADR-0028; install it with the install.sh from that release"
   mkdir -p "$bin"
   # The whole bundle, runtimes included; the Agent finds the CLI beside its
   # own executable (runtime.md).
   changed="$(install_bins "$tmp/bin" "$bin")" || die "cannot install the $version binaries into $bin"
 
+  local ca_changed=0
   if [ -n "$ca" ]; then
+    cmp -s "$ca" "$conf/ca.crt" || ca_changed=1
     install -m 0644 "$ca" "$conf/ca.crt"
   fi
   if [ ${#trust_registry[@]} -gt 0 ]; then
     [ -f "$conf/ca.crt" ] || die "--trust-registry needs --ca"
-    # The Agent pulls with the host's trust store, which it reads at start;
-    # the object store is a redirect target, so it needs the same CA. One CA
-    # covers every --trust-registry host.
-    if command -v update-ca-certificates >/dev/null; then
-      install -D -m 0644 "$conf/ca.crt" /usr/local/share/ca-certificates/orrery-ca.crt
-      update-ca-certificates >/dev/null
-    elif command -v update-ca-trust >/dev/null; then
-      install -D -m 0644 "$conf/ca.crt" /etc/pki/ca-trust/source/anchors/orrery-ca.crt
-      update-ca-trust extract
-    else
-      die "--trust-registry needs update-ca-certificates or update-ca-trust"
-    fi
+    trust_ca "$conf/ca.crt"
   else
     # A rerun without --trust-registry keeps the hosts buildkitd trusts.
     mapfile -t trust_registry < <(buildkitd_hosts "$conf/buildkitd.toml")
+    # A rotated --ca replaces the one those hosts were trusted with.
+    [ "$ca_changed" = 0 ] || [ ${#trust_registry[@]} -eq 0 ] || trust_ca "$conf/ca.crt"
   fi
   local ca_flag=()
   [ -f "$conf/ca.crt" ] && ca_flag=(--ca "$conf/ca.crt")
@@ -899,6 +910,8 @@ node() {
     if grep -qx containerd <<<"$changed"; then restart_ctrd=1; fi
   fi
   if write_if_changed "$conf/buildkitd.toml" < <(buildkitd_toml "${trust_registry[@]}"); then restart_bk=1; fi
+  # buildkitd.toml names ca.crt by path, so a new CA does not change it.
+  [ "$ca_changed" = 0 ] || restart_bk=1
   if write_if_changed "$sd/orrery-buildkitd.service" < <(buildkitd_unit); then restart_bk=1; reload=1; fi
   if grep -qx buildkitd <<<"$changed"; then restart_bk=1; fi
   [ -n "$exec_start" ] || exec_start="$(drop_host_daemons "$bin/orrery-agent" run --runtime "$runtime" "${ca_flag[@]}" "${extra[@]}")"

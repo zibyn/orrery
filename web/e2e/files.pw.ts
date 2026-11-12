@@ -18,7 +18,9 @@ test.afterEach(async ({ page }) => {
       .poll(
         async () => {
           const res = await page.context().request.get(url)
-          return res.ok() ? ((await res.json()) as { state: string }).state : 'deleted'
+          // Only 404 means gone; any other failure keeps polling until the timeout.
+          if (res.status() === 404) return 'deleted'
+          return res.ok() ? ((await res.json()) as { state: string }).state : `HTTP ${res.status()}`
         },
         { timeout: 120_000 },
       )

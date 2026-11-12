@@ -172,7 +172,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 
   Egress Policy 由一个纯函数从（Egress Rules，Egress Mode）算出有序条目，nftables 程序由它的输出渲染。条目是 `CIDR` 时匹配 `ip daddr`，任何协议；带 `:port` 时只匹配该端口的 TCP 和 UDP。
 - **生效时机**：Rules 取 Agent 当前持有的那份（`node-protocol.md` 的 `HelloAck`），Mode 取 `CreateSandbox` 里的 `egress`，都在 Create 时渲染。运行中的 Sandbox 不因 Rules 变化而改写；Stop 再 start 后按新 Rules 重建。
-- **自检 `sandbox_links`**：注册时用两个探针容器。一个作为目标监听 TCP 端口，只链接另一个；被链接的那个必须连得上，Agent 从宿主（网桥网关地址）连必须连不上。都符合才报 `enforced`。
+- **自检 `sandbox_links`**：注册时用两个探针容器。一个作为目标监听 TCP 端口，只链接另一个；被链接的那个必须连得上，Agent 从宿主（网桥网关地址）连必须连不上；随后把这条 Link 的来源换成一个没人用的地址，并把来源探针的出网放开（`open`），它再连必须超时。都符合才报 `enforced`。
 - **自检 `egress_policy`**：注册时在探针容器上做。Agent 在网桥网关地址上临时监听一个 TCP 端口；探针容器先按 Mode `none`（不带 Rules）建网，由 Supervisor 拨这个端口，必须连不上；再按 `allowlist`、只列这个地址和端口建网，必须连得上。两步都符合才报 `enforced`，否则 `unsupported`。自检不用运维的 Rules，结果与它们无关。
 
 ## 14. 端口转发（containerd）
@@ -190,7 +190,7 @@ runc 和 runsc 走同一条路；runsc 上 socket 在宿主可见，靠的是 §
 Node 之间的 WireGuard 网络，只承载跨 Node 的 Sandbox Link 流量（ADR-0027）。只有 IPv4。
 
 - **接口**：Agent 自己经 netlink 建内核 WireGuard 接口 `orrery-wg`、写私钥和 peer、加路由，不依赖 `wireguard-tools` 或 `ip`。接口没有地址。私钥在数据目录的 `mesh.key`（0600），第一次启动时生成，之后不变；Node 被删除或重新注册时随身份一起清掉。监听端口为 `--mesh-port`。内核没有 WireGuard 时 Agent 照常运行，`Hello` 不带 `mesh`，这台 Node 没有任何 Mesh 通路。
-- **peer**：Control Plane 用 `MeshPeers` 下发其他每台 Node 的公钥、Sandbox 子网和端点（如果有）。Agent 把每个 peer 的 `AllowedIPs` 设成对方的 Sandbox 子网，并为它加一条 `<对方子网> dev orrery-wg` 路由；对带端点的 peer 设 keepalive（`defaults.md`）。两台都没有端点的 Node 之间没有通路。Sandbox 子网与本机重叠的 peer 不会下发。
+- **peer**：Control Plane 用 `MeshPeers` 下发其他每台 Node 的公钥、Sandbox 子网和端点（如果有），由 Reconciler 的 sweep 在一台 Node 的 peer 集合变化时发出，所以各份按顺序到达，丢了的一份下一轮重发（`node-protocol.md`）。Agent 把每个 peer 的 `AllowedIPs` 设成对方的 Sandbox 子网，并为它加一条 `<对方子网> dev orrery-wg` 路由；对带端点的 peer 设 keepalive（`defaults.md`）。新的一份逐个 peer 增量应用：不在其中的 peer 被移除，其余的就地更新，不整体替换，所以没变的 peer 保留握手会话和学到的端点，只有配置了端点的 peer 才会被设端点。两台都没有端点的 Node 之间没有通路。Sandbox 子网与本机重叠的 peer 不会下发。
 - **过滤**：Agent 在 `orrery_nat` 之外再独占一张 `inet` 表 `orrery_mesh`，`forward` 钩子：从 `orrery-wg` 进来的，只放行 `ct state established,related` 和「来源地址 → 本机 Link 目标地址:端口」；发往 `orrery-wg` 的，只放行 established 和「本机 Link 来源地址 → 目标地址:端口」；其余丢弃。`output` 钩子丢弃宿主自己发往 `orrery-wg` 的一切。这样 Mesh 只承载 Link 流量，与运维的 Egress Rules 无关。条目来自同一份 `SandboxLinks`。
 - **MSS**：`orrery_mesh` 在 `forward` 钩子上对经过 `orrery-wg` 的 TCP SYN 做 `tcp option maxseg size set rt mtu`。WireGuard 的封装开销是 60–80 字节，veth 是 1500；大包和 runsc 对 ICMP fragmentation-needed 的处理还没有实测（spike #183 §5）。
 - **通路上报**：Agent 每个上报间隔读一次每个 peer 的最近握手时间，发 `MeshReport`。Control Plane 只在内存里保存这张连通矩阵：两台 Node 之间，任一方报告的最近握手在判定时限内（`defaults.md`），就算有通路。Control Plane 重启后矩阵为空，直到下一轮上报；这期间跨 Node 放置只能等待。

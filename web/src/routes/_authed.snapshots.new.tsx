@@ -31,7 +31,8 @@ function NewSnapshotPage() {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [created, setCreated] = useState<Snapshot>()
-  // One key per form mount: repeated submits cannot create a second version (api.md §2).
+  // One key per form mount: repeated submits cannot create a second Snapshot or
+  // version; the key is unique per endpoint, so both requests share it (api.md §2).
   const [idempotencyKey] = useState(() => crypto.randomUUID())
 
   return (
@@ -72,7 +73,12 @@ function NewSnapshotPage() {
           let snapshot = created
           if (!snapshot) {
             if (!name.trim()) throw new Error(m.snapshots_enter_name())
-            snapshot = await api<Snapshot>('POST', '/snapshots', { name: name.trim() })
+            snapshot = await api<Snapshot>(
+              'POST',
+              '/snapshots',
+              { name: name.trim() },
+              { 'Idempotency-Key': idempotencyKey },
+            )
             setCreated(snapshot)
             await queryClient.invalidateQueries({ queryKey: ['snapshots'] })
           }

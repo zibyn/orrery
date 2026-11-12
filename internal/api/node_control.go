@@ -68,10 +68,10 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 	// done is closed when an admin declares the Node lost or deletes it, so the
 	// handler can return UNAUTHENTICATED even while Recv blocks.
 	conn := &agentConn{nodeID: node.ID, send: make(chan *nodev1.ControlMessage, 64), done: make(chan struct{})}
+	// register wakes the sweep, which resends every Node's MeshPeers that
+	// changed with this Hello (node-protocol.md).
 	n.s.reconcile.hub.register(conn)
 	defer n.s.reconcile.hub.unregister(conn)
-	// Every Node's peer set may have changed with this Hello (node-protocol.md).
-	n.s.sendMeshPeers(ctx)
 	go func() {
 		for {
 			select {

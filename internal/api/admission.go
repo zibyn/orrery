@@ -193,22 +193,22 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		if workspaceNode != nil && node.ID != *workspaceNode {
 			continue
 		}
+		// A Node that has not reported Capabilities yet (one that just
+		// reconnected keeps stale Hardware) may still take any request, so it
+		// is not proof of exhaustion.
+		if len(node.Capabilities) == 0 {
+			unknown = true
+			continue
+		}
 		// A non-build request can only run on a Node with a matching Runtime
-		// Provider (api.md §3). A Node that has not reported Capabilities is
-		// treated as potentially matching, so it is not proof of exhaustion.
-		if sb.Kind != string(SandboxKindBuild) && len(node.Capabilities) > 0 &&
+		// Provider (api.md §3).
+		if sb.Kind != string(SandboxKindBuild) &&
 			(!runtimeMatches(node.Capabilities, sandboxRuntimeValue(sb.Runtime)) || !egressPlaceable(sb.EgressMode)(node) ||
 				!linksCapable(sb.LinksFrom)(node)) {
 			known = true
 			continue
 		}
 		if sb.Kind == string(SandboxKindBuild) {
-			if len(node.Capabilities) == 0 {
-				// A Node that has not reported its Capabilities may still turn
-				// out to support builds.
-				unknown = true
-				continue
-			}
 			if !nodeproto.CapabilityEnforced(node.Capabilities, nodeproto.CapSnapshotBuild) {
 				// Reported and incapable: this Node can never take the build.
 				known = true
@@ -222,12 +222,6 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 		}
 		known = true
 		if sb.GpuCount > 0 {
-			if len(node.Capabilities) == 0 {
-				// A Node that has not reported its Runtime Capabilities may
-				// still turn out to support CDI.
-				unknown = true
-				continue
-			}
 			if _, ok := gpuFit(node, fit, gpus[node.ID], sb); ok {
 				return false
 			}

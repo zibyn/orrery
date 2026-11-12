@@ -86,6 +86,33 @@ func TestEndedWaitsForThePeerAfterClose(t *testing.T) {
 	}
 }
 
+// #252: frames that keep arriving after Close, more than the buffer holds,
+// are read and dropped; the pump stops only when Recv fails, so the Agent
+// never cancels while the Control Plane is still sending.
+func TestPumpDrainsFramesAfterClose(t *testing.T) {
+	stream := newFakeStream()
+	conn := NewConn("t8", stream)
+	conn.Close() //nolint:errcheck // local half done
+	for i := 0; i < 64; i++ {
+		select {
+		case stream.in <- &nodev1.TunnelFrame{TunnelId: "t8", Data: []byte("x")}:
+		case <-time.After(time.Second):
+			t.Fatalf("frame %d after Close was not read", i)
+		}
+	}
+	select {
+	case <-conn.Ended():
+		t.Fatal("Ended before the peer ended the stream")
+	default:
+	}
+	close(stream.in)
+	select {
+	case <-conn.Ended():
+	case <-time.After(time.Second):
+		t.Fatal("Ended did not close after Recv failed")
+	}
+}
+
 func TestReadDeadlineWakesABlockedRead(t *testing.T) {
 	stream := newFakeStream()
 	conn := NewConn("t3", stream)

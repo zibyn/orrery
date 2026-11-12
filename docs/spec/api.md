@@ -32,7 +32,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `internal` | 500 | 平台缺陷 |
-| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达，或 OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败；可以重试 |
+| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达，OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败，或 import 的源 registry 在解析期限内没有响应；可以重试 |
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
@@ -97,7 +97,7 @@ secrets?: {ENV_NAME: secret_name}
 cpu, memory, gpu?: {count, model?}
 idle_stop?: 秒数，默认 900，0 表示关闭
 egress?: {mode: open|none|allowlist, allow?: [CIDR[:port]]}   # 不写等于 {mode: open}
-links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自己的 Sandbox 连进来；不写就谁也连不进来
+links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自己的 Sandbox 连进来；写了就只有这些来源能连进来。不写时没有入站链，别的 Node 上的 Sandbox 经 Mesh 连不进来，同一 Node 上的连不连得进来取决于运维是否在 Egress Rules 的 `deny` 里列了 Sandbox 子网（`defaults.md`，`runtime.md` §13）
 ```
 
 每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
@@ -216,7 +216,7 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 
 Git Provider 来自部署配置文件 `config.yaml` 的 `git_providers`（`defaults.md`），client secret 直接写在文件里。OAuth `redirect_uri` 和 `authorize_url` 都以 `access.url`（环境变量覆盖名 `ORRERY_ACCESS_URL`）为基址；它未配置时 Git 关联关闭。
 
-沙箱内的 helper 收到 `404` 时，把 `authorize_url` 写到 stderr，stdout 不输出，退出码为 0。平台 helper 是 Exec 里唯一的 helper（镜像和仓库里配置的 helper 已被清空），所以 git 随后报认证失败。
+沙箱内的 helper 收到 `404` 时，把 `authorize_url` 写到 stderr，stdout 不输出，退出码为 0。平台 helper 是 Exec 里唯一的 helper（镜像和仓库里配置的 helper 已被清空），git 不会再运行其它 helper。Agent 不设 `GIT_TERMINAL_PROMPT`/`GIT_ASKPASS`，所以 PTY Exec 中 git 回退到交互式提示输入凭据，非 PTY Exec 中认证失败。
 
 **审计**：`GET /audit`，**admin**，过滤 `actor`、`action`、`target`、时间区间。
 

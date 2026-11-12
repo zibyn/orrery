@@ -79,6 +79,27 @@ describe('snapshotVersionSchema', () => {
       snapshotVersionSchema.safeParse({ ...valid, secrets: [{ id: 'npm', name: '' }] }).success,
     ).toBe(false)
   })
+
+  it('rejects two rows with the same secret id, on the later row', () => {
+    const result = snapshotVersionSchema.safeParse({
+      ...valid,
+      secrets: [
+        { id: 'npm', name: 'a' },
+        { id: 'pip', name: 'b' },
+        { id: ' npm ', name: 'c' },
+      ],
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((issue) => issue.path)).toEqual([['secrets', 2, 'id']])
+  })
+
+  it('accepts distinct secret ids', () => {
+    const secrets = [
+      { id: 'npm', name: 'a' },
+      { id: 'pip', name: 'a' },
+    ]
+    expect(snapshotVersionSchema.safeParse({ ...valid, secrets }).success).toBe(true)
+  })
 })
 
 describe('formFieldsFromRequest', () => {

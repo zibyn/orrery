@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { Layers, Plus } from 'lucide-react'
 
-import { api, type ListResponse, type Snapshot } from '@/api'
+import { listAll, type Snapshot } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { buttonVariants } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
@@ -31,10 +31,10 @@ function SnapshotsPage() {
   const { user } = Route.useRouteContext()
   const snapshots = useQuery({
     queryKey: ['snapshots'],
-    queryFn: () => api<ListResponse<Snapshot>>('GET', '/snapshots?limit=200'),
+    queryFn: () => listAll<Snapshot>('/snapshots'),
   })
 
-  const count = snapshots.data?.items.length
+  const count = snapshots.data?.length
 
   return (
     <div className="flex flex-col gap-6">
@@ -66,7 +66,7 @@ function SnapshotsPage() {
         </div>
       )}
 
-      {snapshots.data?.items.length === 0 && (
+      {snapshots.data?.length === 0 && (
         <Empty className="border">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -78,9 +78,9 @@ function SnapshotsPage() {
         </Empty>
       )}
 
-      {snapshots.data && snapshots.data.items.length > 0 && (
+      {snapshots.data && snapshots.data.length > 0 && (
         <ItemGroup>
-          {snapshots.data.items.map((snapshot) => (
+          {snapshots.data.map((snapshot) => (
             // The row itself is the link, so the listitem role goes on a wrapper.
             <div key={snapshot.id} role="listitem">
               <Item

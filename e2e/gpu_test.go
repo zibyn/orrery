@@ -251,9 +251,14 @@ func requireGPUs(t *testing.T, node nodeView) int {
 // remoteGPUUUIDs runs nvidia-smi inside the Sandbox on the GPU host.
 func remoteGPUUUIDs(t *testing.T, h *gpuHost, sandboxID string) []string {
 	t.Helper()
-	query := []string{"nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader,nounits"}
-	args := append([]string{"ctr", "-n", "orrery", "task", "exec",
-		"--exec-id", fmt.Sprintf("e2e-gpu-%d", time.Now().UnixNano()), "orrery-" + sandboxID}, query...)
+	// ctrCommand reaches the Agent's own containerd, not the host's.
+	args := append(ctrCommand(), "-n", "orrery", "task", "exec",
+		"--exec-id", fmt.Sprintf("e2e-gpu-%d", time.Now().UnixNano()), "orrery-"+sandboxID,
+		"nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader,nounits")
+	// ssh joins its arguments into one remote shell command line.
+	for i, w := range args {
+		args[i] = shellQuote(w)
+	}
 	out := sshRun(t, h, args...)
 	var uuids []string
 	for _, line := range strings.Split(out, "\n") {

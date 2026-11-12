@@ -5,7 +5,7 @@ import { useState } from 'react'
 
 import {
   api,
-  type ListResponse,
+  listAll,
   type ManifestEntry,
   type Resource,
   type ResourceVersion,
@@ -56,7 +56,11 @@ import {
 import { formatBytes } from '@/lib/files'
 import { useLocale } from '@/lib/i18n'
 import { causeLabel } from '@/lib/labels'
-import { parseProvenance, resourceVersionsPollInterval } from '@/lib/resources'
+import {
+  parseProvenance,
+  resourceVersionPollInterval,
+  resourceVersionsPollInterval,
+} from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
@@ -83,13 +87,13 @@ function ResourceDetailPage() {
   const versions = useQuery({
     queryKey: ['resource-versions', id],
     queryFn: async () => {
-      const list = await api<ListResponse<ResourceVersion>>('GET', `/resources/${id}/versions?limit=200`)
+      const list = await listAll<ResourceVersion>(`/resources/${id}/versions`)
       // The current pointer moves when a publish becomes ready, so every
       // version poll re-reads the Resource too, including the one that sees ready.
       void queryClient.invalidateQueries({ queryKey: ['resource', id] })
       return list
     },
-    refetchInterval: (query) => resourceVersionsPollInterval(query.state.data?.items),
+    refetchInterval: (query) => resourceVersionsPollInterval(query.state.data),
   })
   const resource = useQuery({
     queryKey: ['resource', id],
@@ -113,7 +117,20 @@ function ResourceDetailPage() {
         queryClient.invalidateQueries({ queryKey: ['resources'] }),
       ]),
   })
-  const selected = versions.data?.items.find((item) => item.id === selectedId)
+  const listed = versions.data?.find((item) => item.id === selectedId)
+  // A ?version= the list does not hold (it may have been created since) is read on its own.
+  const unlisted = useQuery({
+    queryKey: ['resource-version', id, selectedId],
+    queryFn: async () => {
+      const version = await api<ResourceVersion>('GET', `/resources/${id}/versions/${selectedId}`)
+      void queryClient.invalidateQueries({ queryKey: ['resource', id] })
+      return version
+    },
+    enabled: selectedId !== undefined && versions.isSuccess && !listed,
+    retry: false,
+    refetchInterval: (query) => resourceVersionPollInterval(query.state.data?.state),
+  })
+  const selected = listed ?? unlisted.data
 
   return (
     <div className="flex flex-col gap-6">
@@ -191,7 +208,7 @@ function ResourceDetailPage() {
               {m.common_loading()}
             </div>
           )}
-          {versions.data?.items.length === 0 && (
+          {versions.data?.length === 0 && (
             <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon">
@@ -202,7 +219,7 @@ function ResourceDetailPage() {
               </EmptyHeader>
             </Empty>
           )}
-          {versions.data && versions.data.items.length > 0 && (
+          {versions.data && versions.data.length > 0 && (
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
@@ -216,7 +233,7 @@ function ResourceDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {versions.data.items.map((version) => {
+                {versions.data.map((version) => {
                   const isCurrent = current?.current_version_id === version.id
                   return (
                     <TableRow key={version.id} data-testid={`version-${version.id}`}>
@@ -292,7 +309,7 @@ function ResourceDetailPage() {
         </CardContent>
       </Card>
 
-      {selectedId && !selected && !versions.isPending && (
+      {selectedId && !selected && unlisted.isError && (
         <p className="text-sm text-muted-foreground">{m.resource_not_in_list()}</p>
       )}
       {selected && <VersionFiles resourceId={id} versionId={selected.id} />}

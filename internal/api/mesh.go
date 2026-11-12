@@ -90,16 +90,20 @@ func helloMesh(m *nodev1.Mesh) (key, endpoint, subnet *string) {
 	return &m.PublicKey, endpoint, &s
 }
 
-// sendMeshPeers sends every connected Node with mesh its full peer set. It
-// runs on every Node register, reconnect and delete (node-protocol.md). A
-// Node without mesh, which includes every Agent older than the Mesh minor, is
-// never sent MeshPeers.
-func (s *Server) sendMeshPeers(ctx context.Context) {
-	nodes, err := s.q.ListAllNodes(ctx)
+// meshPeerSets pushes every connected Node with mesh its full peer set when
+// it changed, from the sweep, so sets go out in order (node-protocol.md).
+func (r *reconciler) meshPeerSets(ctx context.Context) {
+	nodes, err := r.s.q.ListAllNodes(ctx)
 	if err != nil {
-		s.log.Warn("list nodes for mesh peers", "error", err)
+		r.s.log.Warn("reconcile: list nodes for mesh peers", "error", err)
 		return
 	}
+	r.pushMeshPeers(nodes)
+}
+
+// pushMeshPeers sends like pushSandboxLinks. A Node without mesh, which
+// includes every Agent older than the Mesh minor, is never sent MeshPeers.
+func (r *reconciler) pushMeshPeers(nodes []store.Node) {
 	// A lost Node keeps its row but has no Token: it is nobody's peer.
 	var members []store.Node
 	for _, n := range nodes {
@@ -107,10 +111,14 @@ func (s *Server) sendMeshPeers(ctx context.Context) {
 			members = append(members, n)
 		}
 	}
+	if r.meshSent == nil {
+		r.meshSent = map[uuid.UUID]string{}
+	}
+	forgetOthers(r.meshSent, members)
 	for _, n := range members {
-		s.reconcile.hub.direct(n.ID, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_MeshPeers{
-			MeshPeers: &nodev1.MeshPeers{Peers: meshPeers(n, members)},
-		}})
+		msg := &nodev1.MeshPeers{Peers: meshPeers(n, members)}
+		r.pushSet(r.meshSent, n.ID, "mesh-peers",
+			&nodev1.ControlMessage{Message: &nodev1.ControlMessage_MeshPeers{MeshPeers: msg}})
 	}
 }
 

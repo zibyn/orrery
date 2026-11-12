@@ -3,7 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Pause, Play, Server, Trash } from 'lucide-react'
 import { useState } from 'react'
 
-import { api, type CapacityNode, type ListResponse, type Node } from '@/api'
+import { api, type CapacityNode, listAll, type ListResponse, type Node } from '@/api'
 import { NodeCapacity } from '@/components/node-capacity'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
@@ -62,15 +62,15 @@ function NodesPage() {
 
   const nodes = useQuery({
     queryKey: ['nodes'],
-    queryFn: () => api<ListResponse<Node>>('GET', '/nodes?limit=200'),
-    refetchInterval: (query) => nodeListPollInterval(query.state.data?.items),
+    queryFn: () => listAll<Node>('/nodes'),
+    refetchInterval: (query) => nodeListPollInterval(query.state.data),
   })
   const capacity = useQuery({
     queryKey: ['capacity'],
     queryFn: () => api<ListResponse<CapacityNode>>('GET', '/capacity'),
-    // A live Node beyond the Node list's first page still shows (mergeNodeCapacity), so its own rows count too.
+    // A live Node the Node list missed (registered between the two reads) still shows (mergeNodeCapacity), so its own rows count too.
     refetchInterval: (query) =>
-      nodeListPollInterval([...(nodes.data?.items ?? []), ...(query.state.data?.items ?? [])]),
+      nodeListPollInterval([...(nodes.data ?? []), ...(query.state.data?.items ?? [])]),
   })
 
   const invalidate = () => {
@@ -87,7 +87,7 @@ function NodesPage() {
     onSuccess: invalidate,
   })
 
-  const rows = mergeNodeCapacity(nodes.data?.items ?? [], capacity.data?.items ?? [])
+  const rows = mergeNodeCapacity(nodes.data ?? [], capacity.data?.items ?? [])
   // The server's problem detail explains why a pause/resume/delete was refused
   // (for example delete preconditions, or resuming a lost Node).
 

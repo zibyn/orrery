@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, Link, Navigate, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 
 import { api, type Snapshot, type SnapshotVersion } from '@/api'
@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/breadcrumb'
 import { useLocale } from '@/lib/i18n'
 import { buildSnapshotVersionBody, formFieldsFromRequest } from '@/lib/snapshot-form'
+import { snapshotIsWritable } from '@/lib/snapshots'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/snapshots/$id_/versions/new')({
@@ -74,11 +75,14 @@ function NewSnapshotVersionPage() {
       />
 
 
-      {(from === undefined || source.data) && (
+      {/* A Platform Snapshot takes no versions from the console; send the URL back to it. */}
+      {snapshot.data && !snapshotIsWritable(snapshot.data) && (
+        <Navigate to="/snapshots/$id" params={{ id }} replace />
+      )}
+      {snapshotIsWritable(snapshot.data) && (from === undefined || source.data) && (
         <SnapshotVersionForm
           key={from ?? ''}
           initial={formFieldsFromRequest(source.data?.request)}
-          snapshotId={id}
           onCancel={() => navigate({ to: '/snapshots/$id', params: { id } })}
           onSubmit={async (values) => {
             const created = await api<SnapshotVersion>(
