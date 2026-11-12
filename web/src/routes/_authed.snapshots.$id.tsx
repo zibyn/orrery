@@ -349,7 +349,7 @@ function SnapshotDetailPage() {
           </CardHeader>
           <CardContent>
             {logMode !== 'none' && selected.build_exec_id ? (
-              <BuildLog execId={selected.build_exec_id} mode={logMode} />
+              <BuildLog key={selected.build_exec_id} execId={selected.build_exec_id} mode={logMode} />
             ) : (
               <p className="text-sm text-muted-foreground">{m.snapshot_no_build_log()}</p>
             )}
