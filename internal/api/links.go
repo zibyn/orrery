@@ -102,32 +102,45 @@ func (r *reconciler) pushSandboxLinks(nodes []store.Node, rows []store.ListSandb
 	if r.linksSent == nil {
 		r.linksSent = map[uuid.UUID]string{}
 	}
-	live := map[uuid.UUID]bool{}
-	for _, n := range nodes {
-		live[n.ID] = true
-	}
-	for id := range r.linksSent {
-		if !live[id] {
-			delete(r.linksSent, id) // a deleted Node
-		}
-	}
+	forgetOthers(r.linksSent, nodes)
 	for _, n := range nodes {
 		if n.ProtoMinor == nil || *n.ProtoMinor < sandboxLinksMinor {
 			continue
 		}
 		msg := &nodev1.SandboxLinks{Links: byNode[n.ID]}
-		raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
-		if err != nil {
-			r.s.log.Warn("reconcile: encode sandbox links", "node_id", n.ID, "error", err)
-			continue
-		}
-		sum := sha256.Sum256(raw)
-		id := "sandbox-links:" + hex.EncodeToString(sum[:16])
-		if prev := r.linksSent[n.ID]; prev != id {
-			// Forget the previous set, so returning to it later is resent.
-			r.hub.failed(n.ID, prev)
-			r.linksSent[n.ID] = id
-		}
-		r.hub.send(n.ID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_SandboxLinks{SandboxLinks: msg}})
+		r.pushSet(r.linksSent, n.ID, "sandbox-links", msg,
+			&nodev1.ControlMessage{Message: &nodev1.ControlMessage_SandboxLinks{SandboxLinks: msg}})
 	}
+}
+
+// forgetOthers drops the last sent set of every Node not in nodes.
+func forgetOthers(sent map[uuid.UUID]string, nodes []store.Node) {
+	keep := map[uuid.UUID]bool{}
+	for _, n := range nodes {
+		keep[n.ID] = true
+	}
+	for id := range sent {
+		if !keep[id] {
+			delete(sent, id)
+		}
+	}
+}
+
+// pushSet sends a full-set message under a command id derived from its
+// content, so the hub's dedupe sends it once per connection, a changed set is
+// a new command, and a send the full queue refused is retried next sweep.
+func (r *reconciler) pushSet(sent map[uuid.UUID]string, node uuid.UUID, kind string, content proto.Message, msg *nodev1.ControlMessage) {
+	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(content)
+	if err != nil {
+		r.s.log.Warn("reconcile: encode "+kind, "node_id", node, "error", err)
+		return
+	}
+	sum := sha256.Sum256(raw)
+	id := kind + ":" + hex.EncodeToString(sum[:16])
+	if prev := sent[node]; prev != id {
+		// Forget the previous set, so returning to it later is resent.
+		r.hub.failed(node, prev)
+		sent[node] = id
+	}
+	r.hub.send(node, id, msg)
 }

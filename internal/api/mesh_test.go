@@ -78,6 +78,46 @@ func TestMeshPeersSkipsOverlappingNodes(t *testing.T) {
 	}
 }
 
+// #252: MeshPeers goes out from the sweep under a content-derived id: an
+// unchanged set is not resent, a send the full queue refused goes out on the
+// next sweep, and after a Node is deleted the others get a set without it.
+func TestPushMeshPeers(t *testing.T) {
+	r := &reconciler{hub: newNodeHub()}
+	a := meshNode("10.213.1.0/24", "192.0.2.1:51820")
+	b := meshNode("10.213.2.0/24", "192.0.2.2:51820")
+	c := meshNode("10.213.3.0/24", "192.0.2.3:51820")
+	conn := &agentConn{nodeID: a.ID, send: make(chan *nodev1.ControlMessage, 1)}
+	r.hub.register(conn)
+	received := func() map[string]*nodev1.MeshPeer {
+		t.Helper()
+		select {
+		case msg := <-conn.send:
+			return peerIDs(msg.GetMeshPeers().GetPeers())
+		default:
+			t.Fatal("no MeshPeers sent")
+			return nil
+		}
+	}
+
+	r.pushMeshPeers([]store.Node{a, b, c})
+	if got := received(); len(got) != 2 {
+		t.Fatalf("first push = %v, want b and c", got)
+	}
+	r.pushMeshPeers([]store.Node{a, b, c})
+	if len(conn.send) != 0 {
+		t.Fatal("an unchanged set was resent")
+	}
+
+	conn.send <- &nodev1.ControlMessage{} // the Agent is not reading: the queue is full
+	r.pushMeshPeers([]store.Node{a, b})   // c deleted
+	<-conn.send
+	r.pushMeshPeers([]store.Node{a, b})
+	got := received()
+	if len(got) != 1 || got[b.ID.String()] == nil {
+		t.Fatalf("after a refused send and c's delete = %v, want only b", got)
+	}
+}
+
 // A path is live while either side's latest handshake is within 180 s
 // (defaults.md).
 func TestMeshMatrix(t *testing.T) {
