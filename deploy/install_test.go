@@ -409,3 +409,37 @@ func TestNodeRefusesArchiveWithoutBin(t *testing.T) {
 		t.Errorf("install went on:\n%s", l)
 	}
 }
+
+// A rerun that rotates --ca without --trust-registry puts the new CA in the
+// host trust store and restarts buildkitd; one with the same CA does neither.
+func TestNodeRotatesCA(t *testing.T) {
+	n := newFakeNode(t)
+	n.release("v1.0.0", map[string]string{"bin/orrery-agent": "a", "bin/buildkitd": "b"})
+	ca := filepath.Join(t.TempDir(), "ca.crt")
+	install := func(body string, extra ...string) string {
+		t.Helper()
+		if err := os.WriteFile(ca, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, err := n.run(append([]string{"--version", "v1.0.0", "--runtime", "local", "--ca", ca}, extra...)...)
+		if err != nil {
+			t.Fatalf("install: %v\n%s", err, out)
+		}
+		return n.log()
+	}
+
+	first := install("ca1", "--trust-registry", "registry.example:8443")
+	wantLines(t, "first install", first, "trust_ca ca1", "systemctl restart orrery-buildkitd")
+
+	same := install("ca1")
+	if strings.Contains(same, "trust_ca") || !strings.Contains(same, "systemctl start orrery-buildkitd") ||
+		strings.Contains(same, "restart orrery-buildkitd") {
+		t.Errorf("rerun with the same CA:\n%s", same)
+	}
+
+	rotated := install("ca2")
+	wantLines(t, "rerun with a new CA", rotated, "trust_ca ca2", "systemctl restart orrery-buildkitd")
+	if b, _ := os.ReadFile(filepath.Join(n.d, "conf", "buildkitd.toml")); !strings.Contains(string(b), `[registry."registry.example:8443"]`) {
+		t.Errorf("the rerun dropped the trusted host:\n%s", b)
+	}
+}
