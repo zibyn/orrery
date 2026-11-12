@@ -686,9 +686,10 @@ func (d *containerdDriver) healthy(ctx context.Context) bool {
 // managed container in the namespace with its network (runtime.md §8).
 func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)) {
 	// Every render below, the teardowns included, sees the last SandboxLinks.
-	links := loadSandboxLinks(d.r.dataRoot)
+	// Read under networkMu so a concurrent setLinks cannot be overwritten
+	// by an older snapshot.
 	d.networkMu.Lock()
-	d.links = links
+	d.links = loadSandboxLinks(d.r.dataRoot)
 	d.networkMu.Unlock()
 	containers, err := d.client.Containers(ctx, `labels."`+labelManaged+`"==true`)
 	if err != nil {
