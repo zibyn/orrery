@@ -106,34 +106,59 @@ func (m *mesh) hello() *nodev1.Mesh {
 	return &nodev1.Mesh{PublicKey: m.key.PublicKey().String(), SandboxSubnet: m.subnet, Endpoint: m.endpoint}
 }
 
-// apply replaces the peer set and the routes to the peers' Sandbox subnets.
-func (m *mesh) apply(peers []*nodev1.MeshPeer) error {
-	cfg := wgtypes.Config{ReplacePeers: true}
-	byKey := map[wgtypes.Key]string{}
-	want := map[string]bool{}
-	for _, p := range peers {
+// peerConfig is the per-peer change from the device's current peers to the
+// desired set: one upsert per desired peer, in order, then a Remove for each
+// current peer not desired. It never replaces the whole set, so an unchanged
+// peer keeps its session and the endpoint it learned.
+func peerConfig(current []wgtypes.Peer, desired []*nodev1.MeshPeer) ([]wgtypes.PeerConfig, error) {
+	var out []wgtypes.PeerConfig
+	keep := map[wgtypes.Key]bool{}
+	for _, p := range desired {
 		key, err := wgtypes.ParseKey(p.PublicKey)
 		if err != nil {
-			return fmt.Errorf("peer %s: %w", p.NodeId, err)
+			return nil, fmt.Errorf("peer %s: %w", p.NodeId, err)
 		}
 		_, subnet, err := net.ParseCIDR(p.SandboxSubnet)
 		if err != nil {
-			return fmt.Errorf("peer %s: %w", p.NodeId, err)
+			return nil, fmt.Errorf("peer %s: %w", p.NodeId, err)
 		}
 		peer := wgtypes.PeerConfig{PublicKey: key, ReplaceAllowedIPs: true, AllowedIPs: []net.IPNet{*subnet}}
 		if p.Endpoint != "" {
 			addr, err := net.ResolveUDPAddr("udp4", p.Endpoint)
 			if err != nil {
-				return fmt.Errorf("peer %s endpoint: %w", p.NodeId, err)
+				return nil, fmt.Errorf("peer %s endpoint: %w", p.NodeId, err)
 			}
 			keepalive := meshKeepalive
 			peer.Endpoint, peer.PersistentKeepaliveInterval = addr, &keepalive
 		}
-		cfg.Peers = append(cfg.Peers, peer)
-		byKey[key] = p.NodeId
-		want[subnet.String()] = true
+		out = append(out, peer)
+		keep[key] = true
 	}
-	if err := m.wg.ConfigureDevice(meshInterface, cfg); err != nil {
+	for _, p := range current {
+		if !keep[p.PublicKey] {
+			out = append(out, wgtypes.PeerConfig{PublicKey: p.PublicKey, Remove: true})
+		}
+	}
+	return out, nil
+}
+
+// apply updates the peer set and the routes to the peers' Sandbox subnets.
+func (m *mesh) apply(peers []*nodev1.MeshPeer) error {
+	dev, err := m.wg.Device(meshInterface)
+	if err != nil {
+		return err
+	}
+	cfg, err := peerConfig(dev.Peers, peers)
+	if err != nil {
+		return err
+	}
+	byKey := map[wgtypes.Key]string{}
+	want := map[string]bool{}
+	for i, p := range peers { // cfg[i] is peers[i]'s upsert
+		byKey[cfg[i].PublicKey] = p.NodeId
+		want[cfg[i].AllowedIPs[0].String()] = true
+	}
+	if err := m.wg.ConfigureDevice(meshInterface, wgtypes.Config{Peers: cfg}); err != nil {
 		return err
 	}
 	m.mu.Lock()
