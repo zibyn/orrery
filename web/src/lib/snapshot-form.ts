@@ -17,7 +17,16 @@ const buildSchema = z.object({
   }),
   base: z.string(),
   contexts: z.record(z.string(), z.string()),
-  secrets: z.array(secretRow),
+  // The request body maps id to Secret, so a repeated id would drop a row.
+  secrets: z.array(secretRow).superRefine((rows, ctx) => {
+    const seen = new Set<string>()
+    rows.forEach((row, index) => {
+      if (row.id && seen.has(row.id)) {
+        ctx.addIssue({ code: 'custom', path: [index, 'id'], message: m.snapshot_form_secret_duplicate() })
+      }
+      seen.add(row.id)
+    })
+  }),
 })
 
 // The server's `invalid` stays authoritative; it resolves a tag to its digest.

@@ -32,19 +32,18 @@ import { m } from '@/paraglide/messages'
 // rejected onSubmit shows its error under the form.
 export function SnapshotVersionForm({
   initial,
-  snapshotId,
   above,
   onSubmit,
   onCancel,
 }: {
   initial: SnapshotVersionFormFields
-  // The Snapshot itself is not offered as its own base.
-  snapshotId?: string
   above?: ReactNode
   onSubmit: (values: SnapshotVersionFormValues) => Promise<void>
   onCancel: () => void
 }) {
   const [error, setError] = useState<string>()
+  // Secret row index to its message, so a bad row shows its error in place.
+  const [rowErrors, setRowErrors] = useState<Record<number, string>>({})
   const snapshots = useQuery({
     queryKey: ['snapshots'],
     queryFn: () => listAll<Snapshot>('/snapshots'),
@@ -58,8 +57,16 @@ export function SnapshotVersionForm({
     defaultValues: initial,
     onSubmit: async ({ value }) => {
       setError(undefined)
+      setRowErrors({})
       const parsed = snapshotVersionSchema.safeParse(value)
       if (!parsed.success) {
+        const rows: Record<number, string> = {}
+        for (const issue of parsed.error.issues) {
+          if (issue.path[0] === 'secrets' && typeof issue.path[1] === 'number') {
+            rows[issue.path[1]] ??= issue.message
+          }
+        }
+        setRowErrors(rows)
         setError(parsed.error.issues[0]?.message ?? m.common_invalid_input())
         return
       }
@@ -71,6 +78,7 @@ export function SnapshotVersionForm({
     },
   })
 
+  const baseOptions = baseSnapshotOptions(snapshots.data ?? [])
   const secretOptions = secrets.data?.items.map((secret) => (
     <NativeSelectOption key={secret.name} value={secret.name}>
       {secret.name}
@@ -168,7 +176,14 @@ export function SnapshotVersionForm({
                             onChange={(e) => field.handleChange(e.target.value)}
                           >
                             <NativeSelectOption value="">{m.version_new_base_none()}</NativeSelectOption>
-                            {baseSnapshotOptions(snapshots.data ?? [], snapshotId).map((item) => (
+                            {/* A copied base may be a version UUID or a name not offered; show what is sent. */}
+                            {field.state.value &&
+                              !baseOptions.some((item) => item.name === field.state.value) && (
+                                <NativeSelectOption value={field.state.value}>
+                                  {m.version_new_base_pinned({ value: field.state.value })}
+                                </NativeSelectOption>
+                              )}
+                            {baseOptions.map((item) => (
                               <NativeSelectOption key={item.id} value={item.name}>
                                 {item.name}
                                 {item.owner_id === null ? m.new_platform_suffix() : ''}
@@ -185,43 +200,50 @@ export function SnapshotVersionForm({
                         <FieldSet>
                           <FieldLegend variant="label">{m.version_new_secrets()}</FieldLegend>
                           {rows.state.value.map((_, index) => (
-                            <div key={index} className="flex flex-wrap gap-2 sm:flex-nowrap">
-                              <form.Field name={`secrets[${index}].id`}>
-                                {(field) => (
-                                  <Input
-                                    aria-label={m.version_new_secret_id()}
-                                    placeholder={m.version_new_secret_id()}
-                                    className="font-mono"
-                                    value={field.state.value}
-                                    onChange={(e) => field.handleChange(e.target.value)}
-                                  />
-                                )}
-                              </form.Field>
-                              <form.Field name={`secrets[${index}].name`}>
-                                {(field) => (
-                                  <NativeSelect
-                                    aria-label={m.version_new_secret()}
-                                    className="w-full"
-                                    value={field.state.value}
-                                    onChange={(e) => field.handleChange(e.target.value)}
-                                  >
-                                    <NativeSelectOption value="">
-                                      {m.version_new_secret_choose()}
-                                    </NativeSelectOption>
-                                    {secretOptions}
-                                  </NativeSelect>
-                                )}
-                              </form.Field>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                aria-label={m.version_new_remove_secret()}
-                                onClick={() => rows.removeValue(index)}
-                              >
-                                <X />
-                              </Button>
-                            </div>
+                            <Field key={index} data-invalid={rowErrors[index] ? true : undefined}>
+                              <div className="flex flex-wrap gap-2 sm:flex-nowrap">
+                                <form.Field name={`secrets[${index}].id`}>
+                                  {(field) => (
+                                    <Input
+                                      aria-label={m.version_new_secret_id()}
+                                      placeholder={m.version_new_secret_id()}
+                                      className="font-mono"
+                                      aria-invalid={rowErrors[index] ? true : undefined}
+                                      value={field.state.value}
+                                      onChange={(e) => field.handleChange(e.target.value)}
+                                    />
+                                  )}
+                                </form.Field>
+                                <form.Field name={`secrets[${index}].name`}>
+                                  {(field) => (
+                                    <NativeSelect
+                                      aria-label={m.version_new_secret()}
+                                      className="w-full"
+                                      value={field.state.value}
+                                      onChange={(e) => field.handleChange(e.target.value)}
+                                    >
+                                      <NativeSelectOption value="">
+                                        {m.version_new_secret_choose()}
+                                      </NativeSelectOption>
+                                      {secretOptions}
+                                    </NativeSelect>
+                                  )}
+                                </form.Field>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={m.version_new_remove_secret()}
+                                  onClick={() => {
+                                    rows.removeValue(index)
+                                    setRowErrors({})
+                                  }}
+                                >
+                                  <X />
+                                </Button>
+                              </div>
+                              {rowErrors[index] && <FieldError>{rowErrors[index]}</FieldError>}
+                            </Field>
                           ))}
                           <div>
                             <Button
