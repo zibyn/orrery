@@ -6223,6 +6223,36 @@ func (q *Queries) SetSnapshotCurrentVersion(ctx context.Context, arg SetSnapshot
 	return i, err
 }
 
+const setUserAdmin = `-- name: SetUserAdmin :one
+UPDATE users SET is_admin = true, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, name, email, is_admin, oidc_issuer, oidc_subject, gpu_quota, sandbox_quota, idempotency_key, created_by, created_at, updated_at, deleted_at, disabled_at, polaris_event_at, polaris_disabled_at
+`
+
+func (q *Queries) SetUserAdmin(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, setUserAdmin, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.IsAdmin,
+		&i.OidcIssuer,
+		&i.OidcSubject,
+		&i.GpuQuota,
+		&i.SandboxQuota,
+		&i.IdempotencyKey,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.DisabledAt,
+		&i.PolarisEventAt,
+		&i.PolarisDisabledAt,
+	)
+	return i, err
+}
+
 const setUserQuota = `-- name: SetUserQuota :one
 UPDATE users
 SET gpu_quota = $2, sandbox_quota = $3, updated_at = now()

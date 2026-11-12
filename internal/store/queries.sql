@@ -56,6 +56,11 @@ SET name = $2,
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 
+-- name: SetUserAdmin :one
+UPDATE users SET is_admin = true, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
 -- name: SetUserQuota :one
 UPDATE users
 SET gpu_quota = $2, sandbox_quota = $3, updated_at = now()

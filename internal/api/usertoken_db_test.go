@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/zibyn/orrery/internal/store"
 )
 
 // user-token --sub is the break-glass path: it mints a working token for an
@@ -66,5 +69,65 @@ func TestUserTokenSession(t *testing.T) {
 	var got userDTO
 	if code := asSession(t, h, newSessionCookie(created.Token), "/api/v1/users/me", &got); code != http.StatusOK || got.Name != name {
 		t.Fatalf("GET /users/me with the Session cookie = %d %+v", code, got)
+	}
+}
+
+// Promoting an existing machine User to admin writes only is_admin, so a
+// quota change committed while the promotion waits survives it (#255).
+func TestUserTokenAdminKeepsConcurrentQuota(t *testing.T) {
+	s, q := purgeTestServer(t)
+	ctx := context.Background()
+	name := "machine-" + uuid.NewString()
+	user, err := s.machineUser(ctx, name, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hold the row lock with a quota change, so the promotion reads the old
+	// row and then waits to write.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `UPDATE users SET gpu_quota = $2 WHERE id = $1`, user.ID, user.GpuQuota+7); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		user store.User
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		u, err := s.machineUser(ctx, name, true)
+		done <- result{u, err}
+	}()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var waiting int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%UPDATE users%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("promotion never waited on the row lock")
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res := <-done
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	if !res.user.IsAdmin {
+		t.Fatalf("promoted = %+v, want an admin", res.user)
+	}
+	got, err := q.GetUserByName(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsAdmin || got.GpuQuota != user.GpuQuota+7 {
+		t.Fatalf("after promotion is_admin %v gpu_quota %d, want true and %d", got.IsAdmin, got.GpuQuota, user.GpuQuota+7)
 	}
 }

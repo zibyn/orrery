@@ -132,14 +132,8 @@ func (s *Server) machineUser(ctx context.Context, name string, admin bool) (stor
 		return store.User{}, fmt.Errorf("%q is a Polaris-linked User; use --sub", name)
 	}
 	if admin && !user.IsAdmin {
-		user, err = s.q.UpdateUser(ctx, store.UpdateUserParams{
-			ID:           user.ID,
-			Name:         user.Name,
-			Email:        user.Email,
-			IsAdmin:      true,
-			GpuQuota:     user.GpuQuota,
-			SandboxQuota: user.SandboxQuota,
-		})
+		// Only is_admin: a whole-row write would undo a concurrent PATCH.
+		user, err = s.q.SetUserAdmin(ctx, user.ID)
 		if err != nil {
 			return store.User{}, fmt.Errorf("make %q an admin: %w", name, err)
 		}
