@@ -2,10 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -192,5 +196,57 @@ func TestSnapshotReferencesCountUnfinishedBuildSandbox(t *testing.T) {
 	}
 	if removable, manifest, err := s.snapshotVersionGarbage(ctx, repo, base); err != nil || !removable || !manifest {
 		t.Fatalf("garbage after the build = removable %v manifest %v, err %v; want both", removable, manifest, err)
+	}
+}
+
+// A source registry that accepts the connection but never answers fails the
+// import with unavailable once the resolve timeout passes, well before the
+// client gives up (#255).
+func TestImportResolveTimesOutAsUnavailable(t *testing.T) {
+	s, q := purgeTestServer(t)
+	s.cfg.RegistryPushAddr = "127.0.0.1:1"
+	old := importResolveTimeout
+	importResolveTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { importResolveTimeout = old })
+
+	release := make(chan struct{})
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(hung.Close)
+	t.Cleanup(func() { close(release) })
+
+	ctx := context.Background()
+	user, err := q.CreateMachineUser(ctx, store.CreateMachineUserParams{ID: uuid.New(), Name: "imp-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := q.CreateSnapshot(ctx, store.CreateSnapshotParams{ID: uuid.New(), OwnerID: &user.ID, Name: "imp-" + uuid.NewString()[:8]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := strings.TrimPrefix(hung.URL, "http://") + "/hung/image:latest"
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"import":{"ref":"`+ref+`"}}`))
+	req.SetPathValue("id", snap.ID.String())
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		s.handleCreateSnapshotVersion(rec, req, &principal{user: user})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("import still resolving after 5s")
+	}
+	var problem struct{ Code, Detail string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	if rec.Code != http.StatusServiceUnavailable || problem.Code != "unavailable" || !strings.Contains(problem.Detail, "registry") {
+		t.Fatalf("import = %d %s, want 503 unavailable naming the registry", rec.Code, rec.Body)
 	}
 }
