@@ -180,7 +180,7 @@ export function SnapshotVersionForm({
                             {field.state.value &&
                               !baseOptions.some((item) => item.name === field.state.value) && (
                                 <NativeSelectOption value={field.state.value}>
-                                  {m.version_new_base_pinned({ value: field.state.value })}
+                                  {m.version_new_base_unlisted({ value: field.state.value })}
                                 </NativeSelectOption>
                               )}
                             {baseOptions.map((item) => (

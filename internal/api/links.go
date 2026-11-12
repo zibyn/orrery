@@ -108,7 +108,7 @@ func (r *reconciler) pushSandboxLinks(nodes []store.Node, rows []store.ListSandb
 			continue
 		}
 		msg := &nodev1.SandboxLinks{Links: byNode[n.ID]}
-		r.pushSet(r.linksSent, n.ID, "sandbox-links", msg,
+		r.pushSet(r.linksSent, n.ID, "sandbox-links",
 			&nodev1.ControlMessage{Message: &nodev1.ControlMessage_SandboxLinks{SandboxLinks: msg}})
 	}
 }
@@ -129,8 +129,8 @@ func forgetOthers(sent map[uuid.UUID]string, nodes []store.Node) {
 // pushSet sends a full-set message under a command id derived from its
 // content, so the hub's dedupe sends it once per connection, a changed set is
 // a new command, and a send the full queue refused is retried next sweep.
-func (r *reconciler) pushSet(sent map[uuid.UUID]string, node uuid.UUID, kind string, content proto.Message, msg *nodev1.ControlMessage) {
-	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(content)
+func (r *reconciler) pushSet(sent map[uuid.UUID]string, node uuid.UUID, kind string, msg *nodev1.ControlMessage) {
+	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
 	if err != nil {
 		r.s.log.Warn("reconcile: encode "+kind, "node_id", node, "error", err)
 		return

@@ -32,7 +32,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `internal` | 500 | 平台缺陷 |
-| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达，或 OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败；可以重试 |
+| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达，OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败，或 import 的源 registry 在解析期限内没有响应；可以重试 |
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 

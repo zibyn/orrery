@@ -117,7 +117,7 @@ func (r *reconciler) pushMeshPeers(nodes []store.Node) {
 	forgetOthers(r.meshSent, members)
 	for _, n := range members {
 		msg := &nodev1.MeshPeers{Peers: meshPeers(n, members)}
-		r.pushSet(r.meshSent, n.ID, "mesh-peers", msg,
+		r.pushSet(r.meshSent, n.ID, "mesh-peers",
 			&nodev1.ControlMessage{Message: &nodev1.ControlMessage_MeshPeers{MeshPeers: msg}})
 	}
 }
