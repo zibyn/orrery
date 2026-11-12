@@ -60,7 +60,7 @@ The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port 
 ### Git and Secrets
 
 - **Refresh** of one Git Account Link is serialized; the new token is stored before anything else; only an explicit permanent error such as `invalid_grant` invalidates the link, and everything else is transient; tokens refresh ahead of expiry.
-- **Issue** validates the token first and returns the authorization URL if it fails. A host matching no Git Provider gets no answer and a zero exit; the platform helper is the only one, so git then fails authentication. The username is fixed per provider type (`oauth2` for GitLab).
+- **Issue** validates the token first and returns the authorization URL if it fails. A host matching no Git Provider gets no answer and a zero exit; the platform helper is the only one, so git runs no other helper: in a PTY Exec it falls back to its interactive prompt, otherwise it fails authentication. The username is fixed per provider type (`oauth2` for GitLab).
 - **Providers** default to PKCE S256, which can be disabled per provider, and configure a single `base_url` from which endpoints are derived by type. Upstream revocation on unlink is best effort and never blocks the unlink.
 - **The helper** is installed through `GIT_CONFIG_COUNT` in each Exec's environment, after clearing the helper list; no file is written.
 - **Secrets** reject reserved names (`GIT_*`, `LD_*`, `PATH`, `HOME`, the platform prefix). A User may hold at most 50, each at most 24 KiB. The Node Agent injects them into each Exec's environment, never into the container configuration.
