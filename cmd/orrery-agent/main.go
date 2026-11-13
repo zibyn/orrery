@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/zibyn/orrery/internal/agent"
 	"github.com/zibyn/orrery/internal/resourcefs"
@@ -174,9 +175,14 @@ func spawnTakeover() error {
 		return err
 	}
 	w.Close() //nolint:errcheck // the child holds its copy
-	line, _ := bufio.NewReader(r).ReadString('\n')
+	// Before systemd's 90 s reload timeout: a successor that hangs before it
+	// told the old process "ready" is killed, and the old one keeps serving.
+	timer := time.AfterFunc(80*time.Second, func() { cmd.Process.Kill() }) //nolint:errcheck // already gone is fine
+	line, _ := bufio.NewReader(r).ReadString('\n')                         // EOF when the child dies
+	timer.Stop()
 	if line != "ok\n" {
-		cmd.Wait() //nolint:errcheck // report the takeover failure instead
+		cmd.Process.Kill() //nolint:errcheck // already gone is fine
+		cmd.Wait()         //nolint:errcheck // report the takeover failure instead
 		return errors.New("takeover failed; the running resourcefs keeps serving")
 	}
 	return cmd.Process.Release()

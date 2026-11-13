@@ -80,14 +80,13 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := d.store.cleanTemp(); err != nil {
 		return err
 	}
-	notify := func(state string) {
-		if cfg.Notify != nil {
-			cfg.Notify(state)
-		}
+	notify := func(string) {}
+	if cfg.Notify != nil {
+		notify = cfg.Notify
 	}
 	var predecessor *net.UnixConn
 	if cfg.Takeover {
-		conn, err := d.takeover(ctx)
+		conn, adopted, err := d.takeover(ctx)
 		if err != nil {
 			return fmt.Errorf("take over: %w", err)
 		}
@@ -103,6 +102,13 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 			return fmt.Errorf("take over: %w", err)
 		}
+		// Only now read the sessions; the predecessor's readers finish the
+		// requests they hold and the rest wait in the kernel queue for us.
+		d.mu.Lock()
+		for _, mt := range adopted {
+			d.serve(mt)
+		}
+		d.mu.Unlock()
 	}
 	l, err := listenUnix(cfg.ControlSocket)
 	if predecessor != nil {

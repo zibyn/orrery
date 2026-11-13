@@ -163,7 +163,7 @@ containerd、buildkitd 和 runsc 不用运维准备：脚本把包里的运行�
 - `orrery-buildkitd`：Snapshot 构建用，socket `/run/orrery/buildkit/buildkitd.sock`，配置 `/etc/orrery-agent/buildkitd.toml`。`--runtime local` 的 Node 也装它（构建与 Runtime 无关），但不装 `orrery-containerd`。
 - `orrery-resourcefs`：Resource 的懒加载挂载（`orrery-agent resourcefs`，`runtime.md` §11），每个版本一个只读 FUSE 挂载，在 `/var/lib/orrery/resources/<address>`，块缓存在 `/var/lib/orrery/cache/blocks/`。`--runtime local` 的 Node 也装它。它独立于 Agent，Agent 重启不影响挂载。
   - **崩溃**：`Restart=always` 会把它拉起来，但已有的挂载随旧进程失效（读取返回 `Transport endpoint is not connected`），直到用到它们的 Sandbox 重启。
-  - **升级**：脚本从不 `restart` 它。二进制或 unit 变了时执行 `systemctl reload`：`ExecReload` 以 `--takeover` 启动新二进制，新进程经控制 socket 从旧进程接过每个挂载的 `/dev/fuse` 会话，向 systemd 报 `MAINPID` 成为主进程（`Type=notify`、`NotifyAccess=all`），旧进程处理完手上的请求后退出，挂载不断，正在读的 Sandbox 不出错。交接失败时 reload 报错、脚本停下，旧进程继续服务。二进制和 unit 都没变时什么也不做。不要手动 `systemctl restart orrery-resourcefs`，那会断掉所有 Resource 挂载。
+  - **升级**：脚本从不 `restart` 它。二进制或 unit 变了时执行 `systemctl reload-or-restart`，运行中的服务只会 reload（没在运行时才是启动）：`ExecReload` 以 `--takeover` 启动新二进制，新进程经控制 socket 从旧进程接过每个挂载的 `/dev/fuse` 会话，向 systemd 报 `MAINPID` 成为主进程（`Type=notify`、`NotifyAccess=all`），旧进程处理完手上的请求后退出，挂载不断，正在读的 Sandbox 不出错。交接失败（包括新进程 80 秒内没接管完）时 reload 报错、脚本停下，旧进程继续服务。Agent 带 `--data-root` 时，脚本把同一目录传给 `orrery-resourcefs`。Agent 和它是同一个二进制，所以每次 Agent 升级都会交接一次。二进制和 unit 都没变时什么也不做。不要手动 `systemctl restart orrery-resourcefs`，那会断掉所有 Resource 挂载。
 - `orrery-agent`：`Wants=` 加 `After=orrery-resourcefs` 和 `orrery-containerd`，containerd 重启时 Agent 自己重连，不跟着重启。
 
 两份配置每次运行都重新生成，手改会被覆盖。重跑时只有 `containerd` 或 `buildkitd` 的二进制、配置或 unit 变了，才重启对应服务；containerd 重启不影响运行中的 Exec。Agent 每次都重启。
@@ -230,7 +230,7 @@ services:
 
 ```sh
 systemctl disable --now orrery-agent orrery-resourcefs orrery-buildkitd orrery-containerd
-for m in /var/lib/orrery/resources/*; do umount -l "$m"; done
+for m in /var/lib/orrery/resources/*; do [ -d "$m" ] && umount -l "$m"; done  # 用了 --data-root 时换成那个目录
 rm -f /etc/systemd/system/orrery-{agent,resourcefs,buildkitd,containerd}.service && systemctl daemon-reload
 rm -rf /opt/orrery /etc/orrery-agent /var/lib/orrery-agent /var/lib/orrery
 ```

@@ -690,7 +690,11 @@ EOF
 # main process (MAINPID, hence NotifyAccess=all), so no mount breaks. A
 # restart would break every mount; Restart=always only covers a crash, after
 # which the old mounts stay broken until their Sandboxes restart.
+# resourcefs_unit [DATA_ROOT] takes the Agent's --data-root, if it has one,
+# so both use the same mounts and cache.
 resourcefs_unit() {
+  local flags=""
+  [ -z "${1:-}" ] || flags=" --data-root $1"
   cat <<EOF
 [Unit]
 Description=Orrery Resource mounts (orrery-resourcefs)
@@ -699,8 +703,8 @@ After=local-fs.target
 [Service]
 Type=notify
 NotifyAccess=all
-ExecStart=$NODE_BIN/orrery-agent resourcefs
-ExecReload=$NODE_BIN/orrery-agent resourcefs --takeover
+ExecStart=$NODE_BIN/orrery-agent resourcefs$flags
+ExecReload=$NODE_BIN/orrery-agent resourcefs$flags --takeover
 Restart=always
 RestartSec=5
 
@@ -941,7 +945,9 @@ node() {
   if grep -qx buildkitd <<<"$changed"; then restart_bk=1; fi
   [ -n "$exec_start" ] || exec_start="$(drop_host_daemons "$bin/orrery-agent" run --runtime "$runtime" "${ca_flag[@]}" "${extra[@]}")"
   local upgrade_rfs=0
-  if write_if_changed "$sd/orrery-resourcefs.service" < <(resourcefs_unit); then upgrade_rfs=1; reload=1; fi
+  local data_root
+  data_root="$(sed -n 's/.* --data-root[= ]\([^ ]*\).*/\1/p' <<<"$exec_start")"
+  if write_if_changed "$sd/orrery-resourcefs.service" < <(resourcefs_unit "$data_root"); then upgrade_rfs=1; reload=1; fi
   if grep -qx orrery-agent <<<"$changed"; then upgrade_rfs=1; fi
   if write_if_changed "$unit" < <(agent_unit "$runtime" "$exec_start"); then reload=1; fi
   [ "$reload" = 0 ] || systemctl daemon-reload

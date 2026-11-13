@@ -108,24 +108,23 @@ func drain(mt *mount, log interface{ Warn(string, ...any) }) {
 }
 
 // takeover receives every mount from the process on the control socket and
-// starts serving them. The caller then says "ready" on the returned conn.
-func (d *daemon) takeover(ctx context.Context) (*net.UnixConn, error) {
+// returns them unserved. The caller says "ready" on the returned conn, then
+// serves them: a successor that fails before that has read no request.
+func (d *daemon) takeover(ctx context.Context) (*net.UnixConn, []*mount, error) {
 	var dialer net.Dialer
 	c, err := dialer.DialContext(ctx, "unix", d.cfg.ControlSocket)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conn := c.(*net.UnixConn)
-	fail := func(err error) (*net.UnixConn, error) {
+	fail := func(err error) (*net.UnixConn, []*mount, error) {
 		conn.Close() //nolint:errcheck // report err; the predecessor keeps serving
-		return nil, err
+		return nil, nil, err
 	}
 	if err := json.NewEncoder(conn).Encode(request{Op: "takeover"}); err != nil {
 		return fail(err)
 	}
 	buf, oob := make([]byte, 64<<10), make([]byte, syscall.CmsgSpace(4))
-	// Nothing reads a session until every mount is adopted: a successor that
-	// fails part-way must not exit holding requests it read but never answered.
 	var adopted []*mount
 	for {
 		n, oobn, _, _, err := conn.ReadMsgUnix(buf, oob)
@@ -137,12 +136,7 @@ func (d *daemon) takeover(ctx context.Context) (*net.UnixConn, error) {
 			return fail(fmt.Errorf("handover header: %w", err))
 		}
 		if header.End {
-			d.mu.Lock()
-			for _, mt := range adopted {
-				d.serve(mt)
-			}
-			d.mu.Unlock()
-			return conn, nil
+			return conn, adopted, nil
 		}
 		fd, err := receivedFD(oob[:oobn])
 		if err != nil {

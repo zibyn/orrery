@@ -144,6 +144,14 @@ func TestResourceFSUnit(t *testing.T) {
 	)
 }
 
+// A Node run with --data-root gives the daemon the same one.
+func TestResourceFSUnitDataRoot(t *testing.T) {
+	wantLines(t, "orrery-resourcefs.service", sh(t, "resourcefs_unit /srv/orrery"),
+		"ExecStart=/opt/orrery/bin/orrery-agent resourcefs --data-root /srv/orrery",
+		"ExecReload=/opt/orrery/bin/orrery-agent resourcefs --data-root /srv/orrery --takeover",
+	)
+}
+
 // Wants=, not Requires=: a containerd restart must not restart the Agent,
 // and a containerd stop then start must not leave it stopped (spike §4.3).
 func TestAgentUnit(t *testing.T) {
