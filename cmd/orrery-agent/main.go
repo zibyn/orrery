@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/zibyn/orrery/internal/agent"
+	"github.com/zibyn/orrery/internal/resourcefs"
 	"github.com/zibyn/orrery/internal/supervisor"
 )
 
@@ -40,6 +41,8 @@ func main() {
 			err = enroll(ctx, os.Args[2:])
 		case "run":
 			err = run(ctx, os.Args[2:])
+		case "resourcefs":
+			err = resourceFS(ctx, os.Args[2:])
 		case "supervisor":
 			err = supervise(os.Args[2:])
 		case "init", "probe":
@@ -60,6 +63,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   orrery-agent enroll --server HOST:PORT --packet ore_... [--ca FILE] [--name NAME] [--state FILE] [--data-root DIR]
   orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|runsc] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES] [--mesh-port PORT] [--mesh-endpoint HOST:PORT]
+  orrery-agent resourcefs [--data-root DIR] [--socket PATH] [--presign-socket PATH] [--takeover]
   orrery-agent supervisor init
   orrery-agent supervisor probe [WORKSPACE]
   orrery-agent supervisor run EXEC_ID
@@ -106,6 +110,21 @@ func run(ctx context.Context, args []string) error {
 	fs.Float64Var(&opts.DiskWatermark, "disk-watermark", agent.DefaultDiskWatermark, "fraction of disk kept free before new allocations are refused")
 	fs.Parse(args)
 	return agent.Run(ctx, opts)
+}
+
+// resourceFS runs orrery-resourcefs, the Node's lazy Resource mount daemon
+// (runtime.md §11). --takeover takes the mounts over from the running one.
+func resourceFS(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("resourcefs", flag.ExitOnError)
+	cfg := resourcefs.Config{Log: slog.Default()}
+	var presignSocket string
+	fs.StringVar(&cfg.DataRoot, "data-root", agent.DefaultDataRoot, "data directory of the Node, as given to orrery-agent run")
+	fs.StringVar(&cfg.ControlSocket, "socket", resourcefs.DefaultControlSocket, "control socket the Agent and a successor connect to")
+	fs.StringVar(&presignSocket, "presign-socket", resourcefs.DefaultPresignSocket, "the Agent's presign socket")
+	fs.BoolVar(&cfg.Takeover, "takeover", false, "take every mount over from the daemon on --socket (upgrade)")
+	fs.Parse(args)
+	cfg.Presigner = resourcefs.SocketPresigner{Socket: presignSocket}
+	return resourcefs.Run(ctx, cfg)
 }
 
 func supervise(args []string) error {
