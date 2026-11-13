@@ -20,7 +20,7 @@ Supervisor 是同一个平台二进制，有四种模式：
 | `/workspace` | Workspace | 按 Sandbox 的挂载模式，读写或只读 |
 | `/.orrery/bin` | Supervisor 二进制和外部 CLI `orrery` | 只读 |
 | `/.orrery/run` | 宿主 `/var/lib/orrery/sandboxes/<sandbox_id>/run` | 读写 |
-| `/resources/<mount>` | Node 的 Resource 缓存（§11） | 只读 |
+| `/resources/<mount>` | Node 上该版本的 Resource 挂载（§11） | 只读 |
 | `/etc/resolv.conf`、`/etc/hosts`、`/etc/hostname` | Agent 在 `<data-root>/sandboxes/<sandbox_id>/etc/` 里生成 | 只读 |
 
 `resolv.conf` 取宿主的上游 resolver（宿主用 systemd-resolved 时取 `/run/systemd/resolve/resolv.conf`），去掉回环地址的 nameserver，因为 Sandbox 的回环不是宿主的。这些 nameserver 能不能连通，由 Egress Rules 决定（§13），平台不额外放行。
@@ -134,12 +134,22 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 - **Resource 与构建**：`resource_mount` 报 `unsupported`；`snapshot_build` 由 §12 的自检决定。
 - **网络**：没有 netns，进程直接用宿主网络。Egress Rules 不适用于 Local Node，`egress_policy` 报 `unsupported`（ADR-0026）。
 
-## 11. Node 的 Resource 缓存
+## 11. Node 的 Resource 挂载
 
-- **布局**：对象按 (sha256, 可执行位) 缓存为只读文件（0444/0555）。版本树用硬链接从对象拼出，再只读 bind mount 到容器的 `/resources/<mount>`。`<mount>` 是单段名字，默认取 Resource 名。
-- **拉取**：`CreateSandbox` 只带 `{address, mount}`。Agent 先读 manifest，对缓存里没有的对象调 `Presign` 取 GET（`node-protocol.md`），下载后核对 sha256。拉取期间上报 `fetching_resources`，Sandbox 挂上同名 condition。
-- **失败**：重试沿用 Workspace provisioning 那组退避（`defaults.md`）；用尽后以 `create_failed/resource_fetch_failed` 上报，Sandbox 以 `failed` 结束。对象在对象存储上 404 时，Control Plane 把引用它的版本标为 `unavailable`（ADR-0012）。
-- **淘汰**：剩余空间低于磁盘水位时，按 LRU 淘汰没有 Sandbox 引用的版本树；版本树都淘汰后，没有链接的对象一并回收。Agent 的 containerd namespace 里未被本 Node 上任何 Sandbox（含 stopped）引用的镜像，以及 buildkitd 的构建缓存（prune），计入同一预算，一起按 LRU 淘汰。
+ADR-0030。Resource 一律懒加载：创建时只读 manifest，对象在读到时才拉取。
+
+- **守护进程**：`orrery-resourcefs`，Agent 部署包里的 systemd 服务（ADR-0028），不随 Agent 重启。每个 ResourceVersion 在 Node 上只挂一个 FUSE 实例，挂在 `<data-root>/resources/<address>`；Agent 再把它只读 bind mount 到容器的 `/resources/<mount>`。`<mount>` 是单段名字，默认取 Resource 名。按引用计数：最后一个引用该版本的 Sandbox（含 stopped）删除后卸载。
+- **目录树**：按 manifest 在内存里建。nodeid 取所有路径（文件和目录）排序后的位置，根为 1；目录项偏移也取排序位置；文件句柄没有状态。属性、目录项和页缓存都永不过期，因为版本不可变。
+- **创建**：`CreateSandbox` 只带 `{address, mount}`。Agent 让守护进程挂载该版本，守护进程经 Agent 的 `Presign` 读 manifest。读不到时按 Workspace provisioning 那组退避重试（`defaults.md`），用尽后以 `create_failed/resource_fetch_failed` 上报，Sandbox 以 `failed` 结束。
+- **读取**：读取、缓存和校验的单位是块。不超过 4 MiB 的文件是一个块；更大的文件按 manifest 的 `blocks`（`api.md` §3）。ADR-0030 之前发布的版本里，大文件没有 `blocks`，按区间读整个对象，不做按块校验。
+  - 首次读到一块时拉取它，核对 SHA-256，写进块缓存，然后返回数据；同一块的并发请求合并成一次下载。
+  - 顺序读时预取后面若干块。
+  - 预取块数、全 Node 并发下载上限、单次 GET 超时和重试次数见 `defaults.md`。重试用尽或摘要不符，读取返回 `EIO`。
+  - 预签名 URL 由守护进程经本机 unix socket 向 Agent 要，Agent 再调 `Presign`（`node-protocol.md`）。首次访问时按批签这个文件或目录后续的块，缓存到快过期为止。
+  - 对象在对象存储上 404 时，Control Plane 把引用它的版本标为 `unavailable`（ADR-0012）。
+- **块缓存**：`<data-root>/cache/blocks/<sha256>`。剩余空间低于磁盘水位时，块、Agent 的 containerd namespace 里未被本 Node 上任何 Sandbox（含 stopped）引用的镜像，以及 buildkitd 的构建缓存（prune），计入同一预算，一起按 LRU 淘汰。挂载中的版本，其块也可以淘汰，再读到时重新拉取。
+- **升级**：新的守护进程用 SCM_RIGHTS 从旧进程接过每个挂载的 `/dev/fuse` 会话，连同 INIT 参数。旧进程的读取者处理完手上的请求就退出；挂载空闲时，旧进程查找不存在的随机文件名来唤醒阻塞的读取者（`docs/research/resource-fuse-handover-spike.md`）。整个过程挂载不断。守护进程崩溃时由 systemd 拉起，但已有挂载失效，直到用到它们的 Sandbox 重启。
+- **能力**：Agent 自检时连上守护进程，做一次挂载和读取；不通就把 `resource_mount` 报为 `unsupported`。Local Runtime 报 `unsupported`（ADR-0017）。
 
 ## 12. 构建
 
@@ -147,7 +157,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 
 - **能力**：Node 能否构建与它用哪种 Runtime 无关，containerd 和 Local Node 都跑捆绑的 buildkitd。`snapshot_build` 由注册时的自检决定：`--buildkit` 为空、连不上端点或自检失败就报 `unsupported`。
 - **资源限制**：Agent 仿照 Local Runtime 建一个带 CPU/内存上限的 slice（`orrery-build-<version_id>.slice`，上限见 `defaults.md`），用 frontend 属性 `cgroup-parent` 指向它。实现时要验证 RUN 进程确实落在这个 slice 里；如果没有，改用 Node 级的构建上限。
-- **输入**：没有默认构建上下文。`contexts` 的每一项经 §11 的缓存拼出版本树，经 session 的 `LocalMounts` 作为命名上下文 `context:<name>` 提供；`base` 以 `context:base=docker-image://<registry>/…@<digest>` 注入。Dockerfile 的 `FROM` 也可以写外部 `ref:tag` 或 `ref@digest`，由 BuildKit 直接从外部 registry 拉取。
+- **输入**：没有默认构建上下文。`contexts` 的每一项是 §11 的版本挂载，经 session 的 `LocalMounts` 作为命名上下文 `context:<name>` 提供；`base` 以 `context:base=docker-image://<registry>/…@<digest>` 注入。Dockerfile 的 `FROM` 也可以写外部 `ref:tag` 或 `ref@digest`，由 BuildKit 直接从外部 registry 拉取。
 - **凭据**：拉取 `base` 和推送用的 registry 凭据由 session 的 authprovider 提供。
 - **Secret**：由 session 的 secretsprovider 提供，Dockerfile 用 `RUN --mount=type=secret,id=<id>` 读取。带 Secret 的构建一律 `no-cache`：secret 不进缓存键，而 buildkitd 的缓存由所有客户端共用，否则别的 User 用同一份 Dockerfile 就能命中缓存，拿到用 Secret 生成的层。
 - **输出**：构建输出按帧写进构建 Exec 的 `run/<exec_id>/output`，和普通 Exec 一样上送。成功后推到 `push_repository`，上报 digest 和 BuildKit 实际解析出的 FROM digest。

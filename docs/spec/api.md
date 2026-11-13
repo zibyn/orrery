@@ -28,7 +28,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `not_found` | 404 | 不存在，或不属于调用方 |
 | `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、宣告可达的 Node lost、删除 current 版本、删除被引用或构建中（build 来源）的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
 | `precondition_failed` | 412 | `If-Match` 不匹配 |
-| `payload_too_large` | 413 | 单文件超过 5 GiB、Secret 超过 24 KiB |
+| `payload_too_large` | 413 | 单文件超过 1 TiB、Secret 超过 24 KiB |
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `internal` | 500 | 平台缺陷 |
@@ -100,7 +100,7 @@ egress?: {mode: open|none|allowlist, allow?: [CIDR[:port]]}   # 不写等于 {mo
 links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自己的 Sandbox 连进来；写了就只有这些来源能连进来。不写时没有入站链，别的 Node 上的 Sandbox 经 Mesh 连不进来，同一 Node 上的连不连得进来取决于运维是否在 Egress Rules 的 `deny` 里列了 Sandbox 子网（`defaults.md`，`runtime.md` §13）
 ```
 
-每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`state`、`cause`、`node_id`、`conditions`（如 `fetching_resources`），`pending` 时还有 `queue_position` 和 `blocked_reason`。
+每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`state`、`cause`、`node_id`、`conditions`（目前没有定义任何 condition，恒为空数组；`fetching_resources` 已随 ADR-0030 去掉），`pending` 时还有 `queue_position` 和 `blocked_reason`。
 
 `runtime`（ADR-0009）：
 
@@ -166,14 +166,14 @@ Paused Node 不接收新的 Workspace 和构建。
 | 方法与路径 | 说明 |
 |---|---|
 | `POST /resources` · `GET /resources` · `GET /resources/{id}` · `DELETE /resources/{id}` | |
-| `POST /resources/{id}/uploads` | 请求体是 manifest，每个文件带 sha256；返回 upload 会话和缺失对象的预签名 PUT（带 `x-amz-checksum-sha256`）。24 小时内带同一份 manifest 重复提交即续传：只为仍然缺失的对象重新签发 PUT |
-| `POST /resources/{id}/versions` | `{upload_id}`：对每个对象做 `HeadObject`（`ChecksumMode`），全部存在且 sha256 一致就发布 `ready` 的 ResourceVersion 并移动 current 指针，否则 `409` 并列出问题对象 |
+| `POST /resources/{id}/uploads` | 请求体是 manifest：不超过 4 MiB 的文件带 `sha256`，更大的文件带 `blocks`（见下）。返回 upload 会话和缺失对象（文件或块）的预签名 PUT（带 `x-amz-checksum-sha256`）。24 小时内带同一份 manifest 重复提交即续传：只为仍然缺失的对象重新签发 PUT |
+| `POST /resources/{id}/versions` | `{upload_id}`：对每个对象（文件或块）做 `HeadObject`（`ChecksumMode`），并按块列表算出大文件的 `sha256`；全部存在且一致就发布 `ready` 的 ResourceVersion 并移动 current 指针，否则 `409` 并列出问题对象 |
 | `GET /resources/{id}/versions` · `GET /resources/{id}/versions/{v}` | |
 | `GET /resources/{id}/versions/{v}/manifest` | 返回规范化的 manifest |
-| `POST /resources/{id}/versions/{v}/downloads` | `{sha256[], filename?}` → 预签名 GET；`filename` 只能配一个 sha256，是单段名字，对象存储按它返回 `Content-Disposition: attachment`，浏览器存成这个名字而不是 sha256；tar 由 CLI 在本地拼装，Control Plane 不读内容（ADR-0012） |
+| `POST /resources/{id}/versions/{v}/downloads` | `{sha256[], filename?}` → 预签名 GET。`sha256` 是对象的摘要：不超过 4 MiB 的文件，或大文件的块。`filename` 只能配一个 sha256，只用于整个是一个对象的文件，是单段名字，对象存储按它返回 `Content-Disposition: attachment`，浏览器存成这个名字而不是 sha256；tar 由 CLI 在本地拼装，Control Plane 不读内容（ADR-0012） |
 | `PUT /resources/{id}/current` | `{version}`，可带 `If-Match` |
 
-manifest 的条目是 `{path, type: file|dir|symlink, size?, sha256?, executable?, target?}`：权限只记可执行位，空目录保留，最多 1,000,000 条。服务端规范化后，规范化 manifest 的 sha256 就是地址。publish 单个文件，得到只含这一个条目的树。
+manifest 的条目是 `{path, type: file|dir|symlink, size?, sha256?, blocks?, executable?, target?}`：权限只记可执行位，空目录保留，最多 1,000,000 条。超过 4 MiB 的文件带 `blocks`：按 4 MiB 切分后各块的 sha256，按顺序排列，最后一块可以更短（ADR-0030）。这种文件的 `sha256` 由服务端按 `SHA-256("orrery-blocks-v1\n" ‖ 各块 32 字节原始摘要按序拼接)` 计算，客户端提交时不填。加前缀，是为了不与内容恰好等于这串摘要的小文件撞上。ADR-0030 之前发布的版本里，大文件没有 `blocks`，`sha256` 是整个文件的摘要。服务端规范化后，规范化 manifest 的 sha256 就是地址。publish 单个文件，得到只含这一个条目的树。
 
 ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable`（对象在对象存储上 404）。对象缺失时上传会再次为它签发 PUT，重新上传同样的内容即修复：之后任何一次发布校验通过该对象，引用它的 `unavailable` 版本复查后回到 `ready`。
 
@@ -370,7 +370,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | 终端 | `POST /sandboxes/{id}/execs` 带 `pty`，argv 默认 `["/bin/sh", "-l"]`，可改；然后 `GET /execs/{id}/pty`。不提供非 PTY 的运行表单 |
 | 文件 | §5 的列目录；单文件上传 `PUT files/content`；下载走同源链接，文件用 `files/content`，目录用 `files/archive`；对当前目录或某个文件、目录「发布为 Resource」：`POST /workspaces/{id}/publish`（名字不存在时新建 Resource），之后轮询该版本直到 `ready` 或 `failed`。不做浏览器内 tar 上传、删除、移动、mkdir、编辑 |
 | Workspace | 列表与详情：`GET /workspaces`、`GET /workspaces/{id}`，显示 kind、state、cause、node、挂着它的 Sandbox；`POST /workspaces` 创建持久 Workspace；删除持久 Workspace。文件不经 Workspace 浏览（§5 要求 Sandbox `ready`），详情页只链到挂着它的 Sandbox |
-| Resource | 列表、详情、删除；版本列表（state、cause、size、provenance、expires_at），标出 current，`PUT /resources/{id}/current` 切换，服务端的 `conflict` 原样显示；`ready` 版本的文件：`GET .../versions/{v}/manifest` 列出条目，单文件下载用 `POST .../downloads` 带 `filename`（条目路径的最后一段）拿预签名 GET。上传（manifest + 分片 PUT）用 `orrery resource push` |
+| Resource | 列表、详情、删除；版本列表（state、cause、size、provenance、expires_at），标出 current，`PUT /resources/{id}/current` 切换，服务端的 `conflict` 原样显示；`ready` 版本的文件：`GET .../versions/{v}/manifest` 列出条目，单文件下载用 `POST .../downloads` 带 `filename`（条目路径的最后一段）拿预签名 GET；分块存储的大文件不提供浏览器下载，改为显示对应的 `orrery resource pull` 命令。上传（manifest + 分片 PUT）用 `orrery resource push` |
 | 端口 | 详情页输入端口号，`POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
 | Snapshot | 列表、创建、删除；版本：构建（dockerfile、base、secrets）、导入、cancel、删除、设为 current；构建日志。构建的 contexts 用 CLI |
 | Secret | 名字列表、覆盖写入、删除 |

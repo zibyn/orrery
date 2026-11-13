@@ -54,7 +54,12 @@
 | 非 current、无引用的 ResourceVersion | 30 天 | 部署 | |
 | CAS 对象与未完成上传的 GC 宽限 | 24 小时 | 部署 | 必须长于预签名 URL 的有效期 |
 | 预签名 URL 有效期 | 1 小时 | 常量 | 上传和 Node 拉取都用它 |
-| 单文件上传上限 | 5 GiB | 常量 | ADR-0017 |
+| 单文件上传上限 | 1 TiB | 常量 | ADR-0030；1 TiB 是 262,144 块，条目约 17 MB，在 manifest 大小限制以内 |
+| 块大小 | 4 MiB | 常量 | ADR-0030；不超过它的文件整个是一个对象 |
+| Resource 顺序读预取 | 4 块 | 常量 | ADR-0030；单流冷读预取 1 块只有 228 MiB/s，预取 4 块是 585 MiB/s（`docs/research/resource-lazy-read-spike.md`） |
+| Node 并发对象下载 | 200 | 常量 | 与 JuiceFS `--max-downloads` 一致 |
+| 单次对象 GET 超时 / 重试 | 60 秒 / 10 次 | 常量 | 与 JuiceFS `--get-timeout`、`--io-retries` 一致；用尽后读取返回 `EIO` |
+| 每次 `Presign` 的对象数 | 最多 1,000 | 常量 | 响应留在 gRPC 默认的 4 MiB 以内（一个 URL 约 443 字节） |
 | manifest 条目上限 | 1,000,000 | 常量 | ADR-0012 |
 | upload 会话有效期 | 24 小时 | 常量 | 期内带同一份 manifest 重复提交即续传 |
 

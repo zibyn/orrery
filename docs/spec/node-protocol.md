@@ -24,8 +24,8 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 `AgentMessage`（oneof）：
 - `Hello{node_id, agent_version, proto_major, proto_minor, mesh?{public_key, sandbox_subnet, endpoint?}}`；`mesh` 只在 containerd Node 且内核有 WireGuard 时带，`endpoint` 是 `--mesh-endpoint`（`runtime.md` §15，ADR-0027）
 - `Heartbeat{runtime_health, disk_free, gpu_health[]}`
-- `Capabilities{runtime_provider, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime_provider` 是这台 Node 唯一的 Runtime Provider（`containerd`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount`、`snapshot_build`、`kernel_isolation`、`egress_policy` 和 `sandbox_links`；`sandbox_links` 由注册时的 Link 自检决定，Local 上为 `unsupported`；`kernel_isolation` 在 runsc Node 上为 `enforced`，runc 和 Local 上为 `unsupported`；`egress_policy` 由注册时的出网自检决定，Local 上为 `unsupported`（`runtime.md` §13，ADR-0026）；Local Runtime 的 `resource_mount` 报 `unsupported`，`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
-- `SandboxObserved{sandbox_id, generation, phase: fetching_resources|running|gone|create_failed, cause?, address?}`；`address` 随 `running` 上报，是 CNI 分给这次 Create 的地址，Control Plane 存为 Sandbox 的 `address`，`gone` 时清空；`fetching_resources` 让 Sandbox 挂上同名 condition，`create_failed` 的 cause 可以是 `resource_fetch_failed`（`runtime.md` §11）
+- `Capabilities{runtime_provider, entries[{name, value: enforced|best_effort|unsupported}], gpus[{uuid, model}]}`；`runtime_provider` 是这台 Node 唯一的 Runtime Provider（`containerd`、`local`，由 Agent 的 `--runtime` 选定）；`entries` 含 `resource_mount`、`snapshot_build`、`kernel_isolation`、`egress_policy` 和 `sandbox_links`；`sandbox_links` 由注册时的 Link 自检决定，Local 上为 `unsupported`；`kernel_isolation` 在 runsc Node 上为 `enforced`，runc 和 Local 上为 `unsupported`；`egress_policy` 由注册时的出网自检决定，Local 上为 `unsupported`（`runtime.md` §13，ADR-0026）；containerd Node 的 `resource_mount` 由 Agent 对 `orrery-resourcefs` 的自检决定，Local Runtime 报 `unsupported`（`runtime.md` §11）；`snapshot_build` 由 BuildKit 端点的自检决定，与 Runtime 无关（ADR-0021）
+- `SandboxObserved{sandbox_id, generation, phase: running|gone|create_failed, cause?, address?}`；`address` 随 `running` 上报，是 CNI 分给这次 Create 的地址，Control Plane 存为 Sandbox 的 `address`，`gone` 时清空；`create_failed` 的 cause 可以是 `resource_fetch_failed`，即 manifest 读不到（`runtime.md` §11）。ADR-0030 去掉了 `fetching_resources`
 - `WorkspaceObserved{workspace_id, phase, cause?}`
 - `ExecObserved{exec_id, started_at}`（结果不走这里，见 ExecOutput）
 - `BuildObserved{version_id, digest?, from_digests[], cause?}`：构建结束时上报，见下文「构建」
@@ -35,7 +35,7 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 `ControlMessage`（oneof）：
 - `HelloAck{accepted, registry_credential, egress_rules{allow[], deny[]}}`；`egress_rules` 是部署配置里的 Egress Rules，原样下发，条目格式 `CIDR[:port]`（`defaults.md`）。部署配置没有热加载，所以 Rules 只在 Control Plane 重启后变化，而那时每个 Agent 都会重连、重新收到 `HelloAck`。Agent 只把它放在内存里，用于此后的每个 Create（`runtime.md` §13）
 - `ProvisionWorkspace` · `DeleteWorkspace`
-- `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, mount}], egress{mode: open|none|allowlist, allow[]}, link_target}`；对象经 `Presign` 拉取；`egress` 是 Sandbox 存下的 Egress Mode，每次（重新）下发都带同一份，Agent 拿它和当前的 Egress Rules 在 Create 时算出 Egress Policy。Mode 不是 `open` 时 Control Plane 只会把它下发给 `egress_policy` 为 `enforced` 的 Node；Agent 收到时自己的 `egress_policy` 不是 `enforced`，就以 `create_failed`、cause `runtime_create_failed` 上报，不降级。`link_target` 在 Sandbox 带 `links` 时为真，每次（重新）下发都一样；Agent 随 veth 记下它，在 Create 里、Sandbox 运行之前就渲染这个目标的入站链（此时没有任何来源规则，只以丢弃结尾），之后的 `SandboxLinks` 只往里加放行规则；Agent 重启时按记下的值重建
+- `CreateSandbox{sandbox_id, generation, image_digest, limits, gpu_uuids[], workspace{id, mode}, resources[{address, mount}], egress{mode: open|none|allowlist, allow[]}, link_target}`；manifest 在 Create 时经 `Presign` 读取，对象在读到时才经 `Presign` 拉取（`runtime.md` §11）；`egress` 是 Sandbox 存下的 Egress Mode，每次（重新）下发都带同一份，Agent 拿它和当前的 Egress Rules 在 Create 时算出 Egress Policy。Mode 不是 `open` 时 Control Plane 只会把它下发给 `egress_policy` 为 `enforced` 的 Node；Agent 收到时自己的 `egress_policy` 不是 `enforced`，就以 `create_failed`、cause `runtime_create_failed` 上报，不降级。`link_target` 在 Sandbox 带 `links` 时为真，每次（重新）下发都一样；Agent 随 veth 记下它，在 Create 里、Sandbox 运行之前就渲染这个目标的入站链（此时没有任何来源规则，只以丢弃结尾），之后的 `SandboxLinks` 只往里加放行规则；Agent 重启时按记下的值重建
 - `StopSandbox{sandbox_id, generation}`
 - `MeshPeers{peers[{node_id, public_key, sandbox_subnet, endpoint?}]}`：除本机外所有带 `mesh` 的 Node，Sandbox 子网与本机重叠的除外；整份下发，由 Reconciler 的 sweep 在内容变化时发出（Node 注册、重连、删除或被宣告失联都会唤醒一次 sweep），命令 id 由内容派生，所以内容不变不重发，发送队列满或连接断开后下一轮 sweep 会重发
 - `SandboxLinks{links[{target_id, target_address, source_id, source_address, ports[]}]}`：一端在本机的全部 Sandbox Link，只含目标有地址的条目；来源不在运行或已删除时 `source_address` 为空，Agent 不为它渲染放行规则，目标的入站链照样以丢弃结尾；整份下发，任一端地址变化时重发。Agent 收到后重新渲染 `orrery` 和 `orrery_mesh` 两张表（`runtime.md` §13、§15）。这两种消息只发一次，Agent 应用失败时自己按退避重新应用最新一份，直到成功、被新的一份取代或流断开（`defaults.md`）
@@ -60,9 +60,9 @@ Sandbox Token 不在 `CreateSandbox` 里，而是随每个 `StartExec` 下发，
 
 ## Presign：Node 取放对象
 
-`Presign{sha256[], manifests: address[], method: GET|PUT} → urls[]` 是一元 RPC，用 Node Token 认证。`manifests` 只签 GET，指向 `manifests/<owner_id>/<address>`。Control Plane 只为两类对象签名，其余整批返回 `INVALID_ARGUMENT`（不用 `NOT_FOUND`，它会让 Agent 清掉身份）：
+`Presign{sha256[], manifests: address[], method: GET|PUT} → urls[]` 是一元 RPC，用 Node Token 认证。一次最多签 1,000 个（`defaults.md`），超出整批返回 `INVALID_ARGUMENT`，这样响应留在 gRPC 默认的 4 MiB 以内；Agent 分批调用。`manifests` 只签 GET，指向 `manifests/<owner_id>/<address>`。Control Plane 只为两类对象签名，其余整批返回 `INVALID_ARGUMENT`（不用 `NOT_FOUND`，它会让 Agent 清掉身份）：
 
-- 分配给本 Node 的 Sandbox（含构建行）在 `sandbox_resources` 里引用的版本，及其中的对象，只签 GET；
+- 分配给本 Node 的 Sandbox（含构建行）在 `sandbox_resources` 里引用的版本，及其中的对象（不超过 4 MiB 的文件和大文件的块），只签 GET；
 - 本 Node 进行中的 publish 缺失的对象，只签 PUT，带 `x-amz-checksum-sha256`。
 
 URL 有效期见 `defaults.md`。Node 读写对象存储只走这条路（ADR-0017）。
@@ -70,13 +70,13 @@ URL 有效期见 `defaults.md`。Node 读写对象存储只走这条路（ADR-00
 ## Workspace publish
 
 1. `POST /workspaces/{id}/publish` 建一个 `pending` 的 ResourceVersion，Reconciler 向 Workspace 所在 Node 下发 `PublishWorkspace`。不要求有运行中的 Sandbox，Agent 直接读宿主上的 Workspace 目录，路径规则同 ADR-0012。
-2. Agent 遍历目录、计算哈希，经 `SubmitManifest` 分块上送 manifest 条目（首块带 `version_id`）。Control Plane 规范化后写入 `address`、`resource_version_objects`，在 `ManifestAck{missing sha256[]}` 里返回缺失的对象。`version_id` 不是本 Node 进行中的 publish 时返回 `INVALID_ARGUMENT`。
+2. Agent 遍历目录，按 4 MiB 切块计算哈希：不超过 4 MiB 的文件整个是一个对象，更大的文件条目带 `blocks`（`api.md` §3）。条目经 `SubmitManifest` 分批上送（首批带 `version_id`）。Control Plane 规范化后写入 `address`、`resource_version_objects`，在 `ManifestAck{missing sha256[]}` 里返回缺失的对象（文件或块）。`version_id` 不是本 Node 进行中的 publish 时返回 `INVALID_ARGUMENT`。
 3. Agent 用 `Presign` 取 PUT，上传缺失对象，然后对这条命令回 `CommandResult`。
-4. Control Plane 对每个对象做 `HeadObject`（`ChecksumMode`），全部存在且 sha256 一致就把版本置为 `ready` 并移动 current 指针；否则或 `CommandResult` 带错误就置为 `failed`，指针不动。
+4. Control Plane 对每个对象（文件或块）做 `HeadObject`（`ChecksumMode`），并按块列表算出大文件的 sha256；全部存在且一致就把版本置为 `ready` 并移动 current 指针；否则或 `CommandResult` 带错误就置为 `failed`，指针不动。
 
 ## 构建
 
-`BuildSnapshot` 由 Reconciler 在构建准入、拿到 Allocation 之后下发。`sandbox_id` 是承载 Allocation 的 `kind=build` 行，`exec_id` 是构建 Exec，构建输出按普通 Exec 写进 Log Spool，经 `ExecOutput` 上送。`contexts` 的对象经 Node 缓存拉取；`base_digest` 和 `push_repository` 都指向平台 registry，拉取和推送用 `HelloAck` 的 registry 凭据。`secrets` 的值与 `StartExec.secret_env` 一样，由 Control Plane 解密后下发。Agent 推送成功后发 `BuildObserved{digest, from_digests}`，失败发 `cause`。`CancelExec{exec_id}` 中止构建会话。执行细节见 `runtime.md` §12。
+`BuildSnapshot` 由 Reconciler 在构建准入、拿到 Allocation 之后下发。`sandbox_id` 是承载 Allocation 的 `kind=build` 行，`exec_id` 是构建 Exec，构建输出按普通 Exec 写进 Log Spool，经 `ExecOutput` 上送。`contexts` 是 Node 上的 Resource 挂载（`runtime.md` §11）；`base_digest` 和 `push_repository` 都指向平台 registry，拉取和推送用 `HelloAck` 的 registry 凭据。`secrets` 的值与 `StartExec.secret_env` 一样，由 Control Plane 解密后下发。Agent 推送成功后发 `BuildObserved{digest, from_digests}`，失败发 `cause`。`CancelExec{exec_id}` 中止构建会话。执行细节见 `runtime.md` §12。
 
 ## ExecOutput：每个 Exec 一条
 
