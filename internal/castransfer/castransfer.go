@@ -8,11 +8,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 )
+
+// ErrForbidden wraps an HTTP 403 from the object store, which is how an
+// expired presigned URL answers; the caller signs again.
+var ErrForbidden = errors.New("HTTP 403")
 
 // Put streams body to a presigned PUT URL, declaring digest as the object's
 // SHA-256 checksum.
@@ -34,6 +39,9 @@ func Put(ctx context.Context, client *http.Client, url string, body io.Reader, s
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("upload %s: %w: %s", digest, ErrForbidden, strings.TrimSpace(string(data)))
+		}
 		return fmt.Errorf("upload %s: HTTP %d: %s", digest, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return nil
@@ -52,6 +60,9 @@ func Get(ctx context.Context, client *http.Client, url string, dst io.Writer, di
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("fetch %s: %w", digest, ErrForbidden)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("fetch %s: %s", digest, resp.Status)
 	}

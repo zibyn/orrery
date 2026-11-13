@@ -29,21 +29,45 @@ func (c *Client) PushResource(ctx context.Context, dir, name string) (*ResourceV
 	if err != nil {
 		return nil, err
 	}
-	upload, err := c.CreateResourceUpload(ctx, resource.ID, m)
-	if err != nil {
-		return nil, err
-	}
-	for _, put := range upload.Puts {
-		source, ok := files[put.SHA256]
-		if !ok {
-			return nil, fmt.Errorf("the server asked for an object this tree does not contain: %s", put.SHA256)
-		}
-		if err := c.putObject(ctx, put.URL, source, put.SHA256); err != nil {
+	for {
+		// Resubmitting the manifest resumes the upload: the server signs fresh
+		// PUTs for the objects still missing (api.md §3).
+		upload, err := c.CreateResourceUpload(ctx, resource.ID, m)
+		if err != nil {
 			return nil, err
 		}
+		expired, err := c.putObjects(ctx, upload.Puts, files)
+		if err != nil {
+			return nil, err
+		}
+		if !expired {
+			return c.PublishResourceUpload(ctx, resource.ID, upload.UploadID)
+		}
 	}
-	return c.PublishResourceUpload(ctx, resource.ID, upload.UploadID)
 }
+
+// putObjects uploads puts in order. It reports expired, meaning sign again,
+// when a URL is rejected after at least one object of this round went through,
+// so each round makes progress; a fresh round's first rejection is an error.
+func (c *Client) putObjects(ctx context.Context, puts []UploadPut, files map[string]manifest.Source) (expired bool, err error) {
+	for i, put := range puts {
+		source, ok := files[put.SHA256]
+		if !ok {
+			return false, fmt.Errorf("the server asked for an object this tree does not contain: %s", put.SHA256)
+		}
+		err := c.putObject(ctx, put.URL, source, put.SHA256)
+		if i > 0 && errors.Is(err, castransfer.ErrForbidden) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// downloadBatch is how many objects one downloads request signs.
+var downloadBatch = 1000 // a var so tests can shrink it
 
 // PullResource downloads a Resource Version into dest. ref is NAME or
 // NAME@VERSION; a missing version means the current one (api.md §3).
@@ -70,21 +94,56 @@ func (c *Client) PullResource(ctx context.Context, ref, dest string) error {
 	if err := manifest.Validate(m); err != nil {
 		return err
 	}
-	objects := manifest.FileObjects(m)
-	digests := make([]string, 0, len(objects))
-	for _, object := range objects {
-		digests = append(digests, object.SHA256)
+	// Objects in the order the loop below fetches them, each once.
+	var digests []string
+	position := map[string]int{}
+	for _, entry := range m.Entries {
+		if entry.Type != manifest.TypeFile {
+			continue
+		}
+		blocks := entry.Blocks
+		if blocks == nil {
+			blocks = []string{entry.SHA256}
+		}
+		for _, digest := range blocks {
+			if _, seen := position[digest]; !seen {
+				position[digest] = len(digests)
+				digests = append(digests, digest)
+			}
+		}
 	}
-	downloads, err := c.CreateResourceDownloads(ctx, resource.ID, version, digests)
-	if err != nil {
-		return err
+	// URLs are signed a batch at a time just before use, so none outlives its
+	// hour by much and no request outgrows the server's body limit.
+	urls := map[string]string{}
+	sign := func(from int) error {
+		batch := digests[from:min(from+downloadBatch, len(digests))]
+		downloads, err := c.CreateResourceDownloads(ctx, resource.ID, version, batch)
+		if err != nil {
+			return err
+		}
+		if len(downloads.URLs) != len(batch) {
+			return fmt.Errorf("got %d download URLs for %d objects", len(downloads.URLs), len(batch))
+		}
+		clear(urls)
+		for i, digest := range batch {
+			urls[digest] = downloads.URLs[i]
+		}
+		return nil
 	}
-	if len(downloads.URLs) != len(digests) {
-		return fmt.Errorf("got %d download URLs for %d objects", len(downloads.URLs), len(digests))
-	}
-	urls := make(map[string]string, len(digests))
-	for i, digest := range digests {
-		urls[digest] = downloads.URLs[i]
+	get := func(dst io.Writer, digest string) error {
+		for attempt := 0; ; attempt++ {
+			if _, ok := urls[digest]; !ok {
+				if err := sign(position[digest]); err != nil {
+					return err
+				}
+			}
+			err := castransfer.Get(ctx, c.transfers, urls[digest], dst, digest, 0)
+			if attempt > 0 || !errors.Is(err, castransfer.ErrForbidden) {
+				return err
+			}
+			// The batch expired; a 403 writes nothing, so sign again and retry.
+			clear(urls)
+		}
 	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
@@ -109,7 +168,7 @@ func (c *Client) PullResource(ctx context.Context, ref, dest string) error {
 		if entry.Executable {
 			mode = 0o755
 		}
-		if err := c.downloadFile(ctx, target, entry, urls, mode); err != nil {
+		if err := downloadFile(target, entry, get, mode); err != nil {
 			return err
 		}
 	}
@@ -234,7 +293,7 @@ func (c *Client) putObject(ctx context.Context, url string, source manifest.Sour
 
 // downloadFile writes one file entry, fetching its blocks in order when it
 // has them; each object is verified against its digest.
-func (c *Client) downloadFile(ctx context.Context, path string, entry manifest.Entry, urls map[string]string, mode os.FileMode) error {
+func downloadFile(path string, entry manifest.Entry, get func(io.Writer, string) error, mode os.FileMode) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
@@ -244,7 +303,7 @@ func (c *Client) downloadFile(ctx context.Context, path string, entry manifest.E
 		digests = []string{entry.SHA256}
 	}
 	for _, digest := range digests {
-		if err := castransfer.Get(ctx, c.transfers, urls[digest], f, digest, 0); err != nil {
+		if err := get(f, digest); err != nil {
 			f.Close() //nolint:errcheck // report the transfer error instead
 			return err
 		}

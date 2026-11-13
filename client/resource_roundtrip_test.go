@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -23,6 +24,30 @@ type fakeResourceServer struct {
 	mu       sync.Mutex
 	objects  map[string][]byte
 	manifest []byte
+	// urlLife > 0 expires a signing round's URLs after that many object
+	// requests, the way a presigned URL stops working an hour after signing.
+	urlLife int
+	rounds  []int // object requests served per signing round
+}
+
+// sign starts a signing round and returns the query that marks its URLs.
+func (f *fakeResourceServer) sign() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rounds = append(f.rounds, 0)
+	return "?round=" + strconv.Itoa(len(f.rounds)-1)
+}
+
+// expired counts one object request and reports whether its URL has expired.
+func (f *fakeResourceServer) expired(r *http.Request) bool {
+	round, _ := strconv.Atoi(r.URL.Query().Get("round"))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.urlLife > 0 && f.rounds[round] >= f.urlLife {
+		return true
+	}
+	f.rounds[round]++
+	return false
 }
 
 func (f *fakeResourceServer) handler(t *testing.T, base func() string) http.Handler {
@@ -48,14 +73,24 @@ func (f *fakeResourceServer) handler(t *testing.T, base func() string) http.Hand
 		f.mu.Lock()
 		f.manifest, _ = json.Marshal(m)
 		f.mu.Unlock()
+		query := f.sign()
 		puts := []map[string]string{}
 		for _, object := range manifest.FileObjects(m) {
-			puts = append(puts, map[string]string{"sha256": object.SHA256, "url": base() + "/cas/" + object.SHA256})
+			f.mu.Lock()
+			_, stored := f.objects[object.SHA256]
+			f.mu.Unlock()
+			if !stored { // a resubmitted manifest only signs what is still missing
+				puts = append(puts, map[string]string{"sha256": object.SHA256, "url": base() + "/cas/" + object.SHA256 + query})
+			}
 		}
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"upload_id": "u1", "puts": puts})
 	})
 	mux.HandleFunc("PUT /cas/{digest}", func(w http.ResponseWriter, r *http.Request) {
+		if f.expired(r) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		sum := sha256.Sum256(body)
 		if r.Header.Get("x-amz-checksum-sha256") != base64.StdEncoding.EncodeToString(sum[:]) ||
@@ -68,6 +103,10 @@ func (f *fakeResourceServer) handler(t *testing.T, base func() string) http.Hand
 		f.mu.Unlock()
 	})
 	mux.HandleFunc("GET /cas/{digest}", func(w http.ResponseWriter, r *http.Request) {
+		if f.expired(r) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		w.Write(f.objects[r.PathValue("digest")])
@@ -84,9 +123,13 @@ func (f *fakeResourceServer) handler(t *testing.T, base func() string) http.Hand
 	mux.HandleFunc("POST /api/v1/resources/r1/versions/{v}/downloads", func(w http.ResponseWriter, r *http.Request) {
 		var request struct{ SHA256 []string }
 		json.NewDecoder(r.Body).Decode(&request)
+		if len(request.SHA256) > downloadBatch {
+			t.Errorf("downloads signed %d objects at once, want at most %d", len(request.SHA256), downloadBatch)
+		}
+		query := f.sign()
 		urls := []string{}
 		for _, digest := range request.SHA256 {
-			urls = append(urls, base()+"/cas/"+digest)
+			urls = append(urls, base()+"/cas/"+digest+query)
 		}
 		json.NewEncoder(w).Encode(map[string]any{"urls": urls})
 	})
@@ -94,7 +137,18 @@ func (f *fakeResourceServer) handler(t *testing.T, base func() string) http.Hand
 }
 
 func TestPushPullRoundTripsBlockedFiles(t *testing.T) {
-	fake := &fakeResourceServer{objects: map[string][]byte{}}
+	testPushPullRoundTrip(t, 0)
+}
+
+// A transfer that outlives its presigned URLs signs again and finishes.
+func TestPushPullSurviveExpiredURLs(t *testing.T) {
+	testPushPullRoundTrip(t, 1)
+}
+
+func testPushPullRoundTrip(t *testing.T, urlLife int) {
+	defer func(batch int) { downloadBatch = batch }(downloadBatch)
+	downloadBatch = 2 // four objects, two downloads batches
+	fake := &fakeResourceServer{objects: map[string][]byte{}, urlLife: urlLife}
 	var server *httptest.Server
 	server = httptest.NewServer(fake.handler(t, func() string { return server.URL }))
 	defer server.Close()
