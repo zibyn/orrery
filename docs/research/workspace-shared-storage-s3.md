@@ -59,6 +59,8 @@
 
   提交时机：Sandbox stop 前（**stop 必须等最后一次提交成功才释放写权**）、周期性（默认如 60 秒且有脏数据）、脏数据量阈值、显式 API `checkpoint`。
 
+> **2026-11-13 补记**：Generation 的数据布局改用 ADR-0030 的 4 MiB 分块（≤4 MiB 的文件一个对象，更大的文件按块存为 CAS 对象，地址由 Control Plane 用已校验的块摘要计算），与 Resource 共用上传、校验和 GC 代码；上面「小文件打包」暂缓，等实测证明需要再做。
+
 ### 4.2 Node 侧挂载（P0 已否决此形态，见 §4.6）
 
 - 每个挂载一个 **`orrery wsfs` 进程**（与 Exec Supervisor 同样独立于 Agent，Agent 重启不影响挂载），用 FUSE（`hanwen/go-fuse/v2`，需新增依赖）挂在 `<data-root>/workspaces/<id>/mnt`，`containerd.go` 里 `bindMount(workspace, …)` 的源路径换成这个挂载点，其余不变；Local Runtime 直接用这个路径做 cwd。
