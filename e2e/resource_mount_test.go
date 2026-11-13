@@ -234,7 +234,7 @@ func writeTestFile(t *testing.T, path, content string, mode os.FileMode) {
 }
 
 // TestUnavailableVersionRecovers is the api.md §3 recovery half of #86: an
-// object that 404s marks its ResourceVersion unavailable; re-publishing the
+// object that 404s when read marks its ResourceVersion unavailable; re-publishing the
 // same content re-uploads the object, the publish validation re-checks every
 // object of the affected version, and a complete version returns to ready
 // without moving the current pointer.
@@ -267,8 +267,10 @@ func TestUnavailableVersionRecovers(t *testing.T) {
 		t.Fatalf("v1 = %+v, want ready", v1)
 	}
 
-	// Delete the CAS object behind the tree: the next mount 404s and the
-	// Control Plane marks the referenced version unavailable.
+	// Delete the CAS object behind the tree. Objects are fetched when read
+	// (ADR-0030), so the Sandbox starts; the read's presign finds the 404,
+	// the Control Plane marks the referenced version unavailable and the read
+	// fails.
 	sum := sha256.Sum256([]byte(content))
 	digest := hex.EncodeToString(sum[:])
 	store := e2eObjectStore(t)
@@ -278,7 +280,12 @@ func TestUnavailableVersionRecovers(t *testing.T) {
 
 	broken := createResourceSandbox(t, admin, fmt.Sprintf("recover-broken-%d", suffix), name)
 	defer deleteSandbox(t, admin, broken.ID)
-	waitForFailed(t, admin, broken.ID, "resource_fetch_failed")
+	waitForSandboxState(t, admin, broken.ID, "ready", 120*time.Second)
+	got, stderr, code := execInSandbox(t, admin, broken.ID, "cat", "/resources/"+name+"/hello.txt")
+	if code == 0 {
+		t.Fatalf("cat of a deleted object = %q, want a failed read", got)
+	}
+	t.Logf("cat of a deleted object: exit %d, %s", code, stderr)
 	waitForVersionState(t, admin, v1, "unavailable", 60*time.Second)
 
 	// Re-pushing identical content uploads the missing object again. Its
