@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/zibyn/orrery/internal/manifest"
@@ -83,5 +84,39 @@ func TestMissingObjects(t *testing.T) {
 	}
 	if len(missing) != 2 || missing[0] != "b" || missing[1] != "c" {
 		t.Fatalf("missing = %v, want [b c]", missing)
+	}
+}
+
+// Publishing a blocked file verifies each block: one missing block is the
+// one object the 409 lists, and the file's sha256 is the block formula.
+func TestVerifyObjectsListsAMissingBlock(t *testing.T) {
+	size := int64(9 << 20)
+	blocks := []string{strings.Repeat("1", 64), strings.Repeat("2", 64), strings.Repeat("3", 64)}
+	m, err := manifest.Normalize(manifest.Manifest{Entries: []manifest.Entry{
+		{Path: "big", Type: manifest.TypeFile, Size: &size, Blocks: blocks},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Entries[0].SHA256; got != manifest.FileAddress(blocks) {
+		t.Fatalf("file sha256 = %s, want the block formula", got)
+	}
+	present := map[string]bool{blocks[0]: true, blocks[2]: true}
+	head := func(digest string) (string, error) {
+		if present[digest] {
+			return digest, nil
+		}
+		return "", objectstore.ErrNotFound
+	}
+	bad, err := verifyObjects(manifest.FileObjects(m), head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bad) != 1 || bad[0].SHA256 != blocks[1] || bad[0].Reason != "missing" {
+		t.Fatalf("bad = %+v, want block 1 missing", bad)
+	}
+	present[blocks[1]] = true
+	if bad, _ := verifyObjects(manifest.FileObjects(m), head); len(bad) != 0 {
+		t.Fatalf("bad = %+v with every block present", bad)
 	}
 }

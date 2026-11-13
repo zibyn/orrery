@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 
@@ -22,7 +23,7 @@ const publishChunkEntries = 500
 const presignBatch = 500
 
 // publishHTTP uploads CAS objects through presigned URLs. Like the CLI's
-// transfer client it has no timeout: a legitimate object can be 5 GiB.
+// transfer client it has no timeout: a legacy object can be 5 GiB.
 var publishHTTP = &http.Client{}
 
 // publishWorkspace walks this Node's copy of a Workspace and publishes it
@@ -55,7 +56,7 @@ func (r *Runtime) publishWorkspace(ctx context.Context, cmd *nodev1.PublishWorks
 // Workspace. Symlinks are recorded and never followed, empty directories and
 // the executable bit survive, and devices/FIFOs/sockets are rejected
 // (ADR-0012).
-func walkWorkspaceManifest(root *os.Root, publishPath string) (manifest.Manifest, map[string]string, error) {
+func walkWorkspaceManifest(root *os.Root, publishPath string) (manifest.Manifest, map[string]manifest.Source, error) {
 	base, err := localPath(publishPath)
 	if err != nil {
 		return manifest.Manifest{}, nil, err
@@ -90,6 +91,10 @@ func (r *Runtime) submitManifest(ctx context.Context, versionID string, m manife
 			converted := &nodev1.ManifestEntry{
 				Path: entry.Path, Type: entry.Type, Sha256: entry.SHA256,
 				Executable: entry.Executable, Target: entry.Target,
+				Blocks: entry.Blocks,
+			}
+			if entry.Blocks != nil {
+				converted.Sha256 = "" // the Control Plane computes it
 			}
 			if entry.Size != nil {
 				size := *entry.Size
@@ -110,7 +115,7 @@ func (r *Runtime) submitManifest(ctx context.Context, versionID string, m manife
 
 // uploadPublishObjects PUTs the missing CAS objects through Presign. The
 // checksum header is the one the URL was signed with (ADR-0021).
-func (r *Runtime) uploadPublishObjects(ctx context.Context, root *os.Root, missing []string, files map[string]string) error {
+func (r *Runtime) uploadPublishObjects(ctx context.Context, root *os.Root, missing []string, files map[string]manifest.Source) error {
 	for start := 0; start < len(missing); start += presignBatch {
 		end := start + presignBatch
 		if end > len(missing) {
@@ -137,15 +142,11 @@ func (r *Runtime) uploadPublishObjects(ctx context.Context, root *os.Root, missi
 	return nil
 }
 
-func uploadRootObject(ctx context.Context, root *os.Root, local, url, digest string) error {
-	f, err := root.Open(local)
+func uploadRootObject(ctx context.Context, root *os.Root, local manifest.Source, url, digest string) error {
+	f, err := root.Open(local.Path)
 	if err != nil {
 		return err
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	return castransfer.Put(ctx, publishHTTP, url, f, info.Size(), digest)
+	return castransfer.Put(ctx, publishHTTP, url, io.NewSectionReader(f, local.Offset, local.Size), local.Size, digest)
 }

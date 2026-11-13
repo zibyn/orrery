@@ -100,3 +100,33 @@ func TestWalkWorkspaceManifestRejectsUnsafePaths(t *testing.T) {
 		t.Fatal("FIFO was accepted")
 	}
 }
+
+// A Workspace file over 4 MiB is published as blocks: the entry carries them,
+// each block uploads from its byte range, and the Control Plane computes the
+// file's sha256.
+func TestWalkWorkspaceManifestSplitsLargeFiles(t *testing.T) {
+	root, ws := publishTestRoot(t)
+	big := make([]byte, 5<<20)
+	for i := range big {
+		big[i] = byte(i >> 20)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "big.bin"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, files, err := walkWorkspaceManifest(root, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry manifest.Entry
+	for _, e := range m.Entries {
+		if e.Path == "big.bin" {
+			entry = e
+		}
+	}
+	if len(entry.Blocks) != 2 || entry.SHA256 != manifest.FileAddress(entry.Blocks) {
+		t.Fatalf("big.bin entry = %+v, want two blocks", entry)
+	}
+	if last := files[entry.Blocks[1]]; last.Offset != 4<<20 || last.Size != 1<<20 {
+		t.Fatalf("last block source = %+v", last)
+	}
+}

@@ -251,6 +251,9 @@ func (s *Server) decodeManifestRequest(w http.ResponseWriter, r *http.Request) (
 		return manifest.Manifest{}, false
 	}
 	normalized, err := manifest.Normalize(m)
+	if err == nil {
+		err = manifest.RequireBlocks(normalized)
+	}
 	if err != nil {
 		s.writeManifestError(w, err)
 		return manifest.Manifest{}, false
@@ -421,20 +424,16 @@ func (s *Server) handleCreateResourceVersion(w http.ResponseWriter, r *http.Requ
 	// Verify every object with HeadObject in checksum mode. A version is
 	// published only when all of them exist with the declared digest
 	// (ADR-0012).
-	bad := []badObject{}
 	validated := make([]string, 0, len(manifest.FileObjects(m)))
 	for _, object := range manifest.FileObjects(m) {
 		validated = append(validated, object.SHA256)
-		stored, err := s.objects.HeadSHA256(ctx, resource.OwnerID.String(), object.SHA256)
-		switch {
-		case errors.Is(err, objectstore.ErrNotFound):
-			bad = append(bad, badObject{SHA256: object.SHA256, Reason: "missing"})
-		case err != nil:
-			s.internal(w, "verify object", err)
-			return
-		case stored != object.SHA256:
-			bad = append(bad, badObject{SHA256: object.SHA256, Reason: "checksum_mismatch"})
-		}
+	}
+	bad, err := verifyObjects(manifest.FileObjects(m), func(digest string) (string, error) {
+		return s.objects.HeadSHA256(ctx, resource.OwnerID.String(), digest)
+	})
+	if err != nil {
+		s.internal(w, "verify object", err)
+		return
 	}
 	if len(bad) > 0 {
 		writeProblemWithExtras(w, "conflict", "some objects are missing or do not match their declared sha256", map[string]any{

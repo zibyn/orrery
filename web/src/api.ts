@@ -187,6 +187,8 @@ export type ManifestEntry = {
   type: 'file' | 'dir' | 'symlink'
   size?: number
   sha256?: string
+  // Block digests of a file over 4 MiB (ADR-0030); such a file is not one object.
+  blocks?: string[]
   executable?: boolean
   target?: string
 }

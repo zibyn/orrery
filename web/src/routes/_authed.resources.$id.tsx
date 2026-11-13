@@ -402,7 +402,7 @@ function VersionFiles({ resourceId, versionId }: { resourceId: string; versionId
                         : m.resource_symlink()}
                   </ItemDescription>
                 </ItemContent>
-                {entry.type === 'file' && entry.sha256 && (
+                {entry.type === 'file' && entry.sha256 && !entry.blocks && (
                   <ItemActions>
                     <Button
                       variant="ghost"
@@ -418,6 +418,12 @@ function VersionFiles({ resourceId, versionId }: { resourceId: string; versionId
               </Item>
             ))}
           </ItemGroup>
+        )}
+        {entries.some((entry) => entry.blocks) && (
+          <p className="text-xs text-muted-foreground">
+            {m.resource_blocked_files()}
+            <code className="font-mono">{`orrery resource pull ${resourceId}@${versionId} <dir>`}</code>
+          </p>
         )}
         {entries.length > MANIFEST_SHOWN && (
           <p className="text-xs text-muted-foreground">

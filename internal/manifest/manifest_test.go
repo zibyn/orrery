@@ -93,7 +93,7 @@ func TestFileEntryRules(t *testing.T) {
 		{"short sha", Entry{Path: "f", Type: TypeFile, Size: size(1), SHA256: "abc"}, ErrInvalid},
 		{"uppercase sha", Entry{Path: "f", Type: TypeFile, Size: size(1), SHA256: strings.ToUpper(digestA)}, ErrInvalid},
 		{"negative size", Entry{Path: "f", Type: TypeFile, Size: size(-1), SHA256: digestA}, ErrInvalid},
-		{"over 5 GiB", Entry{Path: "f", Type: TypeFile, Size: size(MaxFileSize + 1), SHA256: digestA}, ErrTooLarge},
+		{"over 1 TiB", Entry{Path: "f", Type: TypeFile, Size: size(MaxFileSize + 1), SHA256: digestA}, ErrTooLarge},
 		{"target on file", Entry{Path: "f", Type: TypeFile, Size: size(1), SHA256: digestA, Target: "x"}, ErrInvalid},
 	}
 	for _, tc := range cases {
@@ -103,10 +103,10 @@ func TestFileEntryRules(t *testing.T) {
 			t.Fatalf("%s: err = %v, want %v", tc.name, err, tc.want)
 		}
 	}
-	// Exactly 5 GiB is allowed.
+	// Exactly 1 TiB is allowed (a legacy entry; Validate does not require blocks).
 	m := Manifest{Entries: []Entry{{Path: "f", Type: TypeFile, Size: size(MaxFileSize), SHA256: digestA}}}
 	if err := Validate(m); err != nil {
-		t.Fatalf("5 GiB entry: %v", err)
+		t.Fatalf("1 TiB entry: %v", err)
 	}
 }
 

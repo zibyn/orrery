@@ -47,6 +47,17 @@ func TestResourceUploadChecksum(t *testing.T) {
 	if err := os.Symlink("hello.txt", filepath.Join(src, "link")); err != nil {
 		t.Fatal(err)
 	}
+	// 9 MiB is three 4 MiB blocks, the last 1 MiB (ADR-0030); 1 KiB is one object.
+	big := make([]byte, 9<<20)
+	for i := range big {
+		big[i] = byte(i*7/4096 + i>>22*13) // distinct blocks
+	}
+	if err := os.WriteFile(filepath.Join(src, "nested", "big.bin"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "nested", "kib.bin"), big[:1024], 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var version struct {
 		ID         string  `json:"id"`
@@ -139,16 +150,16 @@ func TestResourceUploadChecksum(t *testing.T) {
 		t.Fatalf("problem objects = %+v, want the missing digest listed", problem.Objects)
 	}
 
-	// A file entry over 5 GiB is refused before any PUT is signed.
-	big := map[string]any{"entries": []map[string]any{{
+	// A file entry over 1 TiB is refused before any PUT is signed.
+	huge := map[string]any{"entries": []map[string]any{{
 		"path": "big.bin", "type": "file",
-		"size":   int64(5<<30) + 1,
+		"size":   int64(1<<40) + 1,
 		"sha256": missing,
 	}}}
 	status, body = call(t, http.MethodPost,
-		"/api/v1/resources/"+version.ResourceID+"/uploads", admin, big)
+		"/api/v1/resources/"+version.ResourceID+"/uploads", admin, huge)
 	if status != http.StatusRequestEntityTooLarge {
-		t.Fatalf("over-5-GiB manifest: %d %s, want 413", status, body)
+		t.Fatalf("over-1-TiB manifest: %d %s, want 413", status, body)
 	}
 	requireProblemCode(t, body, "payload_too_large")
 }

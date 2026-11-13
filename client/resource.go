@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,11 +34,11 @@ func (c *Client) PushResource(ctx context.Context, dir, name string) (*ResourceV
 		return nil, err
 	}
 	for _, put := range upload.Puts {
-		path, ok := files[put.SHA256]
+		source, ok := files[put.SHA256]
 		if !ok {
 			return nil, fmt.Errorf("the server asked for an object this tree does not contain: %s", put.SHA256)
 		}
-		if err := c.putObject(ctx, put.URL, path, put.SHA256); err != nil {
+		if err := c.putObject(ctx, put.URL, source, put.SHA256); err != nil {
 			return nil, err
 		}
 	}
@@ -108,7 +109,7 @@ func (c *Client) PullResource(ctx context.Context, ref, dest string) error {
 		if entry.Executable {
 			mode = 0o755
 		}
-		if err := c.downloadObject(ctx, target, urls[entry.SHA256], entry.SHA256, mode); err != nil {
+		if err := c.downloadFile(ctx, target, entry, urls, mode); err != nil {
 			return err
 		}
 	}
@@ -195,7 +196,7 @@ func (c *Client) ensureResource(ctx context.Context, name string) (*Resource, er
 
 // buildManifest walks root deterministically. Symlinks are recorded, never
 // followed; devices, FIFOs and sockets are rejected.
-func buildManifest(root string) (manifest.Manifest, map[string]string, error) {
+func buildManifest(root string) (manifest.Manifest, map[string]manifest.Source, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return manifest.Manifest{}, nil, err
@@ -213,39 +214,40 @@ func buildManifest(root string) (manifest.Manifest, map[string]string, error) {
 		return manifest.Manifest{}, nil, err
 	}
 	// The walker reports filesystem paths; uploads open host paths.
-	for digest, fsPath := range files {
-		files[digest] = filepath.Join(root, filepath.FromSlash(fsPath))
+	for digest, source := range files {
+		source.Path = filepath.Join(root, filepath.FromSlash(source.Path))
+		files[digest] = source
 	}
 	return m, files, nil
 }
 
-// putObject sends one CAS object through a presigned URL. The store verifies
-// x-amz-checksum-sha256 (ADR-0021).
-func (c *Client) putObject(ctx context.Context, url, path, digest string) error {
-	f, err := os.Open(path)
+// putObject sends one CAS object, a whole file or one block of it, through a
+// presigned URL. The store verifies x-amz-checksum-sha256 (ADR-0021).
+func (c *Client) putObject(ctx context.Context, url string, source manifest.Source, digest string) error {
+	f, err := os.Open(source.Path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return castransfer.Put(ctx, c.transfers, url, f, fileSize(f), digest)
+	return castransfer.Put(ctx, c.transfers, url, io.NewSectionReader(f, source.Offset, source.Size), source.Size, digest)
 }
 
-func fileSize(f *os.File) int64 {
-	info, err := f.Stat()
-	if err != nil {
-		return 0
-	}
-	return info.Size()
-}
-
-func (c *Client) downloadObject(ctx context.Context, path, url, digest string, mode os.FileMode) error {
+// downloadFile writes one file entry, fetching its blocks in order when it
+// has them; each object is verified against its digest.
+func (c *Client) downloadFile(ctx context.Context, path string, entry manifest.Entry, urls map[string]string, mode os.FileMode) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
-	if err := castransfer.Get(ctx, c.transfers, url, f, digest, 0); err != nil {
-		f.Close() //nolint:errcheck // report the transfer error instead
-		return err
+	digests := entry.Blocks
+	if digests == nil {
+		digests = []string{entry.SHA256}
+	}
+	for _, digest := range digests {
+		if err := castransfer.Get(ctx, c.transfers, urls[digest], f, digest, 0); err != nil {
+			f.Close() //nolint:errcheck // report the transfer error instead
+			return err
+		}
 	}
 	if err := f.Close(); err != nil {
 		return err

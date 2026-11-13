@@ -42,6 +42,9 @@ message ManifestEntry {
   string sha256 = 4;
   bool executable = 5;
   string target = 6;
+  // Block digests of a file over 4 MiB, in order; its sha256 is then empty
+  // and computed by the Control Plane (ADR-0030).
+  repeated string blocks = 7;
 }
 
 message ManifestAck {

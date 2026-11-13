@@ -61,8 +61,8 @@ func TestBuildManifestRecordsTheTree(t *testing.T) {
 	if got := byPath["link"]; got.Type != manifest.TypeSymlink || got.Target != "hello.txt" {
 		t.Fatalf("link = %+v", got)
 	}
-	if files[digest] != filepath.Join(root, "hello.txt") {
-		t.Fatalf("files[%s] = %q", digest, files[digest])
+	if files[digest].Path != filepath.Join(root, "hello.txt") {
+		t.Fatalf("files[%s] = %+v", digest, files[digest])
 	}
 
 	// Re-walking an unchanged tree produces the same address.

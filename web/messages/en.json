@@ -452,6 +452,7 @@
   "files_publish_status": "Publishing {name}:",
   "files_publish_open": "Open Resource",
   "resource_download_missing": "The server returned no download URL.",
+  "resource_blocked_files": "Files over 4 MiB are stored in blocks and cannot be downloaded in the browser. Pull the version with: ",
   "account_never": "never",
   "snapshot_no_current": "none yet",
   "label_snapshot": "Snapshot",

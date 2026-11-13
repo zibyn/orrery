@@ -132,11 +132,14 @@ type ManifestEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Path  string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	// "file", "dir" or "symlink".
-	Type          string `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
-	Size          *int64 `protobuf:"varint,3,opt,name=size,proto3,oneof" json:"size,omitempty"`
-	Sha256        string `protobuf:"bytes,4,opt,name=sha256,proto3" json:"sha256,omitempty"`
-	Executable    bool   `protobuf:"varint,5,opt,name=executable,proto3" json:"executable,omitempty"`
-	Target        string `protobuf:"bytes,6,opt,name=target,proto3" json:"target,omitempty"`
+	Type       string `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Size       *int64 `protobuf:"varint,3,opt,name=size,proto3,oneof" json:"size,omitempty"`
+	Sha256     string `protobuf:"bytes,4,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Executable bool   `protobuf:"varint,5,opt,name=executable,proto3" json:"executable,omitempty"`
+	Target     string `protobuf:"bytes,6,opt,name=target,proto3" json:"target,omitempty"`
+	// Block digests of a file over 4 MiB, in order; its sha256 is then empty
+	// and computed by the Control Plane (ADR-0030).
+	Blocks        []string `protobuf:"bytes,7,rep,name=blocks,proto3" json:"blocks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -211,6 +214,13 @@ func (x *ManifestEntry) GetTarget() string {
 		return x.Target
 	}
 	return ""
+}
+
+func (x *ManifestEntry) GetBlocks() []string {
+	if x != nil {
+		return x.Blocks
+	}
+	return nil
 }
 
 type ManifestAck struct {
@@ -3703,7 +3713,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\rManifestChunk\x12\x1d\n" +
 	"\n" +
 	"version_id\x18\x01 \x01(\tR\tversionId\x127\n" +
-	"\aentries\x18\x02 \x03(\v2\x1d.orrery.node.v1.ManifestEntryR\aentries\"\xa9\x01\n" +
+	"\aentries\x18\x02 \x03(\v2\x1d.orrery.node.v1.ManifestEntryR\aentries\"\xc1\x01\n" +
 	"\rManifestEntry\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x17\n" +
@@ -3712,7 +3722,8 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\n" +
 	"executable\x18\x05 \x01(\bR\n" +
 	"executable\x12\x16\n" +
-	"\x06target\x18\x06 \x01(\tR\x06targetB\a\n" +
+	"\x06target\x18\x06 \x01(\tR\x06target\x12\x16\n" +
+	"\x06blocks\x18\a \x03(\tR\x06blocksB\a\n" +
 	"\x05_size\"4\n" +
 	"\vManifestAck\x12%\n" +
 	"\x0emissing_sha256\x18\x01 \x03(\tR\rmissingSha256\"^\n" +

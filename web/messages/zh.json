@@ -452,6 +452,7 @@
   "files_publish_status": "发布 {name}：",
   "files_publish_open": "打开资源",
   "resource_download_missing": "服务端没有返回下载地址。",
+  "resource_blocked_files": "超过 4 MiB 的文件按块存储，不能在浏览器下载。请用下面的命令拉取整个版本：",
   "account_never": "从不",
   "snapshot_no_current": "暂无",
   "label_snapshot": "快照",

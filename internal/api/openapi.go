@@ -933,8 +933,9 @@ func schemas() map[string]any {
 			"properties": map[string]any{
 				"path":       map[string]any{"type": "string", "description": "Slash-separated relative path; the parent must be an explicit dir entry."},
 				"type":       map[string]any{"type": "string", "enum": []string{"file", "dir", "symlink"}},
-				"size":       map[string]any{"type": "integer", "minimum": 0, "maximum": 5 << 30, "description": "File only; required for files, at most 5 GiB."},
-				"sha256":     map[string]any{"type": "string", "description": "File only; 64 lowercase hex characters."},
+				"size":       map[string]any{"type": "integer", "minimum": 0, "maximum": 1 << 40, "description": "File only; required for files, at most 1 TiB."},
+				"sha256":     map[string]any{"type": "string", "description": "File only; 64 lowercase hex characters. Required for a file of at most 4 MiB; for a larger file the server computes it from blocks."},
+				"blocks":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "File over 4 MiB only: the sha256 of each 4 MiB block in order; the last may be shorter."},
 				"executable": map[string]any{"type": "boolean", "description": "File only; the sole recorded permission bit (644 or 755)."},
 				"target":     map[string]any{"type": "string", "description": "Symlink only; recorded, never followed."},
 			},

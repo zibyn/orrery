@@ -49,6 +49,9 @@ func (a *manifestAccumulator) add(chunk *nodev1.ManifestChunk) error {
 			Executable: entry.GetExecutable(),
 			Target:     entry.GetTarget(),
 		}
+		if len(entry.GetBlocks()) > 0 {
+			converted.Blocks = entry.GetBlocks()
+		}
 		if entry.Size != nil {
 			size := *entry.Size
 			converted.Size = &size
@@ -59,25 +62,43 @@ func (a *manifestAccumulator) add(chunk *nodev1.ManifestChunk) error {
 }
 
 func (a *manifestAccumulator) finish() (manifest.Manifest, error) {
-	return manifest.Normalize(manifest.Manifest{Entries: a.entries})
+	m, err := manifest.Normalize(manifest.Manifest{Entries: a.entries})
+	if err != nil {
+		return manifest.Manifest{}, err
+	}
+	return m, manifest.RequireBlocks(m)
 }
 
-// missingObjects is the ManifestAck calculation. It asks the store, not the
-// database, so a resumed publish does not re-upload what already landed.
-func missingObjects(objects []manifest.FileObject, head func(string) (string, error)) ([]string, error) {
-	missing := []string{}
+// verifyObjects checks every object (whole file or block) with head, the
+// store's checksum-mode HeadObject, and lists those that are missing or hold
+// other bytes (ADR-0012, ADR-0030).
+func verifyObjects(objects []manifest.FileObject, head func(string) (string, error)) ([]badObject, error) {
+	bad := []badObject{}
 	for _, object := range objects {
 		stored, err := head(object.SHA256)
 		switch {
 		case errors.Is(err, objectstore.ErrNotFound):
-			missing = append(missing, object.SHA256)
+			bad = append(bad, badObject{SHA256: object.SHA256, Reason: "missing"})
 		case err != nil:
 			return nil, err
 		case stored != object.SHA256:
-			// The blob is corrupt at a content-addressed key; the Agent can
-			// repair it with a checksum-verified PUT.
-			missing = append(missing, object.SHA256)
+			bad = append(bad, badObject{SHA256: object.SHA256, Reason: "checksum_mismatch"})
 		}
+	}
+	return bad, nil
+}
+
+// missingObjects is the ManifestAck calculation. It asks the store, not the
+// database, so a resumed publish does not re-upload what already landed. A
+// corrupt blob counts as missing: the Agent repairs it with a verified PUT.
+func missingObjects(objects []manifest.FileObject, head func(string) (string, error)) ([]string, error) {
+	bad, err := verifyObjects(objects, head)
+	if err != nil {
+		return nil, err
+	}
+	missing := make([]string, 0, len(bad))
+	for _, object := range bad {
+		missing = append(missing, object.SHA256)
 	}
 	return missing, nil
 }
