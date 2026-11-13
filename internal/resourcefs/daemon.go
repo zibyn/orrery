@@ -42,6 +42,10 @@ type Config struct {
 	// ControlSocket instead of starting empty.
 	Takeover bool
 	Log      *slog.Logger
+	// Notify, when set, receives systemd notify states (sd_notify): after a
+	// takeover MAINPID names this process before the predecessor is told to
+	// stop, so its exit is not the unit's; READY=1 once serving.
+	Notify func(state string)
 }
 
 type mount struct {
@@ -76,6 +80,11 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := d.store.cleanTemp(); err != nil {
 		return err
 	}
+	notify := func(state string) {
+		if cfg.Notify != nil {
+			cfg.Notify(state)
+		}
+	}
 	var predecessor *net.UnixConn
 	if cfg.Takeover {
 		conn, err := d.takeover(ctx)
@@ -83,10 +92,15 @@ func Run(ctx context.Context, cfg Config) error {
 			return fmt.Errorf("take over: %w", err)
 		}
 		predecessor = conn
+		peer := peerPID(conn)
+		notify(fmt.Sprintf("MAINPID=%d", os.Getpid()))
 		// The predecessor waits for this before it stops reading; until then
 		// both processes answer, identically.
 		if _, err := conn.Write([]byte("ready\n")); err != nil {
 			conn.Close() //nolint:errcheck // report the write error
+			if peer > 0 {
+				notify(fmt.Sprintf("MAINPID=%d", peer)) // it keeps serving
+			}
 			return fmt.Errorf("take over: %w", err)
 		}
 	}
@@ -99,6 +113,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer l.Close() //nolint:errcheck // SetUnlinkOnClose(false): the path may be a successor's
 	cfg.Log.Info("resourcefs serving", "socket", cfg.ControlSocket, "mounts", len(d.mounts))
+	notify("READY=1")
 	go d.accept(l)
 	select {
 	case <-ctx.Done():

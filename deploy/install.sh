@@ -684,9 +684,34 @@ WantedBy=multi-user.target
 EOF
 }
 
+# The lazy Resource mount daemon (ADR-0030, runtime.md §11). An upgrade
+# reloads it: ExecReload starts the new binary with --takeover, which takes
+# every /dev/fuse session over from the running one and makes itself the
+# main process (MAINPID, hence NotifyAccess=all), so no mount breaks. A
+# restart would break every mount; Restart=always only covers a crash, after
+# which the old mounts stay broken until their Sandboxes restart.
+resourcefs_unit() {
+  cat <<EOF
+[Unit]
+Description=Orrery Resource mounts (orrery-resourcefs)
+After=local-fs.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=$NODE_BIN/orrery-agent resourcefs
+ExecReload=$NODE_BIN/orrery-agent resourcefs --takeover
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 # agent_unit RUNTIME EXEC_START prints orrery-agent.service.
 agent_unit() {
-  local deps=network-online.target
+  local deps="network-online.target orrery-resourcefs.service"
   [ "$1" != containerd ] || deps="$deps orrery-containerd.service"
   cat <<EOF
 [Unit]
@@ -915,8 +940,21 @@ node() {
   if write_if_changed "$sd/orrery-buildkitd.service" < <(buildkitd_unit); then restart_bk=1; reload=1; fi
   if grep -qx buildkitd <<<"$changed"; then restart_bk=1; fi
   [ -n "$exec_start" ] || exec_start="$(drop_host_daemons "$bin/orrery-agent" run --runtime "$runtime" "${ca_flag[@]}" "${extra[@]}")"
+  local upgrade_rfs=0
+  if write_if_changed "$sd/orrery-resourcefs.service" < <(resourcefs_unit); then upgrade_rfs=1; reload=1; fi
+  if grep -qx orrery-agent <<<"$changed"; then upgrade_rfs=1; fi
   if write_if_changed "$unit" < <(agent_unit "$runtime" "$exec_start"); then reload=1; fi
   [ "$reload" = 0 ] || systemctl daemon-reload
+
+  # Never restart orrery-resourcefs: a running one is reloaded (handed over),
+  # a stopped one started; unchanged, start is a no-op.
+  systemctl enable --quiet orrery-resourcefs
+  if [ "$upgrade_rfs" = 1 ]; then
+    systemctl reload-or-restart orrery-resourcefs ||
+      die "orrery-resourcefs did not hand over to the new binary; the running one keeps serving (journalctl -u orrery-resourcefs)"
+  else
+    systemctl start orrery-resourcefs
+  fi
 
   [ "$runtime" != containerd ] || start_unit orrery-containerd "$restart_ctrd"
   start_unit orrery-buildkitd "$restart_bk"

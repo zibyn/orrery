@@ -3,11 +3,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -126,7 +130,77 @@ func resourceFS(ctx context.Context, args []string) error {
 	fs.BoolVar(&cfg.Takeover, "takeover", false, "take every mount over from the daemon on --socket (upgrade)")
 	fs.Parse(args)
 	cfg.Presigner = resourcefs.SocketPresigner{Socket: presignSocket}
+	if cfg.Takeover && os.Getenv(takeoverChildEnv) == "" {
+		return spawnTakeover()
+	}
+	cfg.Notify = sdNotify
+	if cfg.Takeover {
+		// Tell the waiting `--takeover` parent once this process serves.
+		done := os.NewFile(3, "takeover-done")
+		cfg.Notify = func(state string) {
+			sdNotify(state)
+			if state == "READY=1" && done != nil {
+				done.WriteString("ok\n") //nolint:errcheck // the parent then sees EOF and fails
+				done.Close()             //nolint:errcheck // one message
+				done = nil
+			}
+		}
+	}
 	return resourcefs.Run(ctx, cfg)
+}
+
+// takeoverChildEnv marks the detached successor `--takeover` starts.
+const takeoverChildEnv = "ORRERY_RESOURCEFS_TAKEOVER_CHILD"
+
+// spawnTakeover is systemd's ExecReload: it starts the successor detached in
+// the unit's cgroup and exits once the successor serves every mount, as the
+// unit's new main process (it sends MAINPID itself). A failure leaves the old
+// process serving.
+func spawnTakeover() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(self, os.Args[1:]...)
+	cmd.Env = append(os.Environ(), takeoverChildEnv+"=1")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.ExtraFiles = []*os.File{w} // fd 3
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	w.Close() //nolint:errcheck // the child holds its copy
+	line, _ := bufio.NewReader(r).ReadString('\n')
+	if line != "ok\n" {
+		cmd.Wait() //nolint:errcheck // report the takeover failure instead
+		return errors.New("takeover failed; the running resourcefs keeps serving")
+	}
+	return cmd.Process.Release()
+}
+
+// sdNotify sends one sd_notify(3) state to systemd; outside systemd it does
+// nothing.
+func sdNotify(state string) {
+	addr := os.Getenv("NOTIFY_SOCKET")
+	if addr == "" {
+		return
+	}
+	if addr[0] == '@' {
+		addr = "\x00" + addr[1:]
+	}
+	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: addr, Net: "unixgram"})
+	if err != nil {
+		slog.Warn("sd_notify", "state", state, "error", err)
+		return
+	}
+	defer conn.Close() //nolint:errcheck // one datagram
+	if _, err := conn.Write([]byte(state)); err != nil {
+		slog.Warn("sd_notify", "state", state, "error", err)
+	}
 }
 
 func supervise(args []string) error {

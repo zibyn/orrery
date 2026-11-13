@@ -195,3 +195,18 @@ func (d *daemon) adopt(header handoverMount, fd int) (*mount, error) {
 	}
 	return &mount{address: header.Address, dir: dir, srv: srv}, nil
 }
+
+// peerPID is the process on the other end of a unix socket, or 0.
+func peerPID(conn *net.UnixConn) int {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return 0
+	}
+	pid := 0
+	_ = raw.Control(func(fd uintptr) {
+		if cred, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED); err == nil {
+			pid = int(cred.Pid)
+		}
+	})
+	return pid
+}

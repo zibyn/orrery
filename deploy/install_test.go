@@ -131,14 +131,27 @@ func TestBuildkitdUnit(t *testing.T) {
 	)
 }
 
+// The upgrade path reloads, never restarts, orrery-resourcefs: ExecReload
+// takes the mounts over and the successor becomes the main process
+// (ADR-0030).
+func TestResourceFSUnit(t *testing.T) {
+	wantLines(t, "orrery-resourcefs.service", sh(t, "resourcefs_unit"),
+		"Type=notify",
+		"NotifyAccess=all",
+		"ExecStart=/opt/orrery/bin/orrery-agent resourcefs",
+		"ExecReload=/opt/orrery/bin/orrery-agent resourcefs --takeover",
+		"Restart=always",
+	)
+}
+
 // Wants=, not Requires=: a containerd restart must not restart the Agent,
 // and a containerd stop then start must not leave it stopped (spike §4.3).
 func TestAgentUnit(t *testing.T) {
 	got := sh(t, `agent_unit containerd "/opt/orrery/bin/orrery-agent run --runtime containerd --ca /etc/orrery-agent/ca.crt"`)
 	wantLines(t, "orrery-agent.service", got,
 		"ExecStart=/opt/orrery/bin/orrery-agent run --runtime containerd --ca /etc/orrery-agent/ca.crt",
-		"Wants=network-online.target orrery-containerd.service",
-		"After=network-online.target orrery-containerd.service",
+		"Wants=network-online.target orrery-resourcefs.service orrery-containerd.service",
+		"After=network-online.target orrery-resourcefs.service orrery-containerd.service",
 		"KillMode=process",
 	)
 	if strings.Contains("\n"+got, "\nRequires=") {
@@ -441,5 +454,37 @@ func TestNodeRotatesCA(t *testing.T) {
 	wantLines(t, "rerun with a new CA", rotated, "trust_ca ca2", "systemctl restart orrery-buildkitd")
 	if b, _ := os.ReadFile(filepath.Join(n.d, "conf", "buildkitd.toml")); !strings.Contains(string(b), `[registry."registry.example:8443"]`) {
 		t.Errorf("the rerun dropped the trusted host:\n%s", b)
+	}
+}
+
+// orrery-resourcefs is handed over only when its binary or unit changed; an
+// unchanged rerun only makes sure it runs, and nothing ever restarts it.
+func TestNodeHandsResourceFSOver(t *testing.T) {
+	n := newFakeNode(t)
+	install := func(version string) string {
+		t.Helper()
+		out, err := n.run("--version", version, "--runtime", "local")
+		if err != nil {
+			t.Fatalf("install %s: %v\n%s", version, err, out)
+		}
+		return n.log()
+	}
+	n.release("v1.0.0", map[string]string{"bin/orrery-agent": "a1", "bin/buildkitd": "b"})
+	first := install("v1.0.0")
+	wantLines(t, "first install", first,
+		"systemctl enable --quiet orrery-resourcefs", "systemctl reload-or-restart orrery-resourcefs")
+
+	same := install("v1.0.0")
+	if strings.Contains(same, "reload-or-restart orrery-resourcefs") || !strings.Contains(same, "systemctl start orrery-resourcefs") {
+		t.Errorf("unchanged rerun:\n%s", same)
+	}
+
+	n.release("v1.1.0", map[string]string{"bin/orrery-agent": "a2", "bin/buildkitd": "b"})
+	upgrade := install("v1.1.0")
+	wantLines(t, "upgrade", upgrade, "systemctl reload-or-restart orrery-resourcefs")
+	for _, log := range []string{first, same, upgrade} {
+		if strings.Contains(log, "systemctl restart orrery-resourcefs") {
+			t.Errorf("orrery-resourcefs was restarted:\n%s", log)
+		}
 	}
 }
