@@ -124,6 +124,9 @@ func (d *daemon) takeover(ctx context.Context) (*net.UnixConn, error) {
 		return fail(err)
 	}
 	buf, oob := make([]byte, 64<<10), make([]byte, syscall.CmsgSpace(4))
+	// Nothing reads a session until every mount is adopted: a successor that
+	// fails part-way must not exit holding requests it read but never answered.
+	var adopted []*mount
 	for {
 		n, oobn, _, _, err := conn.ReadMsgUnix(buf, oob)
 		if err != nil {
@@ -134,16 +137,23 @@ func (d *daemon) takeover(ctx context.Context) (*net.UnixConn, error) {
 			return fail(fmt.Errorf("handover header: %w", err))
 		}
 		if header.End {
+			d.mu.Lock()
+			for _, mt := range adopted {
+				d.serve(mt)
+			}
+			d.mu.Unlock()
 			return conn, nil
 		}
 		fd, err := receivedFD(oob[:oobn])
 		if err != nil {
 			return fail(err)
 		}
-		if err := d.adopt(header, fd); err != nil {
+		mt, err := d.adopt(header, fd)
+		if err != nil {
 			syscall.Close(fd) //nolint:errcheck // the predecessor still holds its copy
 			return fail(err)
 		}
+		adopted = append(adopted, mt)
 		if _, err := conn.Write([]byte("ok\n")); err != nil {
 			return fail(err)
 		}
@@ -170,21 +180,18 @@ func receivedFD(oob []byte) (int, error) {
 
 // adopt serves an already initialized session with the same state the
 // predecessor built from the same manifest.
-func (d *daemon) adopt(header handoverMount, fd int) error {
+func (d *daemon) adopt(header handoverMount, fd int) (*mount, error) {
 	if !validAddress(header.Address) {
-		return fmt.Errorf("invalid address %q", header.Address)
+		return nil, fmt.Errorf("invalid address %q", header.Address)
 	}
 	m, err := d.loadManifest(header.Address)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dir := d.mountDir(header.Address)
 	srv, err := fuse.NewServerFromFD(newRawFS(m, d.store, d.cfg.Log), fd, dir, mountOptions(header.Address), header.Init, header.Negotiated)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	d.mu.Lock()
-	d.serve(&mount{address: header.Address, dir: dir, srv: srv})
-	d.mu.Unlock()
-	return nil
+	return &mount{address: header.Address, dir: dir, srv: srv}, nil
 }

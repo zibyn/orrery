@@ -147,6 +147,22 @@ func (d *daemon) command(req request, resp *response) error {
 	if d.handedOver {
 		return ErrHandedOver
 	}
+	if req.Op == "mount" && validAddress(req.Address) {
+		// The manifest read can take a minute; it needs no lock.
+		d.mu.Unlock()
+		m, err := d.loadManifest(req.Address)
+		d.mu.Lock()
+		if err != nil {
+			return err
+		}
+		if d.handedOver {
+			return ErrHandedOver
+		}
+		if _, ok := d.mounts[req.Address]; ok {
+			return nil
+		}
+		return d.mount(req.Address, m)
+	}
 	switch req.Op {
 	case "status":
 		resp.Mounts = make([]string, 0, len(d.mounts))
@@ -162,15 +178,6 @@ func (d *daemon) command(req request, resp *response) error {
 		return fmt.Errorf("invalid address %q", req.Address)
 	}
 	switch req.Op {
-	case "mount":
-		if _, ok := d.mounts[req.Address]; ok {
-			return nil
-		}
-		m, err := d.loadManifest(req.Address)
-		if err != nil {
-			return err
-		}
-		return d.mount(req.Address, m)
 	case "unmount":
 		return d.unmount(req.Address)
 	}
@@ -193,8 +200,14 @@ func (d *daemon) mount(address string, m manifest.Manifest) error {
 	if err != nil {
 		return fmt.Errorf("mount %s: %w", address, err)
 	}
-	d.serve(&mount{address: address, dir: dir, srv: srv})
-	return srv.WaitMount()
+	mt := &mount{address: address, dir: dir, srv: srv}
+	d.serve(mt)
+	if err := srv.WaitMount(); err != nil {
+		delete(d.mounts, address) // a retry must mount again, not find this
+		detach(dir)
+		return err
+	}
+	return nil
 }
 
 // serve runs a server and forgets its mount when the session ends without a

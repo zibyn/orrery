@@ -148,7 +148,11 @@ func (r *Runtime) mountResources(ctx context.Context, id uuid.UUID, resources []
 	if len(resources) > 0 && r.resourcefs == nil {
 		return "resource_fetch_failed", errors.New("orrery-resourcefs is not configured")
 	}
+	previous := r.resourceRefs.release(id.String()) // a re-create without a stop
 	r.resourceRefs.hold(id.String(), addresses)
+	for _, address := range previous {
+		r.unmountUnused(ctx, address)
+	}
 	for _, address := range addresses {
 		unlock := r.resourceRefs.lock(address)
 		err := retryResourceFetch(ctx, resourceFetchBackoff, func() error {
@@ -160,19 +164,27 @@ func (r *Runtime) mountResources(ctx context.Context, id uuid.UUID, resources []
 			return "resource_fetch_failed", fmt.Errorf("mount Resource %s: %w", address, err)
 		}
 	}
-	dir := sandboxResourcesPath(r.dataRoot, id)
-	if err := os.RemoveAll(dir); err != nil {
+	if err := writeResourceLinks(r.dataRoot, id, resources); err != nil {
+		r.releaseResources(context.WithoutCancel(ctx), id)
 		return "runtime_create_failed", err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "runtime_create_failed", err
-	}
-	for _, resource := range resources {
-		if err := os.Symlink(resourceVersionPath(r.dataRoot, resource.address), filepath.Join(dir, resource.mount)); err != nil {
-			return "runtime_create_failed", err
-		}
 	}
 	return "", nil
+}
+
+func writeResourceLinks(dataRoot string, id uuid.UUID, resources []resourceMount) error {
+	dir := sandboxResourcesPath(dataRoot, id)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, resource := range resources {
+		if err := os.Symlink(resourceVersionPath(dataRoot, resource.address), filepath.Join(dir, resource.mount)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // releaseResources drops the Sandbox's hold, unmounts every version no other

@@ -156,16 +156,17 @@ func (s *store) ensure(ref blockRef, hint func() []blockRef) error {
 // download tries once and retries getRetries times; a digest mismatch is a
 // failed attempt. A failed URL is dropped so the retry signs a fresh one.
 func (s *store) download(ref blockRef, hint func() []blockRef) error {
-	s.sem <- struct{}{}
-	defer func() { <-s.sem }()
 	var err error
 	for attempt := 0; attempt <= getRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(retryDelay(attempt))
+			time.Sleep(retryDelay(attempt)) // without a download slot
 		}
 		var url string
 		if url, err = s.url(ref, hint); err == nil {
-			if err = s.fetch(ref, url); err == nil {
+			s.sem <- struct{}{}
+			err = s.fetch(ref, url)
+			<-s.sem
+			if err == nil {
 				return nil
 			}
 		}
