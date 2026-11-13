@@ -255,14 +255,11 @@ func TestRetireNode(t *testing.T) {
 	// The retiring Node is enrolled and started first, so placement prefers it.
 	oldState, oldRoot := enrollAgent(t, admin, oldName)
 	startAgentWith(t, oldState, oldRoot)
-	t.Cleanup(func() { makeTreeRemovable(oldRoot) })
 	waitForNodeReady(t, admin, oldName)
 	old := findNode(t, admin, oldName)
 
 	newState, newRoot := enrollAgent(t, admin, newName)
 	startAgentWith(t, newState, newRoot)
-	// The restoration pins a read-only Resource cache; make it removable.
-	t.Cleanup(func() { makeTreeRemovable(newRoot) })
 	waitForNodeReady(t, admin, newName)
 	replacement := findNode(t, admin, newName)
 

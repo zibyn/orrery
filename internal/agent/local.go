@@ -254,7 +254,6 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 			{Name: nodeproto.CapGPUMemoryLimit, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapDiskCapacityQuota, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapArbitraryMounts, Value: nodeproto.ValueUnsupported},
-			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueUnsupported},
 			// No netns, so Egress Rules do not apply (ADR-0026).
 			{Name: nodeproto.CapEgressPolicy, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapSandboxLinks, Value: nodeproto.ValueUnsupported},
@@ -263,11 +262,13 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 }
 
 // localExecEnv adds the Local-only variables to the common Exec environment:
-// the host Workspace path and the cards CUDA may see (node-protocol.md). A
-// GPU-less Exec still names the variable as empty.
-func localExecEnv(caller map[string]string, basePath, binDir, workspace string, gpus []string) map[string]string {
+// the host Workspace path, the Resource symlink directory and the cards CUDA
+// may see (node-protocol.md, runtime.md §10). A GPU-less Exec still names
+// the variable as empty.
+func localExecEnv(caller map[string]string, basePath, binDir, workspace, resources string, gpus []string) map[string]string {
 	env := execEnv(caller, basePath, binDir)
 	env["ORRERY_WORKSPACE"] = workspace
+	env["ORRERY_RESOURCES"] = resources
 	env["CUDA_VISIBLE_DEVICES"] = strings.Join(gpus, ",")
 	return env
 }
@@ -576,7 +577,7 @@ func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) erro
 		return err
 	}
 	return d.r.deliverExecSpec(ctx, sandboxID, execID, dir, cmd,
-		localExecEnv(cmd.Env, os.Getenv("PATH"), d.binDir, workspace, gpus),
+		localExecEnv(cmd.Env, os.Getenv("PATH"), d.binDir, workspace, sandboxResourcesPath(d.r.dataRoot, sandboxID), gpus),
 		cwd)
 }
 

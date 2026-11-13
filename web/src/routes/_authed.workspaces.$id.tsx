@@ -29,7 +29,7 @@ import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
-import { causeLabel, conditionLabel, workspaceKindLabel } from '@/lib/labels'
+import { causeLabel, workspaceKindLabel } from '@/lib/labels'
 import { workspacePollInterval, workspaceSandboxIds } from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
@@ -189,7 +189,7 @@ function WorkspaceDetailPage() {
               </Detail>
               <Detail label={m.sandbox_conditions()}>
                 {current.conditions.length > 0
-                  ? current.conditions.map(conditionLabel).join(', ')
+                  ? current.conditions.join(', ')
                   : '—'}
               </Detail>
               <Detail label={m.snapshot_created()}>{formatTimestamp(current.created_at)}</Detail>

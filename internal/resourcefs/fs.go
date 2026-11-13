@@ -1,6 +1,8 @@
 package resourcefs
 
 import (
+	"errors"
+	"io/fs"
 	"log/slog"
 	"sync/atomic"
 	"syscall"
@@ -172,7 +174,14 @@ func (f *rawFS) Read(_ <-chan struct{}, in *fuse.ReadIn, dest []byte) (fuse.Read
 		}
 		from := pos - int64(index)*manifest.BlockSize
 		chunk := min(end-pos, ref.length-from)
-		if err := f.store.readBlock(ref, from, dest[done:done+int(chunk)]); err != nil {
+		err := f.store.readBlock(ref, from, dest[done:done+int(chunk)])
+		if errors.Is(err, fs.ErrNotExist) {
+			// The Agent's eviction removed it after ensure; fetch it again.
+			if err = f.store.ensure(ref, f.hint(in.NodeId, index)); err == nil {
+				err = f.store.readBlock(ref, from, dest[done:done+int(chunk)])
+			}
+		}
+		if err != nil {
 			f.log.Error("read cached Resource block", "path", n.entry.Path, "block", index, "error", err)
 			return nil, fuse.EIO
 		}

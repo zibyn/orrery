@@ -2,85 +2,110 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
-	"github.com/zibyn/orrery/internal/castransfer"
-	"github.com/zibyn/orrery/internal/manifest"
+	"github.com/zibyn/orrery/internal/resourcefs"
 )
 
-// resourceMountRoot is where every Resource version tree appears in the
+// resourceMountRoot is where every Resource version appears in a containerd
 // Sandbox (runtime.md §2).
 const resourceMountRoot = "/resources"
 
-// maxResourceManifestBytes matches the Control Plane's manifest body bound.
-const maxResourceManifestBytes = 256 << 20
-
-// resourceFetchBackoff is the Resource fetch retry schedule (defaults.md:
+// resourceFetchBackoff is the Resource mount retry schedule (defaults.md:
 // 1, 2, 4, 8, 16 seconds, the same group as Workspace provisioning). A var so
 // tests can shorten it.
 var resourceFetchBackoff = []time.Duration{
 	time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
 }
 
-// resourceTreeMu serializes tree assembly and eviction. Two Sandboxes mounting
-// the same version may create it concurrently; the tree is built in a temporary
-// directory and renamed, so one build wins. Eviction takes it while removing a
-// tree and reclaiming objects, so a download cannot lose its object between the
-// write and the hard link.
-var resourceTreeMu sync.Mutex
-
-// resourceHTTPClient fetches presigned URLs. The URL lifetime is an hour, so a
-// long single-file download needs more than the default client timeout.
-var resourceHTTPClient = &http.Client{Timeout: 10 * time.Minute}
-
-// resourceCache is the Node's on-disk Content Addressable cache
-// (runtime.md §11):
-//
-//	cache/objects/<sha256>/data  mode 0444
-//	cache/objects/<sha256>/exec  mode 0555
-//	cache/versions/<address>/... version tree built from hard links
-//
-// Keying the object by (sha256, executable bit) is what lets a tree hard-link
-// it: a hard link shares the inode, hence the mode, so the two variants cannot
-// be one file.
-type resourceCache struct {
-	root string
+// resourceMounter is orrery-resourcefs as the Agent drives it; tests fake it.
+type resourceMounter interface {
+	Mount(ctx context.Context, address string) error
+	Unmount(ctx context.Context, address string) error
+	Status(ctx context.Context) ([]string, error)
+	SelfTest(ctx context.Context) error
 }
 
-func newResourceCache(dataRoot string) *resourceCache {
-	return &resourceCache{root: filepath.Join(dataRoot, "cache")}
+// resourceVersionPath is the daemon's mount of one version (runtime.md §11).
+func resourceVersionPath(dataRoot, address string) string {
+	return filepath.Join(dataRoot, "resources", address)
 }
 
-func (c *resourceCache) objectPath(digest string, executable bool) string {
-	variant := "data"
-	if executable {
-		variant = "exec"
+// blockCachePath is the daemon's block cache, which eviction shares.
+func blockCachePath(dataRoot string) string { return filepath.Join(dataRoot, "cache", "blocks") }
+
+// sandboxResourcesPath holds one symlink per <mount> to its version mount. On
+// Local it is the Sandbox's ORRERY_RESOURCES (runtime.md §10); on every Node
+// it is the record that rebuilds the reference counts after a restart.
+func sandboxResourcesPath(dataRoot string, id uuid.UUID) string {
+	return filepath.Join(sandboxPath(dataRoot, id), "resources")
+}
+
+// resourceRefs counts which Sandboxes (and builds) hold each version. A
+// version is unmounted when its last holder stops. Per-address locks order a
+// mount against an unmount of the same version without serializing the Node.
+type resourceRefs struct {
+	mu      sync.Mutex
+	holders map[string][]string // holder id → addresses
+	locks   map[string]*sync.Mutex
+}
+
+func (refs *resourceRefs) hold(id string, addresses []string) {
+	refs.mu.Lock()
+	defer refs.mu.Unlock()
+	if refs.holders == nil {
+		refs.holders = map[string][]string{}
 	}
-	return filepath.Join(c.root, "objects", digest, variant)
+	refs.holders[id] = addresses
 }
 
-func (c *resourceCache) versionPath(address string) string {
-	return filepath.Join(c.root, "versions", address)
+// release drops a holder and returns the addresses it held.
+func (refs *resourceRefs) release(id string) []string {
+	refs.mu.Lock()
+	defer refs.mu.Unlock()
+	addresses := refs.holders[id]
+	delete(refs.holders, id)
+	return addresses
 }
 
-func objectMode(executable bool) os.FileMode {
-	if executable {
-		return 0o555
+func (refs *resourceRefs) used(address string) bool {
+	refs.mu.Lock()
+	defer refs.mu.Unlock()
+	for _, addresses := range refs.holders {
+		for _, held := range addresses {
+			if held == address {
+				return true
+			}
+		}
 	}
-	return 0o444
+	return false
+}
+
+func (refs *resourceRefs) lock(address string) func() {
+	refs.mu.Lock()
+	if refs.locks == nil {
+		refs.locks = map[string]*sync.Mutex{}
+	}
+	l, ok := refs.locks[address]
+	if !ok {
+		l = &sync.Mutex{}
+		refs.locks[address] = l
+	}
+	refs.mu.Unlock()
+	l.Lock()
+	return l.Unlock
 }
 
 // retryResourceFetch runs fetch until it succeeds, sleeping the schedule after
@@ -103,300 +128,166 @@ func retryResourceFetch(ctx context.Context, backoff []time.Duration, fetch func
 	}
 }
 
-// ensureResourceVersion downloads whatever the cache lacks and returns the
-// version tree path. A complete tree is reused as is, including after an Agent
-// restart, so a restarted Sandbox mounts the version pinned at create time.
-func (r *Runtime) ensureResourceVersion(ctx context.Context, address string) (string, error) {
-	cache := newResourceCache(r.dataRoot)
-	tree := cache.versionPath(address)
-	if _, err := os.Stat(tree); err == nil {
-		// The tree's mtime is its LRU clock for eviction (runtime.md §11);
-		// mounting it counts as a use.
-		now := time.Now()
-		_ = os.Chtimes(tree, now, now)
-		return tree, nil
-	} else if !os.IsNotExist(err) {
-		return "", err
-	}
-
-	// Fetch and assembly hold the cache lock together: eviction runs under the
-	// same lock, so it cannot reclaim a just-downloaded object before its hard
-	// link exists (runtime.md §11). A concurrent caller that built the tree
-	// while this one waited is reused.
-	resourceTreeMu.Lock()
-	defer resourceTreeMu.Unlock()
-	if _, err := os.Stat(tree); err == nil {
-		return tree, nil
-	}
-
-	var m manifest.Manifest
-	err := retryResourceFetch(ctx, resourceFetchBackoff, func() error {
-		fetched, err := r.fetchResourceManifest(ctx, address)
-		if err != nil {
-			return err
-		}
-		m = fetched
-		return r.fetchResourceObjects(ctx, cache, m)
-	})
-	if err != nil {
-		return "", err
-	}
-	return cache.assembleTree(address, m)
-}
-
-// fetchResourceManifest reads the version manifest through a Presign GET
-// (node-protocol.md: Nodes never reach the object store directly).
-func (r *Runtime) fetchResourceManifest(ctx context.Context, address string) (manifest.Manifest, error) {
-	resp, err := r.presign(ctx, &nodev1.PresignRequest{Manifests: []string{address}, Method: "GET"})
-	if err != nil {
-		return manifest.Manifest{}, err
-	}
-	if len(resp.GetUrls()) != 1 {
-		return manifest.Manifest{}, fmt.Errorf("presign returned %d manifest URLs", len(resp.GetUrls()))
-	}
-	data, err := downloadResource(ctx, resp.GetUrls()[0], maxResourceManifestBytes)
-	if err != nil {
-		return manifest.Manifest{}, err
-	}
-	var m manifest.Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return manifest.Manifest{}, fmt.Errorf("decode manifest %s: %w", address, err)
-	}
-	return manifest.Normalize(m)
-}
-
-type objectVariant struct {
-	digest     string
-	executable bool
-}
-
-// fetchResourceObjects downloads every missing (sha256, executable) object,
-// verifying the digest on the way to disk.
-func (r *Runtime) fetchResourceObjects(ctx context.Context, cache *resourceCache, m manifest.Manifest) error {
-	needed := make(map[objectVariant]struct{})
-	for _, entry := range m.Entries {
-		if entry.Type == manifest.TypeFile {
-			needed[objectVariant{digest: entry.SHA256, executable: entry.Executable}] = struct{}{}
-		}
-	}
-	digests := make(map[string][]objectVariant)
-	for key := range needed {
-		if _, err := os.Stat(cache.objectPath(key.digest, key.executable)); err == nil {
-			continue
-		}
-		digests[key.digest] = append(digests[key.digest], key)
-	}
-	if len(digests) == 0 {
-		return nil
-	}
-	sha := make([]string, 0, len(digests))
-	for digest := range digests {
-		sha = append(sha, digest)
-	}
-	sort.Strings(sha)
-	resp, err := r.presign(ctx, &nodev1.PresignRequest{Sha256: sha, Method: "GET"})
-	if err != nil {
-		return err
-	}
-	if len(resp.GetUrls()) != len(sha) {
-		return fmt.Errorf("presign returned %d object URLs, want %d", len(resp.GetUrls()), len(sha))
-	}
-	for i, digest := range sha {
-		if err := downloadObject(ctx, resp.GetUrls()[i], cache, digest, digests[digest]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// downloadObject streams one object once and installs every missing variant.
-// Variants differ only in mode, so a second variant is a copy of the same
-// bytes rather than a hard link.
-func downloadObject(ctx context.Context, url string, cache *resourceCache, digest string, variants []objectVariant) error {
-	dir := filepath.Dir(cache.objectPath(digest, false))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp := filepath.Join(dir, ".tmp-"+digest)
-	if err := downloadVerified(ctx, url, tmp, digest); err != nil {
-		return err
-	}
-	if len(variants) == 1 {
-		// The common case: install the downloaded file directly, read-only.
-		mode := objectMode(variants[0].executable)
-		if err := os.Chmod(tmp, mode); err != nil {
-			os.Remove(tmp) //nolint:errcheck // best effort
-			return err
-		}
-		if err := os.Rename(tmp, cache.objectPath(variants[0].digest, variants[0].executable)); err != nil {
-			os.Remove(tmp) //nolint:errcheck // best effort
-			return err
-		}
-		return nil
-	}
-	// Both modes are needed; they cannot share an inode, so copy the bytes.
-	defer os.Remove(tmp) //nolint:errcheck // best effort
-	for _, variant := range variants {
-		if err := copyWithMode(tmp, cache.objectPath(variant.digest, variant.executable), objectMode(variant.executable)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// downloadVerified writes url to path and rejects bytes whose SHA-256 differs
-// from the manifest's digest.
-func downloadVerified(ctx context.Context, url, path, want string) error {
-	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	err = castransfer.Get(ctx, resourceHTTPClient, url, out, want, manifest.MaxFileSize)
-	if closeErr := out.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		os.Remove(path) //nolint:errcheck // best effort
-	}
-	return err
-}
-
-func downloadResource(ctx context.Context, url string, limit int64) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := resourceHTTPClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch manifest: %s", response.Status)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, errors.New("manifest is too large")
-	}
-	return data, nil
-}
-
-func copyWithMode(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close() //nolint:errcheck // read-only
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close() //nolint:errcheck // report the copy error instead
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	return os.Chmod(dst, mode)
-}
-
-// assembleTree builds the version tree from hard links in a temporary
-// directory and renames it into place. The caller has already downloaded every
-// referenced object and holds resourceTreeMu.
-func (c *resourceCache) assembleTree(address string, m manifest.Manifest) (string, error) {
-	final := c.versionPath(address)
-	if _, err := os.Stat(final); err == nil {
-		return final, nil
-	} else if !os.IsNotExist(err) {
-		return "", err
-	}
-	versionsDir := filepath.Join(c.root, "versions")
-	if err := os.MkdirAll(versionsDir, 0o755); err != nil {
-		return "", err
-	}
-	tmp, err := os.MkdirTemp(versionsDir, ".tmp-")
-	if err != nil {
-		return "", err
-	}
-	cleanup := func() { os.RemoveAll(tmp) } //nolint:errcheck // best effort
-	for _, entry := range m.Entries {
-		target := filepath.Join(tmp, filepath.FromSlash(entry.Path))
-		switch entry.Type {
-		case manifest.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				cleanup()
-				return "", err
-			}
-		case manifest.TypeFile:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				cleanup()
-				return "", err
-			}
-			if err := os.Link(c.objectPath(entry.SHA256, entry.Executable), target); err != nil {
-				cleanup()
-				return "", err
-			}
-		case manifest.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				cleanup()
-				return "", err
-			}
-			if err := os.Symlink(entry.Target, target); err != nil {
-				cleanup()
-				return "", err
-			}
-		}
-	}
-	// Files are done; make the directories read-only from the deepest up.
-	var dirs []string
-	if err := filepath.WalkDir(tmp, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			dirs = append(dirs, path)
-		}
-		return nil
-	}); err != nil {
-		cleanup()
-		return "", err
-	}
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
-	for _, dir := range dirs {
-		if err := os.Chmod(dir, 0o555); err != nil {
-			cleanup()
-			return "", err
-		}
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		cleanup()
-		return "", err
-	}
-	return final, nil
-}
-
 // validResourceMount keeps the mount one path segment. The Control Plane
 // validates this too; the Agent does not trust it blindly.
 func validResourceMount(mount string) bool {
 	return mount != "" && mount != "." && mount != ".." && !strings.ContainsAny(mount, "/\x00")
 }
 
-// resourceMounts fetches every version and returns its read-only bind mount.
-func (r *Runtime) resourceMounts(ctx context.Context, resources []resourceMount) ([]specs.Mount, string, error) {
+// mountResources has the daemon mount every version the Sandbox uses and
+// records them as <sandbox>/resources/<mount> symlinks. Only the manifest is
+// read now; objects are fetched when read (ADR-0030).
+func (r *Runtime) mountResources(ctx context.Context, id uuid.UUID, resources []resourceMount) (string, error) {
+	addresses := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		if !validResourceMount(resource.mount) || !validAddress(resource.address) {
+			return "runtime_create_failed", fmt.Errorf("invalid Resource mount %q@%q", resource.mount, resource.address)
+		}
+		addresses = append(addresses, resource.address)
+	}
+	if len(resources) > 0 && r.resourcefs == nil {
+		return "resource_fetch_failed", errors.New("orrery-resourcefs is not configured")
+	}
+	r.resourceRefs.hold(id.String(), addresses)
+	for _, address := range addresses {
+		unlock := r.resourceRefs.lock(address)
+		err := retryResourceFetch(ctx, resourceFetchBackoff, func() error {
+			return r.resourcefs.Mount(ctx, address)
+		})
+		unlock()
+		if err != nil {
+			r.releaseResources(context.WithoutCancel(ctx), id)
+			return "resource_fetch_failed", fmt.Errorf("mount Resource %s: %w", address, err)
+		}
+	}
+	dir := sandboxResourcesPath(r.dataRoot, id)
+	if err := os.RemoveAll(dir); err != nil {
+		return "runtime_create_failed", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "runtime_create_failed", err
+	}
+	for _, resource := range resources {
+		if err := os.Symlink(resourceVersionPath(r.dataRoot, resource.address), filepath.Join(dir, resource.mount)); err != nil {
+			return "runtime_create_failed", err
+		}
+	}
+	return "", nil
+}
+
+// releaseResources drops the Sandbox's hold, unmounts every version no other
+// holder uses and removes the symlink directory.
+func (r *Runtime) releaseResources(ctx context.Context, id uuid.UUID) {
+	for _, address := range r.resourceRefs.release(id.String()) {
+		r.unmountUnused(ctx, address)
+	}
+	if err := os.RemoveAll(sandboxResourcesPath(r.dataRoot, id)); err != nil {
+		slog.Warn("remove Sandbox Resource links", "sandbox_id", id, "error", err)
+	}
+}
+
+func (r *Runtime) unmountUnused(ctx context.Context, address string) {
+	unlock := r.resourceRefs.lock(address)
+	defer unlock()
+	if r.resourceRefs.used(address) || r.resourcefs == nil {
+		return
+	}
+	if err := r.resourcefs.Unmount(ctx, address); err != nil {
+		slog.Warn("unmount Resource version", "address", address, "error", err)
+	}
+}
+
+// rebuildResourceRefs restores the holds of the Sandboxes this Agent adopted
+// after a restart from their symlink records, then unmounts what nothing
+// holds any more. Versions already mounted are not mounted again.
+func (r *Runtime) rebuildResourceRefs(ctx context.Context) {
+	for id := range r.managedSnapshot() {
+		sandboxID, err := uuid.Parse(id)
+		if err != nil {
+			continue
+		}
+		if addresses := readResourceLinks(r.dataRoot, sandboxID); len(addresses) > 0 {
+			r.resourceRefs.hold(id, addresses)
+		}
+	}
+	if r.resourcefs == nil {
+		return
+	}
+	mounted, err := r.resourcefs.Status(ctx)
+	if err != nil {
+		slog.Warn("list Resource mounts", "error", err)
+		return
+	}
+	for _, address := range mounted {
+		r.unmountUnused(ctx, address)
+	}
+}
+
+func readResourceLinks(dataRoot string, id uuid.UUID) []string {
+	entries, err := os.ReadDir(sandboxResourcesPath(dataRoot, id))
+	if err != nil {
+		return nil
+	}
+	var addresses []string
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join(sandboxResourcesPath(dataRoot, id), entry.Name()))
+		if err == nil && validAddress(filepath.Base(target)) {
+			addresses = append(addresses, filepath.Base(target))
+		}
+	}
+	return addresses
+}
+
+func validAddress(address string) bool {
+	return len(address) == 64 && strings.Trim(address, "0123456789abcdef") == ""
+}
+
+// resourceBindMounts bind-mounts each version read-only at /resources/<mount>.
+func (r *Runtime) resourceBindMounts(resources []resourceMount) []specs.Mount {
 	mounts := make([]specs.Mount, 0, len(resources))
 	for _, resource := range resources {
-		if !validResourceMount(resource.mount) {
-			return nil, "runtime_create_failed", fmt.Errorf("invalid Resource mount %q", resource.mount)
-		}
-		tree, err := r.ensureResourceVersion(ctx, resource.address)
-		if err != nil {
-			return nil, "resource_fetch_failed", err
-		}
-		mounts = append(mounts, bindMount(tree, resourceMountRoot+"/"+resource.mount, "ro"))
+		mounts = append(mounts, bindMount(resourceVersionPath(r.dataRoot, resource.address), resourceMountRoot+"/"+resource.mount, "ro"))
 	}
-	return mounts, "", nil
+	return mounts
+}
+
+// servePresign answers orrery-resourcefs: its batches become Presign RPCs
+// (node-protocol.md), so the daemon never holds object-store credentials.
+func (r *Runtime) servePresign(ctx context.Context, socket string) {
+	l, err := resourcefs.ListenPresign(socket)
+	if err != nil {
+		slog.Error("listen for resourcefs presign requests", "socket", socket, "error", err)
+		return
+	}
+	resourcefs.ServePresign(ctx, l, presignFunc(func(ctx context.Context, objects, manifests []string) ([]string, error) {
+		resp, err := r.presign(ctx, &nodev1.PresignRequest{Sha256: objects, Manifests: manifests, Method: "GET"})
+		if err != nil {
+			return nil, err
+		}
+		return resp.GetUrls(), nil
+	}), slog.Default())
+}
+
+type presignFunc func(ctx context.Context, objects, manifests []string) ([]string, error)
+
+func (f presignFunc) Presign(ctx context.Context, objects, manifests []string) ([]string, error) {
+	return f(ctx, objects, manifests)
+}
+
+// removeLegacyResourceCache deletes the eager path's object cache and version
+// trees (before ADR-0030). Tree directories are 0555, so they are made
+// writable first.
+func removeLegacyResourceCache(dataRoot string) {
+	for _, dir := range []string{"objects", "versions"} {
+		path := filepath.Join(dataRoot, "cache", dir)
+		_ = filepath.WalkDir(path, func(p string, entry fs.DirEntry, err error) error {
+			if err == nil && entry.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			}
+			return nil
+		})
+		if err := os.RemoveAll(path); err != nil {
+			slog.Warn("remove the pre-ADR-0030 Resource cache", "path", path, "error", err)
+		}
+	}
 }

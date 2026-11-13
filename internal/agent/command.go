@@ -141,11 +141,6 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			if err := c.afterSelfCheck(); err != nil {
 				return err
 			}
-			if len(cmd.Resources) > 0 {
-				// The Control Plane maps this to the fetching_resources
-				// condition until running or failed (node-protocol.md).
-				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseFetchingResources, "")
-			}
 			cause, err := c.rt.createSandbox(c.ctx, &createSandboxSpec{
 				sandboxID:     sbID.String(),
 				generation:    cmd.Generation,

@@ -1,9 +1,13 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/zibyn/orrery/internal/manifest"
 	"github.com/zibyn/orrery/internal/objectstore"
@@ -118,5 +122,15 @@ func TestVerifyObjectsListsAMissingBlock(t *testing.T) {
 	present[blocks[1]] = true
 	if bad, _ := verifyObjects(manifest.FileObjects(m), head); len(bad) != 0 {
 		t.Fatalf("bad = %+v with every block present", bad)
+	}
+}
+
+// One Presign signs at most 1,000 objects; a larger batch is refused whole
+// before anything is looked up (node-protocol.md).
+func TestPresignRefusesMoreThan1000Objects(t *testing.T) {
+	n := &nodeService{s: &Server{}}
+	_, err := n.Presign(context.Background(), &nodev1.PresignRequest{Sha256: make([]string, 1001), Method: "GET"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Presign(1001) = %v, want InvalidArgument", err)
 	}
 }

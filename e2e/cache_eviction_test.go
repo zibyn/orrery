@@ -16,10 +16,10 @@ import (
 	"time"
 )
 
-// TestCacheEviction is the "cache-eviction" acceptance scenario (#90): a Node
-// below its disk watermark evicts LRU across version trees, local images and
-// BuildKit cache. Anything a Sandbox still references (including a stopped
-// one) survives.
+// TestCacheEviction is the "cache-eviction" acceptance scenario (#90, ADR-0030):
+// a Node below its disk watermark evicts LRU across Resource blocks, local
+// images and BuildKit cache. Blocks of a mounted version are evictable too and
+// are fetched again when read; an image a Sandbox references survives.
 func TestCacheEviction(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 20)
@@ -28,63 +28,28 @@ func TestCacheEviction(t *testing.T) {
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	first := startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
-	// Version trees are read-only by design; let TempDir cleanup remove them.
-	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	cli := newCLIRunner(t, admin)
 	name := fmt.Sprintf("evict-%d", suffix)
-	shared := []byte("shared by two versions\n")
-
-	// v1 and v2 share an object; v3 carries a unique one.
-	v1Src := t.TempDir()
-	writeTestFile(t, filepath.Join(v1Src, "shared.bin"), string(shared), 0o644)
-	writeTestFile(t, filepath.Join(v1Src, "a.txt"), "version one\n", 0o644)
+	content := fmt.Sprintf("read, evicted, read again %d\n", suffix)
+	src := t.TempDir()
+	writeTestFile(t, filepath.Join(src, "payload.txt"), content, 0o644)
 	var v1 resourceVersionView
-	mustJSON(t, cli.run(t, "", "resource", "push", v1Src, name), &v1)
+	mustJSON(t, cli.run(t, "", "resource", "push", src, name), &v1)
 	if v1.State != "ready" || v1.Address == nil {
 		t.Fatalf("v1 = %+v", v1)
 	}
 
-	// A live Sandbox pins v1.
+	// A running Sandbox mounts v1; reading the file caches its block.
 	a := createResourceSandboxVersion(t, admin, fmt.Sprintf("evict-live-%d", suffix), name, v1.ID)
 	defer deleteSandbox(t, admin, a.ID)
 	waitForSandboxState(t, admin, a.ID, "ready", 120*time.Second)
-
-	v2Src := t.TempDir()
-	writeTestFile(t, filepath.Join(v2Src, "shared.bin"), string(shared), 0o644)
-	writeTestFile(t, filepath.Join(v2Src, "b.txt"), "version two\n", 0o644)
-	var v2 resourceVersionView
-	mustJSON(t, cli.run(t, "", "resource", "push", v2Src, name), &v2)
-	if v2.State != "ready" || v2.Address == nil {
-		t.Fatalf("v2 = %+v", v2)
+	if got, _, code := execInSandbox(t, admin, a.ID, "cat", "/resources/data/payload.txt"); code != 0 || got != content {
+		t.Fatalf("first read = %q code %d", got, code)
 	}
-
-	// A stopped Sandbox still pins v2 (runtime.md §11).
-	b := createResourceSandboxVersion(t, admin, fmt.Sprintf("evict-stopped-%d", suffix), name, v2.ID)
-	defer deleteSandbox(t, admin, b.ID)
-	waitForSandboxState(t, admin, b.ID, "ready", 120*time.Second)
-	if status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+b.ID+"/stop", admin, nil); status != http.StatusAccepted {
-		t.Fatalf("stop pinned Sandbox: %d %s", status, data)
-	}
-	waitForSandboxState(t, admin, b.ID, "stopped", 60*time.Second)
-
-	v3Src := t.TempDir()
-	unique := []byte(fmt.Sprintf("unique to v3 %d\n", suffix))
-	writeTestFile(t, filepath.Join(v3Src, "unique.bin"), string(unique), 0o644)
-	var v3 resourceVersionView
-	mustJSON(t, cli.run(t, "", "resource", "push", v3Src, name), &v3)
-	if v3.State != "ready" || v3.Address == nil {
-		t.Fatalf("v3 = %+v", v3)
-	}
-
-	// A deleted Sandbox leaves its cache unreferenced. The Agent keyed the pins
-	// to the Sandbox's data-root record; with no "Sandbox deleted" command it
-	// retains that record, so the test drops it the way an operator would.
-	c := createResourceSandboxVersion(t, admin, fmt.Sprintf("evict-deleted-%d", suffix), name, v3.ID)
-	waitForSandboxState(t, admin, c.ID, "ready", 120*time.Second)
-	deleteSandbox(t, admin, c.ID)
-	if out, err := nodeShell("rm " + shellQuote(filepath.Join(dataRoot, "sandboxes", c.ID, "pinned.json"))); err != nil {
-		t.Fatalf("drop the deleted Sandbox's pin record: %v\n%s", err, out)
+	block := filepath.Join(dataRoot, "cache", "blocks", digestHex([]byte(content)))
+	if !pathExists(block) {
+		t.Fatalf("the read did not cache block %s", block)
 	}
 
 	// A local image from the platform registry that no Sandbox references, and
@@ -104,55 +69,31 @@ func TestCacheEviction(t *testing.T) {
 	pinnedImage := sandboxImage(t, a.ID)
 
 	// Restart with a watermark no disk can satisfy: eviction keeps running and
-	// the free-space check cannot stop it mid-pass. Pins live in the data root,
-	// so the running and stopped Sandboxes stay protected across the restart.
+	// the free-space check cannot stop it mid-pass. Image pins live in the data
+	// root, so the running Sandbox stays protected across the restart.
 	first.stop()
 	startAgentWith(t, state, dataRoot, "--disk-watermark", "0.99")
 
-	tree := func(version resourceVersionView) string {
-		return filepath.Join(dataRoot, "cache", "versions", *version.Address)
-	}
-	sharedDigest := digestHex(shared)
-	uniqueDigest := digestHex(unique)
-	objectPath := func(digest string) string { return filepath.Join(dataRoot, "cache", "objects", digest) }
-
 	deadline := time.Now().Add(180 * time.Second)
 	for {
-		if !pathExists(tree(v3)) && !imageExists(unreferencedImage) && !anyCacheEntry(t, newCache) {
+		if !pathExists(block) && !imageExists(unreferencedImage) && !anyCacheEntry(t, newCache) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("eviction did not finish: tree3=%v image=%v cache=%v",
-				pathExists(tree(v3)), imageExists(unreferencedImage), anyCacheEntry(t, newCache))
+			t.Fatalf("eviction did not finish: block=%v image=%v cache=%v",
+				pathExists(block), imageExists(unreferencedImage), anyCacheEntry(t, newCache))
 		}
 		time.Sleep(time.Second)
 	}
-
-	// Unreferenced: v3's tree and its uniquely linked object are gone.
-	if pathExists(tree(v3)) {
-		t.Fatal("unreferenced version tree survived eviction")
-	}
-	if pathExists(objectPath(uniqueDigest)) {
-		t.Fatal("unlinked object was not reclaimed with its last tree")
-	}
-	// Referenced: the running and stopped Sandboxes keep their trees and the
-	// object both trees hard-link.
-	for label, version := range map[string]resourceVersionView{"running": v1, "stopped": v2} {
-		if !pathExists(tree(version)) {
-			t.Fatalf("%s Sandbox's version tree was evicted", label)
-		}
-	}
-	if !pathExists(objectPath(sharedDigest)) {
-		t.Fatal("an object still linked by two trees was reclaimed")
+	// The mounted version still reads (from the page cache or a re-fetch).
+	if got, _, code := execInSandbox(t, admin, a.ID, "cat", "/resources/data/payload.txt"); code != 0 || got != content {
+		t.Fatalf("read after eviction = %q code %d", got, code)
 	}
 	// Images: the Node's unreferenced platform image is gone, the Sandbox
 	// image stays, and a host-owned (Docker Hub) image, the probe image on a
 	// containerd Node, is not the Node's to evict.
-	if imageExists(unreferencedImage) {
-		t.Fatal("unreferenced local image survived eviction")
-	}
 	if !imageExists(pinnedImage) {
-		t.Fatal("an image pinned by a running or stopped Sandbox was evicted")
+		t.Fatal("an image pinned by a running Sandbox was evicted")
 	}
 	hostImage := "docker.io/library/alpine:3.22"
 	if !imageExists(hostImage) {
@@ -160,14 +101,11 @@ func TestCacheEviction(t *testing.T) {
 	}
 
 	// The suite shares one User quota; a Sandbox this test leaves behind would
-	// starve later scenarios. The deferred deletes above run at return, but
-	// assert they complete while the eviction Agent is still up.
+	// starve later scenarios. The deferred delete runs at return, but assert
+	// it completes while the eviction Agent is still up.
 	deleteSandbox(t, admin, a.ID)
-	deleteSandbox(t, admin, b.ID)
-	for _, id := range []string{a.ID, b.ID} {
-		if status, data := call(t, http.MethodGet, "/api/v1/sandboxes/"+id, admin, nil); status != http.StatusNotFound {
-			t.Fatalf("Sandbox %s survived cleanup: %d %s", id, status, data)
-		}
+	if status, data := call(t, http.MethodGet, "/api/v1/sandboxes/"+a.ID, admin, nil); status != http.StatusNotFound {
+		t.Fatalf("Sandbox %s survived cleanup: %d %s", a.ID, status, data)
 	}
 }
 

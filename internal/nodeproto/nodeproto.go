@@ -73,10 +73,9 @@ func RequiredFor(provider string) []string {
 type SandboxPhase string
 
 const (
-	SandboxPhaseRunning           SandboxPhase = "running"
-	SandboxPhaseFetchingResources SandboxPhase = "fetching_resources"
-	SandboxPhaseGone              SandboxPhase = "gone"
-	SandboxPhaseCreateFailed      SandboxPhase = "create_failed"
+	SandboxPhaseRunning      SandboxPhase = "running"
+	SandboxPhaseGone         SandboxPhase = "gone"
+	SandboxPhaseCreateFailed SandboxPhase = "create_failed"
 )
 
 // WorkspacePhase is what a Node observes about a Workspace's storage.

@@ -28,6 +28,7 @@ import (
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/buildinfo"
 	"github.com/zibyn/orrery/internal/nodeproto"
+	"github.com/zibyn/orrery/internal/resourcefs"
 )
 
 const (
@@ -181,6 +182,13 @@ type RunOptions struct {
 	// host:port other Nodes dial (defaults.md).
 	MeshPort     int
 	MeshEndpoint string
+	// ResourceFSSocket is orrery-resourcefs's control socket and
+	// PresignSocket the one the Agent answers its presign requests on
+	// (runtime.md §11).
+	ResourceFSSocket string
+	PresignSocket    string
+	// resourceRefs counts Resource holders across Control streams.
+	resourceRefs *resourceRefs
 	// mesh is the started Node Mesh, filled by Run; nil without one.
 	mesh *mesh
 }
@@ -275,6 +283,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if err := PrepareDataRoot(opts.DataRoot); err != nil {
 		return err
 	}
+	removeLegacyResourceCache(opts.DataRoot)
+	if opts.ResourceFSSocket == "" {
+		opts.ResourceFSSocket = resourcefs.DefaultControlSocket
+	}
+	if opts.PresignSocket == "" {
+		opts.PresignSocket = resourcefs.DefaultPresignSocket
+	}
+	opts.resourceRefs = &resourceRefs{}
 	// runsc cannot execute the Supervisor from a tmpfs bind mount (runtime.md §9).
 	if opts.Isolation == IsolationRunsc && onTmpfs(filepath.Join(opts.DataRoot, "bin")) {
 		return fmt.Errorf("--isolation runsc needs a --data-root off tmpfs: %s is on tmpfs", opts.DataRoot)
@@ -373,6 +389,10 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	defer rt.driver.close()
 	rt.buildkit = opts.Buildkit
 	rt.mesh = opts.mesh
+	rt.resourcefs = resourcefs.Client{Socket: opts.ResourceFSSocket}
+	if opts.resourceRefs != nil {
+		rt.resourceRefs = opts.resourceRefs
+	}
 	creds, err := transportCredentials(opts.CAPath, server)
 	if err != nil {
 		return false, err
@@ -465,6 +485,9 @@ func runControlStream(ctx context.Context, conn *grpc.ClientConn, rt *Runtime, i
 		}
 	}()
 
+	// orrery-resourcefs reaches the object store only through this
+	// connection's Presign (runtime.md §11).
+	go rt.servePresign(streamCtx, opts.PresignSocket)
 	// An Agent restart must not look like a dead runtime: pick up containers
 	// this Node still runs.
 	go rt.adopt(streamCtx, func(sandboxID string, generation int64) {

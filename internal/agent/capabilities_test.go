@@ -29,7 +29,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 	}
 	for _, name := range []string{
 		"process_mount_namespace", "cpu_memory_pid_limits", "workspace_rw_mount",
-		"exec_supervisor", "gpu_device_visibility", "resource_mount",
+		"exec_supervisor", "gpu_device_visibility",
 		"kernel_isolation", "egress_policy", "sandbox_links",
 	} {
 		if values[name] != nodeproto.ValueEnforced {
@@ -46,9 +46,6 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 	for _, entry := range weak.Entries {
 		if entry.Name == "exec_supervisor" {
 			continue // the probe ran, so the Supervisor works
-		}
-		if entry.Name == nodeproto.CapResourceMount {
-			continue // the container adapter's bind mounts do not depend on the probe
 		}
 		if entry.Value != nodeproto.ValueUnsupported {
 			t.Errorf("%s = %q, want unsupported", entry.Name, entry.Value)

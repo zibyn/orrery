@@ -127,13 +127,10 @@ func (r *Runtime) buildSnapshot(ctx context.Context, cmd *nodev1.BuildSnapshot) 
 	}
 	defer os.RemoveAll(work) //nolint:errcheck // best effort
 
-	// Pin the build's inputs for cache eviction (runtime.md §11). The pin is
-	// released when the build ends, and by resumeBuilds after an interruption.
-	pins := sandboxPins{ImageDigest: cmd.GetBaseDigest()}
-	for _, buildCtx := range cmd.GetContexts() {
-		pins.Resources = append(pins.Resources, buildCtx.GetAddress())
-	}
-	if err := writeSandboxPins(sandboxDir, pins); err != nil {
+	// Pin the build's base image for cache eviction (runtime.md §11). The pin
+	// is released when the build ends, and by resumeBuilds after an
+	// interruption.
+	if err := writeSandboxPins(sandboxDir, sandboxPins{ImageDigest: cmd.GetBaseDigest()}); err != nil {
 		return fmt.Errorf("pin build inputs: %w", err)
 	}
 
@@ -247,15 +244,22 @@ func (r *Runtime) solveBuild(ctx context.Context, cmd *nodev1.BuildSnapshot, wor
 		"filename":      "Dockerfile",
 		"frontend.caps": "moby.buildkit.frontend.contexts+forward",
 	}
+	// Named contexts are read from the version mounts, held for the build
+	// (runtime.md §12). The caller validated the Sandbox id.
+	sandboxID, _ := uuid.Parse(cmd.GetSandboxId())
+	contexts := make([]resourceMount, 0, len(cmd.GetContexts()))
 	for _, buildCtx := range cmd.GetContexts() {
 		if !buildTokenPattern.MatchString(buildCtx.GetName()) {
 			return solveResult{}, fmt.Errorf("invalid context name %q", buildCtx.GetName())
 		}
-		tree, err := r.ensureResourceVersion(ctx, buildCtx.GetAddress())
-		if err != nil {
-			return solveResult{}, fmt.Errorf("fetch context %s: %w", buildCtx.GetName(), err)
-		}
-		mount, err := fsutil.NewFS(tree)
+		contexts = append(contexts, resourceMount{address: buildCtx.GetAddress(), mount: buildCtx.GetName()})
+	}
+	if _, err := r.mountResources(ctx, sandboxID, contexts); err != nil {
+		return solveResult{}, fmt.Errorf("mount build contexts: %w", err)
+	}
+	defer r.releaseResources(context.WithoutCancel(ctx), sandboxID)
+	for _, buildCtx := range cmd.GetContexts() {
+		mount, err := fsutil.NewFS(resourceVersionPath(r.dataRoot, buildCtx.GetAddress()))
 		if err != nil {
 			return solveResult{}, err
 		}

@@ -229,10 +229,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err := d.teardown(ctx, id); err != nil {
 		return "runtime_create_failed", err
 	}
-	resources, cause, err := d.r.resourceMounts(ctx, cmd.resources)
-	if err != nil {
-		return cause, err
-	}
+	resources := d.r.resourceBindMounts(cmd.resources)
 	if _, err = d.setupNetwork(id, sandboxPath(d.r.dataRoot, id), policy, cmd.linkTarget); err == nil {
 		err = d.applyNetwork(ctx)
 	}

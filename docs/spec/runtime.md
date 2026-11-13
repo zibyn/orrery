@@ -138,7 +138,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 
 ADR-0030。Resource 一律懒加载：创建时只读 manifest，对象在读到时才拉取。
 
-- **守护进程**：`orrery-resourcefs`，Agent 部署包里的 systemd 服务（ADR-0028），不随 Agent 重启。每个 ResourceVersion 在 Node 上只挂一个 FUSE 实例，挂在 `<data-root>/resources/<address>`；Agent 再把它只读 bind mount 到容器的 `/resources/<mount>`。`<mount>` 是单段名字，默认取 Resource 名。按引用计数：最后一个引用该版本的 Sandbox（含 stopped）删除后卸载。
+- **守护进程**：`orrery-resourcefs`，Agent 部署包里的 systemd 服务（ADR-0028），不随 Agent 重启。每个 ResourceVersion 在 Node 上只挂一个 FUSE 实例，挂在 `<data-root>/resources/<address>`；Agent 再把它只读 bind mount 到容器的 `/resources/<mount>`。`<mount>` 是单段名字，默认取 Resource 名。按引用计数：最后一个引用该版本的 Sandbox 停止（`StopSandbox`，停止和删除共用它）后卸载，再启动时 `CreateSandbox` 重新挂载；守护进程把 manifest 缓存在 `<data-root>/cache/manifests/<address>`，重新挂载不必再读对象存储。Agent 不知道一个已停止的 Sandbox 何时被删除，所以不按删除计数。Agent 重启后，从接管的 Sandbox 的 `<data-root>/sandboxes/<id>/resources/` 符号链接重建引用计数，并卸载不再被引用的挂载。
 - **目录树**：按 manifest 在内存里建。nodeid 取所有路径（文件和目录）排序后的位置，根为 1；目录项偏移也取排序位置；文件句柄没有状态。属性、目录项和页缓存都永不过期，因为版本不可变。
 - **创建**：`CreateSandbox` 只带 `{address, mount}`。Agent 让守护进程挂载该版本，守护进程经 Agent 的 `Presign` 读 manifest。读不到时按 Workspace provisioning 那组退避重试（`defaults.md`），用尽后以 `create_failed/resource_fetch_failed` 上报，Sandbox 以 `failed` 结束。
 - **读取**：读取、缓存和校验的单位是块。不超过 4 MiB 的文件是一个块；更大的文件按 manifest 的 `blocks`（`api.md` §3）。ADR-0030 之前发布的版本里，大文件没有 `blocks`，按区间读整个对象，不做按块校验。

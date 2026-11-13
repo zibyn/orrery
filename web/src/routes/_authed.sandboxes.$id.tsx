@@ -33,7 +33,6 @@ import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import {
   causeLabel,
-  conditionLabel,
   idleStopLabel,
   runtimeLabel,
   workspaceModeLabel,
@@ -224,7 +223,7 @@ function SandboxDetailPage() {
               )}
               {current.conditions.length > 0 && (
                 <Detail label={m.sandbox_conditions()}>
-                  {current.conditions.map(conditionLabel).join(', ')}
+                  {current.conditions.join(', ')}
                 </Detail>
               )}
               <Detail label="CPU">{current.cpu}</Detail>

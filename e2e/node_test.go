@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -197,7 +198,54 @@ func runAgentCommand(t *testing.T, args ...string) *exec.Cmd {
 	if !hasRoot {
 		args = append(args, "--data-root", t.TempDir())
 	}
+	for i, arg := range args {
+		if arg == "--data-root" && i+1 < len(args) {
+			control, presign := ensureResourceFS(t, args[i+1])
+			args = append(args, "--resourcefs-socket", control, "--presign-socket", presign)
+			break
+		}
+	}
 	return exec.Command(agentPath(t), args...)
+}
+
+var (
+	resourceFSMu      sync.Mutex
+	resourceFSDaemons = map[string]bool{}
+)
+
+// ensureResourceFS runs one orrery-resourcefs per data root, as install.sh
+// runs one per Node (runtime.md §11). It outlives Agent restarts within the
+// test; its mounts are detached when the test ends.
+func ensureResourceFS(t *testing.T, dataRoot string) (control, presign string) {
+	t.Helper()
+	control, presign = filepath.Join(dataRoot, "rfs.sock"), filepath.Join(dataRoot, "presign.sock")
+	resourceFSMu.Lock()
+	defer resourceFSMu.Unlock()
+	if resourceFSDaemons[dataRoot] {
+		return control, presign
+	}
+	cmd := exec.Command(agentPath(t), "resourcefs", "--data-root", dataRoot, "--socket", control, "--presign-socket", presign)
+	log := &lockedBuffer{}
+	cmd.Stdout, cmd.Stderr = log, log
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start resourcefs: %v", err)
+	}
+	resourceFSDaemons[dataRoot] = true
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		mounts, _ := filepath.Glob(filepath.Join(dataRoot, "resources", "*"))
+		for _, mount := range mounts {
+			_ = syscall.Unmount(mount, syscall.MNT_DETACH)
+		}
+		resourceFSMu.Lock()
+		delete(resourceFSDaemons, dataRoot)
+		resourceFSMu.Unlock()
+		if t.Failed() {
+			t.Logf("resourcefs log:\n%s", log.String())
+		}
+	})
+	return control, presign
 }
 
 func agentPath(t *testing.T) string {

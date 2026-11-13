@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,13 +46,13 @@ func TestContainerdImageEviction(t *testing.T) {
 func TestEvictionLRUOrder(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	candidates := []evictionCandidate{
-		{kind: evictTree, key: "tree-new", lastUsed: now},
+		{kind: evictBlock, key: "block-new", lastUsed: now},
 		{kind: evictImage, key: "image-oldest", lastUsed: now.Add(-3 * time.Hour)},
-		{kind: evictTree, key: "tree-old", lastUsed: now.Add(-2 * time.Hour)},
+		{kind: evictBlock, key: "block-old", lastUsed: now.Add(-2 * time.Hour)},
 		{kind: evictImage, key: "image-new", lastUsed: now.Add(-time.Hour)},
 	}
 	sortEvictionCandidates(candidates)
-	want := []string{"image-oldest", "tree-old", "image-new", "tree-new"}
+	want := []string{"image-oldest", "block-old", "image-new", "block-new"}
 	for i, key := range want {
 		if candidates[i].key != key {
 			t.Fatalf("candidate %d = %q, want %q (order %+v)", i, candidates[i].key, key, candidates)
@@ -61,26 +62,51 @@ func TestEvictionLRUOrder(t *testing.T) {
 
 // TestSandboxPinsSurviveStop is the retention half of eviction: the pins live
 // in the Sandbox's data-root record, so a stopped Sandbox still protects its
-// version trees and image after the Agent restarts.
+// image after the Agent restarts.
 func TestSandboxPinsSurviveStop(t *testing.T) {
 	root := t.TempDir()
 	sandboxDir := filepath.Join(root, "sandboxes", uuid.NewString())
 	split := "sha256:" + "abcdef"
 	if err := writeSandboxPins(sandboxDir, sandboxPins{
 		ImageDigest: "127.0.0.1:15000/snapshots/x@" + split,
-		Resources:   []string{"address-v1", "address-v2"},
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if images := loadImagePins(root); !images[split] {
+		t.Fatalf("image %q is not pinned: %v", split, images)
+	}
+}
 
-	trees, images := loadNodePins(root)
-	for _, address := range []string{"address-v1", "address-v2"} {
-		if !trees[address] {
-			t.Fatalf("tree %q is not pinned: %v", address, trees)
+// TestBlockCandidates: every cached block is a candidate, by its mtime, even
+// one of a mounted version; partial downloads are not (runtime.md §11).
+func TestBlockCandidates(t *testing.T) {
+	root := t.TempDir()
+	blocks := blockCachePath(root)
+	if err := os.MkdirAll(blocks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	for _, name := range []string{"aaaa", "bbbb", ".tmp-123"} {
+		path := filepath.Join(blocks, name)
+		if err := os.WriteFile(path, []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if !images[split] {
-		t.Fatalf("image %q is not pinned: %v", split, images)
+	r := newRuntime(ProviderLocal, root, "node")
+	var got []string
+	for _, candidate := range r.evictionCandidates(context.Background(), nil) {
+		if candidate.kind == evictBlock {
+			got = append(got, filepath.Base(candidate.key))
+			if !candidate.lastUsed.Equal(old) || candidate.size != 4 {
+				t.Fatalf("candidate %+v", candidate)
+			}
+		}
+	}
+	if strings.Join(got, ",") != "aaaa,bbbb" {
+		t.Fatalf("block candidates = %v", got)
 	}
 }
 
@@ -119,43 +145,5 @@ func TestImagePinnedByDigest(t *testing.T) {
 	}
 	if imagePinned(pins, cachedImage{ID: "sha256:other", RepoDigests: []string{"a/b@sha256:other"}}) {
 		t.Fatal("an unrelated image is pinned")
-	}
-}
-
-// TestReclaimObjects is tree -> object reclamation (runtime.md §11): an object
-// is kept while a version tree hard-links it and removed once the last tree is
-// gone.
-func TestReclaimObjects(t *testing.T) {
-	root := t.TempDir()
-	cache := newResourceCache(root)
-	object := cache.objectPath("aaaa", false)
-	if err := os.MkdirAll(filepath.Dir(object), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(object, []byte("payload"), 0o444); err != nil {
-		t.Fatal(err)
-	}
-	tree := cache.versionPath("address")
-	if err := os.MkdirAll(tree, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(object, filepath.Join(tree, "payload")); err != nil {
-		t.Fatal(err)
-	}
-
-	cache.reclaimObjects()
-	if _, err := os.Stat(object); err != nil {
-		t.Fatalf("a hard-linked object was reclaimed: %v", err)
-	}
-
-	if err := removeTree(tree); err != nil {
-		t.Fatalf("remove tree: %v", err)
-	}
-	cache.reclaimObjects()
-	if _, err := os.Stat(object); !os.IsNotExist(err) {
-		t.Fatalf("an unlinked object survived reclamation (stat err = %v)", err)
-	}
-	if entries, err := os.ReadDir(filepath.Dir(object)); err == nil && len(entries) != 0 {
-		t.Fatalf("empty object directory was not removed: %v", entries)
 	}
 }

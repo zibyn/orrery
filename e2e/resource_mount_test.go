@@ -27,7 +27,7 @@ type resourceVersionView struct {
 // (#86): a pushed directory is mounted read-only at /resources/<mount>, the
 // content is byte-identical, writes fail, a later publish is invisible to the
 // running Sandbox, and a restart still mounts the version pinned at create
-// time. Two versions that share a file share one cached object.
+// time. Two versions that share a file share one cached block.
 func TestResourceUploadMount(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
@@ -36,9 +36,6 @@ func TestResourceUploadMount(t *testing.T) {
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
-	// The version trees are read-only by design; let TempDir's cleanup remove
-	// them.
-	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	cli := newCLIRunner(t, admin)
 	name := fmt.Sprintf("mounted-%d", suffix)
@@ -111,8 +108,8 @@ func TestResourceUploadMount(t *testing.T) {
 		t.Fatalf("restarted Sandbox saw %q code %d, want the pinned %q", got, code, helloV1)
 	}
 
-	// A second Sandbox pinned to v2 makes the Node cache both trees. The file
-	// both versions share is one stored object, hard-linked into both trees.
+	// A second Sandbox pinned to v2 mounts the other version. The file both
+	// versions share is one cached block (runtime.md §11).
 	status, data = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
 		"name":      fmt.Sprintf("mount-v2-%d", suffix),
 		"cpu":       0.5,
@@ -131,37 +128,25 @@ func TestResourceUploadMount(t *testing.T) {
 		t.Fatalf("v2 Sandbox saw %q code %d, want %q", got, code, helloV2)
 	}
 
+	if got, _, code := execInSandbox(t, admin, sb2.ID, "cat", "/resources/data/nested/data.bin"); code != 0 || got != string(nested) {
+		t.Fatalf("v2 nested file = %q code %d", got, code)
+	}
+	if mode, _, code := execInSandbox(t, admin, sb2.ID, "stat", "-c", "%a", "/resources/data/bin/run.sh"); code != 0 || strings.TrimSpace(mode) != "555" {
+		t.Fatalf("run.sh mode = %q code %d, want 555", mode, code)
+	}
 	sum := sha256.Sum256(nested)
-	digest := hex.EncodeToString(sum[:])
-	cacheObject := filepath.Join(dataRoot, "cache", "objects", digest)
+	block := filepath.Join(dataRoot, "cache", "blocks", hex.EncodeToString(sum[:]))
 	// The cache lives on the Node host (nodeShell).
-	entries, err := nodeShell("ls -A " + shellQuote(cacheObject))
-	if err != nil {
-		t.Fatalf("read cache object directory %s: %v\n%s", cacheObject, err, entries)
-	}
-	if got := strings.TrimSpace(string(entries)); got != "data" {
-		t.Fatalf("cache object directory entries = %q, want one plain object", got)
-	}
-	firstCopy := filepath.Join(dataRoot, "cache", "versions", *v1.Address, "nested", "data.bin")
-	secondCopy := filepath.Join(dataRoot, "cache", "versions", *v2.Address, "nested", "data.bin")
-	// One "<device>:<inode> <mode>" line per copy.
-	out, err := nodeShell("stat -c '%d:%i %a' " + shellQuote(firstCopy) + " " + shellQuote(secondCopy))
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if err != nil || len(lines) != 2 {
-		t.Fatalf("stat the cached copies: %v\n%s", err, out)
-	}
-	if strings.Fields(lines[0])[0] != strings.Fields(lines[1])[0] {
-		t.Fatalf("the file shared by both versions is not hard-linked: %q", lines)
-	}
-	if mode := strings.Fields(lines[0])[1]; mode != "444" {
-		t.Fatalf("cached file mode = %s, want 444", mode)
+	if out, err := nodeShell("test -f " + shellQuote(block)); err != nil {
+		t.Fatalf("the shared file's block %s is not cached: %v\n%s", block, err, out)
 	}
 }
 
 // TestObjectStoreOutage is the "object-store-outage" acceptance scenario
-// (#86): while RustFS is down a Sandbox with Resources reports
-// fetching_resources; if the store recovers within the retry window the
-// Sandbox becomes ready, otherwise it ends failed/resource_fetch_failed.
+// (#86, ADR-0030): while RustFS is down a Sandbox with Resources cannot read
+// its manifest and stays provisioning; if the store recovers within the retry
+// window the Sandbox becomes ready, otherwise it ends
+// failed/resource_fetch_failed.
 func TestObjectStoreOutage(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
@@ -170,7 +155,6 @@ func TestObjectStoreOutage(t *testing.T) {
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
-	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	// Warm the Node image with a plain Sandbox, then remove it. The outage
 	// must not turn into an image pull failure.
@@ -187,17 +171,20 @@ func TestObjectStoreOutage(t *testing.T) {
 	composeService(t, "stop", "rustfs")
 	t.Cleanup(func() { composeService(t, "start", "rustfs") })
 
-	// The Sandbox reports the condition while the Agent retries.
+	// The Sandbox waits while the Agent retries the mount.
 	first := createResourceSandbox(t, admin, fmt.Sprintf("outage-recover-%d", suffix), name)
 	defer deleteSandbox(t, admin, first.ID)
-	waitForSandboxCondition(t, admin, first.ID, "fetching_resources", 60*time.Second)
+	time.Sleep(5 * time.Second)
+	if sb := getSandbox(t, admin, first.ID); sb.State == "ready" || len(sb.Conditions) != 0 {
+		t.Fatalf("during the outage: state %q conditions %v, want not ready and no conditions", sb.State, sb.Conditions)
+	}
 	composeService(t, "start", "rustfs")
 	waitForSandboxState(t, admin, first.ID, "ready", 180*time.Second)
 
 	// Kept down past the backoff, the Sandbox ends failed with the fetch
 	// cause (defaults.md: 1, 2, 4, 8, 16 seconds). The failure needs a version
-	// the Node has not cached yet, so push a second Resource while the store
-	// is still up.
+	// whose manifest the Node has not cached yet, so push a second Resource
+	// while the store is still up.
 	uncached := fmt.Sprintf("outage-uncached-%d", suffix)
 	uncachedSrc := t.TempDir()
 	writeTestFile(t, filepath.Join(uncachedSrc, "payload.txt"), "never fetched\n", 0o644)
@@ -225,23 +212,6 @@ func createResourceSandbox(t *testing.T, admin, name, resource string) sandboxVi
 	return sb
 }
 
-func waitForSandboxCondition(t *testing.T, admin, id, condition string, timeout time.Duration) sandboxView {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		sb := getSandbox(t, admin, id)
-		for _, name := range sb.Conditions {
-			if name == condition {
-				return sb
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Sandbox %s never reported %q (state %q, conditions %v)", id, condition, sb.State, sb.Conditions)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
 func composeService(t *testing.T, action, service string) {
 	t.Helper()
 	if len(composeArgs()) == 0 {
@@ -263,17 +233,6 @@ func writeTestFile(t *testing.T, path, content string, mode os.FileMode) {
 	}
 }
 
-// makeTreeRemovable restores write permission on the Agent's read-only cache
-// trees so the test's TempDir cleanup can delete them.
-func makeTreeRemovable(root string) {
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err == nil && entry.IsDir() {
-			_ = os.Chmod(path, 0o755)
-		}
-		return nil
-	})
-}
-
 // TestUnavailableVersionRecovers is the api.md §3 recovery half of #86: an
 // object that 404s marks its ResourceVersion unavailable; re-publishing the
 // same content re-uploads the object, the publish validation re-checks every
@@ -287,7 +246,6 @@ func TestUnavailableVersionRecovers(t *testing.T) {
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
-	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	status, data := call(t, http.MethodGet, "/api/v1/users/me", admin, nil)
 	if status != http.StatusOK {

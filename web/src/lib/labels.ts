@@ -119,10 +119,6 @@ export function sourceLabel(source: string): string {
   return source
 }
 
-export function conditionLabel(condition: string): string {
-  return condition === 'fetching_resources' ? m.condition_fetching_resources() : condition
-}
-
 // English keeps the server's own message; Chinese shows a localized title and
 // keeps the server detail as diagnostic text (api.md §8).
 export function problemOf(error: unknown): { title: string; detail?: string } {

@@ -683,36 +683,6 @@ func validMountName(mount string) bool {
 		len(mount) <= maxNameLen && !strings.ContainsAny(mount, "/\x00")
 }
 
-// sandboxConditions is the Sandbox's conditions column. Only the conditions
-// the Agent actually reports are defined (api.md §3).
-type sandboxConditions struct {
-	FetchingResources bool `json:"fetching_resources,omitempty"`
-}
-
-func parseSandboxConditions(raw json.RawMessage) sandboxConditions {
-	var c sandboxConditions
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &c)
-	}
-	return c
-}
-
-func (c sandboxConditions) names() []string {
-	names := []string{}
-	if c.FetchingResources {
-		names = append(names, "fetching_resources")
-	}
-	return names
-}
-
-func encodeSandboxConditions(c sandboxConditions) json.RawMessage {
-	raw, err := json.Marshal(c)
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
 // enqueueAdmission opens the admission request that holds the Sandbox's quota
 // slot until it is placed or the deadline passes.
 func (s *Server) enqueueAdmission(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) error {
@@ -1054,7 +1024,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 		State:   sb.State, Cause: sb.Cause, NodeID: uuidPtr(sb.NodeID),
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
-		Conditions: parseSandboxConditions(sb.Conditions).names(),
+		Conditions: []string{}, // the Agent reports none since ADR-0030
 	}
 	if sb.Address != nil {
 		dto.Address = *sb.Address

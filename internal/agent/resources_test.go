@@ -2,123 +2,152 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/zibyn/orrery/internal/manifest"
+	"github.com/google/uuid"
 )
 
-func TestResourceCachePaths(t *testing.T) {
-	cache := newResourceCache("/data")
-	digest := strings.Repeat("ab", 32)
-	if got, want := cache.objectPath(digest, false), filepath.Join("/data", "cache", "objects", digest, "data"); got != want {
-		t.Fatalf("plain object path = %q, want %q", got, want)
+// fakeMounter records what the Agent asks orrery-resourcefs to do.
+type fakeMounter struct {
+	mu      sync.Mutex
+	mounted map[string]bool
+	mounts  int
+	fail    error
+}
+
+func (f *fakeMounter) Mount(_ context.Context, address string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return f.fail
 	}
-	if got, want := cache.objectPath(digest, true), filepath.Join("/data", "cache", "objects", digest, "exec"); got != want {
-		t.Fatalf("executable object path = %q, want %q", got, want)
+	if f.mounted == nil {
+		f.mounted = map[string]bool{}
 	}
-	if got, want := cache.versionPath(digest), filepath.Join("/data", "cache", "versions", digest); got != want {
-		t.Fatalf("version path = %q, want %q", got, want)
+	if !f.mounted[address] {
+		f.mounts++
 	}
-	// The executable bit splits the key: one inode cannot carry two modes.
-	if cache.objectPath(digest, false) == cache.objectPath(digest, true) {
-		t.Fatal("executable and plain objects share a cache path")
+	f.mounted[address] = true
+	return nil
+}
+
+func (f *fakeMounter) Unmount(_ context.Context, address string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.mounted, address)
+	return nil
+}
+
+func (f *fakeMounter) Status(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for address := range f.mounted {
+		out = append(out, address)
+	}
+	return out, nil
+}
+
+func (f *fakeMounter) SelfTest(context.Context) error { return nil }
+
+func (f *fakeMounter) isMounted(address string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mounted[address]
+}
+
+var (
+	versionA = strings.Repeat("a", 64)
+	versionB = strings.Repeat("b", 64)
+)
+
+func newResourceRuntime(t *testing.T, root string, mounter *fakeMounter) *Runtime {
+	t.Helper()
+	r := newRuntime(ProviderLocal, root, "node")
+	r.resourcefs = mounter
+	return r
+}
+
+// Two Sandboxes share a version: stopping one keeps it mounted, stopping the
+// last unmounts it (runtime.md §11).
+func TestResourceMountsAreCounted(t *testing.T) {
+	root := t.TempDir()
+	mounter := &fakeMounter{}
+	r := newResourceRuntime(t, root, mounter)
+	ctx := context.Background()
+	first, second := uuid.New(), uuid.New()
+	if _, err := r.mountResources(ctx, first, []resourceMount{{address: versionA, mount: "data"}, {address: versionB, mount: "other"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.mountResources(ctx, second, []resourceMount{{address: versionA, mount: "data"}}); err != nil {
+		t.Fatal(err)
+	}
+	if mounter.mounts != 2 {
+		t.Fatalf("mounts = %d, want one per version", mounter.mounts)
+	}
+	link, err := os.Readlink(filepath.Join(sandboxResourcesPath(root, first), "data"))
+	if err != nil || link != resourceVersionPath(root, versionA) {
+		t.Fatalf("data link = %q, %v", link, err)
+	}
+
+	r.releaseResources(ctx, first)
+	if !mounter.isMounted(versionA) || mounter.isMounted(versionB) {
+		t.Fatalf("after the first stop: mounted = %v, want only A", mounter.mounted)
+	}
+	if _, err := os.Stat(sandboxResourcesPath(root, first)); !os.IsNotExist(err) {
+		t.Fatalf("the stopped Sandbox's links survive: %v", err)
+	}
+	r.releaseResources(ctx, second)
+	if mounter.isMounted(versionA) {
+		t.Fatal("the last stop left the version mounted")
 	}
 }
 
-func TestAssembleTreeSharesObjectsByHardLink(t *testing.T) {
+// A restarted Agent rebuilds the holds of the Sandboxes it adopts from their
+// link records and unmounts versions nothing holds, without mounting again.
+func TestResourceRefsRebuildAfterRestart(t *testing.T) {
 	root := t.TempDir()
-	makeRemovable(t, root)
-	cache := newResourceCache(root)
-	shared := writeObject(t, cache, []byte("shared content\n"), false)
-	other := writeObject(t, cache, []byte("second version\n"), false)
-	run := writeObject(t, cache, []byte("#!/bin/sh\n"), true)
+	mounter := &fakeMounter{}
+	before := newResourceRuntime(t, root, mounter)
+	ctx := context.Background()
+	running, stopped := uuid.New(), uuid.New()
+	before.mountResources(ctx, running, []resourceMount{{address: versionA, mount: "data"}})
+	before.mountResources(ctx, stopped, []resourceMount{{address: versionB, mount: "data"}})
+	mounts := mounter.mounts
 
-	first := manifest.Manifest{Entries: []manifest.Entry{
-		{Path: "d", Type: manifest.TypeDir},
-		{Path: "d/shared.txt", Type: manifest.TypeFile, Size: sizeOf(len("shared content\n")), SHA256: shared},
-		{Path: "empty", Type: manifest.TypeDir},
-		{Path: "link", Type: manifest.TypeSymlink, Target: "d/shared.txt"},
-		{Path: "run.sh", Type: manifest.TypeFile, Size: sizeOf(len("#!/bin/sh\n")), SHA256: run, Executable: true},
-	}}
-	tree, err := cache.assembleTree("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", first)
-	if err != nil {
-		t.Fatalf("assemble first tree: %v", err)
+	after := newResourceRuntime(t, root, mounter)
+	after.track(running, 1) // adopted; the other Runtime is gone
+	after.rebuildResourceRefs(ctx)
+	if mounter.mounts != mounts {
+		t.Fatalf("rebuild mounted again: %d mounts, want %d", mounter.mounts, mounts)
 	}
-	assertFile(t, filepath.Join(tree, "d", "shared.txt"), "shared content\n", 0o444)
-	assertFile(t, filepath.Join(tree, "run.sh"), "#!/bin/sh\n", 0o555)
-	if info, err := os.Stat(filepath.Join(tree, "empty")); err != nil || !info.IsDir() {
-		t.Fatalf("empty directory missing: %v", err)
+	if !mounter.isMounted(versionA) || mounter.isMounted(versionB) {
+		t.Fatalf("after rebuild: mounted = %v, want only the adopted Sandbox's", mounter.mounted)
 	}
-	if target, err := os.Readlink(filepath.Join(tree, "link")); err != nil || target != "d/shared.txt" {
-		t.Fatalf("symlink = %q, %v", target, err)
+	after.releaseResources(ctx, running)
+	if mounter.isMounted(versionA) {
+		t.Fatal("the rebuilt hold did not unmount on stop")
 	}
-	if info, err := os.Stat(tree); err != nil || info.Mode().Perm() != 0o555 {
-		t.Fatalf("tree root mode = %v, %v", info.Mode().Perm(), err)
-	}
+}
 
-	// A second version that differs by one file hard-links the shared object:
-	// the cache stores those bytes once.
-	second := manifest.Manifest{Entries: []manifest.Entry{
-		{Path: "d", Type: manifest.TypeDir},
-		{Path: "d/shared.txt", Type: manifest.TypeFile, Size: sizeOf(len("shared content\n")), SHA256: shared},
-		{Path: "other.txt", Type: manifest.TypeFile, Size: sizeOf(len("second version\n")), SHA256: other},
-	}}
-	tree2, err := cache.assembleTree("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", second)
-	if err != nil {
-		t.Fatalf("assemble second tree: %v", err)
+func TestResourceMountFailureIsResourceFetchFailed(t *testing.T) {
+	resourceFetchBackoff = []time.Duration{time.Millisecond}
+	t.Cleanup(func() {
+		resourceFetchBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+	})
+	r := newResourceRuntime(t, t.TempDir(), &fakeMounter{fail: errors.New("manifest unreadable")})
+	cause, err := r.mountResources(context.Background(), uuid.New(), []resourceMount{{address: versionA, mount: "data"}})
+	if err == nil || cause != "resource_fetch_failed" {
+		t.Fatalf("cause = %q, err = %v", cause, err)
 	}
-	firstInfo, err := os.Stat(filepath.Join(tree, "d", "shared.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondInfo, err := os.Stat(filepath.Join(tree2, "d", "shared.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !os.SameFile(firstInfo, secondInfo) {
-		t.Fatal("shared file is not a hard link across version trees")
-	}
-	// One cached object per (sha256, executable bit).
-	entries, err := os.ReadDir(filepath.Join(cache.root, "objects", shared))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "data" {
-		t.Fatalf("object directory entries = %v, want only data", entries)
-	}
-
-	// An executable reference to the same bytes needs its own object and
-	// its own inode, because the mode is part of the key.
-	writeObject(t, cache, []byte("shared content\n"), true)
-	execTree, err := cache.assembleTree("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", manifest.Manifest{Entries: []manifest.Entry{
-		{Path: "d", Type: manifest.TypeDir},
-		{Path: "d/shared.txt", Type: manifest.TypeFile, Size: sizeOf(len("shared content\n")), SHA256: shared, Executable: true},
-	}})
-	if err != nil {
-		t.Fatalf("assemble executable tree: %v", err)
-	}
-	assertFile(t, filepath.Join(execTree, "d", "shared.txt"), "shared content\n", 0o555)
-	execInfo, err := os.Stat(filepath.Join(execTree, "d", "shared.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.SameFile(firstInfo, execInfo) {
-		t.Fatal("executable variant shares an inode with the plain variant")
-	}
-
-	// Rebuilding a version reuses the existing tree.
-	again, err := cache.assembleTree("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", first)
-	if err != nil || again != tree {
-		t.Fatalf("second assembly = %q, %v; want %q", again, err, tree)
+	if r.resourceRefs.used(versionA) {
+		t.Fatal("a failed mount left its hold")
 	}
 }
 
@@ -162,133 +191,6 @@ func TestRetryResourceFetch(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("attempts after cancel = %d, want 1", attempts)
 	}
-}
-
-func TestDownloadVerified(t *testing.T) {
-	content := []byte("object bytes")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(content)
-	}))
-	defer server.Close()
-	sum := sha256.Sum256(content)
-	digest := hex.EncodeToString(sum[:])
-
-	path := filepath.Join(t.TempDir(), "object")
-	if err := downloadVerified(context.Background(), server.URL, path, digest); err != nil {
-		t.Fatalf("download verified: %v", err)
-	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != string(content) {
-		t.Fatalf("downloaded = %q, %v", data, err)
-	}
-
-	wrong := strings.Repeat("0", 64)
-	if err := downloadVerified(context.Background(), server.URL, path, wrong); err == nil {
-		t.Fatal("download with a wrong digest succeeded")
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("mismatched download was kept: %v", err)
-	}
-}
-
-func TestDownloadObjectInstallsBothVariants(t *testing.T) {
-	content := []byte("both modes\n")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(content)
-	}))
-	defer server.Close()
-	sum := sha256.Sum256(content)
-	digest := hex.EncodeToString(sum[:])
-	cache := newResourceCache(t.TempDir())
-
-	err := downloadObject(context.Background(), server.URL, cache, digest, []objectVariant{
-		{digest: digest, executable: false},
-		{digest: digest, executable: true},
-	})
-	if err != nil {
-		t.Fatalf("download object: %v", err)
-	}
-	assertFile(t, cache.objectPath(digest, false), string(content), 0o444)
-	assertFile(t, cache.objectPath(digest, true), string(content), 0o555)
-	plain, err := os.Stat(cache.objectPath(digest, false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	exec, err := os.Stat(cache.objectPath(digest, true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.SameFile(plain, exec) {
-		t.Fatal("variants share an inode and therefore a mode")
-	}
-}
-
-func TestDownloadObjectSingleVariantIsReadOnly(t *testing.T) {
-	content := []byte("one mode\n")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(content)
-	}))
-	defer server.Close()
-	sum := sha256.Sum256(content)
-	digest := hex.EncodeToString(sum[:])
-	cache := newResourceCache(t.TempDir())
-	if err := downloadObject(context.Background(), server.URL, cache, digest, []objectVariant{
-		{digest: digest, executable: true},
-	}); err != nil {
-		t.Fatalf("download object: %v", err)
-	}
-	assertFile(t, cache.objectPath(digest, true), string(content), 0o555)
-}
-
-// writeObject puts one object in the cache and returns its digest.
-func writeObject(t *testing.T, cache *resourceCache, content []byte, executable bool) string {
-	t.Helper()
-	sum := sha256.Sum256(content)
-	digest := hex.EncodeToString(sum[:])
-	path := cache.objectPath(digest, executable)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, content, objectMode(executable)); err != nil {
-		t.Fatal(err)
-	}
-	return digest
-}
-
-func assertFile(t *testing.T, path, want string, mode os.FileMode) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	if string(data) != want {
-		t.Fatalf("%s = %q, want %q", path, data, want)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != mode {
-		t.Fatalf("%s mode = %o, want %o", path, info.Mode().Perm(), mode)
-	}
-}
-
-func sizeOf(n int) *int64 {
-	value := int64(n)
-	return &value
-}
-
-// makeRemovable lets TempDir's cleanup delete the read-only trees this test
-// creates.
-func makeRemovable(t *testing.T, root string) {
-	t.Helper()
-	t.Cleanup(func() {
-		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-			if err == nil {
-				_ = os.Chmod(path, 0o755)
-			}
-			return nil
-		})
-	})
 }
 
 func TestValidResourceMount(t *testing.T) {

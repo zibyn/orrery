@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/containerd/containerd/v2/core/images"
@@ -23,11 +22,11 @@ import (
 const evictionInterval = 15 * time.Second
 
 // evictionKind is one of the three caches the disk budget covers
-// (runtime.md §11): version trees, local images and BuildKit cache.
+// (runtime.md §11): Resource blocks, local images and BuildKit cache.
 type evictionKind int
 
 const (
-	evictTree evictionKind = iota
+	evictBlock evictionKind = iota
 	evictImage
 	evictBuildCache
 )
@@ -36,7 +35,7 @@ const (
 // orders all three classes together.
 type evictionCandidate struct {
 	kind     evictionKind
-	key      string // tree path, image id, or "build-cache"
+	key      string // block path, image id, or "build-cache"
 	size     int64  // bytes, when known
 	lastUsed time.Time
 }
@@ -52,8 +51,9 @@ func sortEvictionCandidates(candidates []evictionCandidate) {
 // sandboxPins records what a Sandbox pins on this Node. It lives beside the
 // Sandbox's data-root record (not in memory) for two reasons:
 //
-//   - A stopped Sandbox still references its version trees and image, and a
-//     stopped Sandbox survives an Agent restart.
+//   - A stopped Sandbox still references its image, and a stopped Sandbox
+//     survives an Agent restart. Its Resource addresses rebuild the mount
+//     reference counts after an Agent restart (resources.go).
 //   - The Agent has no "Sandbox deleted" command: StopSandbox is sent for both
 //     stop and delete. Dropping the record on stop would let the next sweep
 //     evict a stopped Sandbox's cache. So the record is retained (it is
@@ -62,8 +62,7 @@ func sortEvictionCandidates(candidates []evictionCandidate) {
 //     records for deleted Sandboxes, which silently over-retain cache; eviction
 //     is a cache policy, so the failure direction is safe.
 type sandboxPins struct {
-	ImageDigest string   `json:"image_digest"`
-	Resources   []string `json:"resources,omitempty"`
+	ImageDigest string `json:"image_digest"`
 }
 
 func pinsPath(sandboxDir string) string { return filepath.Join(sandboxDir, "pinned.json") }
@@ -96,13 +95,14 @@ func readSandboxPins(sandboxDir string) (sandboxPins, bool) {
 	return pins, true
 }
 
-// loadNodePins unions every Sandbox record into the address and image-digest
-// sets the eviction candidates are filtered against.
-func loadNodePins(dataRoot string) (trees, images map[string]bool) {
-	trees, images = map[string]bool{}, map[string]bool{}
+// loadImagePins unions every Sandbox record into the image-digest set the
+// image candidates are filtered against. Blocks are never pinned: one evicted
+// from a mounted version is fetched again when read (runtime.md §11).
+func loadImagePins(dataRoot string) map[string]bool {
+	images := map[string]bool{}
 	entries, err := os.ReadDir(filepath.Join(dataRoot, "sandboxes"))
 	if err != nil {
-		return trees, images
+		return images
 	}
 	for _, entry := range entries {
 		if _, err := uuid.Parse(entry.Name()); err != nil {
@@ -112,14 +112,11 @@ func loadNodePins(dataRoot string) (trees, images map[string]bool) {
 		if !ok {
 			continue
 		}
-		for _, address := range pins.Resources {
-			trees[address] = true
-		}
 		if pins.ImageDigest != "" {
 			images[imageDigestKey(pins.ImageDigest)] = true
 		}
 	}
-	return trees, images
+	return images
 }
 
 // imageDigestKey reduces a reference or image id to the digest an image record
@@ -225,17 +222,15 @@ func (r *Runtime) evictLoop(ctx context.Context, watermark float64) {
 	}
 }
 
-// evictOnce runs one LRU pass. Trees and images are only candidates when no
-// Sandbox record pins them; BuildKit cache is pruned last because the daemon
-// exposes it as one all-or-nothing operation.
+// evictOnce runs one LRU pass. Images are only candidates when no Sandbox
+// record pins them; BuildKit cache is pruned last because the daemon exposes
+// it as one all-or-nothing operation.
 func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 	if watermark <= 0 || !belowWatermark("/", watermark) {
 		return
 	}
-	treePins, imagePins := loadNodePins(r.dataRoot)
-	candidates := r.evictionCandidates(ctx, treePins, imagePins)
+	candidates := r.evictionCandidates(ctx, loadImagePins(r.dataRoot))
 	sortEvictionCandidates(candidates)
-	cache := newResourceCache(r.dataRoot)
 	for _, candidate := range candidates {
 		// The heartbeat and admission use the root filesystem's watermark
 		// (runtime.md §11); eviction reacts to the same number.
@@ -243,23 +238,11 @@ func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 			return
 		}
 		switch candidate.kind {
-		case evictTree:
-			// A tree may have been pinned by a CreateSandbox that raced the
-			// candidate scan; re-check before deleting it.
-			if pins, _ := loadNodePins(r.dataRoot); pins[filepath.Base(candidate.key)] {
-				continue
-			}
-			// Tree assembly and object reclamation share this lock, so an
-			// object downloaded for a tree cannot be reclaimed between the
-			// download and its hard link.
-			resourceTreeMu.Lock()
-			err := removeTree(candidate.key)
-			if err == nil {
-				cache.reclaimObjects()
-			}
-			resourceTreeMu.Unlock()
-			if err != nil {
-				slog.Warn("evict Resource version tree", "path", candidate.key, "error", err)
+		case evictBlock:
+			// resourcefs re-fetches a block it finds missing, and a reader
+			// that already opened it keeps the inode.
+			if err := os.Remove(candidate.key); err != nil && !os.IsNotExist(err) {
+				slog.Warn("evict Resource block", "path", candidate.key, "error", err)
 			}
 		case evictImage:
 			// Only an imageStore lists image candidates (evictionCandidates).
@@ -280,22 +263,22 @@ func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 // platform registry this Node is credentialed for (ADR-0021: Nodes pull only
 // from it), so unrelated images in the namespace are not the Node's to
 // evict.
-func (r *Runtime) evictionCandidates(ctx context.Context, treePins, imagePins map[string]bool) []evictionCandidate {
-	cache := newResourceCache(r.dataRoot)
+func (r *Runtime) evictionCandidates(ctx context.Context, imagePins map[string]bool) []evictionCandidate {
 	var candidates []evictionCandidate
-	if entries, err := os.ReadDir(filepath.Join(cache.root, "versions")); err == nil {
+	blocks := blockCachePath(r.dataRoot)
+	if entries, err := os.ReadDir(blocks); err == nil {
 		for _, entry := range entries {
 			name := entry.Name()
-			if !entry.IsDir() || strings.HasPrefix(name, ".tmp-") || treePins[name] {
+			if !entry.Type().IsRegular() || strings.HasPrefix(name, ".tmp-") {
 				continue
 			}
 			info, err := entry.Info()
 			if err != nil {
 				continue
 			}
-			path := filepath.Join(cache.root, "versions", name)
+			// resourcefs refreshes a block's mtime when it is read.
 			candidates = append(candidates, evictionCandidate{
-				kind: evictTree, key: path, size: treeSize(path), lastUsed: info.ModTime(),
+				kind: evictBlock, key: filepath.Join(blocks, name), size: info.Size(), lastUsed: info.ModTime(),
 			})
 		}
 	}
@@ -313,7 +296,7 @@ func (r *Runtime) evictionCandidates(ctx context.Context, treePins, imagePins ma
 	}
 	// BuildKit cache has no per-entry order through its prune API; the daemon
 	// prunes every unused record at once, so it is the candidate of last
-	// resort. Its clause is only reached when trees and images did not bring
+	// resort. Its clause is only reached when blocks and images did not bring
 	// the free space back above the watermark.
 	candidates = append(candidates, evictionCandidate{
 		kind: evictBuildCache, key: "build-cache", lastUsed: time.Now(),
@@ -342,81 +325,6 @@ func belowWatermark(path string, watermark float64) bool {
 		return false
 	}
 	return float64(free)/float64(total) < watermark
-}
-
-// treeSize is the tree's apparent size. Hard-linked objects are counted once
-// per tree, which over-estimates a shared object; LRU order, not an exact
-// budget, is what the watermark decision needs.
-func treeSize(path string) int64 {
-	var size int64
-	_ = filepath.WalkDir(path, func(_ string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return nil
-		}
-		if info, err := entry.Info(); err == nil {
-			size += info.Size()
-		}
-		return nil
-	})
-	return size
-}
-
-// removeTree removes a read-only version tree. Directories are 0555
-// (runtime.md §11) and RemoveAll needs write permission on each directory, so
-// make them writable deepest-first first.
-func removeTree(path string) error {
-	var dirs []string
-	_ = filepath.WalkDir(path, func(p string, entry os.DirEntry, err error) error {
-		if err == nil && entry.IsDir() {
-			dirs = append(dirs, p)
-		}
-		return nil
-	})
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
-	for _, dir := range dirs {
-		_ = os.Chmod(dir, 0o755)
-	}
-	return os.RemoveAll(path)
-}
-
-// reclaimObjects removes cached objects no version tree hard-links any more.
-// A tree link raises the inode's link count, so count 1 means only the object
-// directory itself still names the file (runtime.md §11).
-func (c *resourceCache) reclaimObjects() {
-	objects := filepath.Join(c.root, "objects")
-	entries, err := os.ReadDir(objects)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		dir := filepath.Join(objects, entry.Name())
-		files, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		remaining := 0
-		for _, file := range files {
-			path := filepath.Join(dir, file.Name())
-			info, err := file.Info()
-			if err != nil {
-				remaining++
-				continue
-			}
-			if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
-				remaining++
-				continue
-			}
-			if err := os.Remove(path); err != nil {
-				remaining++
-			}
-		}
-		if remaining == 0 {
-			_ = os.Remove(dir)
-		}
-	}
 }
 
 // imageStore is the Provider's local image store the disk budget covers

@@ -556,13 +556,6 @@ ORDER BY sr.mount;
 -- name: CountSandboxResources :one
 SELECT count(*)::bigint FROM sandbox_resources WHERE sandbox_id = $1;
 
--- SetSandboxConditions writes the Agent-reported condition set under the
--- generation fence.
--- name: SetSandboxConditions :execrows
-UPDATE sandboxes
-SET conditions = $3, updated_at = now()
-WHERE id = $1 AND generation = $2 AND state <> 'deleted';
-
 -- Admission requests
 
 -- name: CreateAdmissionRequest :one

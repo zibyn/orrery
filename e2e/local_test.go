@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,8 +39,9 @@ func TestLocalRuntime(t *testing.T) {
 	if values["process_mount_namespace"] != "unsupported" {
 		t.Errorf("process_mount_namespace = %q, want unsupported", values["process_mount_namespace"])
 	}
-	if values["resource_mount"] != "unsupported" {
-		t.Errorf("resource_mount = %q, want unsupported", values["resource_mount"])
+	// resource_mount is the resourcefs self-check, on Local as on containerd.
+	if values["resource_mount"] != "enforced" {
+		t.Errorf("resource_mount = %q, want enforced", values["resource_mount"])
 	}
 	// No netns, so Egress Rules do not apply (ADR-0026).
 	if values["egress_policy"] != "unsupported" {
@@ -100,6 +102,32 @@ func TestLocalRuntime(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(stdout)); got != workspace {
 		t.Fatalf("ORRERY_WORKSPACE = %q, want %q", got, workspace)
+	}
+
+	// Resources: the unprivileged Exec reads the version mount through the
+	// $ORRERY_RESOURCES/<mount> symlink (runtime.md §10, ADR-0030), and the
+	// link directory goes with the Sandbox.
+	resourceName := fmt.Sprintf("local-res-%d", time.Now().UnixNano())
+	resourceSrc := t.TempDir()
+	writeTestFile(t, filepath.Join(resourceSrc, "hello.txt"), "local resource\n", 0o644)
+	var version resourceVersionView
+	mustJSON(t, newCLIRunner(t, admin).run(t, "", "resource", "push", resourceSrc, resourceName), &version)
+	withResource := createSandbox(t, admin, map[string]any{
+		"cpu": 0.5, "memory": 64 << 20, "runtime": "local", "idle_stop": 0,
+		"resources": []map[string]any{{"resource": resourceName, "mount": "data"}},
+	})
+	waitForSandboxReady(t, admin, withResource.ID)
+	readExec := createExec(t, admin, withResource.ID, map[string]any{
+		"argv": []string{"sh", "-c", `cat "$ORRERY_RESOURCES/data/hello.txt"`},
+	})
+	stdout, _, _, result = followExec(t, admin, readExec.ID, 30*time.Second)
+	if result.Cause != "exited" || *result.ExitCode != 0 || string(stdout) != "local resource\n" {
+		t.Fatalf("read via ORRERY_RESOURCES = %q, result %+v", stdout, result)
+	}
+	links := host.dir + "/data/sandboxes/" + withResource.ID + "/resources"
+	deleteSandbox(t, admin, withResource.ID)
+	if out := host.sshRoot(t, "sh", "-c", "test -e "+links+" && echo present || echo gone"); strings.TrimSpace(out) != "gone" {
+		t.Fatalf("the deleted Sandbox's Resource links are %s", strings.TrimSpace(out))
 	}
 
 	// Every User on a Local Node shares the one configured uid (ADR-0009).
@@ -209,11 +237,26 @@ func startRemoteHost(t *testing.T, name string, runArgs func(h *localHost) []str
 		"--server", "127.0.0.1:"+remotePort, "--ca", h.dir+"/ca.crt",
 		"--packet", packet, "--name", h.nodeName, "--state", h.state)
 
+	// One orrery-resourcefs per Node, as install.sh runs it (runtime.md §11).
+	control, presign := h.dir+"/rfs.sock", h.dir+"/presign.sock"
+	daemon := exec.Command("ssh", append(append([]string{target}, h.rootPrefix()...),
+		h.dir+"/agent", "resourcefs", "--data-root", h.dir+"/data", "--socket", control, "--presign-socket", presign)...)
+	daemon.Stdout, daemon.Stderr = h.agentLog, h.agentLog
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("start the remote resourcefs: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = daemon.Process.Kill()
+		_ = daemon.Wait()
+		tryRemote(t, "pkill", "-f", control)
+		tryRemote(t, "sh", "-c", "for m in "+h.dir+"/data/resources/*; do umount -l \"$m\"; done")
+	})
+
 	args := h.rootPrefix()
 	args = append(args, h.dir+"/agent", "run",
 		"--server", "127.0.0.1:"+remotePort, "--ca", h.dir+"/ca.crt",
 		"--state", h.state, "--data-root", h.dir+"/data",
-		"--reserve-cpu", "0")
+		"--reserve-cpu", "0", "--resourcefs-socket", control, "--presign-socket", presign)
 	args = append(args, runArgs(h)...)
 	h.agent = exec.Command("ssh", append([]string{target}, args...)...)
 	h.agent.Stdout, h.agent.Stderr = h.agentLog, h.agentLog

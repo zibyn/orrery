@@ -37,7 +37,6 @@ func TestSnapshotBuildRun(t *testing.T) {
 	// Sandbox infeasible forever.
 	startAgentWith(t, state, dataRoot, "--reserve-cpu", "0")
 	waitForNodeReady(t, admin, nodeName)
-	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	// A Resource-backed named context.
 	cli := newCLIRunner(t, admin)
@@ -206,7 +205,6 @@ func TestSnapshotBuildSurvivesSnapshotDelete(t *testing.T) {
 	state, dataRoot := enrollAgent(t, admin, nodeName)
 	startAgentWith(t, state, dataRoot, "--reserve-cpu", "0")
 	waitForNodeReady(t, admin, nodeName)
-	t.Cleanup(func() { makeTreeRemovable(dataRoot) })
 
 	snapshot := createTestSnapshot(t, admin, fmt.Sprintf("e2e-build-delete-%d", suffix))
 	version := startBuild(t, admin, snapshot.ID, map[string]any{

@@ -6080,28 +6080,6 @@ func (q *Queries) SetSandboxAddress(ctx context.Context, arg SetSandboxAddressPa
 	return err
 }
 
-const setSandboxConditions = `-- name: SetSandboxConditions :execrows
-UPDATE sandboxes
-SET conditions = $3, updated_at = now()
-WHERE id = $1 AND generation = $2 AND state <> 'deleted'
-`
-
-type SetSandboxConditionsParams struct {
-	ID         uuid.UUID
-	Generation int64
-	Conditions json.RawMessage
-}
-
-// SetSandboxConditions writes the Agent-reported condition set under the
-// generation fence.
-func (q *Queries) SetSandboxConditions(ctx context.Context, arg SetSandboxConditionsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setSandboxConditions, arg.ID, arg.Generation, arg.Conditions)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const setSandboxNode = `-- name: SetSandboxNode :execrows
 UPDATE sandboxes
 SET node_id = $2, updated_at = now()

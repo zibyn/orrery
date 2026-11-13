@@ -62,7 +62,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   orrery-agent enroll --server HOST:PORT --packet ore_... [--ca FILE] [--name NAME] [--state FILE] [--data-root DIR]
-  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|runsc] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES] [--mesh-port PORT] [--mesh-endpoint HOST:PORT]
+  orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|runsc] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES] [--mesh-port PORT] [--mesh-endpoint HOST:PORT] [--resourcefs-socket PATH] [--presign-socket PATH]
   orrery-agent resourcefs [--data-root DIR] [--socket PATH] [--presign-socket PATH] [--takeover]
   orrery-agent supervisor init
   orrery-agent supervisor probe [WORKSPACE]
@@ -108,6 +108,8 @@ func run(ctx context.Context, args []string) error {
 	fs.IntVar(&opts.MeshPort, "mesh-port", agent.DefaultMeshPort, "Node Mesh WireGuard UDP listen port")
 	fs.StringVar(&opts.MeshEndpoint, "mesh-endpoint", "", "host:port other Nodes reach this Node's WireGuard at (default: none, only dial out)")
 	fs.Float64Var(&opts.DiskWatermark, "disk-watermark", agent.DefaultDiskWatermark, "fraction of disk kept free before new allocations are refused")
+	fs.StringVar(&opts.ResourceFSSocket, "resourcefs-socket", resourcefs.DefaultControlSocket, "orrery-resourcefs control socket")
+	fs.StringVar(&opts.PresignSocket, "presign-socket", resourcefs.DefaultPresignSocket, "socket the Agent answers orrery-resourcefs presign requests on")
 	fs.Parse(args)
 	return agent.Run(ctx, opts)
 }

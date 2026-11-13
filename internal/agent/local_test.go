@@ -232,9 +232,6 @@ func TestLocalCapabilities(t *testing.T) {
 	if v[nodeproto.CapProcessMountNamespace] != nodeproto.ValueUnsupported {
 		t.Errorf("process_mount_namespace = %q, want unsupported", v[nodeproto.CapProcessMountNamespace])
 	}
-	if v[nodeproto.CapResourceMount] != nodeproto.ValueUnsupported {
-		t.Errorf("resource_mount = %q, want unsupported", v[nodeproto.CapResourceMount])
-	}
 
 	// A failed limits readback is not enforced; a failed DevicePolicy check
 	// degrades GPU visibility to best_effort, not unsupported.
@@ -258,15 +255,19 @@ func TestLocalCapabilities(t *testing.T) {
 }
 
 // Local PATH and Git helper use the Agent's own bin directory, not /.orrery,
-// and ORRERY_WORKSPACE names the host Workspace (node-protocol.md).
+// ORRERY_WORKSPACE names the host Workspace and ORRERY_RESOURCES the Resource
+// symlink directory (node-protocol.md, runtime.md §10).
 func TestLocalExecEnv(t *testing.T) {
 	env := localExecEnv(map[string]string{"PATH": "/caller/bin", "KEEP": "kept"},
-		"/fallback/bin", "/agent/bin", "/data/workspaces/ws", []string{"GPU-a", "GPU-b"})
+		"/fallback/bin", "/agent/bin", "/data/workspaces/ws", "/data/sandboxes/sb/resources", []string{"GPU-a", "GPU-b"})
 	if got := env["PATH"]; got != "/caller/bin:/agent/bin" {
 		t.Fatalf("PATH = %q", got)
 	}
 	if env["ORRERY_WORKSPACE"] != "/data/workspaces/ws" {
 		t.Fatalf("ORRERY_WORKSPACE = %q", env["ORRERY_WORKSPACE"])
+	}
+	if env["ORRERY_RESOURCES"] != "/data/sandboxes/sb/resources" {
+		t.Fatalf("ORRERY_RESOURCES = %q", env["ORRERY_RESOURCES"])
 	}
 	if env["GIT_CONFIG_VALUE_1"] != "/agent/bin/orrery git-credential" {
 		t.Fatalf("credential helper = %q", env["GIT_CONFIG_VALUE_1"])
@@ -278,7 +279,7 @@ func TestLocalExecEnv(t *testing.T) {
 		t.Fatal("caller env was dropped")
 	}
 	// Without a caller PATH the Agent's own PATH is the base.
-	noGPU := localExecEnv(nil, "/host/bin", "/agent/bin", "/ws", nil)
+	noGPU := localExecEnv(nil, "/host/bin", "/agent/bin", "/ws", "/res", nil)
 	if got := noGPU["PATH"]; got != "/host/bin:/agent/bin" {
 		t.Fatalf("fallback PATH = %q", got)
 	}

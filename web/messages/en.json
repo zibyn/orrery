@@ -67,7 +67,6 @@
   "state_healthy": "healthy",
   "state_queued": "queued",
   "state_unhealthy": "unhealthy",
-  "condition_fetching_resources": "Fetching Resources",
   "runtime_container": "container",
   "runtime_local": "local",
   "scope_read_only": "Read-only",

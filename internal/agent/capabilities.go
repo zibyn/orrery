@@ -27,18 +27,24 @@ func probeTargetName(probe string) string {
 // It is independent of the Runtime type (runtime.md §12): a Local Node with a
 // reachable BuildKit endpoint builds too.
 func withSnapshotBuild(report nodeproto.CapabilityReport, ok bool) nodeproto.CapabilityReport {
+	return withSelfCheck(report, nodeproto.CapSnapshotBuild, ok)
+}
+
+// withSelfCheck sets a capability the Agent decides by its own self-check,
+// independent of the Runtime probe.
+func withSelfCheck(report nodeproto.CapabilityReport, name string, ok bool) nodeproto.CapabilityReport {
 	value := nodeproto.ValueUnsupported
 	if ok {
 		value = nodeproto.ValueEnforced
 	}
 	for i := range report.Entries {
-		if report.Entries[i].Name == nodeproto.CapSnapshotBuild {
+		if report.Entries[i].Name == name {
 			report.Entries[i].Value = value
 			return report
 		}
 	}
 	report.Entries = append(report.Entries, nodeproto.CapabilityEntry{
-		Name: nodeproto.CapSnapshotBuild, Value: value,
+		Name: name, Value: value,
 	})
 	return report
 }
@@ -75,11 +81,6 @@ func capabilities(r supervisor.Result, checks probeChecks) nodeproto.CapabilityR
 			// honestly instead of guessing.
 			{Name: nodeproto.CapDiskCapacityQuota, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapArbitraryMounts, Value: nodeproto.ValueUnsupported},
-			// The containerd adapter mounts Resource version trees as extra
-			// read-only binds (runtime.md §2, §11). The Local Runtime reports
-			// unsupported, which keeps the Scheduler from placing a Sandbox
-			// with Resources there.
-			{Name: nodeproto.CapResourceMount, Value: nodeproto.ValueEnforced},
 			{Name: nodeproto.CapKernelIsolation, Value: value(checks.runsc)},
 			{Name: nodeproto.CapEgressPolicy, Value: value(checks.egress)},
 			{Name: nodeproto.CapSandboxLinks, Value: value(checks.links)},

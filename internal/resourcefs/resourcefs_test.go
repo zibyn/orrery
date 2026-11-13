@@ -3,8 +3,11 @@ package resourcefs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -160,5 +163,25 @@ func TestLegacyLargeFileReadsByRange(t *testing.T) {
 	// Two 4 MiB ranges were fetched, not the whole object twice.
 	if n := o.gets[m.Entries[0].SHA256]; n != 2 {
 		t.Fatalf("GETs = %d, want 2 ranges", n)
+	}
+}
+
+// Eviction may delete a block between the cache check and the read.
+func TestReadRefetchesAnEvictedBlock(t *testing.T) {
+	o := newObjectServer(t)
+	m, _ := o.tree(t, map[string][]byte{"f": []byte("hello")})
+	f := newTestFS(t, o, m)
+	if got, _ := read(t, f, "f", 0, 5); string(got) != "hello" {
+		t.Fatalf("first read = %q", got)
+	}
+	ref := refAt(m.Entries[0], 0)
+	if err := os.Remove(f.store.path(ref.key)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.readBlock(ref, 0, make([]byte, 5)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("readBlock after eviction = %v, want ErrNotExist", err)
+	}
+	if got, status := read(t, f, "f", 0, 5); status != fuse.OK || string(got) != "hello" {
+		t.Fatalf("read after eviction = %q %v", got, status)
 	}
 }

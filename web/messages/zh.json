@@ -67,7 +67,6 @@
   "state_healthy": "健康",
   "state_queued": "排队中",
   "state_unhealthy": "不健康",
-  "condition_fetching_resources": "正在获取资源",
   "runtime_container": "容器",
   "runtime_local": "本地",
   "scope_read_only": "只读",

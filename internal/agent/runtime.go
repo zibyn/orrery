@@ -77,6 +77,11 @@ type Runtime struct {
 	// client makes one-shot Node RPCs outside the Control stream (Presign).
 	client nodev1.NodeClient
 
+	// resourcefs mounts Resource versions (runtime.md §11); resourceRefs
+	// counts their holders and outlives each Control stream.
+	resourcefs   resourceMounter
+	resourceRefs *resourceRefs
+
 	registryMu sync.Mutex
 	registry   *registry.Credential
 
@@ -101,6 +106,7 @@ func newRuntime(provider, dataRoot, nodeID string) *Runtime {
 		buildCancels:   make(map[string]context.CancelCauseFunc),
 		buildDone:      make(map[string]struct{}),
 		managed:        make(map[string]int64),
+		resourceRefs:   &resourceRefs{},
 	}
 }
 
@@ -287,14 +293,10 @@ func (r *Runtime) prepareSandboxHost(id, workspaceID uuid.UUID, cmd *createSandb
 	if err := r.writeWorkspaceRefFile(id, workspaceRef{ID: workspaceID.String(), Mode: mode}); err != nil {
 		return "", "", "", err
 	}
-	// The pin record is written before the trees are fetched: eviction must
-	// never mistake a tree being assembled for this Sandbox for garbage. It
-	// survives StopSandbox (a stopped Sandbox still references these) and is
-	// only dropped when the Sandbox is known to be gone; see sandboxPins.
+	// The pin record survives StopSandbox (a stopped Sandbox still
+	// references its image) and is only dropped when the Sandbox is known to
+	// be gone; see sandboxPins.
 	pins := sandboxPins{ImageDigest: cmd.imageDigest}
-	for _, resource := range cmd.resources {
-		pins.Resources = append(pins.Resources, resource.address)
-	}
 	if err := writeSandboxPins(sandboxPath(r.dataRoot, id), pins); err != nil {
 		return "", "", "", err
 	}
@@ -521,7 +523,7 @@ type createSandboxSpec struct {
 	linkTarget    bool
 }
 
-// resourceMount is one version to fetch and mount at /resources/<mount>.
+// resourceMount is one version to mount at /resources/<mount>.
 type resourceMount struct {
 	address string
 	mount   string

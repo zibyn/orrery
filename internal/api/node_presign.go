@@ -15,12 +15,19 @@ import (
 	"github.com/zibyn/orrery/internal/store"
 )
 
+// maxPresignObjects bounds one Presign (defaults.md, node-protocol.md).
+const maxPresignObjects = 1000
+
 // Presign issues object store URLs to an authenticated Node
 // (docs/spec/node-protocol.md "Presign"). It signs nothing the Node is not
 // entitled to, and answers InvalidArgument for the whole batch otherwise
 // (node-protocol.md: never NotFound, which would make the Agent clear its
 // identity).
 func (n *nodeService) Presign(ctx context.Context, req *nodev1.PresignRequest) (*nodev1.PresignResponse, error) {
+	// Bounded so the reply stays under gRPC's default 4 MiB (defaults.md).
+	if len(req.GetSha256())+len(req.GetManifests()) > maxPresignObjects {
+		return nil, status.Errorf(codes.InvalidArgument, "at most %d objects per Presign", maxPresignObjects)
+	}
 	node, err := n.s.authenticateNode(ctx)
 	if err != nil {
 		return nil, err
