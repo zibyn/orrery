@@ -10,6 +10,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -163,6 +165,8 @@ func ServePresign(ctx context.Context, l net.Listener, p Presigner, log *slog.Lo
 	}
 }
 
+var listenSeq atomic.Int64
+
 // listenUnix binds path atomically: it listens on a temporary name in the
 // same directory and renames it over path, so a predecessor's socket is
 // replaced, never unlinked from under a connecting client.
@@ -170,7 +174,10 @@ func listenUnix(path string) (*net.UnixListener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	tmp := fmt.Sprintf("%s.%d.%d", path, os.Getpid(), time.Now().UnixNano())
+	// sun_path holds 107 bytes, so the temporary name is kept about as short as
+	// a socket's own name; pid plus a per-process sequence keeps it unique.
+	tmp := filepath.Join(filepath.Dir(path),
+		"."+strconv.FormatInt(int64(os.Getpid()), 36)+"-"+strconv.FormatInt(listenSeq.Add(1), 36))
 	os.Remove(tmp) //nolint:errcheck // stale from a crashed process
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
 	if err != nil {
