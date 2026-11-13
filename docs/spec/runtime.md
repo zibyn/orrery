@@ -131,7 +131,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 - **Inspect**：看占位 unit 是否 active。
 - **Stop**：`systemctl stop orrery-sb-<id>.slice`，停掉 slice 里的所有单元。
 - **GPU**：每个 `orrery-exec-<exec_id>` 瞬态 service 带 `DevicePolicy=closed` 和 `DeviceAllow`（所分配卡的 `/dev/nvidia<N>`，以及 `/dev/nvidiactl`、`/dev/nvidia-uvm`），同时设置 `CUDA_VISIBLE_DEVICES`。注册时由能力自检验证：通过就报 `enforced`，否则报 `best_effort`。`runtime: local` 的请求接受 `best_effort`（ADR-0009）。
-- **Resource 与构建**：`resource_mount` 报 `unsupported`；`snapshot_build` 由 §12 的自检决定。
+- **Resource 与构建**：没有 `/resources`。Agent 为每个 Sandbox 建目录 `<data-root>/sandboxes/<id>/resources/`，其中每个 `<mount>` 是指向该版本挂载 `<data-root>/resources/<address>` 的符号链接，并设置 `ORRERY_RESOURCES` 为这个目录（§11，ADR-0030）。版本挂载带 `allow_other`，Node 配置里的非特权 uid 能读。`resource_mount` 和 containerd Node 一样由对 `orrery-resourcefs` 的自检决定；`snapshot_build` 由 §12 的自检决定。
 - **网络**：没有 netns，进程直接用宿主网络。Egress Rules 不适用于 Local Node，`egress_policy` 报 `unsupported`（ADR-0026）。
 
 ## 11. Node 的 Resource 挂载
@@ -149,7 +149,7 @@ ADR-0030。Resource 一律懒加载：创建时只读 manifest，对象在读到
   - 对象在对象存储上 404 时，Control Plane 把引用它的版本标为 `unavailable`（ADR-0012）。
 - **块缓存**：`<data-root>/cache/blocks/<sha256>`。剩余空间低于磁盘水位时，块、Agent 的 containerd namespace 里未被本 Node 上任何 Sandbox（含 stopped）引用的镜像，以及 buildkitd 的构建缓存（prune），计入同一预算，一起按 LRU 淘汰。挂载中的版本，其块也可以淘汰，再读到时重新拉取。
 - **升级**：新的守护进程用 SCM_RIGHTS 从旧进程接过每个挂载的 `/dev/fuse` 会话，连同 INIT 参数。旧进程的读取者处理完手上的请求就退出；挂载空闲时，旧进程查找不存在的随机文件名来唤醒阻塞的读取者（`docs/research/resource-fuse-handover-spike.md`）。整个过程挂载不断。守护进程崩溃时由 systemd 拉起，但已有挂载失效，直到用到它们的 Sandbox 重启。
-- **能力**：Agent 自检时连上守护进程，做一次挂载和读取；不通就把 `resource_mount` 报为 `unsupported`。Local Runtime 报 `unsupported`（ADR-0017）。
+- **能力**：Agent 自检时连上守护进程，做一次挂载和读取；不通就把 `resource_mount` 报为 `unsupported`。Local Runtime 也一样，它的 Sandbox 经符号链接目录访问挂载（§10）。
 
 ## 12. 构建
 

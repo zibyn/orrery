@@ -106,7 +106,7 @@ links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自�
 
 - `container` 只放到 containerd Node 上（runc 和 runsc 都算），`local` 只放到 Local Node 上；重启后仍作为准入约束。Isolation Runtime 不能在请求里选；要全部跑在 gVisor 下，就只注册 runsc Node（ADR-0026）。
 - `local` 带了 `snapshot` 或 `resources` 时返回 `422 unsupported`。
-- Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `ORRERY_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。
+- Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `ORRERY_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。同样没有 `/resources`：`ORRERY_RESOURCES` 指向一个目录，其中每个 `<mount>` 是一个只读的 Resource 版本（ADR-0030）。
 - Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用。GPU 可见性为 `best_effort` 时也接受。
 
 `egress`（ADR-0026）：
