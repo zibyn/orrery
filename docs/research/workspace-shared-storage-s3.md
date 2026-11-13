@@ -59,7 +59,7 @@
 
   提交时机：Sandbox stop 前（**stop 必须等最后一次提交成功才释放写权**）、周期性（默认如 60 秒且有脏数据）、脏数据量阈值、显式 API `checkpoint`。
 
-### 4.2 Node 侧挂载
+### 4.2 Node 侧挂载（P0 已否决此形态，见 §4.6）
 
 - 每个挂载一个 **`orrery wsfs` 进程**（与 Exec Supervisor 同样独立于 Agent，Agent 重启不影响挂载），用 FUSE（`hanwen/go-fuse/v2`，需新增依赖）挂在 `<data-root>/workspaces/<id>/mnt`，`containerd.go` 里 `bindMount(workspace, …)` 的源路径换成这个挂载点，其余不变；Local Runtime 直接用这个路径做 cwd。
 - **写者**：元数据在本地（SQLite WAL 或内存 + 本地日志，均在 Node 本地盘），全部 `lookup/getattr/readdir/rename/create` 本地完成；数据写到本地暂存区（按 inode 的稀疏文件），`fsync` = 本地落盘后返回（writeback）。读未缓存的 Block 时按需从 S3 拉（**懒加载**，换 Node 启动无需先全量下载）。
@@ -94,11 +94,21 @@ FIFO、unix socket 可以在写者本地存在但不进入 Generation；设备�
 
 ### 4.5 分期
 
-1. **P0 spike**（决定能不能走 FUSE）：runsc 下 bind 宿主 go-fuse 挂载点的正确性与开销（`git clone` linux、`git status`、`npm install` 计时，与本地盘对比）；FUSE 进程在 Agent 重启后存活；锁行为。
-2. **P1 提交与恢复**：Generation 格式、提交流程、换 Node 懒加载、stop 前提交、Node lost 恢复。只读挂载可以晚一步。
-3. **P2 运维面**：GC 枚举、缓存水位、批量预签名、只读挂载、从 Generation publish。
+1. ~~**P0 spike**~~ **已完成（2026-11-13，`workspace-wsfs-fuse-spike.md`）**：语义全部正确，但 FUSE 在热路径上让 runc 的 clone 慢约 12 倍、checkout 慢 6–9 倍，runsc 下 clone 约 20s（runc 宿主目录 0.8s）。判定失败，改走 §4.6。
+2. **P1 提交与恢复**（按 §4.6）：Generation 格式、扫描提交、stop 前提交、换 Node 先恢复再启动、Node lost 恢复。
+3. **P2 运维面**：GC 枚举、本地副本淘汰与水位、批量预签名、从 Generation publish、只读挂载（直接把某个 Generation 恢复成只读目录）。
 
-**若 P0 失败（runsc 下 FUSE 不可用或太慢）的退路**：不挂 FUSE，Workspace 仍是本地盘目录，Generation 格式不变；提交 = 按 mtime/size/ino 扫描变化（类似 git index 的 stat 缓存）再上传，换 Node = 先全量下载再启动。丢掉懒加载和实时挂载，但空间释放（停止的 Workspace 本地副本可淘汰）、换 Node、Node 丢失可恢复都保住，且 P1/P2 的格式和 Control Plane 代码不用改。
+### 4.6 修订后的推荐：本地目录为活副本，Generation 为 S3 上的持久版本
+
+§4.1 的数据模型、§4.4 的 Control Plane 变更不变，只换 Node 侧：
+
+- **运行时**：Workspace 仍是 Node 本地盘目录，原样 bind mount，Git 和 Files API 的性能、语义与现在完全相同，不引入 FUSE 和 go-fuse 依赖。
+- **提交**：Agent 对目录做 stat 扫描（size、mtime、ctime、ino、mode），与上一个 Generation 的记录比较，只对变化的文件重算 SHA-256、打包、上传（P0 实测：15k 文件、212 MiB 的工作区，扫描 41–44ms，全量哈希 258ms）。Agent 本地保存上次提交的 stat 表，以免每次都从 S3 读元数据。
+- **一致性**：stop 时没有写者，提交天然时间点一致。运行中的周期提交需要冻结点：用 Runtime 的 pause（cgroup freezer，runc/runsc 都支持）冻住 Sandbox，同时阻塞 Agent 自己的 Files API 写入，期间扫描并把变化的文件 reflink/复制到暂存区，然后解冻，再从暂存区慢慢上传。冻结时长 ≈ 扫描 + 复制变化文件。**未测**：pause 对正在运行的 Exec/PTY 的影响、reflink 依赖 Node 文件系统（XFS/btrfs，否则退化为复制）。
+- **换 Node / 空间共享**：Workspace 停止且最后一次提交成功后，本地目录变成可淘汰的缓存，按水位线回收，空间也就释放了。在别的 Node 启动时，先把 head Generation 恢复到本地（对象按内容寻址，Node 上已有的块不重复下载），再启动 Sandbox。代价是大 Workspace 的启动时间与其大小成正比，没有懒加载。
+- **Git 的 ino/ctime**：恢复到新目录后 ino、ctime 必然改变，第一次 `git status` 会重读跟踪文件刷新 index（耗时约等于对工作区做一遍哈希，P0 规模下是亚秒级），之后恢复正常。也可以由平台在 Snapshot 里默认 `core.checkStat=minimal`，这一项不做。
+- **只读挂载**：把指定 Generation 恢复成一个只读目录再 bind 进去，同一 Node 上的多个只读者共享这份恢复结果。
+- **懒加载留给以后**：只有当「大 Workspace 换 Node 的启动时间」成为真实问题时，再评估只读 FUSE 懒加载层（读多写少，FUSE 的写开销不再关键），或者等 Node 内核支持 FUSE passthrough（6.9+）后重测。
 
 ## 5. 被否决的方案
 
