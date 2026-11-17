@@ -119,6 +119,15 @@ func validate(m Manifest, maxEntries int) error {
 	return nil
 }
 
+// ValidateEntry checks one entry's path and fields without the tree rules
+// Validate adds; Generation manifests (internal/generation) reuse it.
+func ValidateEntry(entry Entry) error {
+	if err := validatePath(entry.Path); err != nil {
+		return err
+	}
+	return validateEntry(entry)
+}
+
 func validatePath(path string) error {
 	switch {
 	case path == "":
