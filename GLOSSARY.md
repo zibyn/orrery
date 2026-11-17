@@ -5,28 +5,32 @@ This context defines the resources and trust boundaries for agent-driven remote 
 ## Resources and execution
 
 **Sandbox**:
-A short-lived isolated execution instance that runs commands and interactive sessions against a Workspace and optional Resources. It does not own their long-term lifecycle.
+A short-lived isolated execution instance that runs commands and interactive sessions over its own filesystem, optional Volumes and optional Resources. Its filesystem belongs to it: it survives stop and start, can start again on another Node, and is deleted with the Sandbox. It does not own the lifecycle of Volumes or Resources.
 _Avoid_: Workspace, container (when referring to the platform resource)
 
-**Workspace**:
-A mutable working directory for an agent. It may contain arbitrary files and zero or more Git repositories, and is permanently bound to one compute Node for its lifetime. It is either persistent, deleted only explicitly, or ephemeral, created with one Sandbox and deleted with it. It may become temporarily unavailable or permanently lost with that Node. A Workspace is not owned by a Sandbox. A Sandbox mounts one Workspace, read-only or read-write, and mounting does not transfer ownership. Single-writer rule: at most one active Sandbox mounts a Workspace read-write at a time. A Sandbox holds the write from `pending` until it stops, fails, or finishes deleting; deleting a `stopped` or `failed` Sandbox does not take it back.
-_Avoid_: Sandbox filesystem, Workspace Attachment, Workspace lease
+**Volume**:
+A named, writable directory that a User creates, mounts into Sandboxes, and deletes explicitly. It is bound to no Node and is not owned by any Sandbox. At most one Sandbox mounts a Volume at a time, always read-write; it holds the Volume from `pending` until it stops, fails, or finishes deleting.
+_Avoid_: Workspace, persistent Workspace, Drive, read-only mount
+
+**Generation**:
+An immutable committed state of a Sandbox's filesystem or of a Volume, kept in object storage. A Sandbox or Volume restores from its head Generation on any Node; what was written after it is lost with the Node.
+_Avoid_: checkpoint, backup, Snapshot
 
 **Resource**:
 A stable named collection of persisted content whose current version may be mounted, copied, or referenced by execution.
-_Avoid_: Workspace, build output
+_Avoid_: Volume, build output
 
 **ResourceVersion**:
 An immutable content-addressed version of a Resource. Its address identifies the content; provenance and metadata explain how that content entered the platform.
-_Avoid_: mutable file, Workspace snapshot
+_Avoid_: mutable file, Generation
 
 **Snapshot**:
-An immutable, reusable software-environment template. It excludes Workspace state, Resources, Secrets, and running processes.
-_Avoid_: Workspace checkpoint, process checkpoint
+An immutable, reusable software-environment template. It excludes what a Sandbox writes to its filesystem, Volumes, Resources, Secrets, and running processes.
+_Avoid_: Generation, process checkpoint
 
 **SnapshotVersion**:
 An immutable image of a Snapshot, built from a base and declared build inputs or imported by digest. Its inputs are traceable; rebuilding them is not promised to yield the same result.
-_Avoid_: Workspace snapshot, running Sandbox
+_Avoid_: Generation, running Sandbox
 
 **Platform Snapshot**:
 A Snapshot given by deployment configuration and readable by every User. It is a recommended starting point for Sandboxes and builds, not a restriction.
@@ -115,7 +119,7 @@ A registered compute host whose Node Agent reports its Runtime Provider, hardwar
 _Avoid_: worker container, Sandbox
 
 **Paused Node**:
-A Node that receives no new Workspaces or builds, while Workspaces already bound to it can still run Sandboxes and running Sandboxes continue undisturbed. A paused Node with no running Sandbox is drained; drained is a fact, not a separate state.
+A Node that receives no new Sandboxes, restarted ones included, and no builds, while running Sandboxes continue undisturbed. A paused Node with no running Sandbox is drained; drained is a fact, not a separate state.
 _Avoid_: cordoned, draining state, evicting
 
 **Node Agent**:
@@ -163,7 +167,7 @@ The facts a Node Agent self-checks and reports about what a Runtime Provider can
 _Avoid_: provider promise, static feature list
 
 **Lease**:
-A fenced claim over a mutable Workspace or schedulable compute resource. It ends by an explicit act, never by expiry; its fencing token rejects work from a holder that has been superseded. Resource Allocation generations are monotonic counters, not fences: the Control Plane is its only writer. Admission compares `sandboxes.generation` as its CAS guard.
+A fenced claim over a Volume or schedulable compute resource. It ends by an explicit act, never by expiry; its fencing token rejects work from a holder that has been superseded. Resource Allocation generations are monotonic counters, not fences: the Control Plane is its only writer. Admission compares `sandboxes.generation` as its CAS guard.
 _Avoid_: timed lock, TTL
 
 **User**:
@@ -281,10 +285,10 @@ The console's Chinese locale (`web/messages/zh.json`) uses these names for the t
 | Term | 中文 |
 | --- | --- |
 | Sandbox | 沙箱 |
-| Snapshot | 快照 (an environment template, never a saved Workspace state) |
+| Snapshot | 快照 (an environment template, never a Generation) |
 | SnapshotVersion | 快照版本 |
 | Platform Snapshot | 平台快照 |
-| Workspace | 工作区 |
+| Volume | 卷 |
 | Resource | 资源 (only for the persisted Resource; compute sizing is 规格, capacity is 容量) |
 | Secret | 密钥 |
 | Node | 节点 |
