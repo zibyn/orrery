@@ -159,6 +159,11 @@ func (s *Server) handleDeleteVolume(w http.ResponseWriter, r *http.Request, p *p
 		writeProblem(w, "conflict", "a Sandbox holds the Volume")
 		return
 	}
+	// A directory still waiting on a Node for this Volume is not uploaded.
+	if err := q.DeleteVolumeLegacyDir(ctx, &v.ID); err != nil {
+		s.internal(w, "drop Volume directory", err)
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		s.internal(w, "commit Volume deletion", err)
 		return

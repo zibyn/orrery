@@ -101,7 +101,6 @@ func (s *Server) purgeExpiredRows(ctx context.Context) {
 			{"User idempotency keys", func() error { return q.PurgeUserIdempotencyKeys(ctx) }},
 			{"token idempotency keys", func() error { return q.PurgeTokenIdempotencyKeys(ctx) }},
 			{"Sandbox idempotency keys", func() error { return q.PurgeSandboxIdempotencyKeys(ctx) }},
-			{"Workspace idempotency keys", func() error { return q.PurgeWorkspaceIdempotencyKeys(ctx) }},
 			{"Volume idempotency keys", func() error { return q.PurgeVolumeIdempotencyKeys(ctx) }},
 			{"Snapshot idempotency keys", func() error { return q.PurgeSnapshotIdempotencyKeys(ctx) }},
 			{"Resource idempotency keys", func() error { return q.PurgeResourceIdempotencyKeys(ctx) }},

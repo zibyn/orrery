@@ -76,21 +76,17 @@ func (f *placementFixture) exec(sql string, args ...any) {
 	}
 }
 
-// sandbox is a user Sandbox in state that last ran on node (nil: never ran),
-// with an unbound persistent Workspace, so only the Sandbox's own Node
-// steers placement.
-func (f *placementFixture) sandbox(state string, node *uuid.UUID) (store.Sandbox, store.Workspace) {
+// sandbox is a user Sandbox in state that last ran on node (nil: never ran).
+func (f *placementFixture) sandbox(state string, node *uuid.UUID) store.Sandbox {
 	f.t.Helper()
-	id, ws := uuid.New(), uuid.New()
+	id := uuid.New()
 	desired := "running"
 	if state == "stopped" || state == "stopping" {
 		desired = "stopped"
 	}
 	f.exec(`INSERT INTO sandboxes (id, owner_id, name, snapshot_digest, cpu, memory, state, desired_state, node_id)
 		VALUES ($1, $2, $3, 'sha256:x', 1, 1073741824, $4, $5, $6)`, id, f.user, "sb-"+id.String(), state, desired, node)
-	f.exec(`INSERT INTO workspaces (id, owner_id, kind, state) VALUES ($1, $2, 'persistent', 'ready')`, ws, f.user)
-	f.exec(`UPDATE sandboxes SET workspace_id = $2, workspace_mode = 'rw' WHERE id = $1`, id, ws)
-	return f.get(id), f.workspace(ws)
+	return f.get(id)
 }
 
 func (f *placementFixture) get(id uuid.UUID) store.Sandbox {
@@ -102,20 +98,11 @@ func (f *placementFixture) get(id uuid.UUID) store.Sandbox {
 	return sb
 }
 
-func (f *placementFixture) workspace(id uuid.UUID) store.Workspace {
-	f.t.Helper()
-	ws, err := f.s.q.GetWorkspace(f.ctx, id)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	return ws
-}
-
 // admit runs one placement of sb over the fixture's Nodes and returns the
 // Node it was placed on, or nil.
-func (f *placementFixture) admit(sb store.Sandbox, ws store.Workspace, nodes []store.Node) *uuid.UUID {
+func (f *placementFixture) admit(sb store.Sandbox, pinned *uuid.UUID, nodes []store.Node) *uuid.UUID {
 	f.t.Helper()
-	placed, err := f.r.tryAdmit(f.ctx, f.s.q, sb, ws, nodes, time.Now())
+	placed, err := f.r.tryAdmit(f.ctx, f.s.q, sb, pinned, nodes, time.Now())
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -131,32 +118,81 @@ func TestRestartedSandboxPlacement(t *testing.T) {
 	older, newer := f.nodes[0], f.nodes[1]
 
 	t.Run("its Node infeasible, it goes elsewhere", func(t *testing.T) {
-		sb, ws := f.sandbox("pending", &older.ID)
+		sb := f.sandbox("pending", &older.ID)
 		paused := older
 		paused.Paused = true
-		got := f.admit(sb, ws, []store.Node{paused, newer})
+		got := f.admit(sb, nil, []store.Node{paused, newer})
 		if got == nil || *got != newer.ID {
 			t.Fatalf("placed on %v, want the other Node %s", got, newer.ID)
 		}
 	})
 
 	t.Run("its Node feasible, it is preferred over an earlier Node", func(t *testing.T) {
-		sb, ws := f.sandbox("pending", &newer.ID)
-		got := f.admit(sb, ws, f.nodes)
+		sb := f.sandbox("pending", &newer.ID)
+		got := f.admit(sb, nil, f.nodes)
 		if got == nil || *got != newer.ID {
 			t.Fatalf("placed on %v, want its last Node %s", got, newer.ID)
 		}
 	})
 
-	t.Run("a paused Node takes no restarted Sandbox even with its Workspace", func(t *testing.T) {
-		sb, ws := f.sandbox("pending", &older.ID)
-		f.exec(`UPDATE workspaces SET node_id = $2 WHERE id = $1`, ws.ID, older.ID)
+	t.Run("a paused Node takes no restarted Sandbox even when pinned there", func(t *testing.T) {
+		sb := f.sandbox("pending", &older.ID)
 		paused := older
 		paused.Paused = true
-		if got := f.admit(sb, f.workspace(ws.ID), []store.Node{paused, newer}); got != nil {
+		if got := f.admit(sb, &older.ID, []store.Node{paused, newer}); got != nil {
 			t.Fatalf("placed on %v, want none", got)
 		}
 	})
+}
+
+// Migration 000037: a directory from before ADR-0031 pins its Sandbox, and
+// the Sandboxes mounting its Volume, to its Node until a commit after the
+// next Create there holds it.
+func TestLegacyDirectoryPinsItsNode(t *testing.T) {
+	f := newPlacementFixture(t)
+	older, newer := f.nodes[0], f.nodes[1]
+	pinnedTo := func(sb store.Sandbox) *uuid.UUID {
+		t.Helper()
+		nodes, err := f.s.q.ListLegacyDirNodes(f.ctx, sb.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(nodes) == 0 {
+			return nil
+		}
+		return &nodes[0]
+	}
+
+	own := f.sandbox("pending", &newer.ID)
+	f.exec(`INSERT INTO legacy_dirs (id, node_id, sandbox_id) VALUES ($1, $2, $3)`, uuid.New(), older.ID, own.ID)
+	volume := uuid.New()
+	f.exec(`INSERT INTO volumes (id, owner_id, name) VALUES ($1, $2, 'v')`, volume, f.user)
+	f.exec(`INSERT INTO legacy_dirs (id, node_id, volume_id) VALUES ($1, $2, $1)`, volume, older.ID)
+	mounting := f.sandbox("pending", &newer.ID)
+	f.exec(`INSERT INTO sandbox_volumes (sandbox_id, volume_id, path, held) VALUES ($1, $2, '/data', true)`, mounting.ID, volume)
+
+	for name, sb := range map[string]store.Sandbox{"own directory": own, "Volume's directory": mounting} {
+		if got := f.admit(sb, pinnedTo(sb), f.nodes); got == nil || *got != older.ID {
+			t.Fatalf("%s: placed on %v, want the directory's Node %s", name, got, older.ID)
+		}
+		// Committed after that Create, the Sandbox moves freely again.
+		if err := f.s.q.FinishLegacyDirs(f.ctx, sb.ID); err != nil {
+			t.Fatal(err)
+		}
+		if got := pinnedTo(sb); got != nil {
+			t.Fatalf("%s: still pinned to %s after the commit", name, got)
+		}
+	}
+
+	// A commit from before the upgrade's first Create there holds nothing.
+	running := f.sandbox("ready", &older.ID)
+	f.exec(`INSERT INTO legacy_dirs (id, node_id, sandbox_id) VALUES ($1, $2, $3)`, uuid.New(), older.ID, running.ID)
+	if err := f.s.q.FinishLegacyDirs(f.ctx, running.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := pinnedTo(running); got == nil {
+		t.Fatal("a commit before the merging Create released the pin")
+	}
 }
 
 // api.md §3 "宣告 lost": running, stopping and bound pending Sandboxes become
@@ -165,11 +201,11 @@ func TestRestartedSandboxPlacement(t *testing.T) {
 func TestNodeLostStopsSandboxes(t *testing.T) {
 	f := newPlacementFixture(t)
 	lost, other := f.nodes[0], f.nodes[1]
-	ready, _ := f.sandbox("ready", &lost.ID)
-	stopping, _ := f.sandbox("stopping", &lost.ID)
-	stopped, _ := f.sandbox("stopped", &lost.ID)
-	queued, _ := f.sandbox("pending", &lost.ID) // waiting, not bound: not affected
-	bound, _ := f.sandbox("pending", &lost.ID)
+	ready := f.sandbox("ready", &lost.ID)
+	stopping := f.sandbox("stopping", &lost.ID)
+	stopped := f.sandbox("stopped", &lost.ID)
+	queued := f.sandbox("pending", &lost.ID) // waiting, not bound: not affected
+	bound := f.sandbox("pending", &lost.ID)
 	for _, sb := range []store.Sandbox{ready, stopping, bound} {
 		f.exec(`INSERT INTO allocations (sandbox_id, node_id, cpu, memory, generation) VALUES ($1, $2, 1, 1, 1)`, sb.ID, lost.ID)
 	}
@@ -203,10 +239,9 @@ func TestNodeLostStopsSandboxes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws := f.workspace(*restarted.WorkspaceID)
 	lostNode := lost
 	lostNode.Paused, lostNode.LostAt = true, pgtype.Timestamptz{Time: time.Now(), Valid: true}
-	if got := f.admit(restarted, ws, []store.Node{lostNode, other}); got == nil || *got != other.ID {
+	if got := f.admit(restarted, nil, []store.Node{lostNode, other}); got == nil || *got != other.ID {
 		t.Fatalf("restart placed on %v, want %s", got, other.ID)
 	}
 }

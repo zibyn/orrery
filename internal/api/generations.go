@@ -348,6 +348,11 @@ func (s *Server) recordGeneration(ctx context.Context, q *store.Queries, sb stor
 	if moved != 1 {
 		return fmt.Errorf("head of %s moved under the row lock", sb.ID)
 	}
+	if volume == nil {
+		// The Sandbox's own commit comes after its Volumes': the directories
+		// its last Create merged are now in object storage (migration 000037).
+		return q.FinishLegacyDirs(ctx, sb.ID)
+	}
 	return nil
 }
 

@@ -123,9 +123,6 @@ func (r *reconciler) once(ctx context.Context) {
 			r.stopForDelete(ctx, sb)
 		}
 	}
-	r.deleteWorkspaces(ctx)
-	r.workspaces(ctx)
-	r.publishWorkspaces(ctx)
 	r.publishSandboxes(ctx)
 	r.s.publishVolumes(ctx)
 	r.builds(ctx)
@@ -273,41 +270,12 @@ func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
 	if placed, err := r.placed(ctx, sb); err != nil || !placed {
 		return
 	}
-	ws, err := r.s.q.GetSandboxWorkspace(ctx, sb.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		r.fail(ctx, sb, "runtime_create_failed")
-		return
-	}
-	if err != nil {
-		r.s.log.Warn("reconcile: workspace lookup", "sandbox_id", sb.ID, "error", err)
-		return
-	}
-	if ws.NodeID == nil {
-		if _, err := r.s.q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{
-			ID: ws.ID, NodeID: sb.NodeID,
-		}); err != nil {
-			r.s.log.Warn("reconcile: bind workspace", "workspace_id", ws.ID, "error", err)
-		}
-		return
-	}
-	switch WorkspaceState(ws.State) {
-	case WorkspaceProvisioning:
-		// The Workspace sweep sends ProvisionWorkspace with its retry backoff.
-	case WorkspaceReady:
-		if _, err := r.s.q.SetSandboxProvisioning(ctx, sb.ID); err != nil {
-			r.s.log.Warn("reconcile: mark sandbox provisioning", "sandbox_id", sb.ID, "error", err)
-		}
-	default:
-		// failed, lost, deleting or deleted: nothing to mount.
-		r.fail(ctx, sb, "runtime_create_failed")
+	if _, err := r.s.q.SetSandboxProvisioning(ctx, sb.ID); err != nil {
+		r.s.log.Warn("reconcile: mark sandbox provisioning", "sandbox_id", sb.ID, "error", err)
 	}
 }
 
 func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
-	if sb.WorkspaceID == nil {
-		r.fail(ctx, sb, "runtime_create_failed")
-		return
-	}
 	if sb.NodeID == nil {
 		return
 	}
@@ -336,8 +304,7 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 		return
 	}
 	id := commandID("create-sandbox", sb.ID, sb.Generation)
-	workspace := &nodev1.WorkspaceMount{WorkspaceId: sb.WorkspaceID.String(), Mode: sb.WorkspaceMode}
-	cmd := createSandboxCommand(id, sb, workspace, gpus, resources)
+	cmd := createSandboxCommand(id, sb, gpus, resources)
 	for _, v := range volumes {
 		mount := &nodev1.VolumeMount{VolumeId: v.VolumeID.String(), Path: v.Path, Name: v.Name}
 		if v.HeadGenerationID != nil {
@@ -350,14 +317,13 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 
 // createSandboxCommand is the same on every (re)send of one generation
 // (node-protocol.md).
-func createSandboxCommand(id string, sb store.Sandbox, workspace *nodev1.WorkspaceMount, gpus []string, resources []*nodev1.ResourceMount) *nodev1.CreateSandbox {
+func createSandboxCommand(id string, sb store.Sandbox, gpus []string, resources []*nodev1.ResourceMount) *nodev1.CreateSandbox {
 	return &nodev1.CreateSandbox{
 		CommandId:   id,
 		SandboxId:   sb.ID.String(),
 		Generation:  sb.Generation,
 		ImageDigest: sb.SnapshotDigest,
 		Limits:      &nodev1.Limits{Cpu: sb.Cpu, Memory: sb.Memory},
-		Workspace:   workspace,
 		GpuUuids:    gpus,
 		Resources:   resources,
 		Egress:      &nodev1.EgressMode{Mode: sandboxEgressValue(sb.EgressMode), Allow: sb.EgressAllow},
@@ -437,10 +403,9 @@ func (r *reconciler) stopForDelete(ctx context.Context, sb store.Sandbox) {
 		return
 	}
 	if !placed {
-		// No Runtime runs. Release the Runtime and let the implicit
-		// Workspace's cleanup finish the Sandbox, or finish a persistent one
-		// now (ADR-0018). The Node it last ran on drops its cache; one that
-		// is unreachable or deleted leaves it to its disk watermark.
+		// No Runtime runs: finish the Sandbox now. The Node it last ran on
+		// drops its cache; one that is unreachable or deleted leaves it to its
+		// disk watermark.
 		r.dropSandboxDisk(ctx, sb)
 		if err := finalizeGone(ctx, r.s.q, sb.ID); err != nil {
 			r.s.log.Warn("reconcile: finalize deleted Sandbox", "sandbox_id", sb.ID, "error", err)
@@ -492,107 +457,10 @@ func (r *reconciler) execsDrained(ctx context.Context, sandboxID uuid.UUID) bool
 	return active == 0
 }
 
-// workspaceProvisionBackoff is the delay after each failed provisioning
-// attempt (defaults.md: 1, 2, 4, 8, 16 seconds; the third failure raises
-// provisioning_stalled).
-var workspaceProvisionBackoff = []time.Duration{
-	time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
-}
-
-const workspaceStalledAfter = 3
-
-// workspaces provisions every Workspace whose Node is known, honoring the
-// retry backoff. A persistent Workspace without a Node is placed first
-// (ADR-0014: a paused Node takes no new Workspaces); an ephemeral one is bound
-// by its Sandbox's admission.
-func (r *reconciler) workspaces(ctx context.Context) {
-	rows, err := r.s.q.ListProvisioningWorkspaces(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			r.s.log.Warn("reconcile: list provisioning Workspaces", "error", err)
-		}
-		return
-	}
-	now := time.Now()
-	for _, ws := range rows {
-		if ws.NodeID == nil {
-			if ws.Kind == "persistent" {
-				r.placeWorkspace(ctx, ws, now)
-			}
-			continue
-		}
-		if !parseWorkspaceConditions(ws.Conditions).provisionDue(now) {
-			continue
-		}
-		id := commandID("provision-workspace", ws.ID, ws.Generation)
-		r.send(ctx, ws.NodeID, id, &nodev1.ControlMessage{
-			Message: &nodev1.ControlMessage_ProvisionWorkspace{
-				ProvisionWorkspace: &nodev1.ProvisionWorkspace{
-					CommandId:   id,
-					WorkspaceId: ws.ID.String(),
-					Generation:  ws.Generation,
-				},
-			},
-		})
-	}
-}
-
-func (r *reconciler) placeWorkspace(ctx context.Context, ws store.Workspace, now time.Time) {
-	nodes, err := r.s.q.ListAllNodes(ctx)
-	if err != nil {
-		r.s.log.Warn("reconcile: place Workspace", "workspace_id", ws.ID, "error", err)
-		return
-	}
-	for _, node := range r.hub.currentReports(nodes) {
-		if !nodeReady(node, now) || !r.hub.connected(node.ID) {
-			continue
-		}
-		if _, err := r.s.q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{
-			ID: ws.ID, NodeID: &node.ID,
-		}); err != nil {
-			r.s.log.Warn("reconcile: bind Workspace", "workspace_id", ws.ID, "error", err)
-		}
-		return
-	}
-}
-
-// publishWorkspaces derives PublishWorkspace for every pending
-// workspace-source ResourceVersion and sends it to the Workspace's bound Node.
-// nodeHub clears its dedupe memory on reconnect, so an Agent restart redelivers
-// the command and the walk converges (publish-agent-restart).
-func (r *reconciler) publishWorkspaces(ctx context.Context) {
-	rows, err := r.s.q.ListPendingWorkspacePublishes(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			r.s.log.Warn("reconcile: list pending publishes", "error", err)
-		}
-		return
-	}
-	for _, row := range rows {
-		if row.NodeID == nil {
-			continue
-		}
-		workspaceID, publishPath, ok := parseWorkspaceProvenance(row.Provenance)
-		if !ok {
-			r.s.log.Warn("reconcile: publish has no workspace provenance", "version_id", row.ID)
-			continue
-		}
-		id := publishCommandID(row.ID)
-		r.send(ctx, row.NodeID, id, &nodev1.ControlMessage{
-			Message: &nodev1.ControlMessage_PublishWorkspace{
-				PublishWorkspace: &nodev1.PublishWorkspace{
-					CommandId:   id,
-					VersionId:   row.ID.String(),
-					WorkspaceId: workspaceID.String(),
-					Path:        publishPath,
-				},
-			},
-		})
-	}
-}
-
 // publishSandboxes derives PublishSandbox for every pending Sandbox publish
-// and sends it to the Sandbox's Node, like publishWorkspaces.
+// and sends it to the Sandbox's Node. nodeHub clears its dedupe memory on
+// reconnect, so an Agent restart redelivers the command and the walk
+// converges (publish-agent-restart).
 func (r *reconciler) publishSandboxes(ctx context.Context) {
 	rows, err := r.s.q.ListPendingSandboxPublishes(ctx)
 	if err != nil {
@@ -668,47 +536,6 @@ func (r *reconciler) idle(ctx context.Context) {
 		if running > 0 || live > 0 || !sb.LastActivityAt.Valid {
 			if err := r.s.q.TouchSandboxActivity(ctx, sb.ID); err != nil {
 				r.s.log.Warn("reconcile: touch activity", "sandbox_id", sb.ID, "error", err)
-			}
-		}
-	}
-}
-
-func (r *reconciler) deleteWorkspaces(ctx context.Context) {
-	workspaces, err := r.s.q.ListDeletingWorkspaces(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			r.s.log.Warn("reconcile: list workspaces", "error", err)
-		}
-		return
-	}
-	for _, ws := range workspaces {
-		if ws.NodeID == nil {
-			r.finalizeWorkspace(ctx, ws)
-			continue
-		}
-		id := commandID("delete-workspace", ws.ID, ws.Generation)
-		r.send(ctx, ws.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_DeleteWorkspace{
-			DeleteWorkspace: &nodev1.DeleteWorkspace{
-				CommandId: id, WorkspaceId: ws.ID.String(), Generation: ws.Generation,
-			},
-		}})
-	}
-}
-
-func (r *reconciler) finalizeWorkspace(ctx context.Context, ws store.Workspace) {
-	if _, err := r.s.q.MarkWorkspaceDeleted(ctx, store.MarkWorkspaceDeletedParams{
-		ID: ws.ID, Generation: ws.Generation,
-	}); err != nil {
-		r.s.log.Warn("reconcile: mark workspace deleted", "workspace_id", ws.ID, "error", err)
-		return
-	}
-	if ws.SandboxID != nil {
-		// A Workspace going away does not release a Sandbox that still runs
-		// (ADR-0018); only its own deletion finishes it.
-		if sb, err := r.s.q.GetSandbox(ctx, *ws.SandboxID); err == nil &&
-			SandboxDesiredState(sb.DesiredState) == SandboxDesiredDeleted {
-			if err := finalizeGone(ctx, r.s.q, *ws.SandboxID); err != nil {
-				r.s.log.Warn("reconcile: finalize Sandbox", "sandbox_id", *ws.SandboxID, "error", err)
 			}
 		}
 	}

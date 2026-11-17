@@ -107,11 +107,11 @@ func TestAdmissionExhausted(t *testing.T) {
 	reconnected.Capabilities = nil
 
 	for _, tt := range []struct {
-		name          string
-		nodes         []store.Node
-		sb            store.Sandbox
-		workspaceNode *uuid.UUID
-		want          bool
+		name   string
+		nodes  []store.Node
+		sb     store.Sandbox
+		pinned *uuid.UUID
+		want   bool
 	}{
 		{"no Node has enrolled yet", nil, request, nil, false},
 		{"unknown hardware is not proof", []store.Node{noHardware}, request, nil, false},
@@ -127,7 +127,7 @@ func TestAdmissionExhausted(t *testing.T) {
 			false,
 		},
 		{
-			"a bound Workspace only considers its Node",
+			"a pinned Sandbox only considers its Node",
 			[]store.Node{small, big},
 			store.Sandbox{Cpu: 4, Memory: 8 << 30},
 			&small.ID,
@@ -135,7 +135,7 @@ func TestAdmissionExhausted(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := admissionExhausted(tt.nodes, nil, tt.sb, tt.workspaceNode); got != tt.want {
+			if got := admissionExhausted(tt.nodes, nil, tt.sb, tt.pinned); got != tt.want {
 				t.Fatalf("admissionExhausted = %v, want %v", got, tt.want)
 			}
 		})

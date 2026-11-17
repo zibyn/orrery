@@ -162,7 +162,7 @@ func responsesFor(rt route) map[string]any {
 		responses["503"] = problemResponse("unavailable")
 	case "createResourceVersion", "getResourceManifest", "createResourceDownloads":
 		responses["503"] = problemResponse("unavailable")
-	case "publishWorkspace":
+	case "publishSandbox":
 		responses["503"] = problemResponse("unavailable")
 	case "setResourceCurrent":
 		responses["412"] = problemResponse("precondition_failed")
@@ -527,38 +527,6 @@ func schemas() map[string]any {
 				"next_cursor": nullableString,
 			},
 		},
-		"SandboxWorkspace": map[string]any{
-			"type":     "object",
-			"required": []string{"id", "mode"},
-			"properties": map[string]any{
-				"id":   map[string]any{"type": "string", "format": "uuid"},
-				"mode": map[string]any{"type": "string", "enum": []string{"rw", "ro"}},
-			},
-		},
-		"Workspace": map[string]any{
-			"type":     "object",
-			"required": []string{"id", "kind", "state", "unavailable", "conditions", "created_at"},
-			"properties": map[string]any{
-				"id":          map[string]any{"type": "string", "format": "uuid"},
-				"kind":        map[string]any{"type": "string", "enum": []string{"ephemeral", "persistent"}},
-				"node_id":     nullableString,
-				"state":       map[string]any{"type": "string", "enum": workspaceStateNames},
-				"cause":       nullableString,
-				"unavailable": map[string]any{"type": "boolean", "description": "Derived from Node reachability, never stored."},
-				"conditions":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"sandbox_id":  nullableString,
-				"created_at":  map[string]any{"type": "string", "format": "date-time"},
-				"deleted_at":  nullableTime,
-			},
-		},
-		"WorkspaceList": map[string]any{
-			"type":     "object",
-			"required": []string{"items", "next_cursor"},
-			"properties": map[string]any{
-				"items":       map[string]any{"type": "array", "items": schemaRef("Workspace")},
-				"next_cursor": nullableString,
-			},
-		},
 		"CreateVolumeRequest": map[string]any{
 			"type":     "object",
 			"required": []string{"name"},
@@ -716,15 +684,6 @@ func schemas() map[string]any {
 					"default":     "container",
 					"description": "container places on a containerd Node; local places on a Local Runtime Node and accepts no Snapshot or Resources.",
 				},
-				"workspace": map[string]any{
-					"type":        "object",
-					"description": "Attach an existing Workspace; omit to create an implicit ephemeral one.",
-					"required":    []string{"id"},
-					"properties": map[string]any{
-						"id":   map[string]any{"type": "string", "format": "uuid"},
-						"mode": map[string]any{"type": "string", "enum": []string{"rw", "ro"}, "default": "rw"},
-					},
-				},
 				"volumes": map[string]any{
 					"type":        "array",
 					"maxItems":    maxSandboxVolumes,
@@ -827,7 +786,6 @@ func schemas() map[string]any {
 				},
 				"idle_stop":      map[string]any{"type": "integer"},
 				"conditions":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Current conditions: commit_stalled while a stop's commit is being retried; changes_lost after the Sandbox's Node was declared lost (ADR-0031)."},
-				"workspace":      schemaRef("SandboxWorkspace"),
 				"volumes":        map[string]any{"type": "array", "items": schemaRef("SandboxVolume")},
 				"queue_position": map[string]any{"type": "integer", "description": "1-based position in the admission queue while pending."},
 				"blocked_reason": nullableString,
@@ -1023,20 +981,6 @@ func schemas() map[string]any {
 				"upload_id": map[string]any{"type": "string", "format": "uuid"},
 			},
 		},
-		"PublishWorkspaceRequest": map[string]any{
-			"type":     "object",
-			"required": []string{"path", "resource"},
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Relative to the Workspace root; /workspace/... is accepted. Must stay inside the Workspace.",
-				},
-				"resource": map[string]any{
-					"type":        "string",
-					"description": "Resource name; created when absent.",
-				},
-			},
-		},
 		"ResourceVersion": map[string]any{
 			"type":     "object",
 			"required": []string{"id", "resource_id", "size", "state", "provenance", "created_at"},
@@ -1047,7 +991,7 @@ func schemas() map[string]any {
 				"size":        map[string]any{"type": "integer"},
 				"state":       map[string]any{"type": "string", "enum": resourceVersionStateNames},
 				"cause":       nullableString,
-				"provenance":  map[string]any{"type": "object", "description": "upload, or workspace{id, path}."},
+				"provenance":  map[string]any{"type": "object", "description": "upload, sandbox{id, path} or volume{id, path, generation_id}."},
 				"created_at":  map[string]any{"type": "string", "format": "date-time"},
 				"expires_at":  nullableTime,
 			},

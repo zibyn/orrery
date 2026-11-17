@@ -17,8 +17,8 @@ import (
 	"github.com/zibyn/orrery/internal/store"
 )
 
-// publishFailedCause is the single failure cause a Workspace publish reports
-// (node-protocol.md "Workspace publish").
+// publishFailedCause is the single failure cause a Sandbox publish reports
+// (node-protocol.md "Sandbox publish").
 const publishFailedCause = "publish_failed"
 
 // manifestAccumulator collects SubmitManifest chunks. version_id arrives on
@@ -103,8 +103,8 @@ func missingObjects(objects []manifest.FileObject, head func(string) (string, er
 	return missing, nil
 }
 
-// SubmitManifest receives a Workspace publish's manifest (node-protocol.md
-// "Workspace publish"). It writes the canonical manifest, replaces the pending
+// SubmitManifest receives a Sandbox publish's manifest (node-protocol.md
+// "Sandbox publish"). It writes the canonical manifest, replaces the pending
 // version's object set, and replies with the objects the store still lacks.
 func (n *nodeService) SubmitManifest(stream nodev1.Node_SubmitManifestServer) error {
 	ctx := stream.Context()
@@ -136,9 +136,9 @@ func (n *nodeService) SubmitManifest(stream nodev1.Node_SubmitManifestServer) er
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "version_id must be a UUID")
 	}
-	pending, err := n.s.q.GetPendingWorkspacePublish(ctx, versionID)
+	pending, err := n.s.q.GetPendingSandboxPublish(ctx, versionID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return status.Error(codes.InvalidArgument, "version is not a pending Workspace publish")
+		return status.Error(codes.InvalidArgument, "version is not a pending Sandbox publish")
 	}
 	if err != nil {
 		n.s.log.Error("load pending publish", "version_id", versionID, "error", err)
@@ -172,7 +172,7 @@ func (n *nodeService) SubmitManifest(stream nodev1.Node_SubmitManifestServer) er
 		ID: versionID, Address: &address, ManifestKey: &manifestKey, Size: manifest.TotalSize(m),
 	})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && updated.State != string(ResourceVersionPending)) {
-		return status.Error(codes.InvalidArgument, "version is not a pending Workspace publish")
+		return status.Error(codes.InvalidArgument, "version is not a pending Sandbox publish")
 	}
 	if err != nil {
 		n.s.log.Error("record publish manifest", "version_id", versionID, "error", err)
@@ -204,7 +204,7 @@ func (n *nodeService) SubmitManifest(stream nodev1.Node_SubmitManifestServer) er
 	return stream.SendAndClose(&nodev1.ManifestAck{MissingSha256: missing})
 }
 
-// handlePublishCommandResult finalizes a Workspace publish once its Agent
+// handlePublishCommandResult finalizes a Sandbox publish once its Agent
 // reports (node-protocol.md step 3-4). A failed command or a failed final
 // validation marks the version failed; only a fully verified object set makes
 // it ready and moves the current pointer.
@@ -213,7 +213,7 @@ func (n *nodeService) handlePublishCommandResult(ctx context.Context, node store
 	if !ok {
 		return
 	}
-	pending, err := n.s.q.GetPendingWorkspacePublish(ctx, versionID)
+	pending, err := n.s.q.GetPendingSandboxPublish(ctx, versionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return // already terminal: a redelivered command changes nothing
 	}

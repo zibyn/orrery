@@ -158,6 +158,14 @@ type GpuAllocation struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type LegacyDir struct {
+	ID        uuid.UUID
+	NodeID    uuid.UUID
+	SandboxID *uuid.UUID
+	VolumeID  *uuid.UUID
+	Started   bool
+}
+
 type Node struct {
 	ID             uuid.UUID
 	Name           string
@@ -209,7 +217,6 @@ type ResourceVersion struct {
 	IdempotencyKey        *string
 	ExpiresAt             pgtype.Timestamptz
 	CreatedAt             pgtype.Timestamptz
-	PublishWorkspaceID    *uuid.UUID
 	PublishIdempotencyKey *string
 	PublishSandboxID      *uuid.UUID
 	PublishVolumeID       *uuid.UUID
@@ -243,8 +250,6 @@ type Sandbox struct {
 	UpdatedAt        pgtype.Timestamptz
 	DeletedAt        pgtype.Timestamptz
 	GpuModel         *string
-	WorkspaceID      *uuid.UUID
-	WorkspaceMode    string
 	TokenKeyID       *string
 	Conditions       json.RawMessage
 	Kind             string
@@ -345,21 +350,4 @@ type Volume struct {
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
 	DeletedAt        pgtype.Timestamptz
-}
-
-type Workspace struct {
-	ID             uuid.UUID
-	OwnerID        uuid.UUID
-	Kind           string
-	SandboxID      *uuid.UUID
-	NodeID         *uuid.UUID
-	State          string
-	Cause          *string
-	StorageHandle  *string
-	Conditions     json.RawMessage
-	Generation     int64
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	DeletedAt      pgtype.Timestamptz
-	IdempotencyKey *string
 }

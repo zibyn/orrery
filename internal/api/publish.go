@@ -15,12 +15,12 @@ import (
 	"github.com/zibyn/orrery/internal/store"
 )
 
-// errPublishPath marks a path that is not a local path inside the Workspace.
-var errPublishPath = errors.New("path must be relative to the Workspace and stay inside it")
+// errPublishPath marks a path that is not a local path inside /workspace.
+var errPublishPath = errors.New("path must be relative to /workspace and stay inside it")
 
 // normalizePublishPath turns a publish request's path into the relative form
 // the Agent walks. "/workspace" and its descendants are accepted because that
-// is where the Workspace is mounted inside a Sandbox; any other absolute path
+// is the Sandbox's working directory; any other absolute path
 // and any ".." segment is rejected (ADR-0012: paths stay within /workspace).
 func normalizePublishPath(raw string) (string, error) {
 	if strings.ContainsRune(raw, 0) {
@@ -52,141 +52,6 @@ func normalizePublishPath(raw string) (string, error) {
 		return "", errPublishPath
 	}
 	return cleaned, nil
-}
-
-// workspaceProvenance is `source: workspace{id, path}` (schema.md). The path
-// is relative to the Workspace root, with "." for the root itself.
-func workspaceProvenance(workspaceID uuid.UUID, publishPath string) json.RawMessage {
-	type workspaceRef struct {
-		ID   string `json:"id"`
-		Path string `json:"path"`
-	}
-	raw, err := json.Marshal(struct {
-		Source    string       `json:"source"`
-		Workspace workspaceRef `json:"workspace"`
-	}{
-		Source:    "workspace",
-		Workspace: workspaceRef{ID: workspaceID.String(), Path: publishPath},
-	})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
-// parseWorkspaceProvenance reads what workspaceProvenance wrote.
-func parseWorkspaceProvenance(raw json.RawMessage) (uuid.UUID, string, bool) {
-	var prov struct {
-		Source    string `json:"source"`
-		Workspace struct {
-			ID   string `json:"id"`
-			Path string `json:"path"`
-		} `json:"workspace"`
-	}
-	if err := json.Unmarshal(raw, &prov); err != nil || prov.Source != "workspace" {
-		return uuid.Nil, "", false
-	}
-	id, err := uuid.Parse(prov.Workspace.ID)
-	if err != nil {
-		return uuid.Nil, "", false
-	}
-	return id, prov.Workspace.Path, true
-}
-
-// handlePublishWorkspace creates a pending ResourceVersion for a Workspace
-// path (api.md §3). The Reconciler hands the walk to the Workspace's Node;
-// no Sandbox needs to be running. A Node without a live Control stream is
-// 503, because the command could not be delivered.
-func (s *Server) handlePublishWorkspace(w http.ResponseWriter, r *http.Request, p *principal) {
-	id, ok := pathUUID(r, "id")
-	if !ok {
-		writeProblem(w, "invalid_request", "id must be a UUID")
-		return
-	}
-	key, ok := idempotencyKey(r)
-	if !ok {
-		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
-		return
-	}
-	ctx := r.Context()
-	ws, ok := s.getOwnedWorkspace(w, ctx, p, id)
-	if !ok {
-		return
-	}
-	// Idempotency is per (Workspace, key) (api.md §1, migration 000014).
-	lookup := func() (store.ResourceVersion, error) {
-		return s.q.GetResourceVersionByPublishIdempotencyKey(ctx, store.GetResourceVersionByPublishIdempotencyKeyParams{
-			PublishWorkspaceID: &ws.ID, PublishIdempotencyKey: key,
-		})
-	}
-	if replayOr(s, w, "look up idempotent publish", key, lookup, func(v store.ResourceVersion) {
-		writeJSON(w, http.StatusAccepted, resourceVersionToDTO(v))
-	}) {
-		return
-	}
-	if !workspaceUsable(ws) {
-		writeProblem(w, "conflict", "the Workspace is not usable")
-		return
-	}
-	if s.objects == nil {
-		writeProblem(w, "unavailable", "object storage is not configured")
-		return
-	}
-	if ws.NodeID == nil || !s.reconcile.hub.connected(*ws.NodeID) {
-		writeProblem(w, "unavailable", "the Workspace's Node is not connected")
-		return
-	}
-
-	var request struct {
-		Path     string `json:"path"`
-		Resource string `json:"resource"`
-	}
-	if !decodeJSON(w, r, &request) {
-		return
-	}
-	publishPath, err := normalizePublishPath(request.Path)
-	if err != nil {
-		writeProblem(w, "invalid_request", errPublishPath.Error())
-		return
-	}
-	if !validDisplayName(request.Resource) {
-		writeProblem(w, "invalid_request", "resource must be a non-empty, trimmed name of at most 255 characters")
-		return
-	}
-	// The Resource belongs to the Workspace's owner, which is the caller
-	// except when an admin publishes on someone else's Workspace (api.md §1:
-	// admins may act on all resources).
-	resource, err := s.ensureOwnedResource(ctx, ws.OwnerID, request.Resource)
-	if err != nil {
-		s.internal(w, "resolve Resource", err)
-		return
-	}
-
-	versionID, err := uuid.NewV7()
-	if err != nil {
-		s.internal(w, "generate ResourceVersion id", err)
-		return
-	}
-	version, replayed, err := createIdempotent(key, lookup,
-		func() (store.ResourceVersion, error) {
-			return s.q.CreatePendingResourceVersion(ctx, store.CreatePendingResourceVersionParams{
-				ID:                    versionID,
-				ResourceID:            resource.ID,
-				Provenance:            workspaceProvenance(ws.ID, publishPath),
-				PublishWorkspaceID:    &ws.ID,
-				PublishIdempotencyKey: key,
-			})
-		})
-	if err != nil {
-		s.internal(w, "create pending ResourceVersion", err)
-		return
-	}
-	if replayed {
-		writeJSON(w, http.StatusAccepted, resourceVersionToDTO(version))
-		return
-	}
-	s.changed(ctx)
-	writeJSON(w, http.StatusAccepted, resourceVersionToDTO(version))
 }
 
 // ensureOwnedResource resolves a Resource name, creating it when absent — the
@@ -228,26 +93,18 @@ func (s *Server) ensureOwnedResource(ctx context.Context, ownerID uuid.UUID, nam
 // of the same version is idempotent work, while a newer publish is a
 // different version id and therefore a different command and lock key.
 const (
-	publishCommandPrefix        = "publish-workspace"
 	publishSandboxCommandPrefix = "publish-sandbox"
 	publishGeneration           = int64(0)
 )
-
-func publishCommandID(versionID uuid.UUID) string {
-	return commandID(publishCommandPrefix, versionID, publishGeneration)
-}
 
 func publishSandboxCommandID(versionID uuid.UUID) string {
 	return commandID(publishSandboxCommandPrefix, versionID, publishGeneration)
 }
 
-// publishVersionFromCommandID extracts the version a Workspace or Sandbox
-// publish's CommandResult refers to.
+// publishVersionFromCommandID extracts the version a Sandbox publish's
+// CommandResult refers to.
 func publishVersionFromCommandID(id string) (uuid.UUID, bool) {
-	rest, ok := strings.CutPrefix(id, publishCommandPrefix+":")
-	if !ok {
-		rest, ok = strings.CutPrefix(id, publishSandboxCommandPrefix+":")
-	}
+	rest, ok := strings.CutPrefix(id, publishSandboxCommandPrefix+":")
 	if !ok {
 		return uuid.Nil, false
 	}

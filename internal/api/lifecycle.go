@@ -96,35 +96,11 @@ func execStep(facts execFacts, connected, delivered bool) execStepAction {
 	}
 }
 
-// goneAction is what follows releasing a gone Runtime's resources.
-type goneAction int
-
-const (
-	goneReleaseOnly goneAction = iota
-	goneWorkspaceDeleting
-	goneSandboxDeleted
-)
-
-// finalizeAction is the pure part of tearing a Sandbox down once its Runtime
-// is gone. A failed Sandbox, or one the caller has not asked to delete, only
-// releases its Runtime. An ephemeral Workspace is deleted with its Sandbox; a
-// persistent one outlives it. A nil workspace means the Workspace row is
-// already gone, so the Sandbox finishes alone.
-func finalizeAction(state SandboxState, desired SandboxDesiredState, workspace *store.Workspace) goneAction {
-	if state == SandboxFailed || desired != SandboxDesiredDeleted {
-		return goneReleaseOnly
-	}
-	if workspace != nil && workspace.Kind == "ephemeral" {
-		return goneWorkspaceDeleting
-	}
-	return goneSandboxDeleted
-}
-
 // finalizeGone is the one teardown of a Sandbox whose Runtime is gone. It
-// releases the Runtime and then finishes the deletion the desired state asks
-// for. Every step is idempotent, so a repeated observation converges; the
-// caller owns the transaction, the wake, and the proof that the Runtime is
-// really gone.
+// releases the Runtime and then finishes a deletion the desired state asks
+// for; a failed Sandbox only releases. Every step is idempotent, so a repeated
+// observation converges; the caller owns the transaction, the wake, and the
+// proof that the Runtime is really gone.
 func finalizeGone(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) error {
 	sb, err := q.GetSandbox(ctx, sandboxID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -133,35 +109,19 @@ func finalizeGone(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) er
 	if err != nil {
 		return err
 	}
-	// Release before the Workspace lookup: a transient read must not leave the
-	// compute allocated.
 	if err := releaseRuntime(ctx, q, sandboxID); err != nil {
 		return err
 	}
-	// A deleted or missing Workspace row means the Sandbox finishes alone.
-	ws, err := q.GetSandboxWorkspace(ctx, sandboxID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		// Do not orphan an implicit Workspace; the next sweep retries.
-		return err
+	if SandboxState(sb.State) == SandboxFailed || SandboxDesiredState(sb.DesiredState) != SandboxDesiredDeleted {
+		return nil
 	}
-	var workspace *store.Workspace
-	if err == nil {
-		workspace = &ws
-	}
-	switch finalizeAction(SandboxState(sb.State), SandboxDesiredState(sb.DesiredState), workspace) {
-	case goneWorkspaceDeleting:
-		_, err := q.SetWorkspaceDeleting(ctx, ws.ID)
-		return err
-	case goneSandboxDeleted:
-		_, err := q.MarkSandboxDeleted(ctx, sandboxID)
-		return err
-	}
-	return nil
+	_, err = q.MarkSandboxDeleted(ctx, sandboxID)
+	return err
 }
 
 // releaseRuntime drops the Allocation and the GPU claims, which exist only
-// while a runtime does. The write on the Workspace follows the Sandbox state
-// (sandboxes_workspace_rw), so there is nothing else to release.
+// while a runtime does. Volume holds follow the Sandbox state
+// (sandbox_volumes_held), so there is nothing else to release.
 func releaseRuntime(ctx context.Context, q *store.Queries, sandboxID uuid.UUID) error {
 	if err := q.ReleaseCompute(ctx, sandboxID); err != nil {
 		return fmt.Errorf("release allocation: %w", err)

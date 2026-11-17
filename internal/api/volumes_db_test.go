@@ -481,3 +481,16 @@ func garbage(t *testing.T, q *store.Queries, id uuid.UUID) bool {
 	}
 	return false
 }
+
+// The workspace field is gone without an alias period; the refusal names its
+// replacement (ADR-0031).
+func TestSandboxRemovedFieldNamesVolumes(t *testing.T) {
+	a := newVolumeAPI(t)
+	r := a.do(http.MethodPost, "/sandboxes", map[string]any{
+		"runtime": "local", "cpu": 1, "memory": 1 << 20, "workspace": map[string]any{"id": uuid.NewString()},
+	})
+	r.want(t, http.StatusBadRequest)
+	if code := problemCode(r.body); code != "invalid_request" || !strings.Contains(string(r.body), "volumes") {
+		t.Fatalf("workspace field = %s %s, want invalid_request naming volumes", code, r.body)
+	}
+}

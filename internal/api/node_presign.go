@@ -245,7 +245,7 @@ func (s *Server) markObjectsMissing(ctx context.Context, sha256 string, refs []s
 }
 
 // authorizePublishObject reports whether sha256 is one of the objects of a
-// pending Workspace publish or open Generation upload assigned to this Node
+// pending Sandbox publish or open Generation upload assigned to this Node
 // (node-protocol.md "Generation 提交") and is still missing from
 // the store (node-protocol.md "Presign"). It returns the Resource owner whose
 // CAS key the URL addresses (ADR-0021: keys are owner-scoped).

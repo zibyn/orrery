@@ -134,7 +134,7 @@ func (s *Server) handleResumeNode(w http.ResponseWriter, r *http.Request, p *pri
 }
 
 // setNodePaused flips the server-side flag (ADR-0017). A paused Node takes no
-// new Workspace, no Sandbox (restarted ones included) and no build; running
+// Sandbox (restarted ones included) and no build; running
 // Sandboxes are undisturbed (api.md §3, ADR-0031).
 func (s *Server) setNodePaused(w http.ResponseWriter, r *http.Request, p *principal, paused bool) {
 	id, ok := pathUUID(r, "id")
@@ -183,9 +183,10 @@ func nodeLost(node store.Node) bool {
 }
 
 // handleDeleteNode leaves a tombstone (api.md §3, ADR-0014): the Node must be
-// paused with no non-terminal Workspace and no non-terminal Sandbox, build
-// rows included. The token is cleared and the GPU rows are removed; the row
-// stays because Workspaces and Sandboxes still reference it.
+// paused with no Sandbox running, stopping or bound there, build rows
+// included. The token is cleared, the GPU rows are removed and the
+// directories still waiting there from before ADR-0031 are lost; the row
+// stays because Sandboxes still reference it.
 func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request, p *principal) {
 	id, ok := pathUUID(r, "id")
 	if !ok {
@@ -213,18 +214,17 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request, p *pri
 		writeProblem(w, "conflict", "the Node must be paused before it can be deleted")
 		return
 	}
-	workspaces, err := q.CountNodeNonTerminalWorkspaces(ctx, &id)
-	if err != nil {
-		s.internal(w, "count Node Workspaces", err)
-		return
-	}
 	sandboxes, err := q.CountNodeNonTerminalSandboxes(ctx, id)
 	if err != nil {
 		s.internal(w, "count Node Sandboxes", err)
 		return
 	}
-	if workspaces > 0 || sandboxes > 0 {
-		writeProblem(w, "conflict", "the Node still has non-terminal Workspaces or Sandboxes")
+	if sandboxes > 0 {
+		writeProblem(w, "conflict", "the Node still has non-terminal Sandboxes")
+		return
+	}
+	if _, err := q.DeleteNodeLegacyDirs(ctx, id); err != nil {
+		s.internal(w, "drop Node directories", err)
 		return
 	}
 	rows, err := q.TombstoneNode(ctx, id)
@@ -358,10 +358,9 @@ func declareNodeLost(ctx context.Context, q *store.Queries, id uuid.UUID) error 
 		{"stop Sandboxes", func() (int64, error) { return q.StopSandboxesOnNodeLost(ctx, id) }},
 		{"release GPU allocations", func() (int64, error) { return q.DeleteGPUAllocationsOnNodeLost(ctx, id) }},
 		{"release allocations", func() (int64, error) { return q.DeleteAllocationsOnNodeLost(ctx, id) }},
-		{"finish Workspace deletions", func() (int64, error) { return q.MarkDeletingWorkspacesDeletedOnNodeLost(ctx, &id) }},
-		{"mark Workspaces lost", func() (int64, error) { return q.MarkWorkspacesLostOnNodeLost(ctx, &id) }},
+		{"drop directories from before ADR-0031", func() (int64, error) { return q.DeleteNodeLegacyDirs(ctx, id) }},
 		{"fail builds", func() (int64, error) { return q.FailBuildsOnNodeLost(ctx, &id) }},
-		{"fail publishes", func() (int64, error) { return q.FailPublishesOnNodeLost(ctx, id) }},
+		{"fail publishes", func() (int64, error) { return q.FailPublishesOnNodeLost(ctx, &id) }},
 	}
 	for _, step := range steps {
 		if _, err := step.run(); err != nil {
