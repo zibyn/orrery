@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { Plus, Trash } from 'lucide-react'
+import { Trash } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 
 import { api, listAll, type Sandbox, type Workspace } from '@/api'
@@ -25,14 +25,13 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { causeLabel, workspaceKindLabel } from '@/lib/labels'
 import { workspacePollInterval, workspaceSandboxIds } from '@/lib/resources'
 import { formatTimestamp } from '@/lib/tokens'
-import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/workspaces/$id')({
@@ -98,16 +97,6 @@ function WorkspaceDetailPage() {
         actions={
           current && (
             <>
-              {current.kind === 'persistent' && current.state === 'ready' && (
-                <Link
-                  to="/sandboxes/new"
-                  search={{ workspace: id }}
-                  className={cn(buttonVariants({ variant: 'outline' }))}
-                >
-                  <Plus data-icon="inline-start" />
-                  {m.workspace_new_sandbox()}
-                </Link>
-              )}
               {deletable && (
                 <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
                   <AlertDialogTrigger render={<Button variant="outline" disabled={remove.isPending} />}>

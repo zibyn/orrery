@@ -155,6 +155,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				volumes:       volumeMounts(cmd.Volumes),
 				egress:        egressModeOf(cmd.Egress),
 				linkTarget:    cmd.LinkTarget,
+				restore:       cmd.GetRestore().GetGenerationId(),
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)
@@ -172,6 +173,18 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		}
 		go c.run("sandbox:"+cmd.SandboxId, cmd.CommandId, cmd.Generation, func() error {
 			return c.stopSandbox(sbID, cmd.Generation)
+		})
+	case *nodev1.ControlMessage_DropSandboxDisk:
+		cmd := m.DropSandboxDisk
+		sbID, err := uuid.Parse(cmd.SandboxId)
+		if err != nil {
+			c.result(cmd.CommandId, "invalid sandbox id")
+			return
+		}
+		// Sent once the Sandbox is deleted: no generation follows, so the
+		// Sandbox's lock is taken without a fence.
+		go c.run("disk:"+cmd.SandboxId, cmd.CommandId, noGenerationFence, func() error {
+			return c.rt.dropSandboxDisk(c.ctx, sbID)
 		})
 	case *nodev1.ControlMessage_StartExec:
 		cmd := m.StartExec

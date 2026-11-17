@@ -85,7 +85,8 @@ func TestWorkspaceSingleWriter(t *testing.T) {
 		if err := f.mount(a, "rw"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := q.FailSandboxesOnNodeLost(ctx, &node); err != nil {
+		f.exec(`INSERT INTO allocations (sandbox_id, node_id, cpu, memory, generation) VALUES ($1, $2, 1, 1, 1)`, a, node)
+		if _, err := q.StopSandboxesOnNodeLost(ctx, node); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.mount(f.sandbox("pending"), "rw"); err != nil {

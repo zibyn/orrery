@@ -45,6 +45,14 @@ func newFakeGenerationNode(t *testing.T) *fakeGenerationNode {
 		data, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if r.Method == http.MethodGet {
+			if key, ok := strings.CutPrefix(r.URL.Path, "/generations/"); ok {
+				w.Write(f.manifests[key]) //nolint:errcheck // test server
+			} else {
+				w.Write(f.objects[strings.TrimPrefix(r.URL.Path, "/objects/")]) //nolint:errcheck // test server
+			}
+			return
+		}
 		if key, ok := strings.CutPrefix(r.URL.Path, "/generations/"); ok {
 			f.manifests[key] = data
 		} else {
@@ -82,8 +90,10 @@ func (s *fakeGenerationStream) CloseAndRecv() (*nodev1.GenerationAck, error) {
 	for _, c := range s.chunks {
 		for _, e := range c.GetEntries() {
 			digests = append(digests, e.GetSha256())
-			if _, ok := f.objects[e.GetSha256()]; !ok {
-				missing = append(missing, e.GetSha256())
+			for _, d := range append([]string{e.GetSha256()}, e.GetBlocks()...) {
+				if _, ok := f.objects[d]; !ok && d != "" {
+					missing = append(missing, d)
+				}
 			}
 		}
 	}
@@ -223,7 +233,7 @@ func (d *stopRecorder) dropSandboxDisk(context.Context, uuid.UUID) error {
 	return nil
 }
 
-func stopAndObserve(t *testing.T, rt *Runtime) chan *nodev1.SandboxObserved {
+func stopAndObserve(t *testing.T, rt *Runtime, id uuid.UUID, generation int64) chan *nodev1.SandboxObserved {
 	observed := make(chan *nodev1.SandboxObserved, 10)
 	runner := newCommandRunner(t.Context(), rt, func(msg *nodev1.AgentMessage) {
 		if obs := msg.GetSandboxObserved(); obs != nil {
@@ -231,14 +241,15 @@ func stopAndObserve(t *testing.T, rt *Runtime) chan *nodev1.SandboxObserved {
 		}
 	})
 	runner.handle(&nodev1.ControlMessage{Message: &nodev1.ControlMessage_StopSandbox{
-		StopSandbox: &nodev1.StopSandbox{CommandId: "c1", SandboxId: uuid.NewString(), Generation: 2},
+		StopSandbox: &nodev1.StopSandbox{CommandId: "c1", SandboxId: id.String(), Generation: generation},
 	}})
 	return observed
 }
 
 // StopSandbox reports committing, commit_retrying while the store is
-// unreachable, and gone only after the commit; the disk is dropped then
-// (node-protocol.md SandboxObserved).
+// unreachable, and gone only after the commit; the disk stays as the Node's
+// cache, and a later stop of it (a delete) has nothing to commit
+// (node-protocol.md SandboxObserved, runtime.md §16).
 func TestStopSandboxReportsGoneOnlyAfterTheCommit(t *testing.T) {
 	fastCommitRetries(t)
 	f := newFakeGenerationNode(t)
@@ -249,7 +260,8 @@ func TestStopSandboxReportsGoneOnlyAfterTheCommit(t *testing.T) {
 	rt := newRuntime(ProviderContainerd, t.TempDir(), uuid.NewString())
 	rt.driver = driver
 	rt.client = f
-	observed := stopAndObserve(t, rt)
+	id := uuid.New()
+	observed := stopAndObserve(t, rt, id, 2)
 	var phases []string
 	for len(phases) == 0 || phases[len(phases)-1] != string(nodeproto.SandboxPhaseGone) {
 		select {
@@ -274,8 +286,22 @@ func TestStopSandboxReportsGoneOnlyAfterTheCommit(t *testing.T) {
 	}
 	select {
 	case <-driver.dropped:
+		t.Fatal("the committed disk was dropped instead of cached")
 	default:
-		t.Fatal("the committed disk was not dropped")
+	}
+
+	submits := len(f.submitted)
+	again := stopAndObserve(t, rt, id, 3)
+	select {
+	case obs := <-again:
+		if obs.GetPhase() != string(nodeproto.SandboxPhaseGone) {
+			t.Fatalf("second stop reported %q first, want gone", obs.GetPhase())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second stop reported nothing")
+	}
+	if len(f.submitted) != submits {
+		t.Fatal("the second stop committed the cached diff again")
 	}
 }
 
@@ -285,7 +311,7 @@ func TestStopSandboxReportsCommitFailed(t *testing.T) {
 	rt := newRuntime(ProviderContainerd, t.TempDir(), uuid.NewString())
 	rt.driver = driver
 	rt.client = newFakeGenerationNode(t)
-	observed := stopAndObserve(t, rt)
+	observed := stopAndObserve(t, rt, uuid.New(), 2)
 	for _, want := range []string{"committing", "commit_failed"} {
 		select {
 		case obs := <-observed:

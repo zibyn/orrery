@@ -279,11 +279,13 @@ func (r *Runtime) servePresign(ctx context.Context, socket string) {
 type runtimePresigner struct{ r *Runtime }
 
 func (p runtimePresigner) Presign(ctx context.Context, objects, manifests []string) ([]string, error) {
-	resp, err := p.r.presign(ctx, &nodev1.PresignRequest{Sha256: objects, Manifests: manifests, Method: "GET"})
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetUrls(), nil
+	return p.r.presignGET(ctx, objects, manifests)
+}
+
+type presignFunc func(ctx context.Context, objects, manifests []string) ([]string, error)
+
+func (f presignFunc) Presign(ctx context.Context, objects, manifests []string) ([]string, error) {
+	return f(ctx, objects, manifests)
 }
 
 func (p runtimePresigner) PresignGenerations(ctx context.Context, ids []string) ([]string, error) {

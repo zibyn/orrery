@@ -278,6 +278,20 @@ func TestRetireNode(t *testing.T) {
 	runExecScript(t, admin, sbOld.ID,
 		"printf 'retire me\\n' > /workspace/data.txt\nchmod -R a+rwX /workspace")
 
+	// A stopped Sandbox only prefers its Node and does not block deleting it
+	// (ADR-0031); it is stopped before the pause, which takes no restarts.
+	status, data = createSandboxWithWorkspace(t, admin, fmt.Sprintf("retire-stop-%d", suffix), wsOld.ID, "ro", 0)
+	if status != http.StatusCreated {
+		t.Fatalf("create second Sandbox: %d %s", status, data)
+	}
+	var sbStopped sandboxView
+	mustJSON(t, data, &sbStopped)
+	sbStopped = waitForSandboxReady(t, admin, sbStopped.ID)
+	if status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+sbStopped.ID+"/stop", admin, nil); status != http.StatusAccepted {
+		t.Fatalf("stop second Sandbox: %d %s", status, data)
+	}
+	waitForSandboxState(t, admin, sbStopped.ID, "stopped", 60*time.Second)
+
 	cli := newCLIRunner(t, admin)
 	// Pause and resume are the admin switch (ADR-0017). A paused Node takes no
 	// new Workspace but keeps running Sandboxes.
@@ -315,28 +329,10 @@ func TestRetireNode(t *testing.T) {
 	}
 	requireProblemCode(t, data, "conflict")
 
-	// A Workspace already bound to the paused Node can still start a Sandbox
-	// (ADR-0017), and a stopped Sandbox is still non-terminal.
-	status, data = createSandboxWithWorkspace(t, admin, fmt.Sprintf("retire-stop-%d", suffix), wsOld.ID, "rw", 0)
-	if status != http.StatusCreated {
-		t.Fatalf("create second Sandbox: %d %s", status, data)
-	}
-	var sbStopped sandboxView
-	mustJSON(t, data, &sbStopped)
-	sbStopped = waitForSandboxReady(t, admin, sbStopped.ID)
-	if status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+sbStopped.ID+"/stop", admin, nil); status != http.StatusAccepted {
-		t.Fatalf("stop second Sandbox: %d %s", status, data)
-	}
-	waitForSandboxState(t, admin, sbStopped.ID, "stopped", 60*time.Second)
 	if status, data := call(t, http.MethodDelete, "/api/v1/workspaces/"+wsOld.ID, admin, nil); status != http.StatusAccepted {
 		t.Fatalf("delete Workspace: %d %s", status, data)
 	}
 	waitForWorkspaceState(t, admin, wsOld.ID, "deleted", 60*time.Second)
-	status, data = call(t, http.MethodDelete, "/api/v1/nodes/"+old.ID, admin, nil)
-	if status != http.StatusConflict {
-		t.Fatalf("delete a Node with a stopped Sandbox = %d %s, want 409", status, data)
-	}
-	requireProblemCode(t, data, "conflict")
 
 	// Restore into a Workspace on the other Node; the paused Node takes no new
 	// Workspace, so placement has to choose the other one.
@@ -364,7 +360,6 @@ func TestRetireNode(t *testing.T) {
 	runExecScript(t, admin, sbNew.ID,
 		`cp -a /resources/archive/. /workspace/ && chmod -R a+rwX /workspace && test "$(cat /workspace/data.txt)" = "retire me"`)
 
-	// The stopped Sandbox is the last real blocker.
 	deleteSandbox(t, admin, sbStopped.ID)
 
 	// A finished build row is terminal: a Node that ever ran a build can still

@@ -106,40 +106,6 @@ func TestNodeReachable(t *testing.T) {
 	}
 }
 
-// A paused Node takes no new Workspace, but a Sandbox whose Workspace is
-// already bound there can still start (ADR-0017).
-func TestNodeSchedulable(t *testing.T) {
-	now := time.Now()
-	ready := readyNode(t, now)
-	paused := mutate(ready, func(n *store.Node) { n.Paused = true })
-	unavailable := mutate(ready, func(n *store.Node) { n.RuntimeHealth = nil })
-	pausedUnavailable := mutate(unavailable, func(n *store.Node) { n.Paused = true })
-	minorTooOld := int32(nodeproto.Minor) - 1
-	outdated := mutate(ready, func(n *store.Node) { n.ProtoMinor = &minorTooOld })
-	pausedOutdated := mutate(outdated, func(n *store.Node) { n.Paused = true })
-
-	tests := []struct {
-		name          string
-		node          store.Node
-		workspaceHere bool
-		want          bool
-	}{
-		{"ready takes a new Workspace", ready, false, true},
-		{"paused refuses a new Workspace or a build (no bound Workspace)", paused, false, false},
-		{"paused runs a Sandbox for its bound Workspace", paused, true, true},
-		{"unavailable takes nothing", unavailable, true, false},
-		{"paused does not bypass an unhealthy Runtime", pausedUnavailable, true, false},
-		{"paused does not bypass an outdated Agent", pausedOutdated, true, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := nodeSchedulable(tt.node, now, tt.workspaceHere); got != tt.want {
-				t.Fatalf("nodeSchedulable = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 // Deleting a Node has to end its live Control stream: close fires the
 // connection's done channel exactly once, so Control returns UNAUTHENTICATED
 // (ADR-0014, api.md §3).
@@ -174,7 +140,7 @@ func TestReconnectedNodeAwaitsCapabilities(t *testing.T) {
 	}
 	schedulable := func() bool {
 		seen := hub.currentReports([]store.Node{node})[0]
-		return nodeSchedulable(seen, now, false)
+		return nodeReady(seen, now)
 	}
 
 	first := connect()

@@ -48,6 +48,9 @@ type Runtime struct {
 	// Host-path work (Workspaces, records, files, publish, resources, tunnels)
 	// stays on Runtime and is shared.
 	driver runtimeDriver
+	// diskMu orders eviction of a cached diff against a Create taking it
+	// (runtime.md §16).
+	diskMu sync.Mutex
 	// owner maps host paths to the Local Runtime user; nil for containerd,
 	// whose container root maps to host root.
 	owner *rootlessOwner
@@ -526,6 +529,8 @@ type createSandboxSpec struct {
 	volumes       []volumeMount
 	egress        egressMode
 	linkTarget    bool
+	// restore is the head Generation, empty before the first commit.
+	restore string
 }
 
 // resourceMount is one version to mount at /resources/<mount>.

@@ -467,7 +467,12 @@ ORDER BY id;
 -- name: SetSandboxNode :execrows
 UPDATE sandboxes
 SET node_id = $2, updated_at = now()
-WHERE id = $1 AND node_id IS NULL AND state = 'pending' AND desired_state = 'running';
+WHERE id = $1 AND state = 'pending' AND desired_state = 'running';
+
+-- SandboxPlaced: an admitted Sandbox holds an Allocation until its Runtime is
+-- gone; node_id alone is only where it last ran (ADR-0031).
+-- name: SandboxPlaced :one
+SELECT EXISTS (SELECT 1 FROM allocations WHERE sandbox_id = $1);
 
 -- name: SetSandboxProvisioning :execrows
 UPDATE sandboxes
@@ -1467,17 +1472,16 @@ UPDATE nodes SET deleted_at = now(), token_hash = ''
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- Deletion requires no non-terminal Workspace (deleted, failed and lost are
--- terminal) and no non-terminal Sandbox, build rows included (api.md §3). A
--- build row at stopped is finished and has no Runtime, so it is terminal; a
--- stopped user Sandbox still blocks.
+-- terminal) and no Sandbox running, stopping or bound there, build rows
+-- included (api.md §3).
 -- name: CountNodeNonTerminalWorkspaces :one
 SELECT count(*)::bigint FROM workspaces
 WHERE node_id = $1 AND state NOT IN ('deleted', 'failed', 'lost');
 
+-- A Sandbox running, stopping or bound there holds an Allocation on the Node;
+-- a stopped one only prefers it and does not block (api.md §3, ADR-0031).
 -- name: CountNodeNonTerminalSandboxes :one
-SELECT count(*)::bigint FROM sandboxes
-WHERE node_id = $1 AND state NOT IN ('deleted', 'failed')
-  AND NOT (kind = 'build' AND state = 'stopped');
+SELECT count(*)::bigint FROM allocations WHERE node_id = $1;
 
 -- Lost cascades (#95)
 
@@ -1488,25 +1492,30 @@ UPDATE nodes
 SET token_hash = '', paused = true, lost_at = now()
 WHERE id = $1;
 
--- Every non-deleted Sandbox on the Node, including stopped and bound pending
--- ones and build rows, becomes failed/node_lost (api.md §3).
--- name: FailSandboxesOnNodeLost :execrows
-UPDATE sandboxes
-SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
-    conditions = NULL, address = NULL, updated_at = now()
-WHERE node_id = $1 AND state <> 'deleted';
+-- A Sandbox runs on, or is bound to, the Node that holds its Allocation. On a
+-- lost Node those stop with node_lost and changes_lost and start again
+-- elsewhere from their head Generation; a deleting one is deleted; build rows
+-- fail. Stopped and failed Sandboxes keep their state: their data is the head
+-- (api.md §3, ADR-0031). Runs before the Allocations are released.
+-- name: StopSandboxesOnNodeLost :execrows
+UPDATE sandboxes s
+SET state = CASE WHEN s.state = 'deleting' THEN 'deleted'
+                 WHEN s.kind = 'build' THEN 'failed' ELSE 'stopped' END,
+    cause = CASE WHEN s.state = 'deleting' THEN s.cause ELSE 'node_lost' END,
+    desired_state = CASE WHEN s.state = 'deleting' THEN s.desired_state ELSE 'stopped' END,
+    conditions = CASE WHEN s.state = 'deleting' OR s.kind = 'build' THEN NULL
+                      ELSE '{"changes_lost": true}'::jsonb END,
+    address = NULL, updated_at = now()
+WHERE s.state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+  AND (EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = s.id AND a.node_id = $1)
+       OR (s.state = 'deleting' AND s.node_id = $1));
 
 -- name: DeleteGPUAllocationsOnNodeLost :execrows
 DELETE FROM gpu_allocations
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-);
+WHERE gpu_uuid IN (SELECT uuid FROM gpus WHERE node_id = $1);
 
 -- name: DeleteAllocationsOnNodeLost :execrows
-DELETE FROM allocations
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-);
+DELETE FROM allocations WHERE node_id = $1;
 
 -- name: FinishExecsOnNodeLost :execrows
 UPDATE execs

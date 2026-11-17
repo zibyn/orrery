@@ -322,12 +322,12 @@ func (q *Queries) CountBuildingSnapshotImports(ctx context.Context, snapshotID u
 }
 
 const countNodeNonTerminalSandboxes = `-- name: CountNodeNonTerminalSandboxes :one
-SELECT count(*)::bigint FROM sandboxes
-WHERE node_id = $1 AND state NOT IN ('deleted', 'failed')
-  AND NOT (kind = 'build' AND state = 'stopped')
+SELECT count(*)::bigint FROM allocations WHERE node_id = $1
 `
 
-func (q *Queries) CountNodeNonTerminalSandboxes(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+// A Sandbox running, stopping or bound there holds an Allocation on the Node;
+// a stopped one only prefers it and does not block (api.md §3, ADR-0031).
+func (q *Queries) CountNodeNonTerminalSandboxes(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countNodeNonTerminalSandboxes, nodeID)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -340,9 +340,8 @@ WHERE node_id = $1 AND state NOT IN ('deleted', 'failed', 'lost')
 `
 
 // Deletion requires no non-terminal Workspace (deleted, failed and lost are
-// terminal) and no non-terminal Sandbox, build rows included (api.md §3). A
-// build row at stopped is finished and has no Runtime, so it is terminal; a
-// stopped user Sandbox still blocks.
+// terminal) and no Sandbox running, stopping or bound there, build rows
+// included (api.md §3).
 func (q *Queries) CountNodeNonTerminalWorkspaces(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countNodeNonTerminalWorkspaces, nodeID)
 	var column_1 int64
@@ -1454,13 +1453,10 @@ func (q *Queries) DeleteAllocation(ctx context.Context, sandboxID uuid.UUID) err
 }
 
 const deleteAllocationsOnNodeLost = `-- name: DeleteAllocationsOnNodeLost :execrows
-DELETE FROM allocations
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-)
+DELETE FROM allocations WHERE node_id = $1
 `
 
-func (q *Queries) DeleteAllocationsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+func (q *Queries) DeleteAllocationsOnNodeLost(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteAllocationsOnNodeLost, nodeID)
 	if err != nil {
 		return 0, err
@@ -1542,12 +1538,10 @@ func (q *Queries) DeleteGPUAllocations(ctx context.Context, sandboxID uuid.UUID)
 
 const deleteGPUAllocationsOnNodeLost = `-- name: DeleteGPUAllocationsOnNodeLost :execrows
 DELETE FROM gpu_allocations
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-)
+WHERE gpu_uuid IN (SELECT uuid FROM gpus WHERE node_id = $1)
 `
 
-func (q *Queries) DeleteGPUAllocationsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+func (q *Queries) DeleteGPUAllocationsOnNodeLost(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteGPUAllocationsOnNodeLost, nodeID)
 	if err != nil {
 		return 0, err
@@ -1896,23 +1890,6 @@ WHERE state = 'pending'
 
 func (q *Queries) FailPublishesOnNodeLost(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, failPublishesOnNodeLost, nodeID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const failSandboxesOnNodeLost = `-- name: FailSandboxesOnNodeLost :execrows
-UPDATE sandboxes
-SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
-    conditions = NULL, address = NULL, updated_at = now()
-WHERE node_id = $1 AND state <> 'deleted'
-`
-
-// Every non-deleted Sandbox on the Node, including stopped and bound pending
-// ones and build rows, becomes failed/node_lost (api.md §3).
-func (q *Queries) FailSandboxesOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, failSandboxesOnNodeLost, nodeID)
 	if err != nil {
 		return 0, err
 	}
@@ -6989,6 +6966,19 @@ func (q *Queries) ReusableUpload(ctx context.Context, arg ReusableUploadParams) 
 	return i, err
 }
 
+const sandboxPlaced = `-- name: SandboxPlaced :one
+SELECT EXISTS (SELECT 1 FROM allocations WHERE sandbox_id = $1)
+`
+
+// SandboxPlaced: an admitted Sandbox holds an Allocation until its Runtime is
+// gone; node_id alone is only where it last ran (ADR-0031).
+func (q *Queries) SandboxPlaced(ctx context.Context, sandboxID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, sandboxPlaced, sandboxID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const setExecStarted = `-- name: SetExecStarted :exec
 UPDATE execs
 SET started_at = COALESCE(started_at, $2),
@@ -7158,7 +7148,7 @@ func (q *Queries) SetSandboxHeadGeneration(ctx context.Context, arg SetSandboxHe
 const setSandboxNode = `-- name: SetSandboxNode :execrows
 UPDATE sandboxes
 SET node_id = $2, updated_at = now()
-WHERE id = $1 AND node_id IS NULL AND state = 'pending' AND desired_state = 'running'
+WHERE id = $1 AND state = 'pending' AND desired_state = 'running'
 `
 
 type SetSandboxNodeParams struct {
@@ -7560,6 +7550,33 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.HeadGenerationID,
 	)
 	return i, err
+}
+
+const stopSandboxesOnNodeLost = `-- name: StopSandboxesOnNodeLost :execrows
+UPDATE sandboxes s
+SET state = CASE WHEN s.state = 'deleting' THEN 'deleted'
+                 WHEN s.kind = 'build' THEN 'failed' ELSE 'stopped' END,
+    cause = CASE WHEN s.state = 'deleting' THEN s.cause ELSE 'node_lost' END,
+    desired_state = CASE WHEN s.state = 'deleting' THEN s.desired_state ELSE 'stopped' END,
+    conditions = CASE WHEN s.state = 'deleting' OR s.kind = 'build' THEN NULL
+                      ELSE '{"changes_lost": true}'::jsonb END,
+    address = NULL, updated_at = now()
+WHERE s.state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+  AND (EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = s.id AND a.node_id = $1)
+       OR (s.state = 'deleting' AND s.node_id = $1))
+`
+
+// A Sandbox runs on, or is bound to, the Node that holds its Allocation. On a
+// lost Node those stop with node_lost and changes_lost and start again
+// elsewhere from their head Generation; a deleting one is deleted; build rows
+// fail. Stopped and failed Sandboxes keep their state: their data is the head
+// (api.md §3, ADR-0031). Runs before the Allocations are released.
+func (q *Queries) StopSandboxesOnNodeLost(ctx context.Context, nodeID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, stopSandboxesOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const syncOIDCUser = `-- name: SyncOIDCUser :one

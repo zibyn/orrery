@@ -267,10 +267,10 @@ func (r *reconciler) endExec(ctx context.Context, id uuid.UUID, cause ExecCause)
 }
 
 // pending provisions a Sandbox that the admission sweep has placed. Placement
-// itself is the admission queue's job (admission.go); a Sandbox without a Node
-// is still waiting for capacity.
+// itself is the admission queue's job (admission.go); a Sandbox without an
+// Allocation is still waiting for capacity, whatever Node it last ran on.
 func (r *reconciler) pending(ctx context.Context, sb store.Sandbox) {
-	if sb.NodeID == nil {
+	if placed, err := r.placed(ctx, sb); err != nil || !placed {
 		return
 	}
 	ws, err := r.s.q.GetSandboxWorkspace(ctx, sb.ID)
@@ -362,15 +362,27 @@ func createSandboxCommand(id string, sb store.Sandbox, workspace *nodev1.Workspa
 		Resources:   resources,
 		Egress:      &nodev1.EgressMode{Mode: sandboxEgressValue(sb.EgressMode), Allow: sb.EgressAllow},
 		LinkTarget:  len(sb.LinksFrom) > 0,
+		Restore:     restoreOf(sb.HeadGenerationID),
 	}
+}
+
+func restoreOf(head *uuid.UUID) *nodev1.RestoreGeneration {
+	if head == nil {
+		return nil
+	}
+	return &nodev1.RestoreGeneration{GenerationId: head.String()}
 }
 
 func (r *reconciler) stop(ctx context.Context, sb store.Sandbox) {
 	if _, err := r.s.q.SetSandboxStopping(ctx, sb.ID); err != nil {
 		r.s.log.Warn("reconcile: mark stopping", "sandbox_id", sb.ID, "error", err)
 	}
-	if sb.NodeID == nil {
-		// Never placed: there is no runtime to stop.
+	placed, err := r.placed(ctx, sb)
+	if err != nil {
+		return
+	}
+	if !placed {
+		// Not placed: there is no runtime to stop.
 		r.finalizeStopped(ctx, sb.ID)
 		return
 	}
@@ -416,14 +428,20 @@ func (r *reconciler) finalizeStopped(ctx context.Context, sandboxID uuid.UUID) {
 	}
 }
 
-// stopForDelete tears down a Sandbox whose desired state is deleted. Without a
-// Node there is nothing to stop; otherwise the Node's observed "gone" completes
-// the deletion.
+// stopForDelete tears down a Sandbox whose desired state is deleted. Without an
+// Allocation there is no Runtime to stop; otherwise the Node's observed "gone"
+// completes the deletion.
 func (r *reconciler) stopForDelete(ctx context.Context, sb store.Sandbox) {
-	if sb.NodeID == nil {
-		// Nothing ever ran. Release the Runtime and let the implicit
+	placed, err := r.placed(ctx, sb)
+	if err != nil {
+		return
+	}
+	if !placed {
+		// No Runtime runs. Release the Runtime and let the implicit
 		// Workspace's cleanup finish the Sandbox, or finish a persistent one
-		// now (ADR-0018).
+		// now (ADR-0018). The Node it last ran on drops its cache; one that
+		// is unreachable or deleted leaves it to its disk watermark.
+		r.dropSandboxDisk(ctx, sb)
 		if err := finalizeGone(ctx, r.s.q, sb.ID); err != nil {
 			r.s.log.Warn("reconcile: finalize deleted Sandbox", "sandbox_id", sb.ID, "error", err)
 		}
@@ -433,6 +451,29 @@ func (r *reconciler) stopForDelete(ctx context.Context, sb store.Sandbox) {
 		return
 	}
 	r.sendStopRuntime(ctx, sb)
+}
+
+// placed reports whether the Sandbox holds an Allocation, so a Runtime may run
+// on its Node; node_id alone is only where it last ran (ADR-0031). On a read
+// error the step waits for the next sweep.
+func (r *reconciler) placed(ctx context.Context, sb store.Sandbox) (bool, error) {
+	if sb.NodeID == nil {
+		return false, nil
+	}
+	placed, err := r.s.q.SandboxPlaced(ctx, sb.ID)
+	if err != nil {
+		r.s.log.Warn("reconcile: read allocation", "sandbox_id", sb.ID, "error", err)
+	}
+	return placed, err
+}
+
+// dropSandboxDisk asks the Node a deleted Sandbox last ran on to remove its
+// cached diff (node-protocol.md DropSandboxDisk).
+func (r *reconciler) dropSandboxDisk(ctx context.Context, sb store.Sandbox) {
+	id := commandID("drop-sandbox-disk", sb.ID, sb.Generation)
+	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_DropSandboxDisk{
+		DropSandboxDisk: &nodev1.DropSandboxDisk{CommandId: id, SandboxId: sb.ID.String()},
+	}})
 }
 
 // execsDrained marks a Sandbox's active Execs for cancellation and reports

@@ -466,6 +466,22 @@ func (d *localDriver) createSandbox(ctx context.Context, cmd *createSandboxSpec)
 		d.r.track(id, cmd.generation)
 		return "", nil
 	}
+	// The working directory is the Sandbox's filesystem: kept when it is the
+	// head, otherwise restored from it (runtime.md §10, §16).
+	if !d.r.cachedDiffMatches(id, cmd.restore) {
+		workdir := localWorkdir(d.r.dataRoot, id)
+		if err := os.RemoveAll(workdir); err != nil {
+			return "runtime_create_failed", err
+		}
+		if err := d.r.forgetCachedDiff(id); err != nil {
+			return "runtime_create_failed", err
+		}
+		if cmd.restore != "" {
+			if err := d.r.restoreFilesystem(ctx, id, cmd.restore, workdir); err != nil {
+				return "runtime_create_failed", err
+			}
+		}
+	}
 	if _, err := runLocalCommand(ctx, "systemctl",
 		append([]string{"set-property", "--runtime", localSliceName(id)}, localLimitProperties(cmd.cpu, cmd.memory)...)...); err != nil {
 		return "runtime_create_failed", err
@@ -532,9 +548,11 @@ func (d *localDriver) commitTarget(_ context.Context, sandboxID uuid.UUID) (comm
 	return commitTarget{root: dir, kind: generation.KindTree}, true, nil
 }
 
-// dropSandboxDisk keeps the working directory: it is the Local Sandbox's
-// filesystem, and nothing on this Node restores it yet (#276).
-func (d *localDriver) dropSandboxDisk(context.Context, uuid.UUID) error { return nil }
+// dropSandboxDisk removes the working directory, the cached diff of a Local
+// Sandbox.
+func (d *localDriver) dropSandboxDisk(_ context.Context, sandboxID uuid.UUID) error {
+	return os.RemoveAll(localWorkdir(d.r.dataRoot, sandboxID))
+}
 
 func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 	sandboxID, err := uuid.Parse(cmd.SandboxId)

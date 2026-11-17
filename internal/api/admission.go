@@ -177,8 +177,9 @@ func fitFor(node store.Node, used store.NodePlacementRow) (nodeFit, bool) {
 
 // admissionExhausted reports whether every usable Node is too small for the
 // request, so waiting for capacity cannot help. Unknown hardware (a Node that
-// has not reported yet) is not proof either way. A Sandbox bound to a Node can
-// only ever go there. gpus is each Node's reported inventory.
+// has not reported yet) is not proof either way. A Sandbox whose Workspace is
+// bound to a Node can only ever go there. gpus is each Node's reported
+// inventory.
 func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb store.Sandbox, workspaceNode *uuid.UUID) bool {
 	if sb.Kind == string(SandboxKindBuild) && len(nodes) == 0 {
 		// No Node can enforce snapshot_build (ADR-0021).
@@ -186,9 +187,6 @@ func admissionExhausted(nodes []store.Node, gpus map[uuid.UUID][]store.Gpu, sb s
 	}
 	known, unknown := false, false
 	for _, node := range nodes {
-		if sb.NodeID != nil && node.ID != *sb.NodeID {
-			continue
-		}
 		// A Workspace never moves: its Sandbox can only ever run there.
 		if workspaceNode != nil && node.ID != *workspaceNode {
 			continue
@@ -319,22 +317,6 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// nodeSchedulable reports whether a Node may take this admission. A paused
-// Node takes no new Workspace, but a Workspace already bound there can still
-// start Sandboxes (ADR-0017). Paused only relaxes that rule: the Node must
-// still be reachable, healthy and compatible, so clear the flag and derive the
-// rest of the status.
-func nodeSchedulable(node store.Node, now time.Time, workspaceHere bool) bool {
-	if nodeReady(node, now) {
-		return true
-	}
-	if !workspaceHere || !node.Paused {
-		return false
-	}
-	node.Paused = false
-	return nodeReady(node, now)
-}
-
 // placementNode is a feasible Node and the cards it offers. gpus is the
 // reported card count, used for the GPU-less preference, and free is the cards
 // still available for packing.
@@ -344,6 +326,7 @@ type placementNode struct {
 	free     []store.Gpu
 	gpuIDs   []string
 	linkPeer bool // a placed Link source or target runs here
+	last     bool // the Sandbox last ran here, so its cached diff may be here
 }
 
 // freeGPUs counts free cards of the requested model; an empty model counts
@@ -364,9 +347,10 @@ func freeGPUs(free []store.Gpu, model *string) int {
 // orderPlacementNodes sorts feasible Nodes in place (ADR-0015): a Link target
 // goes first to a Node of its sources (ADR-0027); a GPU request
 // is packed onto the Node left with the fewest free cards of the requested
-// model; a GPU-less request prefers Nodes without cards, then the first
-// feasible one. Ties break by created_at and then id, so placement is
-// deterministic. The policy is not configurable.
+// model; a GPU-less request prefers Nodes without cards; then the Node the
+// Sandbox last ran on, whose cached diff saves a restore (ADR-0031). Ties
+// break by created_at and then id, so placement is deterministic. The policy
+// is not configurable.
 func orderPlacementNodes(nodes []placementNode, sb store.Sandbox) {
 	sort.Slice(nodes, func(i, j int) bool {
 		a, b := nodes[i], nodes[j]
@@ -380,6 +364,9 @@ func orderPlacementNodes(nodes []placementNode, sb store.Sandbox) {
 		} else if (a.gpus == 0) != (b.gpus == 0) {
 			return a.gpus == 0
 		}
+		if a.last != b.last {
+			return a.last
+		}
 		if !a.node.CreatedAt.Time.Equal(b.node.CreatedAt.Time) {
 			return a.node.CreatedAt.Time.Before(b.node.CreatedAt.Time)
 		}
@@ -387,9 +374,9 @@ func orderPlacementNodes(nodes []placementNode, sb store.Sandbox) {
 	})
 }
 
-// tryAdmit places a Sandbox on the best feasible Node (ADR-0015). A Sandbox
-// bound to a Node stays there (a Workspace never moves), and so does one whose
-// Workspace is already bound (locality). A GPU Sandbox claims whole cards;
+// tryAdmit places a Sandbox on the best feasible Node (ADR-0015). The Node it
+// last ran on is only a preference (ADR-0031); one whose Workspace is bound
+// stays with it (a Workspace never moves). A GPU Sandbox claims whole cards;
 // their primary key keeps the cards exclusive.
 func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sandbox, ws store.Workspace, nodes []store.Node, now time.Time) (bool, error) {
 	// A Sandbox with Resources can only run where the Runtime can bind-mount
@@ -412,13 +399,10 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 	}
 	// A Sandbox bound to a Node can only go there: requiring a Mesh path
 	// would only keep it pending.
-	linkBound := sb.NodeID != nil || ws.NodeID != nil
+	linkBound := ws.NodeID != nil
 	meshLive := func(a, b uuid.UUID) bool { return r.s.mesh.live(a, b, now) }
 	var candidates []placementNode
 	for _, node := range nodes {
-		if sb.NodeID != nil && node.ID != *sb.NodeID {
-			continue
-		}
 		if !isBuild && ws.NodeID != nil && node.ID != *ws.NodeID {
 			continue
 		}
@@ -445,7 +429,8 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 				continue
 			}
 		}
-		if !nodeSchedulable(node, now, !isBuild && ws.NodeID != nil) || !r.hub.connected(node.ID) {
+		// A paused Node takes no Sandbox, restarted ones included (api.md §3).
+		if !nodeReady(node, now) || !r.hub.connected(node.ID) {
 			continue
 		}
 		used, err := q.NodePlacement(ctx, node.ID)
@@ -456,7 +441,10 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		if !ok {
 			continue
 		}
-		candidate := placementNode{node: node, gpus: fit.gpuTotal, linkPeer: slices.Contains(linkNodes, node.ID)}
+		candidate := placementNode{
+			node: node, gpus: fit.gpuTotal, linkPeer: slices.Contains(linkNodes, node.ID),
+			last: sb.NodeID != nil && *sb.NodeID == node.ID,
+		}
 		if sb.GpuCount > 0 {
 			free, err := q.ListNodeFreeGPUs(ctx, node.ID)
 			if err != nil {
@@ -485,20 +473,18 @@ func (r *reconciler) tryAdmit(ctx context.Context, q *store.Queries, sb store.Sa
 		if rows == 0 {
 			return false, nil
 		}
-		if sb.NodeID == nil {
-			rows, err := q.SetSandboxNode(ctx, store.SetSandboxNodeParams{ID: sb.ID, NodeID: &node.ID})
-			if err != nil {
+		rows, err = q.SetSandboxNode(ctx, store.SetSandboxNodeParams{ID: sb.ID, NodeID: &node.ID})
+		if err != nil {
+			return false, err
+		}
+		if rows == 0 {
+			return false, nil
+		}
+		if !isBuild && ws.NodeID == nil {
+			if _, err := q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{
+				ID: ws.ID, NodeID: &node.ID,
+			}); err != nil {
 				return false, err
-			}
-			if rows == 0 {
-				return false, nil
-			}
-			if !isBuild && ws.NodeID == nil {
-				if _, err := q.SetWorkspaceNode(ctx, store.SetWorkspaceNodeParams{
-					ID: ws.ID, NodeID: &node.ID,
-				}); err != nil {
-					return false, err
-				}
 			}
 		}
 		if err := q.CreateAllocation(ctx, store.CreateAllocationParams{
