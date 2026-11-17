@@ -268,6 +268,7 @@ message ControlMessage {
     BuildSnapshot build_snapshot = 10;
     MeshPeers mesh_peers = 11;
     SandboxLinks sandbox_links = 12;
+    PublishSandbox publish_sandbox = 13;
   }
 }
 
@@ -308,6 +309,16 @@ message PublishWorkspace {
   string command_id = 1;
   string version_id = 2;
   string workspace_id = 3;
+  string path = 4;
+}
+
+// PublishSandbox publishes a path of a running Sandbox's live filesystem as
+// a ResourceVersion, through SubmitManifest like PublishWorkspace
+// (node-protocol.md "Sandbox publish"). path is relative to /workspace.
+message PublishSandbox {
+  string command_id = 1;
+  string version_id = 2;
+  string sandbox_id = 3;
   string path = 4;
 }
 

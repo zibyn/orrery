@@ -254,8 +254,7 @@ func (n *nodeService) handlePublishCommandResult(ctx context.Context, node store
 		n.markPublishFailed(ctx, versionID)
 		return
 	}
-	objects := manifest.FileObjects(m)
-	missing, err := missingObjects(objects, func(digest string) (string, error) {
+	missing, err := missingObjects(manifest.FileObjects(m), func(digest string) (string, error) {
 		return n.s.objects.HeadSHA256(ctx, pending.OwnerID.String(), digest)
 	})
 	if err != nil {
@@ -268,25 +267,71 @@ func (n *nodeService) handlePublishCommandResult(ctx context.Context, node store
 		n.markPublishFailed(ctx, versionID)
 		return
 	}
+	n.s.finishPublish(ctx, versionID, pending.ResourceID, pending.OwnerID, m, false)
+}
 
-	tx, err := n.s.pool.Begin(ctx)
+// finishPublish makes a pending version ready and moves the current pointer.
+// record writes the manifest first, for a publish no SubmitManifest
+// recorded (a Volume's).
+func (s *Server) finishPublish(ctx context.Context, versionID, resourceID, ownerID uuid.UUID, m manifest.Manifest, record bool) {
+	objects := manifest.FileObjects(m)
+	address, err := manifest.Address(m)
 	if err != nil {
-		n.s.log.Error("begin publish completion", "version_id", versionID, "error", err)
-		n.markPublishFailed(ctx, versionID)
+		s.markPublishFailed(ctx, versionID)
+		return
+	}
+	if record {
+		canonical, err := manifest.Canonical(m)
+		if err != nil {
+			s.markPublishFailed(ctx, versionID)
+			return
+		}
+		if err := s.generations.PutManifest(ctx, ownerID.String(), address, canonical); err != nil {
+			s.log.Error("store publish manifest", "version_id", versionID, "error", err)
+			return // retried on the next pass
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.log.Error("begin publish completion", "version_id", versionID, "error", err)
+		s.markPublishFailed(ctx, versionID)
 		return
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	q := n.s.q.WithTx(tx)
+	q := s.q.WithTx(tx)
 	// Serialize pointer moves of one Resource (ADR-0012: last to become ready
 	// wins).
-	if _, err := q.LockResource(ctx, pending.ResourceID); err != nil {
-		n.s.log.Error("lock Resource for publish", "resource_id", pending.ResourceID, "error", err)
-		n.markPublishFailed(ctx, versionID)
+	if _, err := q.LockResource(ctx, resourceID); err != nil {
+		s.log.Error("lock Resource for publish", "resource_id", resourceID, "error", err)
+		s.markPublishFailed(ctx, versionID)
 		return
+	}
+	if record {
+		manifestKey := objectstore.ManifestKey(ownerID.String(), address)
+		if _, err := q.SetResourceVersionManifest(ctx, store.SetResourceVersionManifestParams{
+			ID: versionID, Address: &address, ManifestKey: &manifestKey, Size: manifest.TotalSize(m),
+		}); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				s.log.Error("record publish manifest", "version_id", versionID, "error", err)
+			}
+			return
+		}
+		if err := q.DeleteResourceVersionObjects(ctx, versionID); err != nil {
+			s.log.Error("clear publish objects", "version_id", versionID, "error", err)
+			return
+		}
+		for _, object := range objects {
+			if err := q.InsertResourceVersionObject(ctx, store.InsertResourceVersionObjectParams{
+				VersionID: versionID, Sha256: object.SHA256,
+			}); err != nil {
+				s.log.Error("link publish object", "version_id", versionID, "error", err)
+				return
+			}
+		}
 	}
 	rows, err := q.MarkResourceVersionReady(ctx, versionID)
 	if err != nil {
-		n.s.log.Error("mark publish ready", "version_id", versionID, "error", err)
+		s.log.Error("mark publish ready", "version_id", versionID, "error", err)
 		return
 	}
 	if rows == 0 {
@@ -294,51 +339,55 @@ func (n *nodeService) handlePublishCommandResult(ctx context.Context, node store
 	}
 	for _, object := range objects {
 		if err := q.UpsertCASObject(ctx, store.UpsertCASObjectParams{
-			OwnerID: pending.OwnerID, Sha256: object.SHA256, Size: object.Size,
+			OwnerID: ownerID, Sha256: object.SHA256, Size: object.Size,
 		}); err != nil {
-			n.s.log.Error("record CAS object", "version_id", versionID, "error", err)
+			s.log.Error("record CAS object", "version_id", versionID, "error", err)
 			return
 		}
 	}
 	if _, err := q.SetResourceCurrent(ctx, store.SetResourceCurrentParams{
-		ID: pending.ResourceID, CurrentVersionID: &versionID,
+		ID: resourceID, CurrentVersionID: &versionID,
 	}); err != nil {
-		n.s.log.Error("move current pointer", "resource_id", pending.ResourceID, "error", err)
+		s.log.Error("move current pointer", "resource_id", resourceID, "error", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		n.s.log.Error("commit publish completion", "version_id", versionID, "error", err)
+		s.log.Error("commit publish completion", "version_id", versionID, "error", err)
 		return
 	}
-	n.s.auditAs(ctx, nil, nil, "resource.version.publish", "resource_version", versionID.String(), map[string]any{
-		"resource_id": pending.ResourceID.String(),
-		"address":     *pending.Address,
-		"size":        pending.Size,
+	s.auditAs(ctx, nil, nil, "resource.version.publish", "resource_version", versionID.String(), map[string]any{
+		"resource_id": resourceID.String(),
+		"address":     address,
+		"size":        manifest.TotalSize(m),
 		"state":       string(ResourceVersionReady),
 	})
-	n.s.changed(ctx)
+	s.changed(ctx)
 }
 
 // markPublishFailed ends a pending publish without touching the current
 // pointer. It is a no-op once the version is terminal.
 func (n *nodeService) markPublishFailed(ctx context.Context, versionID uuid.UUID) {
+	n.s.markPublishFailed(ctx, versionID)
+}
+
+func (s *Server) markPublishFailed(ctx context.Context, versionID uuid.UUID) {
 	cause := publishFailedCause
-	rows, err := n.s.q.MarkResourceVersionFailed(ctx, store.MarkResourceVersionFailedParams{
+	rows, err := s.q.MarkResourceVersionFailed(ctx, store.MarkResourceVersionFailedParams{
 		ID: versionID, Cause: &cause,
 	})
 	if err != nil {
-		n.s.log.Error("mark publish failed", "version_id", versionID, "error", err)
+		s.log.Error("mark publish failed", "version_id", versionID, "error", err)
 		return
 	}
 	if rows == 0 {
 		return
 	}
-	version, err := n.s.q.GetResourceVersion(ctx, versionID)
+	version, err := s.q.GetResourceVersion(ctx, versionID)
 	if err != nil {
-		n.s.log.Error("load failed publish", "version_id", versionID, "error", err)
+		s.log.Error("load failed publish", "version_id", versionID, "error", err)
 		return
 	}
-	n.s.auditAs(ctx, nil, nil, "resource.version.publish", "resource_version", versionID.String(), map[string]any{
+	s.auditAs(ctx, nil, nil, "resource.version.publish", "resource_version", versionID.String(), map[string]any{
 		"resource_id": version.ResourceID.String(),
 		"cause":       publishFailedCause,
 		"state":       string(ResourceVersionFailed),

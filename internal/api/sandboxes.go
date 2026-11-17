@@ -27,6 +27,7 @@ type createSandboxRequest struct {
 	Labels    map[string]string        `json:"labels"`
 	Runtime   *string                  `json:"runtime"`
 	Workspace *sandboxWorkspaceRequest `json:"workspace"`
+	Volumes   []sandboxVolumeDTO       `json:"volumes"`
 	Snapshot  *string                  `json:"snapshot"`
 	Resources []sandboxResourceRequest `json:"resources"`
 	Secrets   map[string]string        `json:"secrets"`
@@ -240,6 +241,7 @@ type sandboxDTO struct {
 	GPU           *sandboxGPUDTO       `json:"gpu,omitempty"`
 	IdleStop      int32                `json:"idle_stop"`
 	Workspace     *sandboxWorkspaceDTO `json:"workspace,omitempty"`
+	Volumes       []sandboxVolumeDTO   `json:"volumes"`
 	Conditions    []string             `json:"conditions"`
 	QueuePosition *int64               `json:"queue_position,omitempty"`
 	BlockedReason *string              `json:"blocked_reason,omitempty"`
@@ -444,6 +446,10 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !ok {
 		return
 	}
+	volumes, ok := s.resolveSandboxVolumes(w, ctx, q, p, req.Volumes)
+	if !ok {
+		return
+	}
 	// An explicit Workspace is mounted as requested; otherwise the Sandbox
 	// gets an implicit ephemeral one (ADR-0018).
 	var attached *store.Workspace
@@ -515,6 +521,18 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			SandboxID: sandbox.ID, ResourceVersionID: resource.ResourceVersionID, Mount: resource.Mount,
 		}); err != nil {
 			s.internal(w, "pin Sandbox Resource", err)
+			return
+		}
+	}
+	// Creation enters pending, so each Volume is held from now on; another
+	// holder fails sandbox_volumes_held (ADR-0031).
+	for _, v := range volumes {
+		v.SandboxID = sandbox.ID
+		if err := q.CreateSandboxVolume(ctx, v); err != nil {
+			if writeConstraintProblem(w, err) {
+				return
+			}
+			s.internal(w, "record Sandbox Volume", err)
 			return
 		}
 	}
@@ -832,8 +850,9 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		s.internal(w, "count active Sandboxes", err)
 		return
 	}
-	// Entering pending re-acquires an rw mount: another writer fails
-	// sandboxes_workspace_rw (ADR-0018).
+	// Entering pending re-acquires an rw mount and the Volumes: another
+	// writer fails sandboxes_workspace_rw (ADR-0018), another holder
+	// sandbox_volumes_held (ADR-0031).
 	started, err := q.StartSandbox(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeProblem(w, "conflict", "the Sandbox state changed; retry")
@@ -867,6 +886,14 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		}
 		s.changed(ctx)
 		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(ctx, failed))
+		return
+	}
+	if problem, err := lockStartVolumes(ctx, q, id); err != nil || problem != "" {
+		if err != nil {
+			s.internal(w, "lock Sandbox Volumes", err)
+			return
+		}
+		writeProblem(w, "conflict", problem)
 		return
 	}
 	ws, err := q.GetSandboxWorkspace(ctx, id)
@@ -1041,6 +1068,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 	if sb.WorkspaceID != nil {
 		dto.Workspace = &sandboxWorkspaceDTO{ID: sb.WorkspaceID.String(), Mode: sb.WorkspaceMode}
 	}
+	dto.Volumes = s.sandboxVolumes(ctx, sb.ID)
 	// queue_position exists only while the admission request is open. Ignoring
 	// a failed read degrades the display, not the response.
 	if SandboxState(sb.State) == SandboxPending {

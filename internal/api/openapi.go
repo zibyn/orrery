@@ -559,6 +559,58 @@ func schemas() map[string]any {
 				"next_cursor": nullableString,
 			},
 		},
+		"CreateVolumeRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"name"},
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string", "description": "Unique among the caller's undeleted Volumes; same rules as a Sandbox name."},
+			},
+		},
+		"Volume": map[string]any{
+			"type":        "object",
+			"description": "A named, writable directory in object storage, bound to no Node and held by at most one Sandbox at a time.",
+			"required":    []string{"id", "name", "state", "held_by", "committed_at", "size", "created_at"},
+			"properties": map[string]any{
+				"id":           map[string]any{"type": "string", "format": "uuid"},
+				"name":         map[string]any{"type": "string"},
+				"state":        map[string]any{"type": "string", "enum": []string{VolumeReady, VolumeDeleted}},
+				"held_by":      map[string]any{"type": []string{"string", "null"}, "format": "uuid", "description": "The Sandbox holding the Volume, from pending until it stops, fails or finishes deleting."},
+				"committed_at": map[string]any{"type": []string{"string", "null"}, "format": "date-time", "description": "When the head Generation was committed; null before the first commit."},
+				"size":         map[string]any{"type": "integer", "description": "Bytes in the head Generation."},
+				"created_at":   map[string]any{"type": "string", "format": "date-time"},
+				"deleted_at":   nullableTime,
+			},
+		},
+		"VolumeList": map[string]any{
+			"type":     "object",
+			"required": []string{"items", "next_cursor"},
+			"properties": map[string]any{
+				"items":       map[string]any{"type": "array", "items": schemaRef("Volume")},
+				"next_cursor": nullableString,
+			},
+		},
+		"SandboxVolume": map[string]any{
+			"type":     "object",
+			"required": []string{"volume", "path"},
+			"properties": map[string]any{
+				"volume": map[string]any{"type": "string", "description": "Volume id, or the caller's Volume name in a request; always the id in a response."},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Absolute and normalized; not /, not under /resources, /.orrery, /proc, /sys or /dev, and not containing or under another mount. May be /workspace.",
+				},
+			},
+		},
+		"PublishRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"path", "resource"},
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "For a Volume, relative to its root. For a Sandbox, relative to /workspace (or /workspace/...), and not on a Volume.",
+				},
+				"resource": map[string]any{"type": "string", "description": "Resource name; created when absent."},
+			},
+		},
 		"Snapshot": map[string]any{
 			"type":     "object",
 			"required": []string{"id", "name", "created_at"},
@@ -673,6 +725,12 @@ func schemas() map[string]any {
 						"mode": map[string]any{"type": "string", "enum": []string{"rw", "ro"}, "default": "rw"},
 					},
 				},
+				"volumes": map[string]any{
+					"type":        "array",
+					"maxItems":    maxSandboxVolumes,
+					"items":       schemaRef("SandboxVolume"),
+					"description": "Volumes mounted read-write, fixed for the Sandbox's life. The Sandbox holds each from pending until it stops, fails or finishes deleting; one another Sandbox holds is a conflict.",
+				},
 				"snapshot": map[string]any{"type": "string", "description": "SnapshotVersion id or Snapshot name (own first, then platform); omit for the deployment default."},
 				"resources": map[string]any{
 					"type":        "array",
@@ -744,7 +802,7 @@ func schemas() map[string]any {
 		},
 		"Sandbox": map[string]any{
 			"type":     "object",
-			"required": []string{"id", "name", "labels", "runtime", "egress", "state", "snapshot", "conditions", "cpu", "memory", "idle_stop", "created_at"},
+			"required": []string{"id", "name", "labels", "runtime", "egress", "state", "snapshot", "conditions", "cpu", "memory", "idle_stop", "volumes", "created_at"},
 			"properties": map[string]any{
 				"id":       map[string]any{"type": "string", "format": "uuid"},
 				"name":     map[string]any{"type": "string"},
@@ -770,6 +828,7 @@ func schemas() map[string]any {
 				"idle_stop":      map[string]any{"type": "integer"},
 				"conditions":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Current conditions; always empty since Resources mount lazily (ADR-0030)."},
 				"workspace":      schemaRef("SandboxWorkspace"),
+				"volumes":        map[string]any{"type": "array", "items": schemaRef("SandboxVolume")},
 				"queue_position": map[string]any{"type": "integer", "description": "1-based position in the admission queue while pending."},
 				"blocked_reason": nullableString,
 				"created_at":     map[string]any{"type": "string", "format": "date-time"},

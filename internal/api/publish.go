@@ -228,17 +228,26 @@ func (s *Server) ensureOwnedResource(ctx context.Context, ownerID uuid.UUID, nam
 // of the same version is idempotent work, while a newer publish is a
 // different version id and therefore a different command and lock key.
 const (
-	publishCommandPrefix = "publish-workspace"
-	publishGeneration    = int64(0)
+	publishCommandPrefix        = "publish-workspace"
+	publishSandboxCommandPrefix = "publish-sandbox"
+	publishGeneration           = int64(0)
 )
 
 func publishCommandID(versionID uuid.UUID) string {
 	return commandID(publishCommandPrefix, versionID, publishGeneration)
 }
 
-// publishVersionFromCommandID extracts the version a CommandResult refers to.
+func publishSandboxCommandID(versionID uuid.UUID) string {
+	return commandID(publishSandboxCommandPrefix, versionID, publishGeneration)
+}
+
+// publishVersionFromCommandID extracts the version a Workspace or Sandbox
+// publish's CommandResult refers to.
 func publishVersionFromCommandID(id string) (uuid.UUID, bool) {
 	rest, ok := strings.CutPrefix(id, publishCommandPrefix+":")
+	if !ok {
+		rest, ok = strings.CutPrefix(id, publishSandboxCommandPrefix+":")
+	}
 	if !ok {
 		return uuid.Nil, false
 	}
@@ -251,4 +260,101 @@ func publishVersionFromCommandID(id string) (uuid.UUID, bool) {
 		return uuid.Nil, false
 	}
 	return versionID, true
+}
+
+// sandboxProvenance is `source: sandbox{id, path}` (schema.md); the path is
+// relative to /workspace, "." for /workspace itself.
+func sandboxProvenance(sandboxID uuid.UUID, publishPath string) (json.RawMessage, error) {
+	type sandboxRef struct {
+		ID   string `json:"id"`
+		Path string `json:"path"`
+	}
+	return json.Marshal(struct {
+		Source  string     `json:"source"`
+		Sandbox sandboxRef `json:"sandbox"`
+	}{Source: "sandbox", Sandbox: sandboxRef{ID: sandboxID.String(), Path: publishPath}})
+}
+
+// parseSandboxProvenance reads what sandboxProvenance wrote.
+func parseSandboxProvenance(raw json.RawMessage) (string, bool) {
+	var prov struct {
+		Source  string `json:"source"`
+		Sandbox struct {
+			Path string `json:"path"`
+		} `json:"sandbox"`
+	}
+	if err := json.Unmarshal(raw, &prov); err != nil || prov.Source != "sandbox" {
+		return "", false
+	}
+	return prov.Sandbox.Path, true
+}
+
+// handlePublishSandbox creates a pending ResourceVersion for a path of a
+// ready Sandbox (api.md §3); its Node walks the live filesystem. A path on a
+// Volume is published from the Volume instead, without a Node.
+func (s *Server) handlePublishSandbox(w http.ResponseWriter, r *http.Request, p *principal) {
+	id, ok := pathUUID(r, "id")
+	if !ok {
+		writeProblem(w, "invalid_request", "id must be a UUID")
+		return
+	}
+	key, ok := idempotencyKey(r)
+	if !ok {
+		writeProblem(w, "invalid_request", "Idempotency-Key is too long")
+		return
+	}
+	ctx := r.Context()
+	sb, ok := s.getOwnedSandbox(w, ctx, p, id)
+	if !ok {
+		return
+	}
+	lookup := func() (store.ResourceVersion, error) {
+		return s.q.GetResourceVersionBySandboxPublishIdempotencyKey(ctx, store.GetResourceVersionBySandboxPublishIdempotencyKeyParams{
+			PublishSandboxID: &sb.ID, PublishIdempotencyKey: key,
+		})
+	}
+	if replayOr(s, w, "look up idempotent publish", key, lookup, func(v store.ResourceVersion) {
+		writeJSON(w, http.StatusAccepted, resourceVersionToDTO(v))
+	}) {
+		return
+	}
+	var request publishRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	publishPath, err := normalizePublishPath(request.Path)
+	if err != nil {
+		writeProblem(w, "invalid_request", errPublishPath.Error())
+		return
+	}
+	absolute := path.Join("/workspace", publishPath)
+	for _, v := range s.sandboxVolumes(ctx, sb.ID) {
+		if pathWithin(absolute, v.Path) {
+			writeProblem(w, "invalid_request", "the path is on Volume "+v.Volume+"; publish it with POST /volumes/{id}/publish")
+			return
+		}
+	}
+	if !validDisplayName(request.Resource) {
+		writeProblem(w, "invalid_request", "resource must be a non-empty, trimmed name of at most 255 characters")
+		return
+	}
+	if SandboxState(sb.State) != SandboxReady {
+		writeProblem(w, "conflict", "the Sandbox is not ready")
+		return
+	}
+	if s.objects == nil {
+		writeProblem(w, "unavailable", "object storage is not configured")
+		return
+	}
+	if sb.NodeID == nil || !s.reconcile.hub.connected(*sb.NodeID) {
+		writeProblem(w, "unavailable", "the Sandbox's Node is not connected")
+		return
+	}
+	provenance, err := sandboxProvenance(sb.ID, publishPath)
+	if err != nil {
+		s.internal(w, "encode provenance", err)
+		return
+	}
+	s.createPendingPublish(w, ctx, sb.OwnerID, request.Resource, key, lookup, provenance,
+		store.CreatePendingResourceVersionParams{PublishSandboxID: &sb.ID})
 }

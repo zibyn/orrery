@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"sort"
 	"strings"
@@ -29,6 +33,9 @@ type fakeGenerationStore struct {
 	mu          sync.Mutex
 	objects     map[string]bool
 	generations map[string][]byte
+	content     map[string][]byte // CAS bytes served by server
+	manifests   map[string][]byte // Resource manifests by owner/address
+	server      *httptest.Server
 }
 
 func newFakeGenerationStore() *fakeGenerationStore {
@@ -64,6 +71,49 @@ func (f *fakeGenerationStore) DeleteGeneration(_ context.Context, owner, id stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.generations, owner+"/"+id)
+	return nil
+}
+
+// putContent stores data as a CAS object and returns its digest.
+func (f *fakeGenerationStore) putContent(owner uuid.UUID, data []byte) string {
+	sum := sha256.Sum256(data)
+	digest := hex.EncodeToString(sum[:])
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.objects[owner.String()+"/"+digest] = true
+	if f.content == nil {
+		f.content = map[string][]byte{}
+	}
+	f.content[owner.String()+"/"+digest] = data
+	return digest
+}
+
+// PresignGetURL serves the object from an in-process HTTP server.
+func (f *fakeGenerationStore) PresignGetURL(_ context.Context, owner, digest string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.server == nil {
+		f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			data, ok := f.content[strings.TrimPrefix(r.URL.Path, "/")]
+			f.mu.Unlock()
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write(data)
+		}))
+	}
+	return f.server.URL + "/" + owner + "/" + digest, nil
+}
+
+func (f *fakeGenerationStore) PutManifest(_ context.Context, owner, address string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.manifests == nil {
+		f.manifests = map[string][]byte{}
+	}
+	f.manifests[owner+"/"+address] = data
 	return nil
 }
 

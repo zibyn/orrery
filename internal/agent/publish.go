@@ -35,17 +35,38 @@ func (r *Runtime) publishWorkspace(ctx context.Context, cmd *nodev1.PublishWorks
 	if err != nil {
 		return fmt.Errorf("invalid workspace id: %w", err)
 	}
-	root, err := os.OpenRoot(workspacePath(r.dataRoot, workspaceID))
+	return r.publishDir(ctx, workspacePath(r.dataRoot, workspaceID), cmd.GetVersionId(), cmd.GetPath())
+}
+
+// publishSandbox publishes a path of a running Sandbox (node-protocol.md
+// "Sandbox publish"). The path is relative to /workspace.
+// shortcut: reads the Sandbox's Workspace directory, which is its /workspace
+// until the file API moves to the rootfs view (ADR-0031); switch the root then.
+func (r *Runtime) publishSandbox(ctx context.Context, sandboxID uuid.UUID, cmd *nodev1.PublishSandbox) error {
+	ref, ok := readWorkspaceRef(sandboxPath(r.dataRoot, sandboxID))
+	if !ok {
+		return errors.New("the Sandbox has no filesystem on this Node")
+	}
+	workspaceID, err := uuid.Parse(ref.ID)
+	if err != nil {
+		return fmt.Errorf("invalid workspace reference: %w", err)
+	}
+	return r.publishDir(ctx, workspacePath(r.dataRoot, workspaceID), cmd.GetVersionId(), cmd.GetPath())
+}
+
+// publishDir walks publishPath under dir and publishes it as versionID.
+func (r *Runtime) publishDir(ctx context.Context, dir, versionID, publishPath string) error {
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
 	defer root.Close() //nolint:errcheck // read-only handle
 
-	m, files, err := walkWorkspaceManifest(root, cmd.GetPath())
+	m, files, err := walkWorkspaceManifest(root, publishPath)
 	if err != nil {
 		return err
 	}
-	missing, err := r.submitManifest(ctx, cmd.GetVersionId(), m)
+	missing, err := r.submitManifest(ctx, versionID, m)
 	if err != nil {
 		return err
 	}

@@ -47,6 +47,22 @@ func TestUnknownEndpointsReturnProblemJSON(t *testing.T) {
 	}
 }
 
+// Every $ref in the document names a schema it defines.
+func TestOpenAPIRefsResolve(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	doc, err := json.Marshal(s.OpenAPIDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defined := schemas()
+	for _, part := range strings.Split(string(doc), `"$ref":"#/components/schemas/`)[1:] {
+		name := part[:strings.IndexByte(part, '"')]
+		if _, ok := defined[name]; !ok {
+			t.Errorf("$ref to undefined schema %q", name)
+		}
+	}
+}
+
 func TestOpenAPIHasNoPasswordIdentity(t *testing.T) {
 	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	doc, err := json.Marshal(s.OpenAPIDocument())

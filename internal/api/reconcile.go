@@ -126,6 +126,8 @@ func (r *reconciler) once(ctx context.Context) {
 	r.deleteWorkspaces(ctx)
 	r.workspaces(ctx)
 	r.publishWorkspaces(ctx)
+	r.publishSandboxes(ctx)
+	r.s.publishVolumes(ctx)
 	r.builds(ctx)
 	r.execs(ctx)
 	r.idle(ctx)
@@ -531,6 +533,35 @@ func (r *reconciler) publishWorkspaces(ctx context.Context) {
 					VersionId:   row.ID.String(),
 					WorkspaceId: workspaceID.String(),
 					Path:        publishPath,
+				},
+			},
+		})
+	}
+}
+
+// publishSandboxes derives PublishSandbox for every pending Sandbox publish
+// and sends it to the Sandbox's Node, like publishWorkspaces.
+func (r *reconciler) publishSandboxes(ctx context.Context) {
+	rows, err := r.s.q.ListPendingSandboxPublishes(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			r.s.log.Warn("reconcile: list pending Sandbox publishes", "error", err)
+		}
+		return
+	}
+	for _, row := range rows {
+		publishPath, ok := parseSandboxProvenance(row.Provenance)
+		if row.NodeID == nil || row.PublishSandboxID == nil || !ok {
+			continue
+		}
+		id := publishSandboxCommandID(row.ID)
+		r.send(ctx, row.NodeID, id, &nodev1.ControlMessage{
+			Message: &nodev1.ControlMessage_PublishSandbox{
+				PublishSandbox: &nodev1.PublishSandbox{
+					CommandId: id,
+					VersionId: row.ID.String(),
+					SandboxId: row.PublishSandboxID.String(),
+					Path:      publishPath,
 				},
 			},
 		})

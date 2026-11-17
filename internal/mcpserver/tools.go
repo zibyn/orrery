@@ -41,6 +41,10 @@ const sandboxSchema = `{
       "id": {"type": "string"},
       "mode": {"type": "string"}
     }},
+    "volumes": {"type": ["array", "null"], "items": {"type": "object", "properties": {
+      "volume": {"type": "string"},
+      "path": {"type": "string"}
+    }}},
     "conditions": {"type": ["array", "null"], "items": {"type": "string"}},
     "queue_position": {"type": ["integer", "null"]},
     "blocked_reason": {"type": ["string", "null"]},
@@ -165,6 +169,10 @@ func (s *server) register(srv *sdk.Server) {
       "id": {"type": "string"},
       "mode": {"type": "string", "enum": ["rw", "ro"]}
     }, "required": ["id"]},
+    "volumes": {"type": "array", "maxItems": 16, "description": "Volumes mounted read-write for the Sandbox's life; a Volume another Sandbox holds is a conflict.", "items": {"type": "object", "additionalProperties": false, "properties": {
+      "volume": {"type": "string", "description": "Volume id or name."},
+      "path": {"type": "string", "description": "Absolute, normalized mount path; may be /workspace."}
+    }, "required": ["volume", "path"]}},
     "snapshot": {"type": "string", "description": "SnapshotVersion id or Snapshot name."},
     "resources": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
       "resource": {"type": "string"},

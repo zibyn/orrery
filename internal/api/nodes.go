@@ -349,7 +349,7 @@ func (s *Server) handleDeclareNodeLost(w http.ResponseWriter, r *http.Request, p
 	if _, err := q.FailBuildsOnNodeLost(ctx, &id); step("fail builds", err) {
 		return
 	}
-	if _, err := q.FailPublishesOnNodeLost(ctx, &id); step("fail publishes", err) {
+	if _, err := q.FailPublishesOnNodeLost(ctx, id); step("fail publishes", err) {
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {

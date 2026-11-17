@@ -216,6 +216,20 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		go c.run("publish:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
 			return c.rt.publishWorkspace(c.ctx, cmd)
 		})
+	case *nodev1.ControlMessage_PublishSandbox:
+		cmd := m.PublishSandbox
+		if _, err := uuid.Parse(cmd.VersionId); err != nil {
+			c.result(cmd.CommandId, "invalid version id")
+			return
+		}
+		sandboxID, err := uuid.Parse(cmd.SandboxId)
+		if err != nil {
+			c.result(cmd.CommandId, "invalid sandbox id")
+			return
+		}
+		go c.run("publish:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
+			return c.rt.publishSandbox(c.ctx, sandboxID, cmd)
+		})
 	case *nodev1.ControlMessage_BuildSnapshot:
 		cmd := m.BuildSnapshot
 		if _, err := uuid.Parse(cmd.VersionId); err != nil {
