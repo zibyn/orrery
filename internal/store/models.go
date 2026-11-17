@@ -105,6 +105,34 @@ type ExecLogChunk struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type Generation struct {
+	ID          uuid.UUID
+	OwnerID     uuid.UUID
+	SandboxID   *uuid.UUID
+	Seq         int64
+	Kind        string
+	ManifestKey string
+	Size        int64
+	CreatedAt   pgtype.Timestamptz
+}
+
+type GenerationObject struct {
+	GenerationID uuid.UUID
+	Sha256       string
+}
+
+type GenerationUpload struct {
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	SandboxID        uuid.UUID
+	NodeID           uuid.UUID
+	Generation       int64
+	BaseGenerationID *uuid.UUID
+	Missing          []string
+	ExpiresAt        pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+}
+
 type GitLink struct {
 	UserID         uuid.UUID
 	ProviderID     string
@@ -189,39 +217,40 @@ type ResourceVersionObject struct {
 }
 
 type Sandbox struct {
-	ID              uuid.UUID
-	OwnerID         uuid.UUID
-	Name            string
-	Labels          json.RawMessage
-	DesiredState    string
-	State           string
-	Cause           *string
-	NodeID          *uuid.UUID
-	SnapshotDigest  string
-	Cpu             float64
-	Memory          int64
-	GpuCount        int32
-	IdleStopSeconds int32
-	LastActivityAt  pgtype.Timestamptz
-	TokenCt         []byte
-	SecretEnvCt     []byte
-	Generation      int64
-	IdempotencyKey  *string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-	DeletedAt       pgtype.Timestamptz
-	GpuModel        *string
-	WorkspaceID     *uuid.UUID
-	WorkspaceMode   string
-	TokenKeyID      *string
-	Conditions      json.RawMessage
-	Kind            string
-	Runtime         string
-	EgressMode      string
-	EgressAllow     []string
-	Address         *string
-	LinksFrom       []uuid.UUID
-	LinksPorts      []int32
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	Name             string
+	Labels           json.RawMessage
+	DesiredState     string
+	State            string
+	Cause            *string
+	NodeID           *uuid.UUID
+	SnapshotDigest   string
+	Cpu              float64
+	Memory           int64
+	GpuCount         int32
+	IdleStopSeconds  int32
+	LastActivityAt   pgtype.Timestamptz
+	TokenCt          []byte
+	SecretEnvCt      []byte
+	Generation       int64
+	IdempotencyKey   *string
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	DeletedAt        pgtype.Timestamptz
+	GpuModel         *string
+	WorkspaceID      *uuid.UUID
+	WorkspaceMode    string
+	TokenKeyID       *string
+	Conditions       json.RawMessage
+	Kind             string
+	Runtime          string
+	EgressMode       string
+	EgressAllow      []string
+	Address          *string
+	LinksFrom        []uuid.UUID
+	LinksPorts       []int32
+	HeadGenerationID *uuid.UUID
 }
 
 type SandboxResource struct {

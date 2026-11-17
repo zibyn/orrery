@@ -24,6 +24,43 @@ service Node {
   // The first chunk carries version_id; the reply lists the objects the Node
   // still has to upload (node-protocol.md "Workspace publish").
   rpc SubmitManifest(stream ManifestChunk) returns (ManifestAck);
+  // SubmitGeneration streams the changed entries of a Sandbox's filesystem or
+  // a Volume and opens an upload; the reply lists the objects still missing
+  // (node-protocol.md "Generation 提交", ADR-0031).
+  rpc SubmitGeneration(stream GenerationChunk) returns (GenerationAck);
+  // CommitGeneration verifies an upload's manifest and objects and advances
+  // the head Generation in one transaction.
+  rpc CommitGeneration(CommitGenerationRequest) returns (CommitGenerationResponse);
+}
+
+// GenerationChunk is one slice of a Generation commit. The holder fields are
+// set on the first chunk only: exactly one of sandbox_id or volume_id, the
+// holder Sandbox's generation (the fencing token), and the head the Agent
+// built the change on, empty when nothing was committed yet.
+message GenerationChunk {
+  string sandbox_id = 1;
+  string volume_id = 2;
+  int64 generation = 3;
+  string base_generation_id = 4;
+  // Changed entries; only file entries' objects are looked at here. Their
+  // metadata travels in the full manifest uploaded before CommitGeneration.
+  repeated ManifestEntry entries = 5;
+}
+
+message GenerationAck {
+  // The upload, and the id the Generation gets once committed: the Agent
+  // PUTs the full manifest to it through Presign generations.
+  string upload_id = 1;
+  // Objects of the submitted entries that the store does not hold yet.
+  repeated string missing_sha256 = 2;
+}
+
+message CommitGenerationRequest {
+  string upload_id = 1;
+}
+
+message CommitGenerationResponse {
+  string generation_id = 1;
 }
 
 // ManifestChunk is one slice of a publish's manifest. version_id is set on
@@ -59,10 +96,13 @@ message PresignRequest {
   repeated string manifests = 2;
   // "GET" or "PUT".
   string method = 3;
+  // Generation ids, relative to generations/<owner_id>/; GET or PUT.
+  repeated string generations = 4;
 }
 
 message PresignResponse {
-  // URLs in request order: sha256 entries first, then manifests.
+  // URLs in request order: sha256 entries first, then manifests, then
+  // generations.
   repeated string urls = 1;
 }
 

@@ -171,9 +171,47 @@ func (s *Store) PutManifest(ctx context.Context, ownerID, address string, data [
 
 // GetManifest reads a version's stored canonical manifest bytes.
 func (s *Store) GetManifest(ctx context.Context, ownerID, address string) ([]byte, error) {
+	return s.get(ctx, ManifestKey(ownerID, address))
+}
+
+// GenerationKey is where a Generation manifest is stored (schema.md).
+func GenerationKey(ownerID, id string) string {
+	return "generations/" + ownerID + "/" + id
+}
+
+// PresignGenerationGetURL signs a download of a Generation manifest.
+func (s *Store) PresignGenerationGetURL(ctx context.Context, ownerID, id string) (string, error) {
+	return s.presignGet(ctx, GenerationKey(ownerID, id))
+}
+
+// PresignGenerationPutURL signs the Agent's upload of a Generation manifest.
+// It declares no checksum: the Control Plane parses and validates the bytes
+// before it commits them.
+func (s *Store) PresignGenerationPutURL(ctx context.Context, ownerID, id string) (string, error) {
+	req, err := s.presign.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(GenerationKey(ownerID, id)),
+	}, s3.WithPresignExpires(PresignTTL))
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
+}
+
+// GetGeneration reads a Generation manifest, or ErrNotFound.
+func (s *Store) GetGeneration(ctx context.Context, ownerID, id string) ([]byte, error) {
+	return s.get(ctx, GenerationKey(ownerID, id))
+}
+
+// DeleteGeneration removes a Generation manifest; a missing one is success.
+func (s *Store) DeleteGeneration(ctx context.Context, ownerID, id string) error {
+	return s.delete(ctx, GenerationKey(ownerID, id))
+}
+
+func (s *Store) get(ctx context.Context, key string) ([]byte, error) {
 	out, err := s.ops.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(ManifestKey(ownerID, address)),
+		Key:    aws.String(key),
 	})
 	if err != nil {
 		if isNotFound(err) {

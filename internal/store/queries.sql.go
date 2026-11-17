@@ -218,6 +218,17 @@ func (q *Queries) CancelSnapshotVersion(ctx context.Context, id uuid.UUID) (Snap
 	return i, err
 }
 
+const clearDeletedSandboxHead = `-- name: ClearDeletedSandboxHead :exec
+UPDATE sandboxes SET head_generation_id = NULL
+WHERE head_generation_id = $1 AND deleted_at IS NOT NULL
+`
+
+// A deleted Sandbox's head goes with it (ADR-0031).
+func (q *Queries) ClearDeletedSandboxHead(ctx context.Context, headGenerationID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearDeletedSandboxHead, headGenerationID)
+	return err
+}
+
 const clearResourceCurrent = `-- name: ClearResourceCurrent :exec
 UPDATE resources SET current_version_id = NULL
 WHERE id = $1 AND deleted_at IS NOT NULL
@@ -236,6 +247,20 @@ WHERE id = $1 AND deleted_at IS NOT NULL
 func (q *Queries) ClearSnapshotCurrent(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, clearSnapshotCurrent, id)
 	return err
+}
+
+const consumeGenerationUpload = `-- name: ConsumeGenerationUpload :execrows
+DELETE FROM generation_uploads WHERE id = $1 AND expires_at > now()
+`
+
+// ConsumeGenerationUpload ends an upload in its commit. It must still be
+// unexpired: the purge removes an expired upload's manifest.
+func (q *Queries) ConsumeGenerationUpload(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeGenerationUpload, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const countActiveExecs = `-- name: CountActiveExecs :one
@@ -509,7 +534,7 @@ INSERT INTO sandboxes (
     id, owner_id, kind, name, labels, desired_state, state, snapshot_digest,
     cpu, memory, gpu_count, idle_stop_seconds, generation, secret_env_ct
 ) VALUES ($1, $2, 'build', $3, '{}', 'running', 'pending', $4, $5, $6, 0, 0, 1, $7)
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 type CreateBuildSandboxParams struct {
@@ -570,6 +595,7 @@ func (q *Queries) CreateBuildSandbox(ctx context.Context, arg CreateBuildSandbox
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -684,6 +710,36 @@ type CreateGPUAllocationParams struct {
 // Sandbox with fewer cards than it asked for.
 func (q *Queries) CreateGPUAllocation(ctx context.Context, arg CreateGPUAllocationParams) error {
 	_, err := q.db.Exec(ctx, createGPUAllocation, arg.GpuUuid, arg.SandboxID)
+	return err
+}
+
+const createGenerationUpload = `-- name: CreateGenerationUpload :exec
+INSERT INTO generation_uploads (id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type CreateGenerationUploadParams struct {
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	SandboxID        uuid.UUID
+	NodeID           uuid.UUID
+	Generation       int64
+	BaseGenerationID *uuid.UUID
+	Missing          []string
+	ExpiresAt        pgtype.Timestamptz
+}
+
+func (q *Queries) CreateGenerationUpload(ctx context.Context, arg CreateGenerationUploadParams) error {
+	_, err := q.db.Exec(ctx, createGenerationUpload,
+		arg.ID,
+		arg.OwnerID,
+		arg.SandboxID,
+		arg.NodeID,
+		arg.Generation,
+		arg.BaseGenerationID,
+		arg.Missing,
+		arg.ExpiresAt,
+	)
 	return err
 }
 
@@ -979,7 +1035,7 @@ INSERT INTO sandboxes (
     idempotency_key, secret_env_ct, token_ct, token_key_id, egress_mode, egress_allow,
     links_from, links_ports
 ) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15, $16, $17, $18, $19)
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 type CreateSandboxParams struct {
@@ -1062,6 +1118,7 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -1423,6 +1480,26 @@ func (q *Queries) DeleteGPUAllocationsOnNodeLost(ctx context.Context, nodeID *uu
 	return result.RowsAffected(), nil
 }
 
+const deleteGarbageGeneration = `-- name: DeleteGarbageGeneration :exec
+DELETE FROM generations g
+WHERE g.id = $1
+  AND NOT EXISTS (SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id)
+`
+
+func (q *Queries) DeleteGarbageGeneration(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteGarbageGeneration, id)
+	return err
+}
+
+const deleteGenerationUpload = `-- name: DeleteGenerationUpload :exec
+DELETE FROM generation_uploads WHERE id = $1
+`
+
+func (q *Queries) DeleteGenerationUpload(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteGenerationUpload, id)
+	return err
+}
+
 const deleteGitLink = `-- name: DeleteGitLink :one
 DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at
 `
@@ -1481,7 +1558,7 @@ SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
     workspace_mode = CASE WHEN state IN ('stopped', 'failed') THEN 'ro' ELSE workspace_mode END,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 // DeleteSandbox records a stopped or failed Sandbox read-only: it holds no
@@ -1524,6 +1601,7 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -1777,6 +1855,85 @@ func (q *Queries) FailSandboxesOnWorkspaceLost(ctx context.Context, workspaceID 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const findGenerationUploadObjectOwner = `-- name: FindGenerationUploadObjectOwner :one
+
+SELECT u.owner_id FROM generation_uploads u
+JOIN sandboxes s ON s.id = u.sandbox_id
+WHERE u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
+  AND u.expires_at > now() AND $2::text = ANY (u.missing)
+LIMIT 1
+`
+
+type FindGenerationUploadObjectOwnerParams struct {
+	NodeID uuid.UUID
+	Sha256 string
+}
+
+// Presign authorization (node-protocol.md "Presign"). An open upload signs
+// PUTs only while its Sandbox is on this Node under the same fence.
+func (q *Queries) FindGenerationUploadObjectOwner(ctx context.Context, arg FindGenerationUploadObjectOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findGenerationUploadObjectOwner, arg.NodeID, arg.Sha256)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
+}
+
+const findGenerationUploadOwner = `-- name: FindGenerationUploadOwner :one
+SELECT u.owner_id FROM generation_uploads u
+JOIN sandboxes s ON s.id = u.sandbox_id
+WHERE u.id = $2 AND u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
+  AND u.expires_at > now()
+`
+
+type FindGenerationUploadOwnerParams struct {
+	NodeID uuid.UUID
+	ID     uuid.UUID
+}
+
+func (q *Queries) FindGenerationUploadOwner(ctx context.Context, arg FindGenerationUploadOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findGenerationUploadOwner, arg.NodeID, arg.ID)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
+}
+
+const findNodeHeadGenerationObjectOwner = `-- name: FindNodeHeadGenerationObjectOwner :one
+SELECT s.owner_id FROM sandboxes s
+JOIN generation_objects go ON go.generation_id = s.head_generation_id
+WHERE s.node_id = $1 AND s.state <> 'deleted' AND go.sha256 = $2
+LIMIT 1
+`
+
+type FindNodeHeadGenerationObjectOwnerParams struct {
+	NodeID *uuid.UUID
+	Sha256 string
+}
+
+func (q *Queries) FindNodeHeadGenerationObjectOwner(ctx context.Context, arg FindNodeHeadGenerationObjectOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findNodeHeadGenerationObjectOwner, arg.NodeID, arg.Sha256)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
+}
+
+const findNodeHeadGenerationOwner = `-- name: FindNodeHeadGenerationOwner :one
+SELECT s.owner_id FROM sandboxes s
+WHERE s.node_id = $1 AND s.state <> 'deleted' AND s.head_generation_id = $2
+LIMIT 1
+`
+
+type FindNodeHeadGenerationOwnerParams struct {
+	NodeID           *uuid.UUID
+	HeadGenerationID *uuid.UUID
+}
+
+func (q *Queries) FindNodeHeadGenerationOwner(ctx context.Context, arg FindNodeHeadGenerationOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findNodeHeadGenerationOwner, arg.NodeID, arg.HeadGenerationID)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
 }
 
 const findPublishObjectOwner = `-- name: FindPublishObjectOwner :one
@@ -2036,6 +2193,47 @@ func (q *Queries) GetExecWithNode(ctx context.Context, id uuid.UUID) (GetExecWit
 		&i.Exec.IdempotencyKey,
 		&i.Exec.State,
 		&i.SandboxNodeID,
+	)
+	return i, err
+}
+
+const getGeneration = `-- name: GetGeneration :one
+SELECT id, owner_id, sandbox_id, seq, kind, manifest_key, size, created_at FROM generations WHERE id = $1
+`
+
+func (q *Queries) GetGeneration(ctx context.Context, id uuid.UUID) (Generation, error) {
+	row := q.db.QueryRow(ctx, getGeneration, id)
+	var i Generation
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.SandboxID,
+		&i.Seq,
+		&i.Kind,
+		&i.ManifestKey,
+		&i.Size,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getGenerationUpload = `-- name: GetGenerationUpload :one
+SELECT id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, created_at FROM generation_uploads WHERE id = $1 AND expires_at > now()
+`
+
+func (q *Queries) GetGenerationUpload(ctx context.Context, id uuid.UUID) (GenerationUpload, error) {
+	row := q.db.QueryRow(ctx, getGenerationUpload, id)
+	var i GenerationUpload
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.SandboxID,
+		&i.NodeID,
+		&i.Generation,
+		&i.BaseGenerationID,
+		&i.Missing,
+		&i.ExpiresAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -2389,7 +2587,7 @@ func (q *Queries) GetResourceVersionByPublishIdempotencyKey(ctx context.Context,
 }
 
 const getSandbox = `-- name: GetSandbox :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes WHERE id = $1 AND kind = 'user' AND state <> 'deleted'
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes WHERE id = $1 AND kind = 'user' AND state <> 'deleted'
 `
 
 func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -2429,12 +2627,13 @@ func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error)
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
 
 const getSandboxByIdempotencyKey = `-- name: GetSandboxByIdempotencyKey :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes
 WHERE owner_id = $1 AND kind = 'user' AND idempotency_key = $2 AND state <> 'deleted'
 `
 
@@ -2480,12 +2679,13 @@ func (q *Queries) GetSandboxByIdempotencyKey(ctx context.Context, arg GetSandbox
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
 
 const getSandboxIncludingDeleted = `-- name: GetSandboxIncludingDeleted :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes WHERE id = $1
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes WHERE id = $1
 `
 
 // GetSandboxIncludingDeleted does not filter kind: a build Exec's log is
@@ -2527,6 +2727,7 @@ func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) 
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -3054,6 +3255,49 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 	return err
 }
 
+const insertGeneration = `-- name: InsertGeneration :exec
+INSERT INTO generations (id, owner_id, sandbox_id, seq, kind, manifest_key, size)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertGenerationParams struct {
+	ID          uuid.UUID
+	OwnerID     uuid.UUID
+	SandboxID   *uuid.UUID
+	Seq         int64
+	Kind        string
+	ManifestKey string
+	Size        int64
+}
+
+func (q *Queries) InsertGeneration(ctx context.Context, arg InsertGenerationParams) error {
+	_, err := q.db.Exec(ctx, insertGeneration,
+		arg.ID,
+		arg.OwnerID,
+		arg.SandboxID,
+		arg.Seq,
+		arg.Kind,
+		arg.ManifestKey,
+		arg.Size,
+	)
+	return err
+}
+
+const insertGenerationObject = `-- name: InsertGenerationObject :exec
+INSERT INTO generation_objects (generation_id, sha256) VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+`
+
+type InsertGenerationObjectParams struct {
+	GenerationID uuid.UUID
+	Sha256       string
+}
+
+func (q *Queries) InsertGenerationObject(ctx context.Context, arg InsertGenerationObjectParams) error {
+	_, err := q.db.Exec(ctx, insertGenerationObject, arg.GenerationID, arg.Sha256)
+	return err
+}
+
 const insertNodeGPU = `-- name: InsertNodeGPU :exec
 INSERT INTO gpus (uuid, node_id, model) VALUES ($1, $2, $3)
 ON CONFLICT (uuid) DO UPDATE SET node_id = EXCLUDED.node_id, model = EXCLUDED.model
@@ -3283,7 +3527,7 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 }
 
 const listBuildRuns = `-- name: ListBuildRuns :many
-SELECT v.id, v.snapshot_id, v.digest, v.state, v.cause, v.source, v.build_sandbox_id, v.build_exec_id, v.provenance, v.idempotency_key, v.created_at, v.request, v.deleted_at, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind, s.runtime, s.egress_mode, s.egress_allow, s.address, s.links_from, s.links_ports,
+SELECT v.id, v.snapshot_id, v.digest, v.state, v.cause, v.source, v.build_sandbox_id, v.build_exec_id, v.provenance, v.idempotency_key, v.created_at, v.request, v.deleted_at, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind, s.runtime, s.egress_mode, s.egress_allow, s.address, s.links_from, s.links_ports, s.head_generation_id,
        e.id AS exec_id, e.accepted_at AS exec_accepted_at,
        e.started_at AS exec_started_at, e.deadline_at AS exec_deadline_at,
        e.cancel_requested_at AS exec_cancel_requested_at,
@@ -3371,6 +3615,7 @@ func (q *Queries) ListBuildRuns(ctx context.Context) ([]ListBuildRunsRow, error)
 			&i.Sandbox.Address,
 			&i.Sandbox.LinksFrom,
 			&i.Sandbox.LinksPorts,
+			&i.Sandbox.HeadGenerationID,
 			&i.ExecID,
 			&i.ExecAcceptedAt,
 			&i.ExecStartedAt,
@@ -3640,6 +3885,43 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 	return items, nil
 }
 
+const listExpiredGenerationUploads = `-- name: ListExpiredGenerationUploads :many
+SELECT id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, created_at FROM generation_uploads WHERE expires_at <= now() - interval '1 hour'
+ORDER BY expires_at LIMIT $1
+`
+
+// The hour past expiry keeps the purge clear of a commit that read the
+// manifest just before the upload expired.
+func (q *Queries) ListExpiredGenerationUploads(ctx context.Context, limit int32) ([]GenerationUpload, error) {
+	rows, err := q.db.Query(ctx, listExpiredGenerationUploads, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GenerationUpload{}
+	for rows.Next() {
+		var i GenerationUpload
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.SandboxID,
+			&i.NodeID,
+			&i.Generation,
+			&i.BaseGenerationID,
+			&i.Missing,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpiredResourceVersions = `-- name: ListExpiredResourceVersions :many
 
 SELECT rv.id, rv.address, rv.manifest_key, rv.state, rv.created_at,
@@ -3705,6 +3987,47 @@ func (q *Queries) ListExpiredResourceVersions(ctx context.Context, arg ListExpir
 	return items, nil
 }
 
+const listGarbageGenerations = `-- name: ListGarbageGenerations :many
+SELECT g.id, g.owner_id, g.sandbox_id, g.seq, g.kind, g.manifest_key, g.size, g.created_at FROM generations g
+WHERE NOT EXISTS (
+    SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id AND s.deleted_at IS NULL
+)
+ORDER BY g.created_at
+LIMIT $1
+`
+
+// ListGarbageGenerations finds Generations no live Sandbox has as its head.
+// Heads only move forward, so such a row never becomes a head again.
+// shortcut: Volume heads and pending Volume publishes keep rows too (#277).
+func (q *Queries) ListGarbageGenerations(ctx context.Context, limit int32) ([]Generation, error) {
+	rows, err := q.db.Query(ctx, listGarbageGenerations, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Generation{}
+	for rows.Next() {
+		var i Generation
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.SandboxID,
+			&i.Seq,
+			&i.Kind,
+			&i.ManifestKey,
+			&i.Size,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitLinks = `-- name: ListGitLinks :many
 SELECT user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at FROM git_links WHERE user_id = $1 ORDER BY provider_id
 `
@@ -3739,7 +4062,7 @@ func (q *Queries) ListGitLinks(ctx context.Context, userID uuid.UUID) ([]GitLink
 }
 
 const listIdleSandboxes = `-- name: ListIdleSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes
 WHERE kind = 'user' AND state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
 ORDER BY id
 `
@@ -3789,6 +4112,7 @@ func (q *Queries) ListIdleSandboxes(ctx context.Context) ([]Sandbox, error) {
 			&i.Address,
 			&i.LinksFrom,
 			&i.LinksPorts,
+			&i.HeadGenerationID,
 		); err != nil {
 			return nil, err
 		}
@@ -4076,7 +4400,7 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 }
 
 const listOpenAdmissionRequests = `-- name: ListOpenAdmissionRequests :many
-SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind, s.runtime, s.egress_mode, s.egress_allow, s.address, s.links_from, s.links_ports
+SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind, s.runtime, s.egress_mode, s.egress_allow, s.address, s.links_from, s.links_ports, s.head_generation_id
 FROM admission_requests a
 JOIN sandboxes s ON s.id = a.sandbox_id
 WHERE a.ended_at IS NULL
@@ -4140,6 +4464,7 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 			&i.Sandbox.Address,
 			&i.Sandbox.LinksFrom,
 			&i.Sandbox.LinksPorts,
+			&i.Sandbox.HeadGenerationID,
 		); err != nil {
 			return nil, err
 		}
@@ -4236,7 +4561,7 @@ func (q *Queries) ListProvisioningWorkspaces(ctx context.Context) ([]Workspace, 
 
 const listReconcilableSandboxes = `-- name: ListReconcilableSandboxes :many
 
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes
 WHERE kind = 'user'
   AND (state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
        -- A failed Sandbox can still hold a Runtime (workspace_lost); the stop
@@ -4292,6 +4617,7 @@ func (q *Queries) ListReconcilableSandboxes(ctx context.Context) ([]Sandbox, err
 			&i.Address,
 			&i.LinksFrom,
 			&i.LinksPorts,
+			&i.HeadGenerationID,
 		); err != nil {
 			return nil, err
 		}
@@ -4581,7 +4907,7 @@ func (q *Queries) ListSandboxResourceMounts(ctx context.Context, sandboxID uuid.
 }
 
 const listSandboxes = `-- name: ListSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes
 WHERE owner_id = $1
   AND kind = 'user'
   AND state <> 'deleted'
@@ -4659,6 +4985,7 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 			&i.Address,
 			&i.LinksFrom,
 			&i.LinksPorts,
+			&i.HeadGenerationID,
 		); err != nil {
 			return nil, err
 		}
@@ -4867,6 +5194,12 @@ WHERE c.created_at < $1
   )
   AND NOT EXISTS (
     SELECT 1
+    FROM generation_objects go
+    JOIN generations g ON g.id = go.generation_id
+    WHERE g.owner_id = c.owner_id AND go.sha256 = c.sha256
+  )
+  AND NOT EXISTS (
+    SELECT 1
     FROM uploads u
     JOIN resources r ON r.id = u.resource_id
     WHERE r.owner_id = c.owner_id
@@ -4892,8 +5225,8 @@ type ListSweepableCASObjectsRow struct {
 }
 
 // ListSweepableCASObjects finds objects past the grace window that no version
-// of the same owner references and no unexpired upload will still write. The
-// owner join is what makes the sweep owner-scoped (ADR-0021).
+// or Generation of the same owner references and no unexpired upload will
+// still write. The owner join is what makes the sweep owner-scoped (ADR-0021).
 func (q *Queries) ListSweepableCASObjects(ctx context.Context, arg ListSweepableCASObjectsParams) ([]ListSweepableCASObjectsRow, error) {
 	rows, err := q.db.Query(ctx, listSweepableCASObjects, arg.Cutoff, arg.Limit)
 	if err != nil {
@@ -5107,6 +5440,56 @@ func (q *Queries) LockExecStoredSeq(ctx context.Context, id uuid.UUID) (int64, e
 	var stored_seq int64
 	err := row.Scan(&stored_seq)
 	return stored_seq, err
+}
+
+const lockGenerationSandbox = `-- name: LockGenerationSandbox :one
+
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes WHERE id = $1 FOR UPDATE
+`
+
+// Generations (ADR-0031, node-protocol.md "Generation 提交").
+// LockGenerationSandbox reads the committing Sandbox under a row lock, so
+// the fence and head checks and the head move are one step.
+func (q *Queries) LockGenerationSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
+	row := q.db.QueryRow(ctx, lockGenerationSandbox, id)
+	var i Sandbox
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Labels,
+		&i.DesiredState,
+		&i.State,
+		&i.Cause,
+		&i.NodeID,
+		&i.SnapshotDigest,
+		&i.Cpu,
+		&i.Memory,
+		&i.GpuCount,
+		&i.IdleStopSeconds,
+		&i.LastActivityAt,
+		&i.TokenCt,
+		&i.SecretEnvCt,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.GpuModel,
+		&i.WorkspaceID,
+		&i.WorkspaceMode,
+		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
+		&i.Runtime,
+		&i.EgressMode,
+		&i.EgressAllow,
+		&i.Address,
+		&i.LinksFrom,
+		&i.LinksPorts,
+		&i.HeadGenerationID,
+	)
+	return i, err
 }
 
 const lockResource = `-- name: LockResource :one
@@ -5562,6 +5945,19 @@ func (q *Queries) MarkWorkspacesLostOnNodeLost(ctx context.Context, nodeID *uuid
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const nextGenerationSeq = `-- name: NextGenerationSeq :one
+SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE sandbox_id = $1
+`
+
+// seq is monotonic per Sandbox: the head is never purged, so the maximum
+// survives retention.
+func (q *Queries) NextGenerationSeq(ctx context.Context, sandboxID *uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, nextGenerationSeq, sandboxID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const nodeHeartbeat = `-- name: NodeHeartbeat :exec
@@ -6080,6 +6476,25 @@ func (q *Queries) SetSandboxAddress(ctx context.Context, arg SetSandboxAddressPa
 	return err
 }
 
+const setSandboxHeadGeneration = `-- name: SetSandboxHeadGeneration :execrows
+UPDATE sandboxes SET head_generation_id = $2::uuid, updated_at = now()
+WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM $3::uuid
+`
+
+type SetSandboxHeadGenerationParams struct {
+	ID   uuid.UUID
+	Head uuid.UUID
+	Base *uuid.UUID
+}
+
+func (q *Queries) SetSandboxHeadGeneration(ctx context.Context, arg SetSandboxHeadGenerationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSandboxHeadGeneration, arg.ID, arg.Head, arg.Base)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setSandboxNode = `-- name: SetSandboxNode :execrows
 UPDATE sandboxes
 SET node_id = $2, updated_at = now()
@@ -6373,7 +6788,7 @@ UPDATE sandboxes
 SET desired_state = 'running', state = 'pending', cause = NULL, address = NULL,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state = 'stopped'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -6413,6 +6828,7 @@ func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, erro
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -6422,7 +6838,7 @@ UPDATE sandboxes
 SET desired_state = 'stopped', state = 'stopping',
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state IN ('pending', 'provisioning', 'ready')
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -6462,6 +6878,7 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }

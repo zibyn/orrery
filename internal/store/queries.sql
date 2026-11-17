@@ -1275,8 +1275,8 @@ DELETE FROM resource_versions WHERE id = $1;
 DELETE FROM uploads WHERE expires_at <= now();
 
 -- ListSweepableCASObjects finds objects past the grace window that no version
--- of the same owner references and no unexpired upload will still write. The
--- owner join is what makes the sweep owner-scoped (ADR-0021).
+-- or Generation of the same owner references and no unexpired upload will
+-- still write. The owner join is what makes the sweep owner-scoped (ADR-0021).
 -- name: ListSweepableCASObjects :many
 SELECT c.owner_id, c.sha256, c.created_at
 FROM cas_objects c
@@ -1287,6 +1287,12 @@ WHERE c.created_at < sqlc.arg('cutoff')
     JOIN resource_versions rv ON rv.id = rvo.version_id
     JOIN resources r ON r.id = rv.resource_id
     WHERE r.owner_id = c.owner_id AND rvo.sha256 = c.sha256
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM generation_objects go
+    JOIN generations g ON g.id = go.generation_id
+    WHERE g.owner_id = c.owner_id AND go.sha256 = c.sha256
   )
   AND NOT EXISTS (
     SELECT 1
@@ -1526,3 +1532,99 @@ WHERE finished_at IS NULL
 UPDATE workspaces
 SET state = 'deleted', deleted_at = now(), updated_at = now()
 WHERE id = $1 AND state = 'deleting';
+
+-- Generations (ADR-0031, node-protocol.md "Generation 提交").
+
+-- LockGenerationSandbox reads the committing Sandbox under a row lock, so
+-- the fence and head checks and the head move are one step.
+-- name: LockGenerationSandbox :one
+SELECT * FROM sandboxes WHERE id = $1 FOR UPDATE;
+
+-- name: CreateGenerationUpload :exec
+INSERT INTO generation_uploads (id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: GetGenerationUpload :one
+SELECT * FROM generation_uploads WHERE id = $1 AND expires_at > now();
+
+-- ConsumeGenerationUpload ends an upload in its commit. It must still be
+-- unexpired: the purge removes an expired upload's manifest.
+-- name: ConsumeGenerationUpload :execrows
+DELETE FROM generation_uploads WHERE id = $1 AND expires_at > now();
+
+-- The hour past expiry keeps the purge clear of a commit that read the
+-- manifest just before the upload expired.
+-- name: ListExpiredGenerationUploads :many
+SELECT * FROM generation_uploads WHERE expires_at <= now() - interval '1 hour'
+ORDER BY expires_at LIMIT $1;
+
+-- name: DeleteGenerationUpload :exec
+DELETE FROM generation_uploads WHERE id = $1;
+
+-- seq is monotonic per Sandbox: the head is never purged, so the maximum
+-- survives retention.
+-- name: NextGenerationSeq :one
+SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE sandbox_id = $1;
+
+-- name: InsertGeneration :exec
+INSERT INTO generations (id, owner_id, sandbox_id, seq, kind, manifest_key, size)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: InsertGenerationObject :exec
+INSERT INTO generation_objects (generation_id, sha256) VALUES ($1, $2)
+ON CONFLICT DO NOTHING;
+
+-- name: GetGeneration :one
+SELECT * FROM generations WHERE id = $1;
+
+-- name: SetSandboxHeadGeneration :execrows
+UPDATE sandboxes SET head_generation_id = sqlc.arg('head')::uuid, updated_at = now()
+WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM sqlc.narg('base')::uuid;
+
+-- ListGarbageGenerations finds Generations no live Sandbox has as its head.
+-- Heads only move forward, so such a row never becomes a head again.
+-- shortcut: Volume heads and pending Volume publishes keep rows too (#277).
+-- name: ListGarbageGenerations :many
+SELECT g.* FROM generations g
+WHERE NOT EXISTS (
+    SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id AND s.deleted_at IS NULL
+)
+ORDER BY g.created_at
+LIMIT $1;
+
+-- A deleted Sandbox's head goes with it (ADR-0031).
+-- name: ClearDeletedSandboxHead :exec
+UPDATE sandboxes SET head_generation_id = NULL
+WHERE head_generation_id = $1 AND deleted_at IS NOT NULL;
+
+-- name: DeleteGarbageGeneration :exec
+DELETE FROM generations g
+WHERE g.id = $1
+  AND NOT EXISTS (SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id);
+
+-- Presign authorization (node-protocol.md "Presign"). An open upload signs
+-- PUTs only while its Sandbox is on this Node under the same fence.
+
+-- name: FindGenerationUploadObjectOwner :one
+SELECT u.owner_id FROM generation_uploads u
+JOIN sandboxes s ON s.id = u.sandbox_id
+WHERE u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
+  AND u.expires_at > now() AND sqlc.arg('sha256')::text = ANY (u.missing)
+LIMIT 1;
+
+-- name: FindGenerationUploadOwner :one
+SELECT u.owner_id FROM generation_uploads u
+JOIN sandboxes s ON s.id = u.sandbox_id
+WHERE u.id = $2 AND u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
+  AND u.expires_at > now();
+
+-- name: FindNodeHeadGenerationOwner :one
+SELECT s.owner_id FROM sandboxes s
+WHERE s.node_id = $1 AND s.state <> 'deleted' AND s.head_generation_id = $2
+LIMIT 1;
+
+-- name: FindNodeHeadGenerationObjectOwner :one
+SELECT s.owner_id FROM sandboxes s
+JOIN generation_objects go ON go.generation_id = s.head_generation_id
+WHERE s.node_id = $1 AND s.state <> 'deleted' AND go.sha256 = $2
+LIMIT 1;

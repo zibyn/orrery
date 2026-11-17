@@ -148,6 +148,7 @@ func (s *Server) purgeGC(ctx context.Context, now time.Time) {
 		{"release deleted Sandbox references", s.purgeDeletedSandboxResources},
 		{"expire uploads", s.purgeExpiredUploads},
 		{"ResourceVersions", func(ctx context.Context) error { return s.purgeResourceVersions(ctx, now) }},
+		{"Generations", s.purgeGenerations},
 		{"CAS objects", func(ctx context.Context) error { return s.purgeCASObjects(ctx, now) }},
 		{"Resource tombstones", s.purgeResourceTombstones},
 		{"SnapshotVersion tombstones", s.purgeSnapshotVersionTombstones},
