@@ -61,10 +61,9 @@ func waitForNodeHealth(t *testing.T, admin, name, wantStatus, wantHealth string)
 }
 
 // TestMultiNodePlacement is #93's "multi-node-placement" scenario: with two
-// Nodes on one containerd, a new persistent Workspace lands on a feasible
-// Node, and its Sandbox is admitted only on the Node the Workspace is bound to
-// (ADR-0015 locality). The policy would prefer the older Node, so the two
-// Agents are brought up out of order to make a broken pin visible.
+// Nodes enrolled on one containerd, a Sandbox is admitted only on a connected
+// Node. The policy would prefer the older Node, so the two Agents are brought
+// up out of order to make a placement on a disconnected Node visible.
 func TestMultiNodePlacement(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
@@ -77,31 +76,15 @@ func TestMultiNodePlacement(t *testing.T) {
 	firstState, firstRoot := enrollAgent(t, admin, firstName)
 	secondState, secondRoot := enrollAgent(t, admin, secondName)
 
-	// Only the second (younger) Node is connected when the Workspace is placed.
+	// Only the second (younger) Node is connected when the Sandbox is placed.
 	startAgentWith(t, secondState, secondRoot)
 	waitForNodeReady(t, admin, secondName)
 	second := findNode(t, admin, secondName)
-
-	ws := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
-	if ws.NodeID == nil || *ws.NodeID != second.ID {
-		t.Fatalf("Workspace node_id = %v, want the only connected Node %s", ws.NodeID, second.ID)
-	}
-
-	// The older Node joins now. Without the Workspace locality filter the
-	// Scheduler would prefer it; the pin must keep the Sandbox on the second.
-	startAgentWith(t, firstState, firstRoot)
-	waitForNodeReady(t, admin, firstName)
 	first := findNode(t, admin, firstName)
 
-	status, data := createSandboxWithWorkspace(t, admin, fmt.Sprintf("multi-%d", suffix), ws.ID, "rw", 0)
-	if status != http.StatusCreated {
-		t.Fatalf("create Sandbox: %d %s", status, data)
-	}
-	var created sandboxView
-	mustJSON(t, data, &created)
-	sb := waitForSandboxReady(t, admin, created.ID)
+	sb := getSandbox(t, admin, createReadySandbox(t, admin, fmt.Sprintf("multi-%d", suffix), 128<<20))
 	if sb.NodeID == nil || *sb.NodeID != second.ID {
-		t.Fatalf("Sandbox node_id = %v, want the bound Node %s (the other Node is %s)",
+		t.Fatalf("Sandbox node_id = %v, want the connected Node %s (the other Node is %s)",
 			sb.NodeID, second.ID, first.ID)
 	}
 	// Every Runtime instance carries its Node's ownership label (runtime.md §8).
@@ -110,16 +93,9 @@ func TestMultiNodePlacement(t *testing.T) {
 	}
 
 	deleteSandbox(t, admin, sb.ID)
-	if status, data := call(t, http.MethodDelete, "/api/v1/workspaces/"+ws.ID, admin, nil); status != http.StatusAccepted {
-		t.Fatalf("delete Workspace: %d %s", status, data)
-	}
-	deadline := time.Now().Add(60 * time.Second)
-	for getWorkspace(t, admin, ws.ID).State != "deleted" {
-		if time.Now().After(deadline) {
-			t.Fatalf("Workspace %s never became deleted", ws.ID)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	// The older Node still joins cleanly afterwards.
+	startAgentWith(t, firstState, firstRoot)
+	waitForNodeReady(t, admin, firstName)
 }
 
 // TestUnhealthyRuntime is #93's "unhealthy-runtime" scenario: a Node whose
@@ -145,9 +121,10 @@ func TestUnhealthyRuntime(t *testing.T) {
 		t.Fatalf("Node %s runtime_health = %v, want unhealthy", unhealthy.ID, got.RuntimeHealth)
 	}
 
-	ws := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
-	if ws.NodeID == nil || *ws.NodeID != healthy.ID {
-		t.Fatalf("Workspace node_id = %v, want the healthy Node %s", ws.NodeID, healthy.ID)
+	sb := getSandbox(t, admin, createReadySandbox(t, admin, fmt.Sprintf("unhealthy-%d", suffix), 128<<20))
+	deleteSandbox(t, admin, sb.ID)
+	if sb.NodeID == nil || *sb.NodeID != healthy.ID {
+		t.Fatalf("Sandbox node_id = %v, want the healthy Node %s", sb.NodeID, healthy.ID)
 	}
 }
 
@@ -241,10 +218,10 @@ func sandboxContainerLabel(t *testing.T, sandboxID, key string) string {
 }
 
 // TestRetireNode is #94's "retire-node" scenario (#39, ADR-0014). There is no
-// migration or eviction: a Workspace leaves a Node the way a caller moves data
-// — archive it, publish the archive to a Resource, restore it into a Workspace
-// on another Node. Only a paused Node with no non-terminal Workspace and no
-// non-terminal Sandbox can be deleted; the row stays as a tombstone.
+// eviction: a running Sandbox's data leaves a Node the way a caller moves data
+// — publish it to a Resource, restore it into a Sandbox on another Node. Only
+// a paused Node with no non-terminal Sandbox can be deleted; the row stays as
+// a tombstone.
 func TestRetireNode(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
@@ -263,30 +240,17 @@ func TestRetireNode(t *testing.T) {
 	waitForNodeReady(t, admin, newName)
 	replacement := findNode(t, admin, newName)
 
-	wsOld := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
-	if wsOld.NodeID == nil || *wsOld.NodeID != old.ID {
-		t.Fatalf("Workspace node_id = %v, want the older Node %s (the other is %s)",
-			wsOld.NodeID, old.ID, replacement.ID)
+	sbOld := getSandbox(t, admin, createReadySandbox(t, admin, fmt.Sprintf("retire-%d", suffix), 128<<20))
+	if sbOld.NodeID == nil || *sbOld.NodeID != old.ID {
+		t.Fatalf("Sandbox node_id = %v, want the older Node %s (the other is %s)",
+			sbOld.NodeID, old.ID, replacement.ID)
 	}
-	status, data := createSandboxWithWorkspace(t, admin, fmt.Sprintf("retire-%d", suffix), wsOld.ID, "rw", 0)
-	if status != http.StatusCreated {
-		t.Fatalf("create Sandbox: %d %s", status, data)
-	}
-	var sbOld sandboxView
-	mustJSON(t, data, &sbOld)
-	sbOld = waitForSandboxReady(t, admin, sbOld.ID)
 	runExecScript(t, admin, sbOld.ID,
 		"printf 'retire me\\n' > /workspace/data.txt\nchmod -R a+rwX /workspace")
 
 	// A stopped Sandbox only prefers its Node and does not block deleting it
 	// (ADR-0031); it is stopped before the pause, which takes no restarts.
-	status, data = createSandboxWithWorkspace(t, admin, fmt.Sprintf("retire-stop-%d", suffix), wsOld.ID, "ro", 0)
-	if status != http.StatusCreated {
-		t.Fatalf("create second Sandbox: %d %s", status, data)
-	}
-	var sbStopped sandboxView
-	mustJSON(t, data, &sbStopped)
-	sbStopped = waitForSandboxReady(t, admin, sbStopped.ID)
+	sbStopped := getSandbox(t, admin, createReadySandbox(t, admin, fmt.Sprintf("retire-stop-%d", suffix), 128<<20))
 	if status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+sbStopped.ID+"/stop", admin, nil); status != http.StatusAccepted {
 		t.Fatalf("stop second Sandbox: %d %s", status, data)
 	}
@@ -294,7 +258,7 @@ func TestRetireNode(t *testing.T) {
 
 	cli := newCLIRunner(t, admin)
 	// Pause and resume are the admin switch (ADR-0017). A paused Node takes no
-	// new Workspace but keeps running Sandboxes.
+	// new Sandbox but keeps running ones.
 	cli.run(t, "", "node", "pause", old.ID)
 	if got := getNode(t, admin, old.ID); got.Status != "paused" {
 		t.Fatalf("Node status after pause = %q, want paused", got.Status)
@@ -305,55 +269,34 @@ func TestRetireNode(t *testing.T) {
 	}
 	cli.run(t, "", "node", "pause", old.ID)
 
-	// A non-terminal Sandbox and Workspace both block deletion.
-	status, data = call(t, http.MethodDelete, "/api/v1/nodes/"+old.ID, admin, nil)
+	// A non-terminal Sandbox blocks deletion.
+	status, data := call(t, http.MethodDelete, "/api/v1/nodes/"+old.ID, admin, nil)
 	if status != http.StatusConflict {
 		t.Fatalf("delete a Node with work = %d %s, want 409", status, data)
 	}
 	requireProblemCode(t, data, "conflict")
 
-	// The archive: a paused Node still publishes because the Workspace is
-	// bound there.
+	// The archive: a paused Node still publishes its running Sandbox.
 	resourceName := fmt.Sprintf("retire-%d", suffix)
-	var version publishedVersion
-	mustJSON(t, cli.run(t, "", "workspace", "publish", wsOld.ID, "/workspace", resourceName), &version)
+	version := publishSandbox(t, admin, sbOld.ID, ".", resourceName)
 	if version.State != "ready" || version.Address == nil {
 		t.Fatalf("published version = %+v, want a ready version with an address", version)
 	}
 
-	// With the Sandbox gone the Workspace alone still blocks the Node.
 	deleteSandbox(t, admin, sbOld.ID)
-	status, data = call(t, http.MethodDelete, "/api/v1/nodes/"+old.ID, admin, nil)
-	if status != http.StatusConflict {
-		t.Fatalf("delete a Node with a non-terminal Workspace = %d %s, want 409", status, data)
-	}
-	requireProblemCode(t, data, "conflict")
 
-	if status, data := call(t, http.MethodDelete, "/api/v1/workspaces/"+wsOld.ID, admin, nil); status != http.StatusAccepted {
-		t.Fatalf("delete Workspace: %d %s", status, data)
-	}
-	waitForWorkspaceState(t, admin, wsOld.ID, "deleted", 60*time.Second)
-
-	// Restore into a Workspace on the other Node; the paused Node takes no new
-	// Workspace, so placement has to choose the other one.
-	wsNew := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
-	if wsNew.NodeID == nil || *wsNew.NodeID != replacement.ID {
-		t.Fatalf("restored Workspace node_id = %v, want %s", wsNew.NodeID, replacement.ID)
-	}
-	status, data = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
+	// Restore into a Sandbox on the other Node; the paused Node takes no new
+	// Sandbox, so placement has to choose the other one.
+	sbNew := getSandbox(t, admin, createReadySandboxWith(t, admin, map[string]any{
 		"name":      fmt.Sprintf("restore-%d", suffix),
 		"cpu":       0.5,
 		"memory":    128 << 20,
 		"idle_stop": 0,
-		"workspace": map[string]string{"id": wsNew.ID, "mode": "rw"},
 		"resources": []map[string]any{{"resource": resourceName, "version": version.ID, "mount": "archive"}},
-	})
-	if status != http.StatusCreated {
-		t.Fatalf("create restoring Sandbox: %d %s", status, data)
+	}))
+	if sbNew.NodeID == nil || *sbNew.NodeID != replacement.ID {
+		t.Fatalf("restoring Sandbox node_id = %v, want %s", sbNew.NodeID, replacement.ID)
 	}
-	var sbNew sandboxView
-	mustJSON(t, data, &sbNew)
-	sbNew = waitForSandboxReady(t, admin, sbNew.ID)
 	// cp -a copies the read-only mount's mode onto /workspace; restore write
 	// permission so t.TempDir's cleanup can remove the tree (as the publish
 	// scenario does).

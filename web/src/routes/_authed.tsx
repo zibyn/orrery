@@ -67,7 +67,7 @@ type NavItem = {
 // server still enforces scope.
 const NAV: { label: () => string; items: readonly NavItem[] }[] = [
   {
-    label: () => m.nav_group_workspace(),
+    label: () => m.nav_group_build(),
     items: [
       { to: '/sandboxes', label: () => m.nav_sandboxes(), icon: Boxes },
       { to: '/snapshots', label: () => m.nav_snapshots(), icon: Layers },

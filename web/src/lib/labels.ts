@@ -46,7 +46,6 @@ const CAUSE_LABELS: Record<string, () => string> = {
   runtime_create_failed: m.cause_runtime_create_failed,
   image_pull_failed: m.cause_image_pull_failed,
   resource_fetch_failed: m.cause_resource_fetch_failed,
-  workspace_lost: m.cause_workspace_lost,
   build_interrupted: m.cause_build_interrupted,
   import_failed: m.cause_import_failed,
   build_failed: m.cause_build_failed,
@@ -109,12 +108,6 @@ export function scopeLabel(scope: string): string {
   if (scope === 'user') return m.scope_user()
   if (scope === 'admin') return m.scope_admin()
   return scope
-}
-
-export function workspaceKindLabel(kind: string): string {
-  if (kind === 'persistent') return m.workspace_kind_persistent()
-  if (kind === 'ephemeral') return m.workspace_kind_ephemeral()
-  return kind
 }
 
 export function sourceLabel(source: string): string {

@@ -40,7 +40,7 @@ func TestGvisorParity(t *testing.T) {
 		"egress_policy":         "enforced",
 		"cpu_memory_pid_limits": "enforced",
 		"exec_supervisor":       "enforced",
-		"workspace_rw_mount":    "enforced",
+		"workdir_writable":      "enforced",
 	} {
 		if values[name] != want {
 			t.Fatalf("%s = %q, want %q (capabilities %v)", name, values[name], want, node.Capabilities)

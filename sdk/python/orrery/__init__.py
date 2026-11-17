@@ -13,7 +13,6 @@ from .client import (
     Orrery,
     OrreryError,
     VolumeMount,
-    WorkspaceRef,
 )
 
 __all__ = [
@@ -29,5 +28,4 @@ __all__ = [
     "Orrery",
     "OrreryError",
     "VolumeMount",
-    "WorkspaceRef",
 ]

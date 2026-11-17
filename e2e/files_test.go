@@ -35,7 +35,7 @@ func TestFilesAPI(t *testing.T) {
 	}
 
 	// Upload and download agree byte for byte.
-	content := []byte("hello workspace\n")
+	content := []byte("hello sandboxes\n")
 	if status := put("src/hello.txt", content); status != http.StatusNoContent {
 		t.Fatalf("upload = %d, want 204", status)
 	}
@@ -44,11 +44,11 @@ func TestFilesAPI(t *testing.T) {
 		t.Fatalf("download = %d %q", status, got)
 	}
 	status, got = get("src/hello.txt", map[string]string{"Range": "bytes=6-14"})
-	if status != http.StatusPartialContent || string(got) != "workspace" {
+	if status != http.StatusPartialContent || string(got) != "sandboxes" {
 		t.Fatalf("Range download = %d %q", status, got)
 	}
 
-	// List and stat report the file with its Workspace-relative path.
+	// List and stat report the file with its path relative to /workspace.
 	status, data := call(t, http.MethodGet, files+"?path=src", admin, nil)
 	var list struct {
 		Items []struct {
@@ -97,7 +97,7 @@ func TestFilesAPI(t *testing.T) {
 		}
 	}
 
-	// A symlink inside the Workspace may point outside it, but following it is
+	// A symlink inside /workspace may point outside it, but following it is
 	// refused: only in-tree access is allowed.
 	e := createExec(t, admin, sandboxID, map[string]any{"argv": []string{"ln", "-s", "/etc", "escape"}})
 	assertExitedWith(t, waitExecFinished(t, admin, e.ID, 10*time.Second), "exited")

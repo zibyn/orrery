@@ -16,8 +16,6 @@ import (
 // it on Node B, restored from its head Generation, with the package, the
 // files and a clean `git status`. Back on B it stops again and its next
 // commit is based on what B restored.
-// shortcut: /workspace is a Workspace bind mount bound to A until #279, so
-// this passes only once #279 lands; run it in the final e2e pass.
 func TestStoppedSandboxStartsOnAnotherNode(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)

@@ -219,6 +219,7 @@ ADR-0031。Sandbox 写进根文件系统的一切（装的包、`/workspace` 里
 - **恢复**：`CreateSandbox` 带 `restore` 时，Agent 先看本地有没有这个 Sandbox 的快照且 stat 表对应的 Generation 等于 `restore`，有就直接用；否则在镜像之上新建快照，读 `restore` 的 manifest，按条目把对象（从块缓存，缺的经 `Presign` 拉取）写进 upperdir，还原 mode、属主、xattr、whiteout 和 opaque，最后自底向上设 mtime（目录的 mtime 在子项写完之后设），再写下新的 stat 表。恢复后 ino 和 ctime 都会变，第一次 `git status` 会把跟踪文件重读一遍。
 - **缓存**：停止 Sandbox 的快照和 stat 表在 Node 上保留，供下一次在这台 Node 启动时复用；等于 head 之后可以按磁盘水位淘汰（`defaults.md`），被淘汰的下次启动时从 Generation 恢复。`DropSandboxDisk` 立即删掉它们。
 - **Node 丢失**：宣告 lost 时，这台 Node 上运行中、`stopping` 和已绑定的 `pending` 的 Sandbox 变成 `stopped`，cause 为 `node_lost`，挂上 `changes_lost`，从各自的 head（没有就从 SnapshotVersion）在别处启动（`api.md` §3）。
+- **升级迁移**（迁移 `000037`，ADR-0031「Migration」）：升级前的目录 `<data-root>/workspaces/<id>` 列在 `legacy_dirs` 里。升级时运行中的 Sandbox 保留原来的 bind mount（Local 继续在原目录里跑 Exec），直到停止。之后 Control Plane 把这个 Sandbox、以及挂着对应卷的 Sandbox 固定在目录所在的 Node 上，下一次在那里 `Create` 时 Agent 把目录合并进去：临时的拷进 upperdir 的 `/workspace`（Local 是工作目录），持久的经可写挂载拷进还没有 Generation 的同 ID 卷；只读挂载的记录直接删掉。这次启动之后的提交把它们上传，`legacy_dirs` 的行随之删除，Sandbox 不再固定。Node 被宣告 lost 或删除时它上面的行一并删除，目录按丢失处理。
 
 ## 17. 卷的挂载
 

@@ -169,10 +169,6 @@ func TestSandboxLinksAcrossNodes(t *testing.T) {
 	if got := capabilityValues(far)["sandbox_links"]; got != "enforced" {
 		t.Fatalf("remote sandbox_links = %q, want enforced", got)
 	}
-	// Workspaces created while only the remote Node is connected bind to it.
-	targetWS := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
-	otherWS := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
-
 	startAgentWith(t, state, dataRoot)
 	waitForNodeReady(t, admin, localName)
 	near := findNode(t, admin, localName)
@@ -196,13 +192,15 @@ func TestSandboxLinksAcrossNodes(t *testing.T) {
 	}
 	source := create("mesh-source", map[string]any{"egress": map[string]any{"mode": "none"}}, near.ID)
 	unlinked := create("mesh-unlinked", map[string]any{}, near.ID)
-	target := create("mesh-target", map[string]any{
-		"links":     map[string]any{"from": []string{source}},
-		"workspace": map[string]string{"id": targetWS.ID, "mode": "rw"},
-	}, far.ID)
-	other := create("mesh-other", map[string]any{
-		"workspace": map[string]string{"id": otherWS.ID, "mode": "rw"},
-	}, far.ID)
+	// With this machine's Node paused, placement has to choose the remote one.
+	if status, data := call(t, http.MethodPost, "/api/v1/nodes/"+near.ID+"/pause", admin, nil); status != http.StatusAccepted {
+		t.Fatalf("pause the local Node: %d %s", status, data)
+	}
+	target := create("mesh-target", map[string]any{"links": map[string]any{"from": []string{source}}}, far.ID)
+	other := create("mesh-other", map[string]any{}, far.ID)
+	if status, data := call(t, http.MethodPost, "/api/v1/nodes/"+near.ID+"/resume", admin, nil); status != http.StatusAccepted {
+		t.Fatalf("resume the local Node: %d %s", status, data)
+	}
 
 	listen(t, admin, target)
 	addr := waitSandboxAddress(t, admin, target)

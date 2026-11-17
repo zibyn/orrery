@@ -112,7 +112,7 @@ func TestSDKParityFilesAPI(t *testing.T) {
 	}
 
 	// Upload through the SDK, read back through REST and the SDK.
-	content := []byte("hello workspace\n")
+	content := []byte("hello sandboxes\n")
 	if err := c.WriteFile(ctx, sandboxID, "src/hello.txt", bytes.NewReader(content), int64(len(content))); err != nil {
 		t.Fatalf("sdk WriteFile: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestSDKParityFilesAPI(t *testing.T) {
 	if err := c.ReadFile(ctx, sandboxID, "src/hello.txt", &ranged, "bytes=6-14"); err != nil {
 		t.Fatalf("sdk ranged ReadFile: %v", err)
 	}
-	if ranged.String() != "workspace" {
+	if ranged.String() != "sandboxes" {
 		t.Fatalf("sdk range = %q", ranged.String())
 	}
 

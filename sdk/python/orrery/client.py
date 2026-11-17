@@ -1,7 +1,7 @@
 """A synchronous client for the Orrery public REST API.
 
-Covers Sandbox lifecycle, Exec, Workspace files and Secrets (api.md §9). It
-does not cover Resource upload, Workspace publish, port forwarding or PTY.
+Covers Sandbox lifecycle, Exec, Sandbox files and Secrets (api.md §9). It
+does not cover Resource upload, publish, port forwarding or PTY.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ __all__ = [
     "Orrery",
     "OrreryError",
     "VolumeMount",
-    "WorkspaceRef",
 ]
 
 _TERMINAL_SANDBOX_STATES = {"failed", "deleted"}
@@ -68,12 +67,6 @@ class GPU:
 
 
 @dataclass
-class WorkspaceRef:
-    id: str = ""
-    mode: str = "rw"
-
-
-@dataclass
 class VolumeMount:
     """One of a Sandbox's `volumes`: a Volume id (or name, in a request) and its mount path."""
 
@@ -105,7 +98,6 @@ class Sandbox:
     gpu: GPU | None = None
     idle_stop: int | None = None
     conditions: list[str] = field(default_factory=list)
-    workspace: WorkspaceRef | None = None
     volumes: list[VolumeMount] = field(default_factory=list)
     queue_position: int | None = None
     blocked_reason: str | None = None
@@ -116,8 +108,6 @@ class Sandbox:
         data = dict(data)
         if isinstance(data.get("gpu"), dict):
             data["gpu"] = _fit(GPU, data["gpu"])
-        if isinstance(data.get("workspace"), dict):
-            data["workspace"] = _fit(WorkspaceRef, data["workspace"])
         if isinstance(data.get("volumes"), list):
             data["volumes"] = [_fit(VolumeMount, v) for v in data["volumes"]]
         if isinstance(data.get("egress"), dict):
@@ -460,13 +450,13 @@ class Orrery:
         )
 
     def download_archive(self, sandbox_id: str, path: str) -> bytes:
-        """Download a Workspace subtree as tar (api.md §5)."""
+        """Download a Sandbox subtree as tar (api.md §5)."""
         return self._send(
             "GET", self._files_path(sandbox_id, "/archive"), params={"path": path}
         ).content
 
     def upload_archive(self, sandbox_id: str, path: str, data: bytes) -> None:
-        """Unpack a tar into the Workspace at `path`."""
+        """Unpack a tar into the Sandbox at `path`."""
         self._send(
             "PUT",
             self._files_path(sandbox_id, "/archive"),

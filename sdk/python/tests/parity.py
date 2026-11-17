@@ -142,11 +142,11 @@ def one_file_tar(name: str, data: bytes) -> bytes:
 def files_api(client: Orrery) -> None:
     sandbox = create_ready(client, cpu=0.5, memory=128 << 20, idle_stop=0)
     try:
-        content = b"hello workspace\n"
+        content = b"hello sandboxes\n"
         client.write_file(sandbox.id, "src/hello.txt", content)
         check(client.read_file(sandbox.id, "src/hello.txt") == content, "upload and download disagree")
         check(
-            client.read_file(sandbox.id, "src/hello.txt", offset=6, limit=9) == b"workspace",
+            client.read_file(sandbox.id, "src/hello.txt", offset=6, limit=9) == b"sandboxes",
             "a Range download returned the wrong bytes",
         )
 

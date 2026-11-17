@@ -26,8 +26,8 @@ func TestStopCommitsTheFilesystem(t *testing.T) {
 // assertStopCommits writes a package-like tree, edits and deletes base image
 // files and leaves a Git lock behind, stops the Sandbox and reads the head
 // Generation back from the object store.
-// shortcut: /workspace is still a Workspace bind mount until #279, so the
-// repository lives under /root; #276's e2e covers the second, incremental stop.
+// The repository lives under /root; #276's e2e covers /workspace and the
+// second, incremental stop.
 func assertStopCommits(t *testing.T, admin, id string) {
 	t.Helper()
 	e := createExec(t, admin, id, map[string]any{"argv": []string{"sh", "-c", `set -e
