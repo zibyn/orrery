@@ -12,9 +12,9 @@ import (
 
 // TestNodeUnreachableLost is the "node-unreachable-lost" scenario (#39, #95):
 // an unreachable Node is only unavailable and keeps its Sandbox and compute; an
-// admin's declaration then fails the Sandbox with node_lost and releases the
-// compute. A reachable Node is refused, and the declared-lost Agent's old
-// identity is rejected and cleared.
+// admin's declaration then stops the Sandbox with node_lost and changes_lost
+// and releases the compute (ADR-0031). A reachable Node is refused, and the
+// declared-lost Agent's old identity is rejected and cleared.
 func TestNodeUnreachableLost(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
@@ -80,8 +80,10 @@ func TestNodeUnreachableLost(t *testing.T) {
 		t.Fatalf("resume a lost Node: %d %s, want 409", status, data)
 	}
 	lost := getSandbox(t, admin, sb.ID)
-	if lost.State != "failed" || lost.Cause == nil || *lost.Cause != "node_lost" {
-		t.Fatalf("Sandbox after Node loss = %s/%v, want failed/node_lost", lost.State, lost.Cause)
+	if lost.State != "stopped" || lost.Cause == nil || *lost.Cause != "node_lost" ||
+		len(lost.Conditions) != 1 || lost.Conditions[0] != "changes_lost" {
+		t.Fatalf("Sandbox after Node loss = %s/%v %v, want stopped/node_lost [changes_lost]",
+			lost.State, lost.Cause, lost.Conditions)
 	}
 	if n := psqlCount(t, fmt.Sprintf(
 		"SELECT count(*) FROM allocations WHERE sandbox_id = '%s'", sb.ID)); n != "0" {

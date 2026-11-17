@@ -134,8 +134,8 @@ func (s *Server) handleResumeNode(w http.ResponseWriter, r *http.Request, p *pri
 }
 
 // setNodePaused flips the server-side flag (ADR-0017). A paused Node takes no
-// new Workspace and no build; Workspaces already bound to it can still start
-// Sandboxes so their owners can move data out.
+// new Workspace, no Sandbox (restarted ones included) and no build; running
+// Sandboxes are undisturbed (api.md §3, ADR-0031).
 func (s *Server) setNodePaused(w http.ResponseWriter, r *http.Request, p *principal, paused bool) {
 	id, ok := pathUUID(r, "id")
 	if !ok {
@@ -388,8 +388,8 @@ func nodeReady(node store.Node, now time.Time) bool {
 }
 
 // deriveNodeStatus computes the read-time status (api.md §3, ADR-0014).
-// `ready` is fully schedulable; `paused` takes no new Workspace but can still
-// run Sandboxes whose Workspace is bound there (ADR-0017). `outdated` is
+// `ready` is fully schedulable; `paused` takes no new work but keeps running
+// what it runs (ADR-0017, ADR-0031). `outdated` is
 // accepted but flagged; `unavailable` covers a stale heartbeat, a Runtime that
 // cannot take work and a missing required Capability, and only then is reason
 // non-nil, naming which.
