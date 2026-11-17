@@ -290,6 +290,58 @@ func (s *store) fetch(ref blockRef, url string) error {
 
 var errDigestMismatch = errors.New("digest mismatch")
 
+// Cache is the Node's block cache for a reader outside the daemon: the Agent
+// restoring a Generation shares its blocks and its fetch (runtime.md §16).
+type Cache struct{ s *store }
+
+func NewCache(dir string, presigner Presigner) (*Cache, error) {
+	return &Cache{s: newStore(dir, presigner)}, os.MkdirAll(dir, 0o755)
+}
+
+// Copy writes a file entry's content to w, fetching the blocks the cache
+// lacks; next are the entries likely copied after it, presigned together.
+func (c *Cache) Copy(w io.Writer, entry manifest.Entry, next []manifest.Entry) error {
+	hint := func() []blockRef {
+		var refs []blockRef
+		for k := -1; k < len(next); k++ {
+			e := entry
+			if k >= 0 {
+				e = next[k]
+			}
+			for i := range refCount(e) {
+				if len(refs) == presignBatch {
+					return refs
+				}
+				refs = append(refs, refAt(e, i))
+			}
+		}
+		return refs
+	}
+	for i := range refCount(entry) {
+		ref := refAt(entry, i)
+		// Eviction may remove a block between fetch and open: fetch again.
+		for attempt := 0; ; attempt++ {
+			if err := c.s.ensure(ref, hint); err != nil {
+				return err
+			}
+			f, err := os.Open(c.s.path(ref.key))
+			if errors.Is(err, os.ErrNotExist) && attempt == 0 {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(w, f)
+			f.Close() //nolint:errcheck // read-only
+			if err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
 // readBlock copies ref's bytes [from, from+len(dst)) out of the cache.
 func (s *store) readBlock(ref blockRef, from int64, dst []byte) error {
 	f, err := os.Open(s.path(ref.key))

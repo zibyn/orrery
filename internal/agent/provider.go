@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
 
 	"github.com/google/uuid"
 
@@ -59,6 +61,14 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	if err != nil {
 		return "runtime_create_failed", err
 	}
+	// The Runtime is about to write the filesystem: it is no longer what was
+	// committed, and eviction must leave it alone (runtime.md §16).
+	r.diskMu.Lock()
+	err = os.Remove(cleanMarkPath(r.dataRoot, id))
+	r.diskMu.Unlock()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "runtime_create_failed", err
+	}
 	// Versions are mounted before the Runtime starts, so a restart that adopts
 	// a running Runtime also re-takes its hold (runtime.md §11).
 	if cause, err := r.mountResources(ctx, id, cmd.resources); err != nil {
@@ -88,6 +98,10 @@ func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID, generati
 	if err != nil {
 		return err
 	}
+	cleanMark := cleanMarkPath(r.dataRoot, sandboxID)
+	if _, err := os.Stat(cleanMark); err == nil {
+		ok = false // a cached diff already committed: nothing new to commit
+	}
 	if ok {
 		report(nodeproto.SandboxPhaseCommitting, "", false)
 		err := r.commitWithRetry(ctx, sandboxID, generation, target, func() {
@@ -102,14 +116,28 @@ func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID, generati
 		if err != nil {
 			return err
 		}
-	}
-	// shortcut: the committed disk is dropped, so the next start on this Node
-	// begins from the SnapshotVersion until #276 restores and caches it.
-	if err := r.driver.dropSandboxDisk(ctx, sandboxID); err != nil {
-		return err
+		// The disk stays as this Node's cache of the head (runtime.md §16).
+		if err := os.WriteFile(cleanMark, nil, 0o600); err != nil {
+			return err
+		}
 	}
 	report(nodeproto.SandboxPhaseGone, "", false)
 	return nil
+}
+
+// dropSandboxDisk removes a Sandbox's cached diff and what describes it
+// (DropSandboxDisk, eviction).
+func (r *Runtime) dropSandboxDisk(ctx context.Context, id uuid.UUID) error {
+	r.diskMu.Lock()
+	defer r.diskMu.Unlock()
+	return r.dropSandboxDiskLocked(ctx, id)
+}
+
+func (r *Runtime) dropSandboxDiskLocked(ctx context.Context, id uuid.UUID) error {
+	if err := r.driver.dropSandboxDisk(ctx, id); err != nil {
+		return err
+	}
+	return r.forgetCachedDiff(id)
 }
 
 func (r *Runtime) startExec(ctx context.Context, cmd *nodev1.StartExec) error {

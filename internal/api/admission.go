@@ -317,7 +317,6 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-
 // placementNode is a feasible Node and the cards it offers. gpus is the
 // reported card count, used for the GPU-less preference, and free is the cards
 // still available for packing.

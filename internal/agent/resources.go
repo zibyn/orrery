@@ -15,7 +15,6 @@ import (
 	"github.com/google/uuid"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/resourcefs"
 )
 
@@ -271,13 +270,7 @@ func (r *Runtime) servePresign(ctx context.Context, socket string) {
 		slog.Error("listen for resourcefs presign requests", "socket", socket, "error", err)
 		return
 	}
-	resourcefs.ServePresign(ctx, l, presignFunc(func(ctx context.Context, objects, manifests []string) ([]string, error) {
-		resp, err := r.presign(ctx, &nodev1.PresignRequest{Sha256: objects, Manifests: manifests, Method: "GET"})
-		if err != nil {
-			return nil, err
-		}
-		return resp.GetUrls(), nil
-	}), slog.Default())
+	resourcefs.ServePresign(ctx, l, presignFunc(r.presignGET), slog.Default())
 }
 
 type presignFunc func(ctx context.Context, objects, manifests []string) ([]string, error)

@@ -21,6 +21,7 @@ import (
 	eventtypes "github.com/containerd/containerd/api/events"
 	runtimeoptions "github.com/containerd/containerd/api/types/runtimeoptions/v1"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
@@ -32,6 +33,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
+	"github.com/opencontainers/image-spec/identity"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 
@@ -162,11 +164,16 @@ func limitOpts(cpu float64, memory int64) []oci.SpecOpts {
 	}
 }
 
-// start creates the container and starts its task.
+// start creates the container and starts its task, on the snapshot named
+// name when one exists (a cached or restored filesystem, runtime.md §16).
 func (d *containerdDriver) start(ctx context.Context, name string, img containerd.Image, labels map[string]string, opts []oci.SpecOpts) (containerd.Container, error) {
+	snapshot := containerd.WithNewSnapshot(name, img)
+	if _, err := d.client.SnapshotService(defaults.DefaultSnapshotter).Stat(ctx, name); err == nil {
+		snapshot = containerd.WithSnapshot(name)
+	}
 	containerOpts := []containerd.NewContainerOpts{
 		containerd.WithImage(img),
-		containerd.WithNewSnapshot(name, img),
+		snapshot,
 		containerd.WithContainerLabels(labels),
 		containerd.WithNewSpec(append([]oci.SpecOpts{oci.WithImageConfig(img)}, opts...)...),
 	}
@@ -231,9 +238,36 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 			return "", nil // adopted after an Agent restart or a lost reply
 		}
 	}
-	// A stopped Runtime is never reused, and neither is its netns.
-	if err := d.teardown(ctx, id); err != nil {
+	// A stopped Runtime is never reused, and neither is its netns. Its
+	// snapshot is, when its diff is the head (runtime.md §16).
+	_, statErr := d.client.SnapshotService(defaults.DefaultSnapshotter).Stat(ctx, name)
+	reuse := statErr == nil && d.r.cachedDiffMatches(id, cmd.restore)
+	// The lease keeps the snapshot from containerd's GC while no container
+	// holds it, until the new container does.
+	ctx, done, err := d.client.WithLease(ctx)
+	if err != nil {
 		return "runtime_create_failed", err
+	}
+	defer done(context.WithoutCancel(ctx)) //nolint:errcheck // expires on its own
+	if reuse {
+		lease, _ := leases.FromContext(ctx)
+		if err := d.client.LeasesService().AddResource(ctx, leases.Lease{ID: lease}, leases.Resource{
+			ID: name, Type: "snapshots/" + defaults.DefaultSnapshotter,
+		}); err != nil {
+			return "runtime_create_failed", err
+		}
+	}
+	if err := d.deleteContainer(ctx, name, reuse); err != nil {
+		return "runtime_create_failed", err
+	}
+	if err := d.teardownNetwork(ctx, id, sandboxPath(d.r.dataRoot, id)); err != nil {
+		return "runtime_create_failed", err
+	}
+	if !reuse {
+		if err := d.restoreSnapshot(ctx, id, name, img, cmd.restore); err != nil {
+			d.teardown(context.WithoutCancel(ctx), id) //nolint:errcheck // best effort
+			return "runtime_create_failed", err
+		}
 	}
 	resources := d.r.resourceBindMounts(cmd.resources)
 	if _, err = d.setupNetwork(id, sandboxPath(d.r.dataRoot, id), policy, cmd.linkTarget); err == nil {
@@ -286,9 +320,39 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	return "", nil
 }
 
+// restoreSnapshot prepares a fresh snapshot over the image and writes the
+// head Generation into its upperdir; without a head the snapshot is left to
+// start (runtime.md §9, §16).
+func (d *containerdDriver) restoreSnapshot(ctx context.Context, id uuid.UUID, name string, img containerd.Image, restore string) error {
+	if err := d.r.forgetCachedDiff(id); err != nil {
+		return err
+	}
+	if restore == "" {
+		return nil
+	}
+	diffIDs, err := img.RootFS(ctx)
+	if err != nil {
+		return err
+	}
+	mounts, err := d.client.SnapshotService(defaults.DefaultSnapshotter).Prepare(ctx, name, identity.ChainID(diffIDs).String())
+	if err != nil {
+		return fmt.Errorf("prepare snapshot: %w", err)
+	}
+	upper := upperDir(mounts)
+	if upper == "" {
+		return errors.New("the new snapshot has no upperdir")
+	}
+	return d.r.restoreFilesystem(ctx, id, restore, upper)
+}
+
 // removeContainer kills and deletes the task, the container and its
 // snapshot. A missing object is already removed.
 func (d *containerdDriver) removeContainer(ctx context.Context, name string) error {
+	return d.deleteContainer(ctx, name, false)
+}
+
+// deleteContainer is removeContainer, keeping the snapshot when asked.
+func (d *containerdDriver) deleteContainer(ctx context.Context, name string, keepSnapshot bool) error {
 	c, err := d.client.LoadContainer(ctx, name)
 	if err == nil {
 		if task, err := c.Task(ctx, nil); err == nil {
@@ -298,11 +362,18 @@ func (d *containerdDriver) removeContainer(ctx context.Context, name string) err
 		} else if !errdefs.IsNotFound(err) {
 			return err
 		}
-		if err := c.Delete(ctx, containerd.WithSnapshotCleanup); err != nil && !errdefs.IsNotFound(err) {
+		var opts []containerd.DeleteOpts
+		if !keepSnapshot {
+			opts = append(opts, containerd.WithSnapshotCleanup)
+		}
+		if err := c.Delete(ctx, opts...); err != nil && !errdefs.IsNotFound(err) {
 			return fmt.Errorf("delete container: %w", err)
 		}
 	} else if !errdefs.IsNotFound(err) {
 		return err
+	}
+	if keepSnapshot {
+		return nil
 	}
 	// A create that failed before the container existed can leave its snapshot.
 	if err := d.client.SnapshotService(defaults.DefaultSnapshotter).Remove(ctx, name); err != nil && !errdefs.IsNotFound(err) {
@@ -398,7 +469,7 @@ func upperDir(mounts []mount.Mount) string {
 	return ""
 }
 
-// dropSandboxDisk removes the container and its snapshot.
+// dropSandboxDisk removes the container and its snapshot, the cached diff.
 func (d *containerdDriver) dropSandboxDisk(ctx context.Context, sandboxID uuid.UUID) error {
 	return d.removeContainer(ctx, containerName(sandboxID))
 }
