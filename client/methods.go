@@ -304,6 +304,68 @@ func (c *Client) SetResourceCurrent(ctx context.Context, id, version, ifMatch st
 	return &out, err
 }
 
+// Volumes (api.md §3).
+
+// CreateVolume creates a Volume.
+func (c *Client) CreateVolume(ctx context.Context, name, idempotencyKey string) (*Volume, error) {
+	var out Volume
+	err := c.do(ctx, http.MethodPost, "/api/v1/volumes", nil, map[string]string{"name": name}, &out, idempotencyKey)
+	return &out, err
+}
+
+// ListVolumes returns one page of Volumes.
+func (c *Client) ListVolumes(ctx context.Context, limit int, cursor string) (*VolumeList, error) {
+	var out VolumeList
+	err := c.do(ctx, http.MethodGet, "/api/v1/volumes", pageQuery(limit, cursor), nil, &out, "")
+	return &out, err
+}
+
+// GetVolume returns one Volume.
+func (c *Client) GetVolume(ctx context.Context, id string) (*Volume, error) {
+	var out Volume
+	err := c.do(ctx, http.MethodGet, "/api/v1/volumes/"+url.PathEscape(id), nil, nil, &out, "")
+	return &out, err
+}
+
+// DeleteVolume deletes a Volume no Sandbox holds.
+func (c *Client) DeleteVolume(ctx context.Context, id string) (*Volume, error) {
+	var out Volume
+	err := c.do(ctx, http.MethodDelete, "/api/v1/volumes/"+url.PathEscape(id), nil, nil, &out, "")
+	return &out, err
+}
+
+// PublishVolume publishes a path of the Volume's last commit as a Resource
+// Version.
+func (c *Client) PublishVolume(ctx context.Context, id, path, resource string) (*ResourceVersion, error) {
+	var out ResourceVersion
+	err := c.do(ctx, http.MethodPost, "/api/v1/volumes/"+url.PathEscape(id)+"/publish", nil,
+		map[string]string{"path": path, "resource": resource}, &out, "")
+	return &out, err
+}
+
+// ListVolumeFiles lists a directory of the Volume's last commit.
+func (c *Client) ListVolumeFiles(ctx context.Context, volumeID, path string) (*FileList, error) {
+	var out FileList
+	err := c.do(ctx, http.MethodGet, "/api/v1/volumes/"+url.PathEscape(volumeID)+"/files", url.Values{"path": {path}}, nil, &out, "")
+	return &out, err
+}
+
+// StatVolumeFile reads one path's metadata in the Volume's last commit.
+func (c *Client) StatVolumeFile(ctx context.Context, volumeID, path string) (*FileEntry, error) {
+	var out FileEntry
+	err := c.do(ctx, http.MethodGet, "/api/v1/volumes/"+url.PathEscape(volumeID)+"/files/stat",
+		url.Values{"path": {path}}, nil, &out, "")
+	return &out, err
+}
+
+// PublishSandbox publishes a path of a ready Sandbox as a Resource Version.
+func (c *Client) PublishSandbox(ctx context.Context, id, path, resource string) (*ResourceVersion, error) {
+	var out ResourceVersion
+	err := c.do(ctx, http.MethodPost, "/api/v1/sandboxes/"+url.PathEscape(id)+"/publish", nil,
+		map[string]string{"path": path, "resource": resource}, &out, "")
+	return &out, err
+}
+
 // Workspaces.
 
 // CreateWorkspace creates a persistent Workspace.

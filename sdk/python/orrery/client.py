@@ -25,6 +25,7 @@ __all__ = [
     "Secret",
     "Orrery",
     "OrreryError",
+    "VolumeMount",
     "WorkspaceRef",
 ]
 
@@ -73,6 +74,14 @@ class WorkspaceRef:
 
 
 @dataclass
+class VolumeMount:
+    """One of a Sandbox's `volumes`: a Volume id (or name, in a request) and its mount path."""
+
+    volume: str = ""
+    path: str = ""
+
+
+@dataclass
 class Egress:
     """Egress Mode: open, none, or allowlist with a non-empty allow."""
 
@@ -97,6 +106,7 @@ class Sandbox:
     idle_stop: int | None = None
     conditions: list[str] = field(default_factory=list)
     workspace: WorkspaceRef | None = None
+    volumes: list[VolumeMount] = field(default_factory=list)
     queue_position: int | None = None
     blocked_reason: str | None = None
     created_at: str | None = None
@@ -108,6 +118,8 @@ class Sandbox:
             data["gpu"] = _fit(GPU, data["gpu"])
         if isinstance(data.get("workspace"), dict):
             data["workspace"] = _fit(WorkspaceRef, data["workspace"])
+        if isinstance(data.get("volumes"), list):
+            data["volumes"] = [_fit(VolumeMount, v) for v in data["volumes"]]
         if isinstance(data.get("egress"), dict):
             data["egress"] = _fit(Egress, data["egress"])
         else:
