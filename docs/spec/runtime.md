@@ -224,8 +224,12 @@ ADR-0031。Sandbox 写进根文件系统的一切（装的包、`/workspace` 里
 
 ADR-0031。卷不绑 Node，内容是对象存储里的 Generation（`kind=tree`），由 `orrery-resourcefs`（§11）以可写方式挂载。卷用来放数据：FUSE 的写开销是本地盘的 2.5–16 倍（`docs/research/workspace-wsfs-fuse-spike.md`），Git 仓库和构建应放在 Sandbox 自己的文件系统里，平台不拦。
 
-- **挂载**：`CreateSandbox` 的每个 `volumes` 项，Agent 让守护进程挂载该卷的 head Generation（没有时为空目录），挂在 `<data-root>/volumes/<volume_id>`，再读写 bind mount 到容器里的 `path`。同一个卷同一时间只被一个 Sandbox 持有（`schema.md` `sandbox_volumes`），所以一台 Node 上也只有一个挂载。
+- **挂载**：`CreateSandbox` 的每个 `volumes` 项，Agent 让守护进程挂载该卷的 head Generation（没有时为空目录），挂在 `<data-root>/volumes/<volume_id>/mnt`，再读写 bind mount 到容器里的 `path`（排在 `/workspace` 之后，所以挂在 `/workspace` 的卷盖住它）。同一个卷同一时间只被一个 Sandbox 持有（`schema.md` `sandbox_volumes`），所以一台 Node 上也只有一个挂载。卷已经挂着时（Agent 重启、Create 重发），守护进程保留它的本地状态，除非它既没有未提交的写入、base 也不等于请求的 head（上次 Create 失败留下的，head 已在别处前进），那就重新挂。Agent 把 Sandbox 的卷记在 `<data-root>/sandboxes/<id>/volumes.json`，重启后据此恢复定期提交，停止时据此提交和卸载。
 - **读取**：与 §11 相同，按块懒加载、校验、缓存。
-- **写入**：新写的数据和元数据（目录树、属性、rename、删除、硬链接）保存在 `<data-root>/volumes/<volume_id>/` 下的本地状态里，不直接写对象存储。有未提交的写入时每 60 秒提交一次 Generation，Sandbox 停止时再提交一次，流程同 `node-protocol.md`「Generation 提交」，`generation` 取持有它的 Sandbox 的。`fsync` 只保证落到本地状态，不等提交。
-- **丢失**：Node 丢失或守护进程崩溃，丢掉的是最近一次提交之后的写入；守护进程崩溃后挂载失效，直到 Sandbox 重启。升级时可写挂载的交接沿用 §11，未提交的本地状态随会话一起交出。
-- **Local Runtime**：挂在 `<data-root>/sandboxes/<id>/volumes/<卷名>`，`ORRERY_VOLUMES` 指向这个目录；挂载带 `allow_other`，Node 配置里的非特权 uid 能读写。
+- **POSIX 范围**（#278 定）：创建、写、截断、`O_APPEND` 和 `MAP_SHARED` 的 mmap 写（都经内核的写路径），rename（含覆盖已有名字、目录换到别处、`RENAME_NOREPLACE`），硬链接，符号链接，unlink 后仍打开的文件可读写，mode、属主、mtime 和扩展属性。权限由内核按 mode 检查（`default_permissions`）。`flock` 和 `fcntl` 锁由内核处理，只在本 Node 有效（单写者够用）。`RENAME_EXCHANGE` 和设备节点拒绝（`EINVAL`、`EPERM`）；FIFO 和 socket 可以建、可以用，但同 §16 一样不提交。卷根目录 mode 0777、属主 root，不随提交保存。
+- **写入**：目录树和每个 inode 的元数据在守护进程内存里，文件内容第一次写（或截断、`fallocate`）时整个复制到本地写缓存 `<data-root>/volumes/<volume_id>/data/<inode>`，之后的读写都走它；没写过的文件仍从块缓存懒读。不直接写对象存储。`fsync` 只把写缓存刷到本地盘，不等提交；元数据只在内存里。写入和提交在同一把锁下串行。
+- **提交**：有未提交的写入时（守护进程的变更计数大于上次提交的）每 60 秒提交一次 Generation，Sandbox 停止时再提交一次（先于 §16 的文件系统提交），流程同 `node-protocol.md`「Generation 提交」，首批带 `volume_id`，`generation` 取持有它的 Sandbox 的。提交只扫脏集合：守护进程在内存里遍历目录树生成完整的 `kind=tree` manifest，只有写缓存里的文件要算 SHA-256；它们按 §11 的布局切成对象，放到 `<data-root>/volumes/<volume_id>/objects/`，inode 改指这些对象，写缓存文件删掉（之后再写就再复制一次）。`SubmitGeneration` 只送引用这些对象的条目；Agent 从 `objects/` 上传缺失的对象。`CommitGeneration` 发出前守护进程记下 `upload_id`，回复丢失或 Agent 重启后先重试它；被拒（对象缺失、head 已动）就丢掉它重新提交，只有 `SubmitGeneration` 的 `FAILED_PRECONDITION`（不再持有）才放弃。提交成功后 `objects/` 里的对象移进块缓存，按水位淘汰。提交期间的新写入不丢，留到下一次。停止时卷提交以 `INVALID_ARGUMENT` 被拒，Sandbox 以 `failed/commit_failed` 结束，卷保持挂载、写入留在本地。
+- **卸载**：提交成功（或不再持有）后 Agent 让守护进程卸载并删掉 `<data-root>/volumes/<volume_id>/`，之后才报 `gone`。
+- **丢失**：Node 丢失或守护进程崩溃，丢掉的是最近一次提交之后的写入；守护进程崩溃后挂载失效，直到 Sandbox 重启，重新挂载时丢弃残留的写缓存。
+- **交接**：沿用 §11 的 `/dev/fuse` 交接，未提交的本地状态随会话一起交出（#278 实现，可行）。可写会话不能两个进程同时应答，所以和只读挂载不同：只读挂载发完之后，旧进程逐个卷停止读取、等手上的请求答完（排空），把内存状态（inode、nodeid、内核 lookup 计数、目录项 cookie、base、待确认的 `upload_id`、未提交对象）写到 `<data-root>/volumes/<volume_id>/handover.json`，再连同复制的 fd 交出；写缓存文件原地不动。新进程读这个文件重建，说 ready 之后才开始读。这期间对卷的请求在内核队列里等，不报错；文件句柄不带状态，打开的文件照常可用。新进程在 ready 之前失败时，旧进程用留下的 fd 和自己的状态继续服务。
+- **Local Runtime**：挂在 `<data-root>/sandboxes/<id>/volumes/<卷名>`（指向守护进程挂载的符号链接），`ORRERY_VOLUMES` 指向这个目录；挂载带 `allow_other`，Node 配置里的非特权 uid 能读写。

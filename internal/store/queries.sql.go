@@ -725,8 +725,8 @@ func (q *Queries) CreateGPUAllocation(ctx context.Context, arg CreateGPUAllocati
 }
 
 const createGenerationUpload = `-- name: CreateGenerationUpload :exec
-INSERT INTO generation_uploads (id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO generation_uploads (id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, volume_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type CreateGenerationUploadParams struct {
@@ -738,6 +738,7 @@ type CreateGenerationUploadParams struct {
 	BaseGenerationID *uuid.UUID
 	Missing          []string
 	ExpiresAt        pgtype.Timestamptz
+	VolumeID         *uuid.UUID
 }
 
 func (q *Queries) CreateGenerationUpload(ctx context.Context, arg CreateGenerationUploadParams) error {
@@ -750,6 +751,7 @@ func (q *Queries) CreateGenerationUpload(ctx context.Context, arg CreateGenerati
 		arg.BaseGenerationID,
 		arg.Missing,
 		arg.ExpiresAt,
+		arg.VolumeID,
 	)
 	return err
 }
@@ -1978,6 +1980,12 @@ const findNodeHeadGenerationObjectOwner = `-- name: FindNodeHeadGenerationObject
 SELECT s.owner_id FROM sandboxes s
 JOIN generation_objects go ON go.generation_id = s.head_generation_id
 WHERE s.node_id = $1 AND s.state <> 'deleted' AND go.sha256 = $2
+UNION ALL
+SELECT v.owner_id FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id AND sv.held
+JOIN sandboxes s ON s.id = sv.sandbox_id
+JOIN generation_objects go ON go.generation_id = v.head_generation_id
+WHERE s.node_id = $1 AND go.sha256 = $2
 LIMIT 1
 `
 
@@ -1996,6 +2004,11 @@ func (q *Queries) FindNodeHeadGenerationObjectOwner(ctx context.Context, arg Fin
 const findNodeHeadGenerationOwner = `-- name: FindNodeHeadGenerationOwner :one
 SELECT s.owner_id FROM sandboxes s
 WHERE s.node_id = $1 AND s.state <> 'deleted' AND s.head_generation_id = $2
+UNION ALL
+SELECT v.owner_id FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id AND sv.held
+JOIN sandboxes s ON s.id = sv.sandbox_id
+WHERE s.node_id = $1 AND v.head_generation_id = $2
 LIMIT 1
 `
 
@@ -2004,6 +2017,7 @@ type FindNodeHeadGenerationOwnerParams struct {
 	HeadGenerationID *uuid.UUID
 }
 
+// A Volume's head counts for the Node of the Sandbox holding it.
 func (q *Queries) FindNodeHeadGenerationOwner(ctx context.Context, arg FindNodeHeadGenerationOwnerParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, findNodeHeadGenerationOwner, arg.NodeID, arg.HeadGenerationID)
 	var owner_id uuid.UUID
@@ -2294,7 +2308,7 @@ func (q *Queries) GetGeneration(ctx context.Context, id uuid.UUID) (Generation, 
 }
 
 const getGenerationUpload = `-- name: GetGenerationUpload :one
-SELECT id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, created_at FROM generation_uploads WHERE id = $1 AND expires_at > now()
+SELECT id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, created_at, volume_id FROM generation_uploads WHERE id = $1 AND expires_at > now()
 `
 
 func (q *Queries) GetGenerationUpload(ctx context.Context, id uuid.UUID) (GenerationUpload, error) {
@@ -2310,6 +2324,7 @@ func (q *Queries) GetGenerationUpload(ctx context.Context, id uuid.UUID) (Genera
 		&i.Missing,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.VolumeID,
 	)
 	return i, err
 }
@@ -3496,8 +3511,8 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 }
 
 const insertGeneration = `-- name: InsertGeneration :exec
-INSERT INTO generations (id, owner_id, sandbox_id, seq, kind, manifest_key, size)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO generations (id, owner_id, sandbox_id, seq, kind, manifest_key, size, volume_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type InsertGenerationParams struct {
@@ -3508,6 +3523,7 @@ type InsertGenerationParams struct {
 	Kind        string
 	ManifestKey string
 	Size        int64
+	VolumeID    *uuid.UUID
 }
 
 func (q *Queries) InsertGeneration(ctx context.Context, arg InsertGenerationParams) error {
@@ -3519,6 +3535,7 @@ func (q *Queries) InsertGeneration(ctx context.Context, arg InsertGenerationPara
 		arg.Kind,
 		arg.ManifestKey,
 		arg.Size,
+		arg.VolumeID,
 	)
 	return err
 }
@@ -4126,7 +4143,7 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 }
 
 const listExpiredGenerationUploads = `-- name: ListExpiredGenerationUploads :many
-SELECT id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, created_at FROM generation_uploads WHERE expires_at <= now() - interval '1 hour'
+SELECT id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, created_at, volume_id FROM generation_uploads WHERE expires_at <= now() - interval '1 hour'
 ORDER BY expires_at LIMIT $1
 `
 
@@ -4151,6 +4168,7 @@ func (q *Queries) ListExpiredGenerationUploads(ctx context.Context, limit int32)
 			&i.Missing,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.VolumeID,
 		); err != nil {
 			return nil, err
 		}
@@ -5266,6 +5284,45 @@ func (q *Queries) ListSandboxResourceMounts(ctx context.Context, sandboxID uuid.
 	return items, nil
 }
 
+const listSandboxVolumeMounts = `-- name: ListSandboxVolumeMounts :many
+SELECT sv.volume_id, sv.path, v.name, v.head_generation_id
+FROM sandbox_volumes sv JOIN volumes v ON v.id = sv.volume_id
+WHERE sv.sandbox_id = $1 ORDER BY sv.path
+`
+
+type ListSandboxVolumeMountsRow struct {
+	VolumeID         uuid.UUID
+	Path             string
+	Name             string
+	HeadGenerationID *uuid.UUID
+}
+
+// ListSandboxVolumeMounts is CreateSandbox's volumes (node-protocol.md).
+func (q *Queries) ListSandboxVolumeMounts(ctx context.Context, sandboxID uuid.UUID) ([]ListSandboxVolumeMountsRow, error) {
+	rows, err := q.db.Query(ctx, listSandboxVolumeMounts, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSandboxVolumeMountsRow{}
+	for rows.Next() {
+		var i ListSandboxVolumeMountsRow
+		if err := rows.Scan(
+			&i.VolumeID,
+			&i.Path,
+			&i.Name,
+			&i.HeadGenerationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSandboxVolumes = `-- name: ListSandboxVolumes :many
 SELECT sandbox_id, volume_id, path, held FROM sandbox_volumes WHERE sandbox_id = $1 ORDER BY path
 `
@@ -5926,6 +5983,29 @@ func (q *Queries) LockGenerationSandbox(ctx context.Context, id uuid.UUID) (Sand
 	return i, err
 }
 
+const lockGenerationVolume = `-- name: LockGenerationVolume :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1 FOR UPDATE
+`
+
+// LockGenerationVolume reads the committing Volume under a row lock, after
+// its holder Sandbox's.
+func (q *Queries) LockGenerationVolume(ctx context.Context, id uuid.UUID) (Volume, error) {
+	row := q.db.QueryRow(ctx, lockGenerationVolume, id)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const lockLiveVolumeShare = `-- name: LockLiveVolumeShare :one
 SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1 AND state <> 'deleted' FOR SHARE
 `
@@ -6490,6 +6570,17 @@ SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE sandbox_id = $
 // survives retention.
 func (q *Queries) NextGenerationSeq(ctx context.Context, sandboxID *uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, nextGenerationSeq, sandboxID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const nextVolumeGenerationSeq = `-- name: NextVolumeGenerationSeq :one
+SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE volume_id = $1
+`
+
+func (q *Queries) NextVolumeGenerationSeq(ctx context.Context, volumeID *uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, nextVolumeGenerationSeq, volumeID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -7250,6 +7341,25 @@ func (q *Queries) SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (Use
 		&i.PolarisDisabledAt,
 	)
 	return i, err
+}
+
+const setVolumeHeadGeneration = `-- name: SetVolumeHeadGeneration :execrows
+UPDATE volumes SET head_generation_id = $2::uuid, updated_at = now()
+WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM $3::uuid
+`
+
+type SetVolumeHeadGenerationParams struct {
+	ID   uuid.UUID
+	Head uuid.UUID
+	Base *uuid.UUID
+}
+
+func (q *Queries) SetVolumeHeadGeneration(ctx context.Context, arg SetVolumeHeadGenerationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setVolumeHeadGeneration, arg.ID, arg.Head, arg.Base)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setWorkspaceConditions = `-- name: SetWorkspaceConditions :exec

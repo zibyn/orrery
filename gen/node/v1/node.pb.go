@@ -3158,7 +3158,10 @@ type CreateSandbox struct {
 	// True when the Sandbox has links, the same on every (re)send. The Agent
 	// records it with the veth and renders the inbound chain, ending in a drop,
 	// at Create before the Sandbox runs (runtime.md §13).
-	LinkTarget    bool `protobuf:"varint,10,opt,name=link_target,json=linkTarget,proto3" json:"link_target,omitempty"`
+	LinkTarget bool `protobuf:"varint,10,opt,name=link_target,json=linkTarget,proto3" json:"link_target,omitempty"`
+	// Volumes to mount writable through orrery-resourcefs (runtime.md §17).
+	// Field 11 is left for restore (#276).
+	Volumes       []*VolumeMount `protobuf:"bytes,12,rep,name=volumes,proto3" json:"volumes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3263,6 +3266,85 @@ func (x *CreateSandbox) GetLinkTarget() bool {
 	return false
 }
 
+func (x *CreateSandbox) GetVolumes() []*VolumeMount {
+	if x != nil {
+		return x.Volumes
+	}
+	return nil
+}
+
+type VolumeMount struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	VolumeId string                 `protobuf:"bytes,1,opt,name=volume_id,json=volumeId,proto3" json:"volume_id,omitempty"`
+	// Absolute mount path in the container (api.md §3).
+	Path string `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	// The head to mount; empty when nothing was committed yet.
+	HeadGenerationId string `protobuf:"bytes,3,opt,name=head_generation_id,json=headGenerationId,proto3" json:"head_generation_id,omitempty"`
+	// The Volume's name: a Local Sandbox finds it at
+	// $ORRERY_VOLUMES/<name> (runtime.md §10).
+	Name          string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VolumeMount) Reset() {
+	*x = VolumeMount{}
+	mi := &file_node_v1_node_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VolumeMount) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VolumeMount) ProtoMessage() {}
+
+func (x *VolumeMount) ProtoReflect() protoreflect.Message {
+	mi := &file_node_v1_node_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VolumeMount.ProtoReflect.Descriptor instead.
+func (*VolumeMount) Descriptor() ([]byte, []int) {
+	return file_node_v1_node_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *VolumeMount) GetVolumeId() string {
+	if x != nil {
+		return x.VolumeId
+	}
+	return ""
+}
+
+func (x *VolumeMount) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *VolumeMount) GetHeadGenerationId() string {
+	if x != nil {
+		return x.HeadGenerationId
+	}
+	return ""
+}
+
+func (x *VolumeMount) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
 // EgressMode is open, none or allowlist; allow is set only for allowlist, with
 // `CIDR[:port]` entries. An empty mode is open.
 type EgressMode struct {
@@ -3275,7 +3357,7 @@ type EgressMode struct {
 
 func (x *EgressMode) Reset() {
 	*x = EgressMode{}
-	mi := &file_node_v1_node_proto_msgTypes[44]
+	mi := &file_node_v1_node_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3287,7 +3369,7 @@ func (x *EgressMode) String() string {
 func (*EgressMode) ProtoMessage() {}
 
 func (x *EgressMode) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[44]
+	mi := &file_node_v1_node_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3300,7 +3382,7 @@ func (x *EgressMode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EgressMode.ProtoReflect.Descriptor instead.
 func (*EgressMode) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{44}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *EgressMode) GetMode() string {
@@ -3329,7 +3411,7 @@ type ResourceMount struct {
 
 func (x *ResourceMount) Reset() {
 	*x = ResourceMount{}
-	mi := &file_node_v1_node_proto_msgTypes[45]
+	mi := &file_node_v1_node_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3341,7 +3423,7 @@ func (x *ResourceMount) String() string {
 func (*ResourceMount) ProtoMessage() {}
 
 func (x *ResourceMount) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[45]
+	mi := &file_node_v1_node_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3354,7 +3436,7 @@ func (x *ResourceMount) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceMount.ProtoReflect.Descriptor instead.
 func (*ResourceMount) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{45}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ResourceMount) GetAddress() string {
@@ -3382,7 +3464,7 @@ type Limits struct {
 
 func (x *Limits) Reset() {
 	*x = Limits{}
-	mi := &file_node_v1_node_proto_msgTypes[46]
+	mi := &file_node_v1_node_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3394,7 +3476,7 @@ func (x *Limits) String() string {
 func (*Limits) ProtoMessage() {}
 
 func (x *Limits) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[46]
+	mi := &file_node_v1_node_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3407,7 +3489,7 @@ func (x *Limits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Limits.ProtoReflect.Descriptor instead.
 func (*Limits) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{46}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *Limits) GetCpu() float64 {
@@ -3435,7 +3517,7 @@ type WorkspaceMount struct {
 
 func (x *WorkspaceMount) Reset() {
 	*x = WorkspaceMount{}
-	mi := &file_node_v1_node_proto_msgTypes[47]
+	mi := &file_node_v1_node_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3447,7 +3529,7 @@ func (x *WorkspaceMount) String() string {
 func (*WorkspaceMount) ProtoMessage() {}
 
 func (x *WorkspaceMount) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[47]
+	mi := &file_node_v1_node_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3460,7 +3542,7 @@ func (x *WorkspaceMount) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspaceMount.ProtoReflect.Descriptor instead.
 func (*WorkspaceMount) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{47}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *WorkspaceMount) GetWorkspaceId() string {
@@ -3488,7 +3570,7 @@ type StopSandbox struct {
 
 func (x *StopSandbox) Reset() {
 	*x = StopSandbox{}
-	mi := &file_node_v1_node_proto_msgTypes[48]
+	mi := &file_node_v1_node_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3500,7 +3582,7 @@ func (x *StopSandbox) String() string {
 func (*StopSandbox) ProtoMessage() {}
 
 func (x *StopSandbox) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[48]
+	mi := &file_node_v1_node_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3513,7 +3595,7 @@ func (x *StopSandbox) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSandbox.ProtoReflect.Descriptor instead.
 func (*StopSandbox) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{48}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *StopSandbox) GetCommandId() string {
@@ -3560,7 +3642,7 @@ type StartExec struct {
 
 func (x *StartExec) Reset() {
 	*x = StartExec{}
-	mi := &file_node_v1_node_proto_msgTypes[49]
+	mi := &file_node_v1_node_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3572,7 +3654,7 @@ func (x *StartExec) String() string {
 func (*StartExec) ProtoMessage() {}
 
 func (x *StartExec) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[49]
+	mi := &file_node_v1_node_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3585,7 +3667,7 @@ func (x *StartExec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartExec.ProtoReflect.Descriptor instead.
 func (*StartExec) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{49}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *StartExec) GetCommandId() string {
@@ -3689,7 +3771,7 @@ type CancelExec struct {
 
 func (x *CancelExec) Reset() {
 	*x = CancelExec{}
-	mi := &file_node_v1_node_proto_msgTypes[50]
+	mi := &file_node_v1_node_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3701,7 +3783,7 @@ func (x *CancelExec) String() string {
 func (*CancelExec) ProtoMessage() {}
 
 func (x *CancelExec) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[50]
+	mi := &file_node_v1_node_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3714,7 +3796,7 @@ func (x *CancelExec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelExec.ProtoReflect.Descriptor instead.
 func (*CancelExec) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{50}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *CancelExec) GetCommandId() string {
@@ -3748,7 +3830,7 @@ type OutputFrame struct {
 
 func (x *OutputFrame) Reset() {
 	*x = OutputFrame{}
-	mi := &file_node_v1_node_proto_msgTypes[51]
+	mi := &file_node_v1_node_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3760,7 +3842,7 @@ func (x *OutputFrame) String() string {
 func (*OutputFrame) ProtoMessage() {}
 
 func (x *OutputFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[51]
+	mi := &file_node_v1_node_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3773,7 +3855,7 @@ func (x *OutputFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputFrame.ProtoReflect.Descriptor instead.
 func (*OutputFrame) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{51}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *OutputFrame) GetSeq() int64 {
@@ -3828,7 +3910,7 @@ type OutputBatch struct {
 
 func (x *OutputBatch) Reset() {
 	*x = OutputBatch{}
-	mi := &file_node_v1_node_proto_msgTypes[52]
+	mi := &file_node_v1_node_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3840,7 +3922,7 @@ func (x *OutputBatch) String() string {
 func (*OutputBatch) ProtoMessage() {}
 
 func (x *OutputBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[52]
+	mi := &file_node_v1_node_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3853,7 +3935,7 @@ func (x *OutputBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputBatch.ProtoReflect.Descriptor instead.
 func (*OutputBatch) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{52}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *OutputBatch) GetExecId() string {
@@ -3880,7 +3962,7 @@ type OutputAck struct {
 
 func (x *OutputAck) Reset() {
 	*x = OutputAck{}
-	mi := &file_node_v1_node_proto_msgTypes[53]
+	mi := &file_node_v1_node_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3892,7 +3974,7 @@ func (x *OutputAck) String() string {
 func (*OutputAck) ProtoMessage() {}
 
 func (x *OutputAck) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[53]
+	mi := &file_node_v1_node_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3905,7 +3987,7 @@ func (x *OutputAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputAck.ProtoReflect.Descriptor instead.
 func (*OutputAck) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{53}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *OutputAck) GetExecId() string {
@@ -3937,7 +4019,7 @@ type HelloAck struct {
 
 func (x *HelloAck) Reset() {
 	*x = HelloAck{}
-	mi := &file_node_v1_node_proto_msgTypes[54]
+	mi := &file_node_v1_node_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3949,7 +4031,7 @@ func (x *HelloAck) String() string {
 func (*HelloAck) ProtoMessage() {}
 
 func (x *HelloAck) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[54]
+	mi := &file_node_v1_node_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3962,7 +4044,7 @@ func (x *HelloAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HelloAck.ProtoReflect.Descriptor instead.
 func (*HelloAck) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{54}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *HelloAck) GetAccepted() bool {
@@ -3997,7 +4079,7 @@ type EgressRules struct {
 
 func (x *EgressRules) Reset() {
 	*x = EgressRules{}
-	mi := &file_node_v1_node_proto_msgTypes[55]
+	mi := &file_node_v1_node_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4009,7 +4091,7 @@ func (x *EgressRules) String() string {
 func (*EgressRules) ProtoMessage() {}
 
 func (x *EgressRules) ProtoReflect() protoreflect.Message {
-	mi := &file_node_v1_node_proto_msgTypes[55]
+	mi := &file_node_v1_node_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4022,7 +4104,7 @@ func (x *EgressRules) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EgressRules.ProtoReflect.Descriptor instead.
 func (*EgressRules) Descriptor() ([]byte, []int) {
-	return file_node_v1_node_proto_rawDescGZIP(), []int{55}
+	return file_node_v1_node_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *EgressRules) GetAllow() []string {
@@ -4292,7 +4374,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x03R\n" +
-	"generation\"\xad\x03\n" +
+	"generation\"\xe4\x03\n" +
 	"\rCreateSandbox\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x1d\n" +
@@ -4309,7 +4391,13 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\x06egress\x18\t \x01(\v2\x1a.orrery.node.v1.EgressModeR\x06egress\x12\x1f\n" +
 	"\vlink_target\x18\n" +
 	" \x01(\bR\n" +
-	"linkTarget\"6\n" +
+	"linkTarget\x125\n" +
+	"\avolumes\x18\f \x03(\v2\x1b.orrery.node.v1.VolumeMountR\avolumes\"\x80\x01\n" +
+	"\vVolumeMount\x12\x1b\n" +
+	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12,\n" +
+	"\x12head_generation_id\x18\x03 \x01(\tR\x10headGenerationId\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"6\n" +
 	"\n" +
 	"EgressMode\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x14\n" +
@@ -4415,7 +4503,7 @@ func file_node_v1_node_proto_rawDescGZIP() []byte {
 }
 
 var file_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 58)
+var file_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
 var file_node_v1_node_proto_goTypes = []any{
 	(CapabilityValue)(0),             // 0: orrery.node.v1.CapabilityValue
 	(*GenerationChunk)(nil),          // 1: orrery.node.v1.GenerationChunk
@@ -4462,20 +4550,21 @@ var file_node_v1_node_proto_goTypes = []any{
 	(*ProvisionWorkspace)(nil),       // 42: orrery.node.v1.ProvisionWorkspace
 	(*DeleteWorkspace)(nil),          // 43: orrery.node.v1.DeleteWorkspace
 	(*CreateSandbox)(nil),            // 44: orrery.node.v1.CreateSandbox
-	(*EgressMode)(nil),               // 45: orrery.node.v1.EgressMode
-	(*ResourceMount)(nil),            // 46: orrery.node.v1.ResourceMount
-	(*Limits)(nil),                   // 47: orrery.node.v1.Limits
-	(*WorkspaceMount)(nil),           // 48: orrery.node.v1.WorkspaceMount
-	(*StopSandbox)(nil),              // 49: orrery.node.v1.StopSandbox
-	(*StartExec)(nil),                // 50: orrery.node.v1.StartExec
-	(*CancelExec)(nil),               // 51: orrery.node.v1.CancelExec
-	(*OutputFrame)(nil),              // 52: orrery.node.v1.OutputFrame
-	(*OutputBatch)(nil),              // 53: orrery.node.v1.OutputBatch
-	(*OutputAck)(nil),                // 54: orrery.node.v1.OutputAck
-	(*HelloAck)(nil),                 // 55: orrery.node.v1.HelloAck
-	(*EgressRules)(nil),              // 56: orrery.node.v1.EgressRules
-	nil,                              // 57: orrery.node.v1.StartExec.EnvEntry
-	nil,                              // 58: orrery.node.v1.StartExec.SecretEnvEntry
+	(*VolumeMount)(nil),              // 45: orrery.node.v1.VolumeMount
+	(*EgressMode)(nil),               // 46: orrery.node.v1.EgressMode
+	(*ResourceMount)(nil),            // 47: orrery.node.v1.ResourceMount
+	(*Limits)(nil),                   // 48: orrery.node.v1.Limits
+	(*WorkspaceMount)(nil),           // 49: orrery.node.v1.WorkspaceMount
+	(*StopSandbox)(nil),              // 50: orrery.node.v1.StopSandbox
+	(*StartExec)(nil),                // 51: orrery.node.v1.StartExec
+	(*CancelExec)(nil),               // 52: orrery.node.v1.CancelExec
+	(*OutputFrame)(nil),              // 53: orrery.node.v1.OutputFrame
+	(*OutputBatch)(nil),              // 54: orrery.node.v1.OutputBatch
+	(*OutputAck)(nil),                // 55: orrery.node.v1.OutputAck
+	(*HelloAck)(nil),                 // 56: orrery.node.v1.HelloAck
+	(*EgressRules)(nil),              // 57: orrery.node.v1.EgressRules
+	nil,                              // 58: orrery.node.v1.StartExec.EnvEntry
+	nil,                              // 59: orrery.node.v1.StartExec.SecretEnvEntry
 }
 var file_node_v1_node_proto_depIdxs = []int32{
 	6,  // 0: orrery.node.v1.GenerationChunk.entries:type_name -> orrery.node.v1.ManifestEntry
@@ -4495,13 +4584,13 @@ var file_node_v1_node_proto_depIdxs = []int32{
 	20, // 14: orrery.node.v1.Capabilities.entries:type_name -> orrery.node.v1.CapabilityEntry
 	21, // 15: orrery.node.v1.Capabilities.gpus:type_name -> orrery.node.v1.GPU
 	0,  // 16: orrery.node.v1.CapabilityEntry.value:type_name -> orrery.node.v1.CapabilityValue
-	55, // 17: orrery.node.v1.ControlMessage.hello_ack:type_name -> orrery.node.v1.HelloAck
+	56, // 17: orrery.node.v1.ControlMessage.hello_ack:type_name -> orrery.node.v1.HelloAck
 	42, // 18: orrery.node.v1.ControlMessage.provision_workspace:type_name -> orrery.node.v1.ProvisionWorkspace
 	43, // 19: orrery.node.v1.ControlMessage.delete_workspace:type_name -> orrery.node.v1.DeleteWorkspace
 	44, // 20: orrery.node.v1.ControlMessage.create_sandbox:type_name -> orrery.node.v1.CreateSandbox
-	49, // 21: orrery.node.v1.ControlMessage.stop_sandbox:type_name -> orrery.node.v1.StopSandbox
-	50, // 22: orrery.node.v1.ControlMessage.start_exec:type_name -> orrery.node.v1.StartExec
-	51, // 23: orrery.node.v1.ControlMessage.cancel_exec:type_name -> orrery.node.v1.CancelExec
+	50, // 21: orrery.node.v1.ControlMessage.stop_sandbox:type_name -> orrery.node.v1.StopSandbox
+	51, // 22: orrery.node.v1.ControlMessage.start_exec:type_name -> orrery.node.v1.StartExec
+	52, // 23: orrery.node.v1.ControlMessage.cancel_exec:type_name -> orrery.node.v1.CancelExec
 	37, // 24: orrery.node.v1.ControlMessage.open_tunnel:type_name -> orrery.node.v1.OpenTunnel
 	32, // 25: orrery.node.v1.ControlMessage.publish_workspace:type_name -> orrery.node.v1.PublishWorkspace
 	34, // 26: orrery.node.v1.ControlMessage.build_snapshot:type_name -> orrery.node.v1.BuildSnapshot
@@ -4512,39 +4601,40 @@ var file_node_v1_node_proto_depIdxs = []int32{
 	31, // 31: orrery.node.v1.MeshPeers.peers:type_name -> orrery.node.v1.MeshPeer
 	35, // 32: orrery.node.v1.BuildSnapshot.contexts:type_name -> orrery.node.v1.BuildContext
 	36, // 33: orrery.node.v1.BuildSnapshot.secrets:type_name -> orrery.node.v1.BuildSecret
-	47, // 34: orrery.node.v1.BuildSnapshot.limits:type_name -> orrery.node.v1.Limits
+	48, // 34: orrery.node.v1.BuildSnapshot.limits:type_name -> orrery.node.v1.Limits
 	38, // 35: orrery.node.v1.OpenTunnel.agent_http:type_name -> orrery.node.v1.AgentHTTP
 	39, // 36: orrery.node.v1.OpenTunnel.sandbox_port:type_name -> orrery.node.v1.SandboxPort
-	47, // 37: orrery.node.v1.CreateSandbox.limits:type_name -> orrery.node.v1.Limits
-	48, // 38: orrery.node.v1.CreateSandbox.workspace:type_name -> orrery.node.v1.WorkspaceMount
-	46, // 39: orrery.node.v1.CreateSandbox.resources:type_name -> orrery.node.v1.ResourceMount
-	45, // 40: orrery.node.v1.CreateSandbox.egress:type_name -> orrery.node.v1.EgressMode
-	57, // 41: orrery.node.v1.StartExec.env:type_name -> orrery.node.v1.StartExec.EnvEntry
-	58, // 42: orrery.node.v1.StartExec.secret_env:type_name -> orrery.node.v1.StartExec.SecretEnvEntry
-	41, // 43: orrery.node.v1.StartExec.pty:type_name -> orrery.node.v1.PtySpec
-	52, // 44: orrery.node.v1.OutputBatch.frames:type_name -> orrery.node.v1.OutputFrame
-	56, // 45: orrery.node.v1.HelloAck.egress_rules:type_name -> orrery.node.v1.EgressRules
-	10, // 46: orrery.node.v1.Node.Redeem:input_type -> orrery.node.v1.RedeemRequest
-	12, // 47: orrery.node.v1.Node.Control:input_type -> orrery.node.v1.AgentMessage
-	53, // 48: orrery.node.v1.Node.ExecOutput:input_type -> orrery.node.v1.OutputBatch
-	40, // 49: orrery.node.v1.Node.Tunnel:input_type -> orrery.node.v1.TunnelFrame
-	8,  // 50: orrery.node.v1.Node.Presign:input_type -> orrery.node.v1.PresignRequest
-	5,  // 51: orrery.node.v1.Node.SubmitManifest:input_type -> orrery.node.v1.ManifestChunk
-	1,  // 52: orrery.node.v1.Node.SubmitGeneration:input_type -> orrery.node.v1.GenerationChunk
-	3,  // 53: orrery.node.v1.Node.CommitGeneration:input_type -> orrery.node.v1.CommitGenerationRequest
-	11, // 54: orrery.node.v1.Node.Redeem:output_type -> orrery.node.v1.RedeemResponse
-	27, // 55: orrery.node.v1.Node.Control:output_type -> orrery.node.v1.ControlMessage
-	54, // 56: orrery.node.v1.Node.ExecOutput:output_type -> orrery.node.v1.OutputAck
-	40, // 57: orrery.node.v1.Node.Tunnel:output_type -> orrery.node.v1.TunnelFrame
-	9,  // 58: orrery.node.v1.Node.Presign:output_type -> orrery.node.v1.PresignResponse
-	7,  // 59: orrery.node.v1.Node.SubmitManifest:output_type -> orrery.node.v1.ManifestAck
-	2,  // 60: orrery.node.v1.Node.SubmitGeneration:output_type -> orrery.node.v1.GenerationAck
-	4,  // 61: orrery.node.v1.Node.CommitGeneration:output_type -> orrery.node.v1.CommitGenerationResponse
-	54, // [54:62] is the sub-list for method output_type
-	46, // [46:54] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	48, // 37: orrery.node.v1.CreateSandbox.limits:type_name -> orrery.node.v1.Limits
+	49, // 38: orrery.node.v1.CreateSandbox.workspace:type_name -> orrery.node.v1.WorkspaceMount
+	47, // 39: orrery.node.v1.CreateSandbox.resources:type_name -> orrery.node.v1.ResourceMount
+	46, // 40: orrery.node.v1.CreateSandbox.egress:type_name -> orrery.node.v1.EgressMode
+	45, // 41: orrery.node.v1.CreateSandbox.volumes:type_name -> orrery.node.v1.VolumeMount
+	58, // 42: orrery.node.v1.StartExec.env:type_name -> orrery.node.v1.StartExec.EnvEntry
+	59, // 43: orrery.node.v1.StartExec.secret_env:type_name -> orrery.node.v1.StartExec.SecretEnvEntry
+	41, // 44: orrery.node.v1.StartExec.pty:type_name -> orrery.node.v1.PtySpec
+	53, // 45: orrery.node.v1.OutputBatch.frames:type_name -> orrery.node.v1.OutputFrame
+	57, // 46: orrery.node.v1.HelloAck.egress_rules:type_name -> orrery.node.v1.EgressRules
+	10, // 47: orrery.node.v1.Node.Redeem:input_type -> orrery.node.v1.RedeemRequest
+	12, // 48: orrery.node.v1.Node.Control:input_type -> orrery.node.v1.AgentMessage
+	54, // 49: orrery.node.v1.Node.ExecOutput:input_type -> orrery.node.v1.OutputBatch
+	40, // 50: orrery.node.v1.Node.Tunnel:input_type -> orrery.node.v1.TunnelFrame
+	8,  // 51: orrery.node.v1.Node.Presign:input_type -> orrery.node.v1.PresignRequest
+	5,  // 52: orrery.node.v1.Node.SubmitManifest:input_type -> orrery.node.v1.ManifestChunk
+	1,  // 53: orrery.node.v1.Node.SubmitGeneration:input_type -> orrery.node.v1.GenerationChunk
+	3,  // 54: orrery.node.v1.Node.CommitGeneration:input_type -> orrery.node.v1.CommitGenerationRequest
+	11, // 55: orrery.node.v1.Node.Redeem:output_type -> orrery.node.v1.RedeemResponse
+	27, // 56: orrery.node.v1.Node.Control:output_type -> orrery.node.v1.ControlMessage
+	55, // 57: orrery.node.v1.Node.ExecOutput:output_type -> orrery.node.v1.OutputAck
+	40, // 58: orrery.node.v1.Node.Tunnel:output_type -> orrery.node.v1.TunnelFrame
+	9,  // 59: orrery.node.v1.Node.Presign:output_type -> orrery.node.v1.PresignResponse
+	7,  // 60: orrery.node.v1.Node.SubmitManifest:output_type -> orrery.node.v1.ManifestAck
+	2,  // 61: orrery.node.v1.Node.SubmitGeneration:output_type -> orrery.node.v1.GenerationAck
+	4,  // 62: orrery.node.v1.Node.CommitGeneration:output_type -> orrery.node.v1.CommitGenerationResponse
+	55, // [55:63] is the sub-list for method output_type
+	47, // [47:55] is the sub-list for method input_type
+	47, // [47:47] is the sub-list for extension type_name
+	47, // [47:47] is the sub-list for extension extendee
+	0,  // [0:47] is the sub-list for field type_name
 }
 
 func init() { file_node_v1_node_proto_init() }
@@ -4583,14 +4673,14 @@ func file_node_v1_node_proto_init() {
 		(*OpenTunnel_AgentHttp)(nil),
 		(*OpenTunnel_SandboxPort)(nil),
 	}
-	file_node_v1_node_proto_msgTypes[51].OneofWrappers = []any{}
+	file_node_v1_node_proto_msgTypes[52].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_node_v1_node_proto_rawDesc), len(file_node_v1_node_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   58,
+			NumMessages:   59,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

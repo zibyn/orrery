@@ -390,6 +390,7 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	rt.buildkit = opts.Buildkit
 	rt.mesh = opts.mesh
 	rt.resourcefs = resourcefs.Client{Socket: opts.ResourceFSSocket}
+	rt.volumes = resourcefs.Client{Socket: opts.ResourceFSSocket}
 	if opts.resourceRefs != nil {
 		rt.resourceRefs = opts.resourceRefs
 	}

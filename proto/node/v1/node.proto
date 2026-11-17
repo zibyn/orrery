@@ -427,6 +427,20 @@ message CreateSandbox {
   // records it with the veth and renders the inbound chain, ending in a drop,
   // at Create before the Sandbox runs (runtime.md §13).
   bool link_target = 10;
+  // Volumes to mount writable through orrery-resourcefs (runtime.md §17).
+  // Field 11 is left for restore (#276).
+  repeated VolumeMount volumes = 12;
+}
+
+message VolumeMount {
+  string volume_id = 1;
+  // Absolute mount path in the container (api.md §3).
+  string path = 2;
+  // The head to mount; empty when nothing was committed yet.
+  string head_generation_id = 3;
+  // The Volume's name: a Local Sandbox finds it at
+  // $ORRERY_VOLUMES/<name> (runtime.md §10).
+  string name = 4;
 }
 
 // EgressMode is open, none or allowlist; allow is set only for allowlist, with

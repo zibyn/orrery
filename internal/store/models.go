@@ -132,6 +132,7 @@ type GenerationUpload struct {
 	Missing          []string
 	ExpiresAt        pgtype.Timestamptz
 	CreatedAt        pgtype.Timestamptz
+	VolumeID         *uuid.UUID
 }
 
 type GitLink struct {

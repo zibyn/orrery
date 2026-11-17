@@ -101,9 +101,15 @@ func writeStatTable(path string, table statTable) error {
 // committed or once the holder is refused (nothing is left to commit to), an
 // errCommitFailed, or ctx's error.
 func (r *Runtime) commitWithRetry(ctx context.Context, id uuid.UUID, gen int64, target commitTarget, retrying func()) error {
+	return retryCommit(ctx, id, func() error { return r.commitOnce(ctx, id, gen, target) }, retrying)
+}
+
+// retryCommit runs one commit attempt until it succeeds, as commitWithRetry
+// describes; a Volume's commit shares it.
+func retryCommit(ctx context.Context, id uuid.UUID, once func() error, retrying func()) error {
 	delay := commitRetryMin
 	for failures := 0; ; {
-		err := r.commitOnce(ctx, id, gen, target)
+		err := once()
 		switch {
 		case err == nil:
 			return nil
@@ -114,7 +120,7 @@ func (r *Runtime) commitWithRetry(ctx context.Context, id uuid.UUID, gen int64, 
 			return err
 		}
 		failures++
-		slog.Warn("commit Sandbox filesystem", "sandbox_id", id, "attempt", failures, "error", err, "retry_in", delay)
+		slog.Warn("commit a stopped Sandbox", "sandbox_id", id, "attempt", failures, "error", err, "retry_in", delay)
 		if failures >= commitStalledAfter {
 			retrying()
 		}
@@ -200,11 +206,16 @@ func (r *Runtime) finishCommit(ctx context.Context, tablePath, pendingPath, uplo
 
 // submitGeneration streams the changed file entries and opens the upload.
 func (r *Runtime) submitGeneration(ctx context.Context, id uuid.UUID, gen int64, base string, changed []generation.Entry) (*nodev1.GenerationAck, error) {
+	return r.streamGeneration(ctx, &nodev1.GenerationChunk{SandboxId: id.String(), Generation: gen, BaseGenerationId: base}, changed)
+}
+
+// streamGeneration sends first, holding the holder fields, then the changed
+// file entries.
+func (r *Runtime) streamGeneration(ctx context.Context, first *nodev1.GenerationChunk, changed []generation.Entry) (*nodev1.GenerationAck, error) {
 	stream, err := r.client.SubmitGeneration(ctx)
 	if err != nil {
 		return nil, err
 	}
-	first := &nodev1.GenerationChunk{SandboxId: id.String(), Generation: gen, BaseGenerationId: base}
 	chunk := first
 	for i, e := range changed {
 		if i > 0 && i%publishChunkEntries == 0 {

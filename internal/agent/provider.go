@@ -64,11 +64,19 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	if cause, err := r.mountResources(ctx, id, cmd.resources); err != nil {
 		return cause, err
 	}
+	// shortcut: a Volume mounted for a Create that then fails stays mounted
+	// until a later mount of it here finds it stale (runtime.md §17).
+	if cause, err := r.mountVolumes(ctx, id, cmd.volumes); err != nil {
+		r.releaseResources(context.WithoutCancel(ctx), id)
+		return cause, err
+	}
 	cause, err := r.driver.createSandbox(ctx, cmd)
 	if err != nil {
 		r.releaseResources(context.WithoutCancel(ctx), id)
+		return cause, err
 	}
-	return cause, err
+	r.startVolumeCommits(id, cmd.generation)
+	return "", nil
 }
 
 // sandboxReport sends one SandboxObserved for the Sandbox being stopped.
@@ -83,7 +91,23 @@ func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID, generati
 	if err := r.driver.stopSandbox(ctx, sandboxID); err != nil {
 		return err
 	}
+	r.stopVolumeCommits(sandboxID)
 	r.releaseResources(ctx, sandboxID)
+	// Volumes first: their holds end with this stop (runtime.md §17).
+	if len(readVolumeRecord(r.dataRoot, sandboxID)) > 0 {
+		report(nodeproto.SandboxPhaseCommitting, "", false)
+		err := r.commitVolumes(ctx, sandboxID, generation, func() {
+			report(nodeproto.SandboxPhaseCommitting, "", true)
+		})
+		if isCommitFailed(err) {
+			slog.Error("Sandbox Volume cannot be committed", "sandbox_id", sandboxID, "error", err)
+			report(nodeproto.SandboxPhaseCommitFailed, string(nodeproto.SandboxPhaseCommitFailed), false)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 	target, ok, err := r.driver.commitTarget(ctx, sandboxID)
 	if err != nil {
 		return err
@@ -141,6 +165,7 @@ func (r *Runtime) healthy(ctx context.Context) bool {
 func (r *Runtime) adopt(ctx context.Context, report func(string, int64)) {
 	r.driver.adopt(ctx, report)
 	r.rebuildResourceRefs(ctx)
+	r.resumeVolumeCommits()
 }
 
 func (r *Runtime) scan(ctx context.Context, report func(string, int64)) {

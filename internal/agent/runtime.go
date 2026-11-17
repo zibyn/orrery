@@ -81,6 +81,10 @@ type Runtime struct {
 	// counts their holders and outlives each Control stream.
 	resourcefs   resourceMounter
 	resourceRefs *resourceRefs
+	// volumes is the daemon's writable side (runtime.md §17); volumeLoops
+	// commit running Sandboxes' Volumes periodically.
+	volumes     volumeMounter
+	volumeLoops volumeLoops
 
 	registryMu sync.Mutex
 	registry   *registry.Credential
@@ -519,6 +523,7 @@ type createSandboxSpec struct {
 	workspaceMode string
 	gpuUUIDs      []string
 	resources     []resourceMount
+	volumes       []volumeMount
 	egress        egressMode
 	linkTarget    bool
 }

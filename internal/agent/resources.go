@@ -271,19 +271,27 @@ func (r *Runtime) servePresign(ctx context.Context, socket string) {
 		slog.Error("listen for resourcefs presign requests", "socket", socket, "error", err)
 		return
 	}
-	resourcefs.ServePresign(ctx, l, presignFunc(func(ctx context.Context, objects, manifests []string) ([]string, error) {
-		resp, err := r.presign(ctx, &nodev1.PresignRequest{Sha256: objects, Manifests: manifests, Method: "GET"})
-		if err != nil {
-			return nil, err
-		}
-		return resp.GetUrls(), nil
-	}), slog.Default())
+	resourcefs.ServePresign(ctx, l, runtimePresigner{r}, slog.Default())
 }
 
-type presignFunc func(ctx context.Context, objects, manifests []string) ([]string, error)
+// runtimePresigner signs the daemon's GETs: objects and manifests, and a
+// Volume's head Generation.
+type runtimePresigner struct{ r *Runtime }
 
-func (f presignFunc) Presign(ctx context.Context, objects, manifests []string) ([]string, error) {
-	return f(ctx, objects, manifests)
+func (p runtimePresigner) Presign(ctx context.Context, objects, manifests []string) ([]string, error) {
+	resp, err := p.r.presign(ctx, &nodev1.PresignRequest{Sha256: objects, Manifests: manifests, Method: "GET"})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetUrls(), nil
+}
+
+func (p runtimePresigner) PresignGenerations(ctx context.Context, ids []string) ([]string, error) {
+	resp, err := p.r.presign(ctx, &nodev1.PresignRequest{Generations: ids, Method: "GET"})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetUrls(), nil
 }
 
 // removeLegacyResourceCache deletes the eager path's object cache and version

@@ -598,9 +598,9 @@ func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) erro
 	if err != nil {
 		return err
 	}
-	return d.r.deliverExecSpec(ctx, sandboxID, execID, dir, cmd,
-		localExecEnv(cmd.Env, os.Getenv("PATH"), d.binDir, workspace, sandboxResourcesPath(d.r.dataRoot, sandboxID), gpus),
-		cwd)
+	env := localExecEnv(cmd.Env, os.Getenv("PATH"), d.binDir, workspace, sandboxResourcesPath(d.r.dataRoot, sandboxID), gpus)
+	env["ORRERY_VOLUMES"] = sandboxVolumesPath(d.r.dataRoot, sandboxID)
+	return d.r.deliverExecSpec(ctx, sandboxID, execID, dir, cmd, env, cwd)
 }
 
 func (d *localDriver) probe(ctx context.Context) (nodeproto.CapabilityReport, error) {

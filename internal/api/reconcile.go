@@ -330,11 +330,22 @@ func (r *reconciler) create(ctx context.Context, sb store.Sandbox) {
 		}
 		resources = append(resources, &nodev1.ResourceMount{Address: *mount.Address, Mount: mount.Mount})
 	}
+	volumes, err := r.s.q.ListSandboxVolumeMounts(ctx, sb.ID)
+	if err != nil {
+		r.s.log.Warn("reconcile: list sandbox Volumes", "sandbox_id", sb.ID, "error", err)
+		return
+	}
 	id := commandID("create-sandbox", sb.ID, sb.Generation)
 	workspace := &nodev1.WorkspaceMount{WorkspaceId: sb.WorkspaceID.String(), Mode: sb.WorkspaceMode}
-	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{
-		CreateSandbox: createSandboxCommand(id, sb, workspace, gpus, resources),
-	}})
+	cmd := createSandboxCommand(id, sb, workspace, gpus, resources)
+	for _, v := range volumes {
+		mount := &nodev1.VolumeMount{VolumeId: v.VolumeID.String(), Path: v.Path, Name: v.Name}
+		if v.HeadGenerationID != nil {
+			mount.HeadGenerationId = v.HeadGenerationID.String()
+		}
+		cmd.Volumes = append(cmd.Volumes, mount)
+	}
+	r.send(ctx, sb.NodeID, id, &nodev1.ControlMessage{Message: &nodev1.ControlMessage_CreateSandbox{CreateSandbox: cmd}})
 }
 
 // createSandboxCommand is the same on every (re)send of one generation

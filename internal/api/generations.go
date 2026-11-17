@@ -98,13 +98,32 @@ func (s *Server) submitGeneration(ctx context.Context, node store.Node, chunks [
 		return nil, status.Error(codes.InvalidArgument, "the first chunk must name the holder")
 	}
 	first := chunks[0]
+	var volumeID *uuid.UUID
+	var sandboxID uuid.UUID
 	if first.GetVolumeId() != "" {
-		// shortcut: Volumes commit once #277 adds them.
-		return nil, status.Error(codes.InvalidArgument, "Volume Generations are not supported yet")
-	}
-	sandboxID, err := uuid.Parse(first.GetSandboxId())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "sandbox_id must be a UUID")
+		if first.GetSandboxId() != "" {
+			return nil, status.Error(codes.InvalidArgument, "name one of sandbox_id or volume_id")
+		}
+		id, err := uuid.Parse(first.GetVolumeId())
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, "volume_id must be a UUID")
+		}
+		// A Volume commits under the fence of the Sandbox holding it.
+		holder, err := s.q.GetVolumeHolder(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, status.Error(codes.FailedPrecondition, "no Sandbox holds the Volume")
+		}
+		if err != nil {
+			s.log.Error("load Volume holder", "volume_id", id, "error", err)
+			return nil, status.Error(codes.Internal, "load Volume holder")
+		}
+		volumeID, sandboxID = &id, holder
+	} else {
+		id, err := uuid.Parse(first.GetSandboxId())
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, "sandbox_id must be a UUID")
+		}
+		sandboxID = id
 	}
 	var base *uuid.UUID
 	if first.GetBaseGenerationId() != "" {
@@ -161,7 +180,7 @@ func (s *Server) submitGeneration(ctx context.Context, node store.Node, chunks [
 	if err := s.q.CreateGenerationUpload(ctx, store.CreateGenerationUploadParams{
 		ID: id, OwnerID: sb.OwnerID, SandboxID: sandboxID, NodeID: node.ID,
 		Generation: first.GetGeneration(), BaseGenerationID: base, Missing: missing,
-		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(uploadTTL), Valid: true},
+		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(uploadTTL), Valid: true}, VolumeID: volumeID,
 	}); err != nil {
 		s.log.Error("open Generation upload", "sandbox_id", sandboxID, "error", err)
 		return nil, status.Error(codes.Internal, "open upload")
@@ -230,13 +249,27 @@ func (s *Server) commitGeneration(ctx context.Context, node store.Node, req *nod
 	if err := generationHolder(sb, node, upload.Generation); err != nil {
 		return nil, err
 	}
-	if !sameGeneration(sb.HeadGenerationID, upload.BaseGenerationID) {
+	var volume *store.Volume
+	if upload.VolumeID != nil {
+		if volume, err = lockCommittingVolume(ctx, q, sb.ID, *upload.VolumeID); err != nil {
+			if status.Code(err) == codes.Unknown {
+				s.log.Error("lock committing Volume", "volume_id", *upload.VolumeID, "error", err)
+				return nil, status.Error(codes.Internal, "lock Volume")
+			}
+			return nil, err
+		}
+	}
+	head, kind := sb.HeadGenerationID, generationKind(sb)
+	if volume != nil {
+		head, kind = volume.HeadGenerationID, generation.KindTree
+	}
+	if !sameGeneration(head, upload.BaseGenerationID) {
 		return nil, status.Error(codes.FailedPrecondition, "the head moved since base_generation_id")
 	}
-	if m.Kind != generationKind(sb) {
-		return nil, status.Errorf(codes.InvalidArgument, "this Sandbox commits kind %q", generationKind(sb))
+	if m.Kind != kind {
+		return nil, status.Errorf(codes.InvalidArgument, "this holder commits kind %q", kind)
 	}
-	if err := s.recordGeneration(ctx, q, sb, uploadID, m, objects); err != nil {
+	if err := s.recordGeneration(ctx, q, sb, volume, uploadID, m, objects); err != nil {
 		if status.Code(err) == codes.Unknown {
 			s.log.Error("record Generation", "upload_id", uploadID, "error", err)
 			return nil, status.Error(codes.Internal, "record Generation")
@@ -249,9 +282,29 @@ func (s *Server) commitGeneration(ctx context.Context, node store.Node, req *nod
 	return &nodev1.CommitGenerationResponse{GenerationId: uploadID.String()}, nil
 }
 
-// recordGeneration writes the row, its objects, and the head move inside the
-// caller's transaction.
-func (s *Server) recordGeneration(ctx context.Context, q *store.Queries, sb store.Sandbox, id uuid.UUID, m generation.Manifest, objects []manifest.FileObject) error {
+// lockCommittingVolume locks a Volume a commit advances, after its holder:
+// the holder must still hold it, and it must not be deleted.
+func lockCommittingVolume(ctx context.Context, q *store.Queries, sandboxID, volumeID uuid.UUID) (*store.Volume, error) {
+	holder, err := q.GetVolumeHolder(ctx, volumeID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && holder != sandboxID) {
+		return nil, status.Error(codes.FailedPrecondition, "the Sandbox no longer holds the Volume")
+	}
+	if err != nil {
+		return nil, err
+	}
+	v, err := q.LockGenerationVolume(ctx, volumeID)
+	if err != nil {
+		return nil, err
+	}
+	if v.State == "deleted" {
+		return nil, status.Error(codes.FailedPrecondition, "the Volume is deleted")
+	}
+	return &v, nil
+}
+
+// recordGeneration writes the row, its objects, and the head move of the
+// Sandbox, or of volume when set, inside the caller's transaction.
+func (s *Server) recordGeneration(ctx context.Context, q *store.Queries, sb store.Sandbox, volume *store.Volume, id uuid.UUID, m generation.Manifest, objects []manifest.FileObject) error {
 	consumed, err := q.ConsumeGenerationUpload(ctx, id)
 	if err != nil {
 		return err
@@ -259,14 +312,20 @@ func (s *Server) recordGeneration(ctx context.Context, q *store.Queries, sb stor
 	if consumed == 0 {
 		return status.Error(codes.FailedPrecondition, "the upload expired")
 	}
-	seq, err := q.NextGenerationSeq(ctx, &sb.ID)
+	row := store.InsertGenerationParams{
+		ID: id, OwnerID: sb.OwnerID, SandboxID: &sb.ID, Kind: m.Kind,
+		ManifestKey: objectstore.GenerationKey(sb.OwnerID.String(), id.String()), Size: generation.Size(m),
+	}
+	if volume != nil {
+		row.SandboxID, row.VolumeID = nil, &volume.ID
+		row.Seq, err = q.NextVolumeGenerationSeq(ctx, &volume.ID)
+	} else {
+		row.Seq, err = q.NextGenerationSeq(ctx, &sb.ID)
+	}
 	if err != nil {
 		return err
 	}
-	if err := q.InsertGeneration(ctx, store.InsertGenerationParams{
-		ID: id, OwnerID: sb.OwnerID, SandboxID: &sb.ID, Seq: seq, Kind: m.Kind,
-		ManifestKey: objectstore.GenerationKey(sb.OwnerID.String(), id.String()), Size: generation.Size(m),
-	}); err != nil {
+	if err := q.InsertGeneration(ctx, row); err != nil {
 		return err
 	}
 	for _, object := range objects {
@@ -277,7 +336,12 @@ func (s *Server) recordGeneration(ctx context.Context, q *store.Queries, sb stor
 			return err
 		}
 	}
-	moved, err := q.SetSandboxHeadGeneration(ctx, store.SetSandboxHeadGenerationParams{ID: sb.ID, Head: id, Base: sb.HeadGenerationID})
+	var moved int64
+	if volume != nil {
+		moved, err = q.SetVolumeHeadGeneration(ctx, store.SetVolumeHeadGenerationParams{ID: volume.ID, Head: id, Base: volume.HeadGenerationID})
+	} else {
+		moved, err = q.SetSandboxHeadGeneration(ctx, store.SetSandboxHeadGenerationParams{ID: sb.ID, Head: id, Base: sb.HeadGenerationID})
+	}
 	if err != nil {
 		return err
 	}
@@ -294,6 +358,12 @@ func (s *Server) alreadyCommitted(ctx context.Context, uploadID uuid.UUID) (*nod
 	if err == nil && g.SandboxID != nil {
 		sb, err := s.q.GetSandboxIncludingDeleted(ctx, *g.SandboxID)
 		if err == nil && sameGeneration(sb.HeadGenerationID, &uploadID) {
+			return &nodev1.CommitGenerationResponse{GenerationId: uploadID.String()}, nil
+		}
+	}
+	if err == nil && g.VolumeID != nil {
+		v, err := s.q.GetVolume(ctx, *g.VolumeID)
+		if err == nil && sameGeneration(v.HeadGenerationID, &uploadID) {
 			return &nodev1.CommitGenerationResponse{GenerationId: uploadID.String()}, nil
 		}
 	}

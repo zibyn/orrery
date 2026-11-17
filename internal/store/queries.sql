@@ -1579,8 +1579,8 @@ WHERE id = $1 AND state = 'deleting';
 SELECT * FROM sandboxes WHERE id = $1 FOR UPDATE;
 
 -- name: CreateGenerationUpload :exec
-INSERT INTO generation_uploads (id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+INSERT INTO generation_uploads (id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, volume_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: GetGenerationUpload :one
 SELECT * FROM generation_uploads WHERE id = $1 AND expires_at > now();
@@ -1604,9 +1604,12 @@ DELETE FROM generation_uploads WHERE id = $1;
 -- name: NextGenerationSeq :one
 SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE sandbox_id = $1;
 
+-- name: NextVolumeGenerationSeq :one
+SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE volume_id = $1;
+
 -- name: InsertGeneration :exec
-INSERT INTO generations (id, owner_id, sandbox_id, seq, kind, manifest_key, size)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO generations (id, owner_id, sandbox_id, seq, kind, manifest_key, size, volume_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: InsertGenerationObject :exec
 INSERT INTO generation_objects (generation_id, sha256) VALUES ($1, $2)
@@ -1618,6 +1621,15 @@ SELECT * FROM generations WHERE id = $1;
 -- name: SetSandboxHeadGeneration :execrows
 UPDATE sandboxes SET head_generation_id = sqlc.arg('head')::uuid, updated_at = now()
 WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM sqlc.narg('base')::uuid;
+
+-- name: SetVolumeHeadGeneration :execrows
+UPDATE volumes SET head_generation_id = sqlc.arg('head')::uuid, updated_at = now()
+WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM sqlc.narg('base')::uuid;
+
+-- LockGenerationVolume reads the committing Volume under a row lock, after
+-- its holder Sandbox's.
+-- name: LockGenerationVolume :one
+SELECT * FROM volumes WHERE id = $1 FOR UPDATE;
 
 -- ListGarbageGenerations finds Generations that are no live Sandbox's or
 -- Volume's head and that no pending Volume publish reads. Heads only move
@@ -1670,15 +1682,27 @@ JOIN sandboxes s ON s.id = u.sandbox_id
 WHERE u.id = $2 AND u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
   AND u.expires_at > now();
 
+-- A Volume's head counts for the Node of the Sandbox holding it.
 -- name: FindNodeHeadGenerationOwner :one
 SELECT s.owner_id FROM sandboxes s
-WHERE s.node_id = $1 AND s.state <> 'deleted' AND s.head_generation_id = $2
+WHERE s.node_id = sqlc.arg('node_id') AND s.state <> 'deleted' AND s.head_generation_id = sqlc.arg('head_generation_id')
+UNION ALL
+SELECT v.owner_id FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id AND sv.held
+JOIN sandboxes s ON s.id = sv.sandbox_id
+WHERE s.node_id = sqlc.arg('node_id') AND v.head_generation_id = sqlc.arg('head_generation_id')
 LIMIT 1;
 
 -- name: FindNodeHeadGenerationObjectOwner :one
 SELECT s.owner_id FROM sandboxes s
 JOIN generation_objects go ON go.generation_id = s.head_generation_id
-WHERE s.node_id = $1 AND s.state <> 'deleted' AND go.sha256 = $2
+WHERE s.node_id = sqlc.arg('node_id') AND s.state <> 'deleted' AND go.sha256 = sqlc.arg('sha256')
+UNION ALL
+SELECT v.owner_id FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id AND sv.held
+JOIN sandboxes s ON s.id = sv.sandbox_id
+JOIN generation_objects go ON go.generation_id = v.head_generation_id
+WHERE s.node_id = sqlc.arg('node_id') AND go.sha256 = sqlc.arg('sha256')
 LIMIT 1;
 
 -- Volumes (ADR-0031, api.md §3 "Volume").
@@ -1736,6 +1760,12 @@ VALUES ($1, $2, $3, true);
 
 -- name: ListSandboxVolumes :many
 SELECT * FROM sandbox_volumes WHERE sandbox_id = $1 ORDER BY path;
+
+-- ListSandboxVolumeMounts is CreateSandbox's volumes (node-protocol.md).
+-- name: ListSandboxVolumeMounts :many
+SELECT sv.volume_id, sv.path, v.name, v.head_generation_id
+FROM sandbox_volumes sv JOIN volumes v ON v.id = sv.volume_id
+WHERE sv.sandbox_id = $1 ORDER BY sv.path;
 
 -- LockSandboxVolumes takes the Sandbox's Volumes FOR SHARE on start, so a
 -- concurrent delete waits; a deleted one refuses the start.

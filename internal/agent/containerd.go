@@ -253,6 +253,8 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 		bindMount(filepath.Join(etc, "hostname"), "/etc/hostname", "ro"),
 	}
 	mounts = append(mounts, resources...)
+	// After /workspace, so a Volume mounted there covers the Workspace.
+	mounts = append(mounts, d.r.volumeBindMounts(cmd.volumes)...)
 	opts := append([]oci.SpecOpts{
 		oci.WithProcessArgs(supervisorBin, "init"),
 		oci.WithProcessCwd(workspaceMount),

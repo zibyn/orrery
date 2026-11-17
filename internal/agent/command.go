@@ -152,6 +152,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				workspaceMode: cmd.Workspace.GetMode(),
 				gpuUUIDs:      cmd.GpuUuids,
 				resources:     resourceMounts(cmd.Resources),
+				volumes:       volumeMounts(cmd.Volumes),
 				egress:        egressModeOf(cmd.Egress),
 				linkTarget:    cmd.LinkTarget,
 			})
