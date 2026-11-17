@@ -42,38 +42,34 @@ import { formatLocalDateTime } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
-export function SandboxFiles({
-  sandboxId,
-  workspaceId,
-}: {
-  sandboxId: string
-  // Absent when the Sandbox has no Workspace to publish from.
-  workspaceId?: string
-}) {
+// Browses `source`'s files: `/sandboxes/{id}` (writable) or `/volumes/{id}`
+// (readOnly: its head Generation, no write API). Both publish via
+// `${source}/publish` (docs/spec/api.md §3, §8).
+export function SandboxFiles({ source, readOnly = false }: { source: string; readOnly?: boolean }) {
   const [path, setPath] = useState('')
   const queryClient = useQueryClient()
   const inputRef = useRef<HTMLInputElement>(null)
 
   const listing = useQuery({
-    queryKey: ['files', sandboxId, path],
-    queryFn: () => api<{ items: FileEntry[] }>('GET', filesPath(sandboxId, path)),
+    queryKey: ['files', source, path],
+    queryFn: () => api<{ items: FileEntry[] }>('GET', filesPath(source, path)),
   })
 
   const upload = useMutation({
     mutationFn: (file: File) =>
-      apiRaw('PUT', fileContentPath(sandboxId, joinPath(path, file.name)), file),
+      apiRaw('PUT', fileContentPath(source, joinPath(path, file.name)), file),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['files', sandboxId] })
+      queryClient.invalidateQueries({ queryKey: ['files', source] })
     },
   })
 
-  // Publishing walks the Workspace on its Node; the version starts pending
-  // and moves the Resource's current pointer once ready (api.md §3).
+  // The version starts pending and moves the Resource's current pointer once
+  // ready (api.md §3).
   const publish = useMutation({
     mutationFn: ({ target, resource }: { target: string; resource: string }) =>
       api<ResourceVersion>(
         'POST',
-        `/workspaces/${workspaceId}/publish`,
+        `${source}/publish`,
         { path: target || '.', resource },
         { 'Idempotency-Key': crypto.randomUUID() },
       ),
@@ -90,40 +86,42 @@ export function SandboxFiles({
       <CardHeader className="flex-row items-start justify-between gap-3">
         <CardTitle>{m.files_title()}</CardTitle>
         <div className="flex gap-2">
-          {workspaceId && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={publish.isPending}
-              data-testid="files-publish-dir"
-              onClick={() => startPublish(path, path.split('/').pop() ?? '')}
-            >
-              <PackagePlus data-icon="inline-start" />
-              {m.files_publish_dir()}
-            </Button>
-          )}
-          <input
-            ref={inputRef}
-            type="file"
-            aria-label={m.files_upload_aria()}
-            className="sr-only"
-            disabled={upload.isPending}
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              if (file) upload.mutate(file)
-              // Allow uploading the same name again.
-              event.target.value = ''
-            }}
-          />
           <Button
             variant="outline"
             size="sm"
-            disabled={upload.isPending}
-            onClick={() => inputRef.current?.click()}
+            disabled={publish.isPending}
+            data-testid="files-publish-dir"
+            onClick={() => startPublish(path, path.split('/').pop() ?? '')}
           >
-            <Upload data-icon="inline-start" />
-            {upload.isPending ? m.files_uploading() : m.files_upload()}
+            <PackagePlus data-icon="inline-start" />
+            {m.files_publish_dir()}
           </Button>
+          {!readOnly && (
+            <>
+              <input
+                ref={inputRef}
+                type="file"
+                aria-label={m.files_upload_aria()}
+                className="sr-only"
+                disabled={upload.isPending}
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) upload.mutate(file)
+                  // Allow uploading the same name again.
+                  event.target.value = ''
+                }}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={upload.isPending}
+                onClick={() => inputRef.current?.click()}
+              >
+                <Upload data-icon="inline-start" />
+                {upload.isPending ? m.files_uploading() : m.files_upload()}
+              </Button>
+            </>
+          )}
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -214,9 +212,9 @@ export function SandboxFiles({
               // and the API rejects content requests for symlinks/other types.
               const href =
                 entry.type === 'file'
-                  ? downloadHref('file', sandboxId, entryPath)
+                  ? downloadHref('file', source, entryPath)
                   : entry.type === 'dir'
-                    ? downloadHref('dir', sandboxId, entryPath)
+                    ? downloadHref('dir', source, entryPath)
                     : null
               return (
                 <Item
@@ -249,7 +247,7 @@ export function SandboxFiles({
                     </ItemDescription>
                   </ItemContent>
                   <ItemActions>
-                    {workspaceId && (entry.type === 'file' || entry.type === 'dir') && (
+                    {(entry.type === 'file' || entry.type === 'dir') && (
                       <Button
                         variant="ghost"
                         size="xs"

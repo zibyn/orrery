@@ -936,14 +936,15 @@ INSERT INTO resource_versions (
 ) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
 RETURNING *;
 
--- CreatePendingResourceVersion is the Workspace publish path: the version
--- starts pending and the Agent fills in the manifest (node-protocol.md
--- "Workspace publish").
+-- CreatePendingResourceVersion is the Workspace, Sandbox and Volume publish
+-- path: the version starts pending, and the Agent (or, for a Volume, the
+-- Control Plane) fills in the manifest (node-protocol.md "Sandbox publish").
+-- Exactly one of the publish_*_id columns is set.
 -- name: CreatePendingResourceVersion :one
 INSERT INTO resource_versions (
     id, resource_id, provenance, state, publish_workspace_id,
-    publish_idempotency_key
-) VALUES ($1, $2, $3, 'pending', $4, $5)
+    publish_sandbox_id, publish_volume_id, publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetResourceVersion :one
@@ -952,6 +953,14 @@ SELECT * FROM resource_versions WHERE id = $1;
 -- name: GetResourceVersionByPublishIdempotencyKey :one
 SELECT * FROM resource_versions
 WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2;
+
+-- name: GetResourceVersionBySandboxPublishIdempotencyKey :one
+SELECT * FROM resource_versions
+WHERE publish_sandbox_id = $1 AND publish_idempotency_key = $2;
+
+-- name: GetResourceVersionByVolumePublishIdempotencyKey :one
+SELECT * FROM resource_versions
+WHERE publish_volume_id = $1 AND publish_idempotency_key = $2;
 
 -- SetResourceVersionManifest records what SubmitManifest normalized. Only a
 -- pending version can accept a manifest: a terminal one must not be revived.
@@ -986,16 +995,37 @@ JOIN workspaces w ON w.id = rv.publish_workspace_id
 WHERE rv.state = 'pending' AND rv.publish_workspace_id IS NOT NULL
 ORDER BY rv.id;
 
--- GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
--- version must still be pending and its Workspace bound to the calling Node.
--- name: GetPendingWorkspacePublish :one
-SELECT rv.*, w.node_id, r.owner_id
+-- ListPendingSandboxPublishes is the same for Sandbox publishes, sent to the
+-- Node the Sandbox runs on.
+-- name: ListPendingSandboxPublishes :many
+SELECT rv.id, rv.provenance, rv.publish_sandbox_id, s.node_id
 FROM resource_versions rv
-JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN sandboxes s ON s.id = rv.publish_sandbox_id
+WHERE rv.state = 'pending' AND rv.publish_sandbox_id IS NOT NULL
+ORDER BY rv.id;
+
+-- ListPendingVolumePublishes is the Control Plane's own publish work: no Node
+-- is involved.
+-- name: ListPendingVolumePublishes :many
+SELECT rv.*, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.state = 'pending' AND rv.publish_volume_id IS NOT NULL
+ORDER BY rv.id
+LIMIT $1;
+
+-- GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
+-- version must still be pending and its Workspace bound to (or its Sandbox
+-- on) the calling Node.
+-- name: GetPendingWorkspacePublish :one
+SELECT rv.*, COALESCE(w.node_id, s.node_id) AS node_id, r.owner_id
+FROM resource_versions rv
+LEFT JOIN workspaces w ON w.id = rv.publish_workspace_id
+LEFT JOIN sandboxes s ON s.id = rv.publish_sandbox_id
 JOIN resources r ON r.id = rv.resource_id
 WHERE rv.id = $1
   AND rv.state = 'pending'
-  AND rv.publish_workspace_id IS NOT NULL;
+  AND (rv.publish_workspace_id IS NOT NULL OR rv.publish_sandbox_id IS NOT NULL);
 
 -- FindPublishObjectOwner answers the Presign PUT question: is sha256 one of
 -- the objects of a pending publish assigned to this Node, and which owner's
@@ -1005,10 +1035,10 @@ SELECT r.owner_id
 FROM resource_version_objects rvo
 JOIN resource_versions rv ON rv.id = rvo.version_id
 JOIN resources r ON r.id = rv.resource_id
-JOIN workspaces w ON w.id = rv.publish_workspace_id
+LEFT JOIN workspaces w ON w.id = rv.publish_workspace_id
+LEFT JOIN sandboxes s ON s.id = rv.publish_sandbox_id
 WHERE rv.state = 'pending'
-  AND rv.publish_workspace_id IS NOT NULL
-  AND w.node_id = $1
+  AND (w.node_id = $1 OR s.node_id = $1)
   AND rvo.sha256 = $2
 LIMIT 1;
 
@@ -1517,7 +1547,8 @@ WHERE state = 'building'
 UPDATE resource_versions
 SET state = 'failed', cause = 'node_lost'
 WHERE state = 'pending'
-  AND publish_workspace_id IN (SELECT id FROM workspaces WHERE node_id = $1);
+  AND (publish_workspace_id IN (SELECT w.id FROM workspaces w WHERE w.node_id = sqlc.arg('node_id')::uuid)
+       OR publish_sandbox_id IN (SELECT sb.id FROM sandboxes sb WHERE sb.node_id = sqlc.arg('node_id')::uuid));
 
 -- A Workspace declared lost on a live Node: its attached Sandboxes become
 -- failed/workspace_lost and their Execs end runtime_lost (ADR-0017). A row
@@ -1597,16 +1628,29 @@ SELECT * FROM generations WHERE id = $1;
 UPDATE sandboxes SET head_generation_id = sqlc.arg('head')::uuid, updated_at = now()
 WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM sqlc.narg('base')::uuid;
 
--- ListGarbageGenerations finds Generations no live Sandbox has as its head.
--- Heads only move forward, so such a row never becomes a head again.
--- shortcut: Volume heads and pending Volume publishes keep rows too (#277).
+-- ListGarbageGenerations finds Generations that are no live Sandbox's or
+-- Volume's head and that no pending Volume publish reads. Heads only move
+-- forward, so such a row never becomes a head again.
 -- name: ListGarbageGenerations :many
 SELECT g.* FROM generations g
 WHERE NOT EXISTS (
     SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id AND s.deleted_at IS NULL
 )
+  AND NOT EXISTS (
+    SELECT 1 FROM volumes v WHERE v.head_generation_id = g.id AND v.state <> 'deleted'
+)
+  AND NOT EXISTS (
+    SELECT 1 FROM resource_versions rv
+    WHERE rv.state = 'pending' AND rv.publish_volume_id IS NOT NULL
+      AND rv.provenance -> 'volume' ->> 'generation_id' = g.id::text
+)
 ORDER BY g.created_at
 LIMIT $1;
+
+-- A deleted Volume's head goes with it (ADR-0031).
+-- name: ClearDeletedVolumeHead :exec
+UPDATE volumes SET head_generation_id = NULL
+WHERE head_generation_id = $1 AND state = 'deleted';
 
 -- A deleted Sandbox's head goes with it (ADR-0031).
 -- name: ClearDeletedSandboxHead :exec
@@ -1616,7 +1660,8 @@ WHERE head_generation_id = $1 AND deleted_at IS NOT NULL;
 -- name: DeleteGarbageGeneration :exec
 DELETE FROM generations g
 WHERE g.id = $1
-  AND NOT EXISTS (SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id);
+  AND NOT EXISTS (SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id)
+  AND NOT EXISTS (SELECT 1 FROM volumes v WHERE v.head_generation_id = g.id);
 
 -- Presign authorization (node-protocol.md "Presign"). An open upload signs
 -- PUTs only while its Sandbox is on this Node under the same fence.
@@ -1644,3 +1689,69 @@ SELECT s.owner_id FROM sandboxes s
 JOIN generation_objects go ON go.generation_id = s.head_generation_id
 WHERE s.node_id = $1 AND s.state <> 'deleted' AND go.sha256 = $2
 LIMIT 1;
+
+-- Volumes (ADR-0031, api.md §3 "Volume").
+
+-- name: CreateVolume :one
+INSERT INTO volumes (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: GetVolume :one
+SELECT * FROM volumes WHERE id = $1;
+
+-- name: GetVolumeByIdempotencyKey :one
+SELECT * FROM volumes
+WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
+
+-- name: ListVolumes :many
+SELECT * FROM volumes
+WHERE owner_id = sqlc.arg('owner_id')
+  AND state <> 'deleted'
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- GetVolumeHolder is the Sandbox holding the Volume, if any.
+-- name: GetVolumeHolder :one
+SELECT sandbox_id FROM sandbox_volumes WHERE volume_id = $1 AND held;
+
+-- LockVolume serializes a delete against a create or start that takes the
+-- Volume (which lock it FOR SHARE).
+-- name: LockVolume :one
+SELECT * FROM volumes WHERE id = $1 FOR UPDATE;
+
+-- name: LockLiveVolumeShare :one
+SELECT * FROM volumes WHERE id = $1 AND state <> 'deleted' FOR SHARE;
+
+-- name: GetLiveVolumeByNameShare :one
+SELECT * FROM volumes WHERE owner_id = $1 AND name = $2 AND state <> 'deleted' FOR SHARE;
+
+-- MarkVolumeDeleted runs after LockVolume, so the hold check sees every
+-- committed create and start.
+-- name: MarkVolumeDeleted :execrows
+UPDATE volumes v
+SET state = 'deleted', deleted_at = now(), updated_at = now()
+WHERE v.id = $1 AND v.state = 'ready'
+  AND NOT EXISTS (SELECT 1 FROM sandbox_volumes sv WHERE sv.volume_id = v.id AND sv.held);
+
+-- name: PurgeVolumeIdempotencyKeys :exec
+UPDATE volumes SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
+-- name: CreateSandboxVolume :exec
+INSERT INTO sandbox_volumes (sandbox_id, volume_id, path, held)
+VALUES ($1, $2, $3, true);
+
+-- name: ListSandboxVolumes :many
+SELECT * FROM sandbox_volumes WHERE sandbox_id = $1 ORDER BY path;
+
+-- LockSandboxVolumes takes the Sandbox's Volumes FOR SHARE on start, so a
+-- concurrent delete waits; a deleted one refuses the start.
+-- name: LockSandboxVolumes :many
+SELECT v.* FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id
+WHERE sv.sandbox_id = $1
+ORDER BY v.id
+FOR SHARE OF v;
+

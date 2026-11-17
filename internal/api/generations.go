@@ -21,11 +21,14 @@ import (
 )
 
 // generationStore is the slice of the object store Generation commits and
-// their purge use; *objectstore.Store implements it.
+// their purge use, with the reads and manifest writes of Volume files and
+// publish; *objectstore.Store implements it.
 type generationStore interface {
 	HeadSHA256(ctx context.Context, ownerID, sha256hex string) (string, error)
 	GetGeneration(ctx context.Context, ownerID, id string) ([]byte, error)
 	DeleteGeneration(ctx context.Context, ownerID, id string) error
+	PresignGetURL(ctx context.Context, ownerID, sha256hex string) (string, error)
+	PutManifest(ctx context.Context, ownerID, address string, data []byte) error
 }
 
 // SubmitGeneration opens a Generation commit (node-protocol.md "Generation
@@ -328,6 +331,9 @@ func (s *Server) purgeGenerations(ctx context.Context) error {
 			func(ctx context.Context) error {
 				return s.purgeTx(ctx, func(q *store.Queries) error {
 					for _, g := range rows {
+						if err := q.ClearDeletedVolumeHead(ctx, &g.ID); err != nil {
+							return err
+						}
 						if err := q.ClearDeletedSandboxHead(ctx, &g.ID); err != nil {
 							return err
 						}

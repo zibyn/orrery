@@ -114,6 +114,7 @@ type Generation struct {
 	ManifestKey string
 	Size        int64
 	CreatedAt   pgtype.Timestamptz
+	VolumeID    *uuid.UUID
 }
 
 type GenerationObject struct {
@@ -209,6 +210,8 @@ type ResourceVersion struct {
 	CreatedAt             pgtype.Timestamptz
 	PublishWorkspaceID    *uuid.UUID
 	PublishIdempotencyKey *string
+	PublishSandboxID      *uuid.UUID
+	PublishVolumeID       *uuid.UUID
 }
 
 type ResourceVersionObject struct {
@@ -257,6 +260,13 @@ type SandboxResource struct {
 	SandboxID         uuid.UUID
 	ResourceVersionID uuid.UUID
 	Mount             string
+}
+
+type SandboxVolume struct {
+	SandboxID uuid.UUID
+	VolumeID  uuid.UUID
+	Path      string
+	Held      bool
 }
 
 type Secret struct {
@@ -322,6 +332,18 @@ type User struct {
 	DisabledAt        pgtype.Timestamptz
 	PolarisEventAt    pgtype.Timestamptz
 	PolarisDisabledAt pgtype.Timestamptz
+}
+
+type Volume struct {
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	Name             string
+	State            string
+	HeadGenerationID *uuid.UUID
+	IdempotencyKey   *string
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	DeletedAt        pgtype.Timestamptz
 }
 
 type Workspace struct {

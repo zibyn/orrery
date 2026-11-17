@@ -229,6 +229,17 @@ func (q *Queries) ClearDeletedSandboxHead(ctx context.Context, headGenerationID 
 	return err
 }
 
+const clearDeletedVolumeHead = `-- name: ClearDeletedVolumeHead :exec
+UPDATE volumes SET head_generation_id = NULL
+WHERE head_generation_id = $1 AND state = 'deleted'
+`
+
+// A deleted Volume's head goes with it (ADR-0031).
+func (q *Queries) ClearDeletedVolumeHead(ctx context.Context, headGenerationID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearDeletedVolumeHead, headGenerationID)
+	return err
+}
+
 const clearResourceCurrent = `-- name: ClearResourceCurrent :exec
 UPDATE resources SET current_version_id = NULL
 WHERE id = $1 AND deleted_at IS NOT NULL
@@ -899,9 +910,9 @@ func (q *Queries) CreateOIDCUser(ctx context.Context, arg CreateOIDCUserParams) 
 const createPendingResourceVersion = `-- name: CreatePendingResourceVersion :one
 INSERT INTO resource_versions (
     id, resource_id, provenance, state, publish_workspace_id,
-    publish_idempotency_key
-) VALUES ($1, $2, $3, 'pending', $4, $5)
-RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+    publish_sandbox_id, publish_volume_id, publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7)
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id
 `
 
 type CreatePendingResourceVersionParams struct {
@@ -909,18 +920,23 @@ type CreatePendingResourceVersionParams struct {
 	ResourceID            uuid.UUID
 	Provenance            json.RawMessage
 	PublishWorkspaceID    *uuid.UUID
+	PublishSandboxID      *uuid.UUID
+	PublishVolumeID       *uuid.UUID
 	PublishIdempotencyKey *string
 }
 
-// CreatePendingResourceVersion is the Workspace publish path: the version
-// starts pending and the Agent fills in the manifest (node-protocol.md
-// "Workspace publish").
+// CreatePendingResourceVersion is the Workspace, Sandbox and Volume publish
+// path: the version starts pending, and the Agent (or, for a Volume, the
+// Control Plane) fills in the manifest (node-protocol.md "Sandbox publish").
+// Exactly one of the publish_*_id columns is set.
 func (q *Queries) CreatePendingResourceVersion(ctx context.Context, arg CreatePendingResourceVersionParams) (ResourceVersion, error) {
 	row := q.db.QueryRow(ctx, createPendingResourceVersion,
 		arg.ID,
 		arg.ResourceID,
 		arg.Provenance,
 		arg.PublishWorkspaceID,
+		arg.PublishSandboxID,
+		arg.PublishVolumeID,
 		arg.PublishIdempotencyKey,
 	)
 	var i ResourceVersion
@@ -938,6 +954,8 @@ func (q *Queries) CreatePendingResourceVersion(ctx context.Context, arg CreatePe
 		&i.CreatedAt,
 		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
@@ -983,7 +1001,7 @@ INSERT INTO resource_versions (
     id, resource_id, address, manifest_key, size, provenance,
     state, idempotency_key
 ) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
-RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id
 `
 
 type CreateResourceVersionParams struct {
@@ -1022,6 +1040,8 @@ func (q *Queries) CreateResourceVersion(ctx context.Context, arg CreateResourceV
 		&i.CreatedAt,
 		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
@@ -1138,6 +1158,22 @@ type CreateSandboxResourceParams struct {
 // created with (runtime.md §11).
 func (q *Queries) CreateSandboxResource(ctx context.Context, arg CreateSandboxResourceParams) error {
 	_, err := q.db.Exec(ctx, createSandboxResource, arg.SandboxID, arg.ResourceVersionID, arg.Mount)
+	return err
+}
+
+const createSandboxVolume = `-- name: CreateSandboxVolume :exec
+INSERT INTO sandbox_volumes (sandbox_id, volume_id, path, held)
+VALUES ($1, $2, $3, true)
+`
+
+type CreateSandboxVolumeParams struct {
+	SandboxID uuid.UUID
+	VolumeID  uuid.UUID
+	Path      string
+}
+
+func (q *Queries) CreateSandboxVolume(ctx context.Context, arg CreateSandboxVolumeParams) error {
+	_, err := q.db.Exec(ctx, createSandboxVolume, arg.SandboxID, arg.VolumeID, arg.Path)
 	return err
 }
 
@@ -1322,6 +1358,43 @@ func (q *Queries) CreateUpload(ctx context.Context, arg CreateUploadParams) (Upl
 	return i, err
 }
 
+const createVolume = `-- name: CreateVolume :one
+
+INSERT INTO volumes (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at
+`
+
+type CreateVolumeParams struct {
+	ID             uuid.UUID
+	OwnerID        uuid.UUID
+	Name           string
+	IdempotencyKey *string
+}
+
+// Volumes (ADR-0031, api.md §3 "Volume").
+func (q *Queries) CreateVolume(ctx context.Context, arg CreateVolumeParams) (Volume, error) {
+	row := q.db.QueryRow(ctx, createVolume,
+		arg.ID,
+		arg.OwnerID,
+		arg.Name,
+		arg.IdempotencyKey,
+	)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const createWorkspace = `-- name: CreateWorkspace :one
 
 INSERT INTO workspaces (id, owner_id, kind, sandbox_id, state, storage_handle, generation, idempotency_key)
@@ -1478,6 +1551,7 @@ const deleteGarbageGeneration = `-- name: DeleteGarbageGeneration :exec
 DELETE FROM generations g
 WHERE g.id = $1
   AND NOT EXISTS (SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id)
+  AND NOT EXISTS (SELECT 1 FROM volumes v WHERE v.head_generation_id = g.id)
 `
 
 func (q *Queries) DeleteGarbageGeneration(ctx context.Context, id uuid.UUID) error {
@@ -1808,10 +1882,11 @@ const failPublishesOnNodeLost = `-- name: FailPublishesOnNodeLost :execrows
 UPDATE resource_versions
 SET state = 'failed', cause = 'node_lost'
 WHERE state = 'pending'
-  AND publish_workspace_id IN (SELECT id FROM workspaces WHERE node_id = $1)
+  AND (publish_workspace_id IN (SELECT w.id FROM workspaces w WHERE w.node_id = $1::uuid)
+       OR publish_sandbox_id IN (SELECT sb.id FROM sandboxes sb WHERE sb.node_id = $1::uuid))
 `
 
-func (q *Queries) FailPublishesOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+func (q *Queries) FailPublishesOnNodeLost(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, failPublishesOnNodeLost, nodeID)
 	if err != nil {
 		return 0, err
@@ -1918,10 +1993,10 @@ SELECT r.owner_id
 FROM resource_version_objects rvo
 JOIN resource_versions rv ON rv.id = rvo.version_id
 JOIN resources r ON r.id = rv.resource_id
-JOIN workspaces w ON w.id = rv.publish_workspace_id
+LEFT JOIN workspaces w ON w.id = rv.publish_workspace_id
+LEFT JOIN sandboxes s ON s.id = rv.publish_sandbox_id
 WHERE rv.state = 'pending'
-  AND rv.publish_workspace_id IS NOT NULL
-  AND w.node_id = $1
+  AND (w.node_id = $1 OR s.node_id = $1)
   AND rvo.sha256 = $2
 LIMIT 1
 `
@@ -2175,7 +2250,7 @@ func (q *Queries) GetExecWithNode(ctx context.Context, id uuid.UUID) (GetExecWit
 }
 
 const getGeneration = `-- name: GetGeneration :one
-SELECT id, owner_id, sandbox_id, seq, kind, manifest_key, size, created_at FROM generations WHERE id = $1
+SELECT id, owner_id, sandbox_id, seq, kind, manifest_key, size, created_at, volume_id FROM generations WHERE id = $1
 `
 
 func (q *Queries) GetGeneration(ctx context.Context, id uuid.UUID) (Generation, error) {
@@ -2190,6 +2265,7 @@ func (q *Queries) GetGeneration(ctx context.Context, id uuid.UUID) (Generation, 
 		&i.ManifestKey,
 		&i.Size,
 		&i.CreatedAt,
+		&i.VolumeID,
 	)
 	return i, err
 }
@@ -2292,6 +2368,32 @@ func (q *Queries) GetLiveResourceByName(ctx context.Context, arg GetLiveResource
 	return i, err
 }
 
+const getLiveVolumeByNameShare = `-- name: GetLiveVolumeByNameShare :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE owner_id = $1 AND name = $2 AND state <> 'deleted' FOR SHARE
+`
+
+type GetLiveVolumeByNameShareParams struct {
+	OwnerID uuid.UUID
+	Name    string
+}
+
+func (q *Queries) GetLiveVolumeByNameShare(ctx context.Context, arg GetLiveVolumeByNameShareParams) (Volume, error) {
+	row := q.db.QueryRow(ctx, getLiveVolumeByNameShare, arg.OwnerID, arg.Name)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const getNode = `-- name: GetNode :one
 SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet FROM nodes WHERE id = $1 AND deleted_at IS NULL
 `
@@ -2359,13 +2461,14 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 }
 
 const getPendingWorkspacePublish = `-- name: GetPendingWorkspacePublish :one
-SELECT rv.id, rv.resource_id, rv.address, rv.manifest_key, rv.size, rv.provenance, rv.state, rv.cause, rv.idempotency_key, rv.expires_at, rv.created_at, rv.publish_workspace_id, rv.publish_idempotency_key, w.node_id, r.owner_id
+SELECT rv.id, rv.resource_id, rv.address, rv.manifest_key, rv.size, rv.provenance, rv.state, rv.cause, rv.idempotency_key, rv.expires_at, rv.created_at, rv.publish_workspace_id, rv.publish_idempotency_key, rv.publish_sandbox_id, rv.publish_volume_id, COALESCE(w.node_id, s.node_id) AS node_id, r.owner_id
 FROM resource_versions rv
-JOIN workspaces w ON w.id = rv.publish_workspace_id
+LEFT JOIN workspaces w ON w.id = rv.publish_workspace_id
+LEFT JOIN sandboxes s ON s.id = rv.publish_sandbox_id
 JOIN resources r ON r.id = rv.resource_id
 WHERE rv.id = $1
   AND rv.state = 'pending'
-  AND rv.publish_workspace_id IS NOT NULL
+  AND (rv.publish_workspace_id IS NOT NULL OR rv.publish_sandbox_id IS NOT NULL)
 `
 
 type GetPendingWorkspacePublishRow struct {
@@ -2382,12 +2485,15 @@ type GetPendingWorkspacePublishRow struct {
 	CreatedAt             pgtype.Timestamptz
 	PublishWorkspaceID    *uuid.UUID
 	PublishIdempotencyKey *string
+	PublishSandboxID      *uuid.UUID
+	PublishVolumeID       *uuid.UUID
 	NodeID                *uuid.UUID
 	OwnerID               uuid.UUID
 }
 
 // GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
-// version must still be pending and its Workspace bound to the calling Node.
+// version must still be pending and its Workspace bound to (or its Sandbox
+// on) the calling Node.
 func (q *Queries) GetPendingWorkspacePublish(ctx context.Context, id uuid.UUID) (GetPendingWorkspacePublishRow, error) {
 	row := q.db.QueryRow(ctx, getPendingWorkspacePublish, id)
 	var i GetPendingWorkspacePublishRow
@@ -2405,6 +2511,8 @@ func (q *Queries) GetPendingWorkspacePublish(ctx context.Context, id uuid.UUID) 
 		&i.CreatedAt,
 		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 		&i.NodeID,
 		&i.OwnerID,
 	)
@@ -2478,7 +2586,7 @@ func (q *Queries) GetResourceByIdempotencyKey(ctx context.Context, arg GetResour
 }
 
 const getResourceVersion = `-- name: GetResourceVersion :one
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE id = $1
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions WHERE id = $1
 `
 
 func (q *Queries) GetResourceVersion(ctx context.Context, id uuid.UUID) (ResourceVersion, error) {
@@ -2498,12 +2606,14 @@ func (q *Queries) GetResourceVersion(ctx context.Context, id uuid.UUID) (Resourc
 		&i.CreatedAt,
 		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
 
 const getResourceVersionByIdempotencyKey = `-- name: GetResourceVersionByIdempotencyKey :one
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2
 `
 
 type GetResourceVersionByIdempotencyKeyParams struct {
@@ -2528,12 +2638,14 @@ func (q *Queries) GetResourceVersionByIdempotencyKey(ctx context.Context, arg Ge
 		&i.CreatedAt,
 		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
 
 const getResourceVersionByPublishIdempotencyKey = `-- name: GetResourceVersionByPublishIdempotencyKey :one
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions
 WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2
 `
 
@@ -2559,6 +2671,74 @@ func (q *Queries) GetResourceVersionByPublishIdempotencyKey(ctx context.Context,
 		&i.CreatedAt,
 		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
+	)
+	return i, err
+}
+
+const getResourceVersionBySandboxPublishIdempotencyKey = `-- name: GetResourceVersionBySandboxPublishIdempotencyKey :one
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions
+WHERE publish_sandbox_id = $1 AND publish_idempotency_key = $2
+`
+
+type GetResourceVersionBySandboxPublishIdempotencyKeyParams struct {
+	PublishSandboxID      *uuid.UUID
+	PublishIdempotencyKey *string
+}
+
+func (q *Queries) GetResourceVersionBySandboxPublishIdempotencyKey(ctx context.Context, arg GetResourceVersionBySandboxPublishIdempotencyKeyParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, getResourceVersionBySandboxPublishIdempotencyKey, arg.PublishSandboxID, arg.PublishIdempotencyKey)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
+	)
+	return i, err
+}
+
+const getResourceVersionByVolumePublishIdempotencyKey = `-- name: GetResourceVersionByVolumePublishIdempotencyKey :one
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions
+WHERE publish_volume_id = $1 AND publish_idempotency_key = $2
+`
+
+type GetResourceVersionByVolumePublishIdempotencyKeyParams struct {
+	PublishVolumeID       *uuid.UUID
+	PublishIdempotencyKey *string
+}
+
+func (q *Queries) GetResourceVersionByVolumePublishIdempotencyKey(ctx context.Context, arg GetResourceVersionByVolumePublishIdempotencyKeyParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, getResourceVersionByVolumePublishIdempotencyKey, arg.PublishVolumeID, arg.PublishIdempotencyKey)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishWorkspaceID,
+		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
@@ -3141,6 +3321,66 @@ func (q *Queries) GetUserByOIDCIdentity(ctx context.Context, arg GetUserByOIDCId
 		&i.PolarisDisabledAt,
 	)
 	return i, err
+}
+
+const getVolume = `-- name: GetVolume :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1
+`
+
+func (q *Queries) GetVolume(ctx context.Context, id uuid.UUID) (Volume, error) {
+	row := q.db.QueryRow(ctx, getVolume, id)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getVolumeByIdempotencyKey = `-- name: GetVolumeByIdempotencyKey :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes
+WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted'
+`
+
+type GetVolumeByIdempotencyKeyParams struct {
+	OwnerID        uuid.UUID
+	IdempotencyKey *string
+}
+
+func (q *Queries) GetVolumeByIdempotencyKey(ctx context.Context, arg GetVolumeByIdempotencyKeyParams) (Volume, error) {
+	row := q.db.QueryRow(ctx, getVolumeByIdempotencyKey, arg.OwnerID, arg.IdempotencyKey)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getVolumeHolder = `-- name: GetVolumeHolder :one
+SELECT sandbox_id FROM sandbox_volumes WHERE volume_id = $1 AND held
+`
+
+// GetVolumeHolder is the Sandbox holding the Volume, if any.
+func (q *Queries) GetVolumeHolder(ctx context.Context, volumeID uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getVolumeHolder, volumeID)
+	var sandbox_id uuid.UUID
+	err := row.Scan(&sandbox_id)
+	return sandbox_id, err
 }
 
 const getWorkspace = `-- name: GetWorkspace :one
@@ -3965,17 +4205,25 @@ func (q *Queries) ListExpiredResourceVersions(ctx context.Context, arg ListExpir
 }
 
 const listGarbageGenerations = `-- name: ListGarbageGenerations :many
-SELECT g.id, g.owner_id, g.sandbox_id, g.seq, g.kind, g.manifest_key, g.size, g.created_at FROM generations g
+SELECT g.id, g.owner_id, g.sandbox_id, g.seq, g.kind, g.manifest_key, g.size, g.created_at, g.volume_id FROM generations g
 WHERE NOT EXISTS (
     SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id AND s.deleted_at IS NULL
+)
+  AND NOT EXISTS (
+    SELECT 1 FROM volumes v WHERE v.head_generation_id = g.id AND v.state <> 'deleted'
+)
+  AND NOT EXISTS (
+    SELECT 1 FROM resource_versions rv
+    WHERE rv.state = 'pending' AND rv.publish_volume_id IS NOT NULL
+      AND rv.provenance -> 'volume' ->> 'generation_id' = g.id::text
 )
 ORDER BY g.created_at
 LIMIT $1
 `
 
-// ListGarbageGenerations finds Generations no live Sandbox has as its head.
-// Heads only move forward, so such a row never becomes a head again.
-// shortcut: Volume heads and pending Volume publishes keep rows too (#277).
+// ListGarbageGenerations finds Generations that are no live Sandbox's or
+// Volume's head and that no pending Volume publish reads. Heads only move
+// forward, so such a row never becomes a head again.
 func (q *Queries) ListGarbageGenerations(ctx context.Context, limit int32) ([]Generation, error) {
 	rows, err := q.db.Query(ctx, listGarbageGenerations, limit)
 	if err != nil {
@@ -3994,6 +4242,7 @@ func (q *Queries) ListGarbageGenerations(ctx context.Context, limit int32) ([]Ge
 			&i.ManifestKey,
 			&i.Size,
 			&i.CreatedAt,
+			&i.VolumeID,
 		); err != nil {
 			return nil, err
 		}
@@ -4453,6 +4702,115 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 	return items, nil
 }
 
+const listPendingSandboxPublishes = `-- name: ListPendingSandboxPublishes :many
+SELECT rv.id, rv.provenance, rv.publish_sandbox_id, s.node_id
+FROM resource_versions rv
+JOIN sandboxes s ON s.id = rv.publish_sandbox_id
+WHERE rv.state = 'pending' AND rv.publish_sandbox_id IS NOT NULL
+ORDER BY rv.id
+`
+
+type ListPendingSandboxPublishesRow struct {
+	ID               uuid.UUID
+	Provenance       json.RawMessage
+	PublishSandboxID *uuid.UUID
+	NodeID           *uuid.UUID
+}
+
+// ListPendingSandboxPublishes is the same for Sandbox publishes, sent to the
+// Node the Sandbox runs on.
+func (q *Queries) ListPendingSandboxPublishes(ctx context.Context) ([]ListPendingSandboxPublishesRow, error) {
+	rows, err := q.db.Query(ctx, listPendingSandboxPublishes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPendingSandboxPublishesRow{}
+	for rows.Next() {
+		var i ListPendingSandboxPublishesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Provenance,
+			&i.PublishSandboxID,
+			&i.NodeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingVolumePublishes = `-- name: ListPendingVolumePublishes :many
+SELECT rv.id, rv.resource_id, rv.address, rv.manifest_key, rv.size, rv.provenance, rv.state, rv.cause, rv.idempotency_key, rv.expires_at, rv.created_at, rv.publish_workspace_id, rv.publish_idempotency_key, rv.publish_sandbox_id, rv.publish_volume_id, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.state = 'pending' AND rv.publish_volume_id IS NOT NULL
+ORDER BY rv.id
+LIMIT $1
+`
+
+type ListPendingVolumePublishesRow struct {
+	ID                    uuid.UUID
+	ResourceID            uuid.UUID
+	Address               *string
+	ManifestKey           *string
+	Size                  int64
+	Provenance            json.RawMessage
+	State                 string
+	Cause                 *string
+	IdempotencyKey        *string
+	ExpiresAt             pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	PublishWorkspaceID    *uuid.UUID
+	PublishIdempotencyKey *string
+	PublishSandboxID      *uuid.UUID
+	PublishVolumeID       *uuid.UUID
+	OwnerID               uuid.UUID
+}
+
+// ListPendingVolumePublishes is the Control Plane's own publish work: no Node
+// is involved.
+func (q *Queries) ListPendingVolumePublishes(ctx context.Context, limit int32) ([]ListPendingVolumePublishesRow, error) {
+	rows, err := q.db.Query(ctx, listPendingVolumePublishes, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPendingVolumePublishesRow{}
+	for rows.Next() {
+		var i ListPendingVolumePublishesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ResourceID,
+			&i.Address,
+			&i.ManifestKey,
+			&i.Size,
+			&i.Provenance,
+			&i.State,
+			&i.Cause,
+			&i.IdempotencyKey,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.PublishWorkspaceID,
+			&i.PublishIdempotencyKey,
+			&i.PublishSandboxID,
+			&i.PublishVolumeID,
+			&i.OwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingWorkspacePublishes = `-- name: ListPendingWorkspacePublishes :many
 SELECT rv.id, rv.resource_id, rv.provenance, rv.publish_workspace_id, w.node_id
 FROM resource_versions rv
@@ -4631,7 +4989,7 @@ func (q *Queries) ListResourceVersionObjects(ctx context.Context, versionID uuid
 }
 
 const listResourceVersions = `-- name: ListResourceVersions :many
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions
 WHERE resource_id = $1
   AND ($2::uuid IS NULL OR id < $2)
 ORDER BY id DESC
@@ -4667,6 +5025,8 @@ func (q *Queries) ListResourceVersions(ctx context.Context, arg ListResourceVers
 			&i.CreatedAt,
 			&i.PublishWorkspaceID,
 			&i.PublishIdempotencyKey,
+			&i.PublishSandboxID,
+			&i.PublishVolumeID,
 		); err != nil {
 			return nil, err
 		}
@@ -4873,6 +5233,35 @@ func (q *Queries) ListSandboxResourceMounts(ctx context.Context, sandboxID uuid.
 	for rows.Next() {
 		var i ListSandboxResourceMountsRow
 		if err := rows.Scan(&i.Mount, &i.Address); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSandboxVolumes = `-- name: ListSandboxVolumes :many
+SELECT sandbox_id, volume_id, path, held FROM sandbox_volumes WHERE sandbox_id = $1 ORDER BY path
+`
+
+func (q *Queries) ListSandboxVolumes(ctx context.Context, sandboxID uuid.UUID) ([]SandboxVolume, error) {
+	rows, err := q.db.Query(ctx, listSandboxVolumes, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SandboxVolume{}
+	for rows.Next() {
+		var i SandboxVolume
+		if err := rows.Scan(
+			&i.SandboxID,
+			&i.VolumeID,
+			&i.Path,
+			&i.Held,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -5358,6 +5747,51 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 	return items, nil
 }
 
+const listVolumes = `-- name: ListVolumes :many
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes
+WHERE owner_id = $1
+  AND state <> 'deleted'
+  AND ($2::uuid IS NULL OR id > $2)
+ORDER BY id
+LIMIT $3
+`
+
+type ListVolumesParams struct {
+	OwnerID uuid.UUID
+	After   *uuid.UUID
+	Limit   int32
+}
+
+func (q *Queries) ListVolumes(ctx context.Context, arg ListVolumesParams) ([]Volume, error) {
+	rows, err := q.db.Query(ctx, listVolumes, arg.OwnerID, arg.After, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Volume{}
+	for rows.Next() {
+		var i Volume
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.State,
+			&i.HeadGenerationID,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaces = `-- name: ListWorkspaces :many
 SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces
 WHERE owner_id = $1
@@ -5469,6 +5903,27 @@ func (q *Queries) LockGenerationSandbox(ctx context.Context, id uuid.UUID) (Sand
 	return i, err
 }
 
+const lockLiveVolumeShare = `-- name: LockLiveVolumeShare :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1 AND state <> 'deleted' FOR SHARE
+`
+
+func (q *Queries) LockLiveVolumeShare(ctx context.Context, id uuid.UUID) (Volume, error) {
+	row := q.db.QueryRow(ctx, lockLiveVolumeShare, id)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const lockResource = `-- name: LockResource :one
 SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `
@@ -5487,6 +5942,46 @@ func (q *Queries) LockResource(ctx context.Context, id uuid.UUID) (Resource, err
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const lockSandboxVolumes = `-- name: LockSandboxVolumes :many
+SELECT v.id, v.owner_id, v.name, v.state, v.head_generation_id, v.idempotency_key, v.created_at, v.updated_at, v.deleted_at FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id
+WHERE sv.sandbox_id = $1
+ORDER BY v.id
+FOR SHARE OF v
+`
+
+// LockSandboxVolumes takes the Sandbox's Volumes FOR SHARE on start, so a
+// concurrent delete waits; a deleted one refuses the start.
+func (q *Queries) LockSandboxVolumes(ctx context.Context, sandboxID uuid.UUID) ([]Volume, error) {
+	rows, err := q.db.Query(ctx, lockSandboxVolumes, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Volume{}
+	for rows.Next() {
+		var i Volume
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.State,
+			&i.HeadGenerationID,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockSnapshot = `-- name: LockSnapshot :one
@@ -5536,6 +6031,29 @@ func (q *Queries) LockUser(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.DisabledAt,
 		&i.PolarisEventAt,
 		&i.PolarisDisabledAt,
+	)
+	return i, err
+}
+
+const lockVolume = `-- name: LockVolume :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1 FOR UPDATE
+`
+
+// LockVolume serializes a delete against a create or start that takes the
+// Volume (which lock it FOR SHARE).
+func (q *Queries) LockVolume(ctx context.Context, id uuid.UUID) (Volume, error) {
+	row := q.db.QueryRow(ctx, lockVolume, id)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -5817,6 +6335,23 @@ func (q *Queries) MarkSnapshotVersionReady(ctx context.Context, arg MarkSnapshot
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const markVolumeDeleted = `-- name: MarkVolumeDeleted :execrows
+UPDATE volumes v
+SET state = 'deleted', deleted_at = now(), updated_at = now()
+WHERE v.id = $1 AND v.state = 'ready'
+  AND NOT EXISTS (SELECT 1 FROM sandbox_volumes sv WHERE sv.volume_id = v.id AND sv.held)
+`
+
+// MarkVolumeDeleted runs after LockVolume, so the hold check sees every
+// committed create and start.
+func (q *Queries) MarkVolumeDeleted(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markVolumeDeleted, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markWorkspaceAbandoned = `-- name: MarkWorkspaceAbandoned :execrows
@@ -6219,6 +6754,16 @@ func (q *Queries) PurgeUserIdempotencyKeys(ctx context.Context) error {
 	return err
 }
 
+const purgeVolumeIdempotencyKeys = `-- name: PurgeVolumeIdempotencyKeys :exec
+UPDATE volumes SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
+`
+
+func (q *Queries) PurgeVolumeIdempotencyKeys(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeVolumeIdempotencyKeys)
+	return err
+}
+
 const purgeWorkspaceIdempotencyKeys = `-- name: PurgeWorkspaceIdempotencyKeys :exec
 UPDATE workspaces SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
@@ -6408,7 +6953,7 @@ const setResourceVersionManifest = `-- name: SetResourceVersionManifest :one
 UPDATE resource_versions
 SET address = $2, manifest_key = $3, size = $4
 WHERE id = $1 AND state = 'pending'
-RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key, publish_sandbox_id, publish_volume_id
 `
 
 type SetResourceVersionManifestParams struct {
@@ -6442,6 +6987,8 @@ func (q *Queries) SetResourceVersionManifest(ctx context.Context, arg SetResourc
 		&i.CreatedAt,
 		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }

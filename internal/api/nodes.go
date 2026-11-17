@@ -361,7 +361,7 @@ func declareNodeLost(ctx context.Context, q *store.Queries, id uuid.UUID) error 
 		{"finish Workspace deletions", func() (int64, error) { return q.MarkDeletingWorkspacesDeletedOnNodeLost(ctx, &id) }},
 		{"mark Workspaces lost", func() (int64, error) { return q.MarkWorkspacesLostOnNodeLost(ctx, &id) }},
 		{"fail builds", func() (int64, error) { return q.FailBuildsOnNodeLost(ctx, &id) }},
-		{"fail publishes", func() (int64, error) { return q.FailPublishesOnNodeLost(ctx, &id) }},
+		{"fail publishes", func() (int64, error) { return q.FailPublishesOnNodeLost(ctx, id) }},
 	}
 	for _, step := range steps {
 		if _, err := step.run(); err != nil {

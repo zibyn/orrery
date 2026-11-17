@@ -246,6 +246,32 @@ type WorkspaceList struct {
 	NextCursor *string     `json:"next_cursor"`
 }
 
+// Volume is a named, writable directory in object storage, held by at most
+// one Sandbox at a time.
+type Volume struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	State       string     `json:"state"`
+	HeldBy      *string    `json:"held_by"`
+	CommittedAt *time.Time `json:"committed_at"`
+	Size        int64      `json:"size"`
+	CreatedAt   time.Time  `json:"created_at"`
+	DeletedAt   *time.Time `json:"deleted_at"`
+}
+
+// VolumeList is one page of Volumes.
+type VolumeList struct {
+	Items      []Volume `json:"items"`
+	NextCursor *string  `json:"next_cursor"`
+}
+
+// SandboxVolume mounts a Volume (id, or name in a request) at an absolute
+// Path in a Sandbox.
+type SandboxVolume struct {
+	Volume string `json:"volume"`
+	Path   string `json:"path"`
+}
+
 // Snapshot is a named image with versions.
 type Snapshot struct {
 	ID               string     `json:"id"`
@@ -342,6 +368,7 @@ type CreateSandboxRequest struct {
 	Labels    map[string]string `json:"labels,omitempty"`
 	Runtime   *string           `json:"runtime,omitempty"`
 	Workspace *SandboxWorkspace `json:"workspace,omitempty"`
+	Volumes   []SandboxVolume   `json:"volumes,omitempty"`
 	Snapshot  *string           `json:"snapshot,omitempty"`
 	Resources []SandboxResource `json:"resources,omitempty"`
 	Secrets   map[string]string `json:"secrets,omitempty"`
@@ -371,6 +398,7 @@ type Sandbox struct {
 	GPU           *SandboxGPU       `json:"gpu,omitempty"`
 	IdleStop      int32             `json:"idle_stop"`
 	Workspace     *SandboxWorkspace `json:"workspace,omitempty"`
+	Volumes       []SandboxVolume   `json:"volumes"`
 	Conditions    []string          `json:"conditions"`
 	QueuePosition *int64            `json:"queue_position,omitempty"`
 	BlockedReason *string           `json:"blocked_reason,omitempty"`

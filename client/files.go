@@ -46,6 +46,22 @@ func (c *Client) WriteArchive(ctx context.Context, sandboxID, path string, src i
 	return err
 }
 
+// ReadVolumeFile streams a file of the Volume's last commit.
+func (c *Client) ReadVolumeFile(ctx context.Context, volumeID, path string, dst io.Writer) error {
+	_, err := c.stream(ctx, http.MethodGet, c.volumeFileURL(volumeID, "/content", path), nil, nil, "", dst)
+	return err
+}
+
+// ReadVolumeArchive downloads a tar of path in the Volume's last commit.
+func (c *Client) ReadVolumeArchive(ctx context.Context, volumeID, path string, dst io.Writer) error {
+	_, err := c.stream(ctx, http.MethodGet, c.volumeFileURL(volumeID, "/archive", path), nil, nil, "", dst)
+	return err
+}
+
+func (c *Client) volumeFileURL(volumeID, suffix, path string) string {
+	return c.baseURL + "/api/v1/volumes/" + url.PathEscape(volumeID) + "/files" + suffix + "?" + url.Values{"path": {path}}.Encode()
+}
+
 func (c *Client) fileURL(sandboxID, suffix, path string) string {
 	q := url.Values{}
 	if path != "" {

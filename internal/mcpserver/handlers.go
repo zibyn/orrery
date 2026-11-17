@@ -31,6 +31,7 @@ type sandboxCreateInput struct {
 	Labels    map[string]string        `json:"labels"`
 	Runtime   *string                  `json:"runtime"`
 	Workspace *client.SandboxWorkspace `json:"workspace"`
+	Volumes   []client.SandboxVolume   `json:"volumes"`
 	Snapshot  *string                  `json:"snapshot"`
 	Resources []client.SandboxResource `json:"resources"`
 	Secrets   map[string]string        `json:"secrets"`
@@ -58,6 +59,7 @@ func (s *server) sandboxCreate(ctx context.Context, _ *sdk.CallToolRequest, in s
 		Labels:    in.Labels,
 		Runtime:   in.Runtime,
 		Workspace: in.Workspace,
+		Volumes:   in.Volumes,
 		Snapshot:  in.Snapshot,
 		Resources: in.Resources,
 		Secrets:   in.Secrets,

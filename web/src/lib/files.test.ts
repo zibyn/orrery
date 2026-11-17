@@ -12,7 +12,7 @@ import {
 } from './files'
 
 describe('normalizePath', () => {
-  it('treats empty and "." as the Workspace root', () => {
+  it('treats empty and "." as the root', () => {
     expect(normalizePath('')).toBe('')
     expect(normalizePath('.')).toBe('')
     expect(normalizePath('./')).toBe('')
@@ -61,25 +61,32 @@ describe('formatBytes', () => {
 
 describe('API paths', () => {
   it('builds a directory listing path with an encoded query', () => {
-    expect(filesPath('abc', '')).toBe('/sandboxes/abc/files?path=')
-    expect(filesPath('abc', './dir with space')).toBe(
+    expect(filesPath('/sandboxes/abc', '')).toBe('/sandboxes/abc/files?path=')
+    expect(filesPath('/sandboxes/abc', './dir with space')).toBe(
       '/sandboxes/abc/files?path=dir%20with%20space',
     )
   })
 
   it('builds content and archive paths', () => {
-    expect(fileContentPath('abc', 'a/b.txt')).toBe(
+    expect(fileContentPath('/sandboxes/abc', 'a/b.txt')).toBe(
       '/sandboxes/abc/files/content?path=a%2Fb.txt',
     )
-    expect(archivePath('abc', 'docs')).toBe('/sandboxes/abc/files/archive?path=docs')
+    expect(archivePath('/sandboxes/abc', 'docs')).toBe('/sandboxes/abc/files/archive?path=docs')
   })
 
   it('prefixes same-origin download links with /api/v1', () => {
-    expect(downloadHref('file', 'abc', 'dir/a b.txt')).toBe(
+    expect(downloadHref('file', '/sandboxes/abc', 'dir/a b.txt')).toBe(
       '/api/v1/sandboxes/abc/files/content?path=dir%2Fa%20b.txt',
     )
-    expect(downloadHref('dir', 'abc', 'dir')).toBe(
+    expect(downloadHref('dir', '/sandboxes/abc', 'dir')).toBe(
       '/api/v1/sandboxes/abc/files/archive?path=dir',
+    )
+  })
+
+  it('reads a Volume through the same paths under /volumes/{id}', () => {
+    expect(filesPath('/volumes/v1', 'data')).toBe('/volumes/v1/files?path=data')
+    expect(downloadHref('file', '/volumes/v1', 'a.txt')).toBe(
+      '/api/v1/volumes/v1/files/content?path=a.txt',
     )
   })
 })
