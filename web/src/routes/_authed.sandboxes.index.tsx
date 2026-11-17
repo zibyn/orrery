@@ -21,7 +21,6 @@ import {
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
-import { workspaceModeLabel } from '@/lib/labels'
 import { sandboxListPollInterval } from '@/lib/sandbox'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
@@ -132,8 +131,8 @@ function SandboxesPage() {
                   <ItemDescription>
                     {sandbox.cpu} CPU · {(sandbox.memory / 1024 / 1024).toFixed(0)} MiB
                     {sandbox.gpu ? ` · ${sandbox.gpu.count} GPU` : ''}
-                    {sandbox.workspace
-                      ? ` · ${m.sandboxes_meta_workspace({ mode: workspaceModeLabel(sandbox.workspace.mode) })}`
+                    {sandbox.volumes?.length
+                      ? ` · ${m.sandboxes_meta_volumes({ count: sandbox.volumes.length })}`
                       : ''}
                   </ItemDescription>
                 </ItemContent>

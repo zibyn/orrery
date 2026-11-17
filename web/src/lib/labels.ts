@@ -75,6 +75,16 @@ const PROBLEM_TITLES: Record<string, () => string> = {
   unavailable: m.problem_unavailable,
 }
 
+// Sandbox.conditions (api.md §3).
+const CONDITION_LABELS: Record<string, () => string> = {
+  changes_lost: m.condition_changes_lost,
+  commit_stalled: m.condition_commit_stalled,
+}
+
+export function conditionLabel(condition: string): string {
+  return CONDITION_LABELS[condition]?.() ?? condition
+}
+
 export function stateLabel(state: string): string {
   return STATE_LABELS[state]?.() ?? state
 }
@@ -99,12 +109,6 @@ export function scopeLabel(scope: string): string {
   if (scope === 'user') return m.scope_user()
   if (scope === 'admin') return m.scope_admin()
   return scope
-}
-
-export function workspaceModeLabel(mode: string): string {
-  if (mode === 'rw') return m.workspace_mode_rw()
-  if (mode === 'ro') return m.workspace_mode_ro()
-  return mode
 }
 
 export function workspaceKindLabel(kind: string): string {
