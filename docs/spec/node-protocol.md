@@ -73,8 +73,8 @@ URL 有效期见 `defaults.md`。Node 读写对象存储只走这条路（ADR-00
 
 ADR-0031。Sandbox 的文件系统和卷都按 Generation 提交，流程相同：
 
-1. Agent 扫描出变化的条目（`runtime.md` §16、§17），经 `SubmitGeneration` 分批上送；首批带 `{sandbox_id | volume_id, generation, base_generation_id?}`，`generation` 是持有者 Sandbox 的 fencing token，`base_generation_id` 是 Agent 据以做增量的 head。Control Plane 在 `GenerationAck{missing sha256[]}` 里返回缺失的对象；`generation` 已过期、Sandbox 不在本 Node 或不持有该卷时返回 `FAILED_PRECONDITION`。
-2. Agent 用 `Presign` 取 PUT，上传缺失的对象和完整 manifest（增量条目合入 base 之后的结果，格式同 Resource manifest，另带 mode、属主、mtime、xattr、硬链接、whiteout 和 opaque 目录），然后调 `CommitGeneration{upload_id}`。
+1. Agent 扫描出变化的条目（`runtime.md` §16、§17），经 `SubmitGeneration` 分批上送；首批带 `{sandbox_id | volume_id, generation, base_generation_id?}`，`generation` 是持有者 Sandbox 的 fencing token，`base_generation_id` 是 Agent 据以做增量的 head。Control Plane 开一个提交会话，在 `GenerationAck{upload_id, missing sha256[]}` 里返回会话 id（也是提交后 Generation 的 id）和缺失的对象；`generation` 已过期、Sandbox 不在本 Node 或不持有该卷时返回 `FAILED_PRECONDITION`。
+2. Agent 用 `Presign` 取 PUT，上传缺失的对象和完整 manifest（增量条目合入 base 之后的结果，格式同 Resource manifest，另带 mode、属主、mtime、xattr、硬链接、whiteout 和 opaque 目录），然后调 `CommitGeneration{upload_id}`。回复丢失后重试同一个 `upload_id`，只要它仍是 head 就照样成功。
 3. Control Plane 在一个事务里：对每个对象做 `HeadObject`（`ChecksumMode`），核对 fencing token 仍是当前的、`head_generation_id` 仍等于 `base_generation_id`，写 `generations` 和 `generation_objects`，推进 head。任何一条不满足就整体失败，head 不动；Agent 按 `defaults.md` 退避重试。
 
 ## Sandbox publish

@@ -230,6 +230,42 @@ func TestGenerationCommitRetrySucceeds(t *testing.T) {
 	}
 }
 
+// Presign signs a Generation manifest PUT only for an open upload of this
+// Node, and GET only for a head of a Sandbox on it.
+func TestGenerationPresignAuthorization(t *testing.T) {
+	f := newGenerationFixture(t)
+	ack, err := f.submit(diff(objA), 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := func(id, method string) bool {
+		t.Helper()
+		_, ok, err := f.s.authorizeGeneration(f.ctx, f.node, id, method)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if !allowed(ack.GetUploadId(), "PUT") || allowed(ack.GetUploadId(), "GET") {
+		t.Fatal("an open upload must be signable for PUT only")
+	}
+	if owner, err := f.s.q.FindGenerationUploadObjectOwner(f.ctx, store.FindGenerationUploadObjectOwnerParams{
+		NodeID: f.node.ID, Sha256: objA,
+	}); err != nil || owner != f.user {
+		t.Fatalf("missing object PUT owner = %v, %v", owner, err)
+	}
+	f.upload(ack, diff(objA))
+	if _, err := f.commit(ack); err != nil {
+		t.Fatal(err)
+	}
+	if allowed(ack.GetUploadId(), "PUT") || !allowed(ack.GetUploadId(), "GET") {
+		t.Fatal("a head must be signable for GET only")
+	}
+	if allowed(uuid.NewString(), "GET") {
+		t.Fatal("an unknown Generation was authorized")
+	}
+}
+
 func TestGenerationCommitRefusesStaleFence(t *testing.T) {
 	f := newGenerationFixture(t)
 	if _, err := f.submit(diff(objA), 0, nil); status.Code(err) != codes.FailedPrecondition {
