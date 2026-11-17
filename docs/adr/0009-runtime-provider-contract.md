@@ -1,6 +1,6 @@
 # ADR-0009: Freeze the Runtime Provider contract
 
-- Status: accepted; mounts amended by ADR-0019; request `runtime`, Local Runtime and the Local GPU exception amended in place by #92; Provider list, capability table and egress amended in place by ADR-0026; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31)
+- Status: accepted; mounts amended by ADR-0019; request `runtime`, Local Runtime and the Local GPU exception amended in place by #92; Provider list, capability table and egress amended in place by ADR-0026; Isolation Runtime value `gvisor` renamed to `runsc` in place by #176 (2026-10-31); `Stop`, the Workspace mount and the Local cwd amended in place by ADR-0031
 - Date: 2026-10-17
 
 ## Context
@@ -19,13 +19,13 @@ The platform supports containerd, under the `runc` or `runsc` Isolation Runtime,
 
 `Create` prepares a `ready` Runtime and does not execute a user command. `Exec` is the only command operation. `Exec` receives argv (not an implicit shell), environment, a Workspace-relative cwd, timeout, and optional stdin. It does not run the command through the runtime's own exec stream, which cannot be reattached once its client goes away. It starts the command under the Exec Supervisor: a platform binary mounted read-only into the Runtime that records Output Frames and the exit status in a Node-local directory outside the Workspace. The Node Agent reads that record from its last offset, so an Exec outlives a Node Agent restart. Durable logs, cancellation and reconciliation remain above this contract.
 
-`Stop` terminates and removes the Runtime instance; it is idempotent and never deletes the Workspace. There is no `Start`, so a stopped Runtime is never reused and a restarted Sandbox gets a new one from `Create`. `Exec` never implicitly creates a missing Runtime.
+`Stop` terminates and removes the Runtime instance; it is idempotent and never deletes the Workspace. There is no `Start`, so a stopped Runtime is never reused and a restarted Sandbox gets a new one from `Create`. `Exec` never implicitly creates a missing Runtime. (Amended in place by ADR-0031: `Stop` keeps the container snapshot until the Sandbox's filesystem is committed as a Generation; there is no Workspace.)
 
-On containerd, the common request surface is one platform-managed, read-write Workspace at `/workspace`. No arbitrary host mounts, host network, privileged mode, or caller-selected uid/gid are exposed; the platform mounts are the Workspace, read-only Resources, and under `/.orrery` the read-only Exec Supervisor binary and the Sandbox's read-write Exec record directory (ADR-0019). containerd accepts immutable platform image digests. Local Runtime uses the Node host environment and returns `unsupported` when a concrete image digest is requested.
+On containerd, the common request surface is one platform-managed, read-write Workspace at `/workspace`. No arbitrary host mounts, host network, privileged mode, or caller-selected uid/gid are exposed; the platform mounts are the Workspace, read-only Resources, and under `/.orrery` the read-only Exec Supervisor binary and the Sandbox's read-write Exec record directory (ADR-0019). containerd accepts immutable platform image digests. Local Runtime uses the Node host environment and returns `unsupported` when a concrete image digest is requested. (Amended in place by ADR-0031: there is no Workspace. The root filesystem is the Sandbox's own and persists across stop, `/workspace` is an ordinary directory in it, and Volumes are mounted read-write at paths the caller gives.)
 
 A Sandbox request selects `runtime: container | local`, defaulting to `container`; a caller cannot tell a runc Node from a runsc Node. A `container` request is placed only on containerd Nodes, a `local` request only on Local Nodes, and the choice stays an admission constraint on restart. A `local` request has no Snapshot, so the default platform Snapshot does not apply to it; one that names a `snapshot` or `resources` is rejected `unsupported`.
 
-On Local Runtime there is no `/workspace` and no `/.orrery`: the cwd is the Workspace's host path, also given as `ORRERY_WORKSPACE`, and the Exec record lives in the Node's data directory. Every User's commands run as the one unprivileged uid of the Node configuration, so Users on a Local Node are not isolated from each other (files, signals and loopback ports are shared). Local Runtime is for trusted insiders only, as with Coder's external workspaces. The upgrade path is one host uid per User, Workspace directories at `0700` and systemd hardening, with this contract unchanged.
+On Local Runtime there is no `/workspace` and no `/.orrery`: the cwd is the Workspace's host path, also given as `ORRERY_WORKSPACE`, and the Exec record lives in the Node's data directory. Every User's commands run as the one unprivileged uid of the Node configuration, so Users on a Local Node are not isolated from each other (files, signals and loopback ports are shared). Local Runtime is for trusted insiders only, as with Coder's external workspaces. The upgrade path is one host uid per User, Workspace directories at `0700` and systemd hardening, with this contract unchanged. (Amended in place by ADR-0031: the cwd is the Sandbox's working directory, which is what persists for a Local Sandbox; Volumes are reached through `ORRERY_VOLUMES`.)
 
 The common hard resource limits are CPU, memory, and PID count. IO bandwidth and GPU memory limits are not common Provider guarantees. Disk capacity is enforced only where the Node's Workspace filesystem is XFS with project quotas; elsewhere it is admission accounting plus a Node disk watermark, not isolation. GPU requests use resolved vendor/device/kind records; the Scheduler allocates concrete devices and the Provider only attaches them or rejects the request.
 
@@ -44,7 +44,7 @@ The initial posture is:
 | process/mount namespace | enforced | enforced | unsupported |
 | `kernel_isolation` | unsupported | enforced | unsupported |
 | CPU/memory/PID limits | enforced | enforced; PID count includes Sentry threads (ADR-0026) | enforced via systemd scope |
-| Workspace read-write mount | enforced | enforced | enforced as host cwd |
+| Volume read-write mount (ADR-0031) | enforced | enforced | enforced as a directory under `ORRERY_VOLUMES` |
 | GPU device visibility | enforced via CDI | unsupported | enforced via systemd `DevicePolicy=closed` when the self-check passes, else best_effort |
 | GPU memory limit | unsupported | unsupported | unsupported |
 | disk capacity quota | enforced on XFS project quota, else unsupported | enforced on XFS project quota, else unsupported | enforced on XFS project quota, else unsupported |

@@ -1,6 +1,6 @@
 # ADR-0015: Execution, Workspace and scheduling rechecked against Coder and Daytona
 
-- Status: accepted; Runtime death, PTY logging and Paused Node amended by ADR-0017; per-GPU share default amended by `docs/spec/defaults.md`; placement among feasible Nodes amended in place by #92; read-write Workspace Attachment replaced by the Sandbox's read-write mount in place by #220
+- Status: accepted; Runtime death, PTY logging and Paused Node amended by ADR-0017; per-GPU share default amended by `docs/spec/defaults.md`; placement among feasible Nodes amended in place by #92; read-write Workspace Attachment replaced by the Sandbox's read-write mount in place by #220; Workspace provisioning, read-write mount and disk accounting amended in place by ADR-0031
 - Date: 2026-10-17
 
 ## Context
@@ -11,7 +11,7 @@ Three kinds of gap did not survive the recheck: TTL leases that contradict our o
 
 ## Decision
 
-**Leases end by an act, never by expiry.** The read-write Workspace mount and the Compute Lease lose their TTL and renewal. `#34` already keeps `unknown` allocations and ADR-0014 never declares a Node lost by timer, so an expiring lease could only either double-allocate a GPU or do nothing. The Compute Lease carries a monotonic generation counter; it is not a fencing token, because the Control Plane is the only writer and no superseded holder exists. At most one read-write mount of a Workspace stays; revoking it terminates every Exec in the Sandbox that holds it. Amended in place by #220: the read-write mount has no row and no generation of its own. It is the Sandbox's `workspace_mode = 'rw'` while the Sandbox is `pending`, `provisioning`, `ready`, `stopping` or `deleting`, enforced by a partial unique index; it is revoked only by leaving those states. Daytona's GPU reservation likewise *"stays reserved ... until it is fully destroyed"*.
+**Leases end by an act, never by expiry.** The read-write Workspace mount and the Compute Lease lose their TTL and renewal. `#34` already keeps `unknown` allocations and ADR-0014 never declares a Node lost by timer, so an expiring lease could only either double-allocate a GPU or do nothing. The Compute Lease carries a monotonic generation counter; it is not a fencing token, because the Control Plane is the only writer and no superseded holder exists. At most one read-write mount of a Workspace stays; revoking it terminates every Exec in the Sandbox that holds it. Amended in place by #220: the read-write mount has no row and no generation of its own. It is the Sandbox's `workspace_mode = 'rw'` while the Sandbox is `pending`, `provisioning`, `ready`, `stopping` or `deleting`, enforced by a partial unique index; it is revoked only by leaving those states. Daytona's GPU reservation likewise *"stays reserved ... until it is fully destroyed"*. (Amended in place by ADR-0031: the read-write mount is a Volume's hold, `sandbox_volumes.held`, under the same rules.)
 
 **Exec is one row.** ExecAttempt, Attempt Identity, Execution Retry and Exec Result Aggregation are removed. A Sandbox never leaves its Node, so a new Attempt and a redelivery of the same Exec are indistinguishable. The Exec stores timestamps and its Execution Result, and its state is derived from them, as Coder derives a build's. There is no automatic retry: a failure before start ends the Exec with a retryable error code and the caller decides whether to create another. The Idempotency Key is a unique constraint on the caller-supplied key that returns the existing Exec, not a general idempotency table.
 
@@ -28,7 +28,7 @@ Three kinds of gap did not survive the recheck: TTL leases that contradict our o
 **Scheduling.**
 - Priorities are only `user` and the platform-internal `system`; `high` is removed. Neither vendor has a caller-selectable priority.
 - Among feasible Nodes, a GPU request is packed onto the Node left with the fewest free GPUs of the requested model; a GPU-less request prefers Nodes without GPUs, then the first feasible one. Ties break by the Node's `created_at`. The policy is not configurable.
-- User Quota bounds GPU count and concurrent Sandboxes only. A stopped Workspace's disk counts toward the Node's disk budget, not User Quota.
+- User Quota bounds GPU count and concurrent Sandboxes only. A stopped Sandbox's cached diff counts toward the Node's disk budget and is evictable once committed; its Generations live in the object store, not bounded by User Quota (amended in place by ADR-0031).
 - Quota is authoritative at admission, with a create-time pre-check: a create that is already over quota returns `quota_exceeded` without creating or queueing a row. Lowering a quota never cancels queued holds or running Sandboxes.
 - Every admission request has a deadline, defaulting to a deployment value; reaching it ends the request `admission_timeout` and releases its hold. `#34`'s "no implicit TTL on queueing" is withdrawn: a request bound to a paused or unreachable Node would otherwise wait and hold quota forever.
 - Every Sandbox has an Idle Stop: no running Exec and no live PTY or Data Plane connection for its idle period stops it. The default is 15 minutes, set per Sandbox at creation, and 0 disables it. Hard reservations without preemption make a forgotten GPU Sandbox block the queue indefinitely otherwise.
@@ -38,6 +38,8 @@ Three kinds of gap did not survive the recheck: TTL leases that contradict our o
 **Workspace.**
 - Provisioning retries with exponential backoff up to a limit, exposes a visible `provisioning_stalled` condition, and can be deleted at any time.
 - `admin` may abandon cleanup of a Workspace stuck in `deleting` on a live Node; the abandonment is an Audit Record. This is Coder's orphan delete.
+
+(Amended in place by ADR-0031: there are no Workspaces; provisioning, its retries and `abandon` are gone.)
 
 ## Consequences
 

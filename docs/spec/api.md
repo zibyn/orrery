@@ -26,17 +26,17 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `unauthenticated` | 401 | 没有 token、token 无效、过期或已吊销 |
 | `permission_denied` | 403 | token 的 scope 不够；修改平台 Snapshot |
 | `not_found` | 404 | 不存在，或不属于调用方 |
-| `conflict` | 409 | 与当前状态冲突：读写挂载已被占用、Sandbox 不在 `ready`、只读挂载上写文件、Node 删除前提不满足、宣告可达的 Node lost、删除 current 版本、删除被引用或构建中（build 来源）的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
+| `conflict` | 409 | 与当前状态冲突：卷已被另一个 Sandbox 持有、删除仍被持有的卷、Sandbox 不在 `ready`、Node 删除前提不满足、宣告可达的 Node lost、删除 current 版本、删除被引用或构建中（build 来源）的 SnapshotVersion、发布时对象缺失或 sha256 不符、所用平台 Snapshot 没有 `ready` 版本 |
 | `precondition_failed` | 412 | `If-Match` 不匹配 |
 | `payload_too_large` | 413 | 单文件超过 1 TiB、Secret 超过 24 KiB |
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
 | `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
 | `internal` | 500 | 平台缺陷 |
-| `unavailable` | 503 | Sandbox 或 Workspace 所在 Node 不可达，OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败，或 import 的源 registry 在解析期限内没有响应；可以重试 |
+| `unavailable` | 503 | 运行中的 Sandbox 所在 Node 不可达，OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败，或 import 的源 registry 在解析期限内没有响应；可以重试 |
 
 `incompatible` 只出现在 Node Agent 的 gRPC 握手里（`node-protocol.md`）。
 
-生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`workspace_lost`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`；ResourceVersion 的 `node_lost`）。创建时的配额判定只是预检：能确定超限时直接返回 `429`，不创建行、不入队。是否占用配额由 admission 权威判定，并发下预检通过仍可能在 admission 失败；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
+生命周期原因不是错误码：它们写在资源的 `cause` 字段里（Sandbox 的 `admission_timeout`、`unsatisfiable`、`quota_exceeded`、`runtime_create_failed`、`image_pull_failed`、`resource_fetch_failed`、`commit_failed`、`runtime_lost`、`node_lost`；Exec 见 §4；SnapshotVersion 的 `timed_out`、`build_interrupted`、`node_lost`、`import_failed`、`build_failed`；ResourceVersion 的 `node_lost`）。创建时的配额判定只是预检：能确定超限时直接返回 `429`，不创建行、不入队。是否占用配额由 admission 权威判定，并发下预检通过仍可能在 admission 失败；`start` 一个 `stopped` 的 Sandbox 时重新准入，超限则以 `failed/quota_exceeded` 结束。
 
 ## 3. 资源与路径
 
@@ -62,15 +62,15 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `POST /polaris/backchannel-logout` | 不需要认证，Polaris 调用（ADR-0029）。表单字段 `logout_token`，用 Polaris Go SDK 校验（`aud` = `oidc.client_id`），删掉 `sid` 与之相同的所有 Session，同一 User 的其他 Session 和 API Token 不受影响。没有匹配的 Session 也返回 `200`；token 无效、过期、audience 不对或未签名时 `400`；Polaris discovery 失败时 `503 unavailable`，Polaris 会重试 |
 | `POST /polaris/webhook` | Polaris 的 User 事件（ADR-0029）。按 Standard Webhooks 校验 `webhook-id`、`webhook-timestamp`、`webhook-signature`（HMAC-SHA256，密钥为 `oidc.webhook_secret`，`whsec_` 前缀后是 base64，否则按原字节），时间戳偏差超过 5 分钟或签名不符返回 `401`。按 (`oidc.issuer_url`, `data.sub`) 找 User：`user.disabled` 设 `disabled_at`，`user.enabled` 清掉，`user.deleted` 逻辑删除，`user.updated` 的 `changed` 含 `roles` 时清掉 `is_admin`（下次登录重新判定）。每个应用的事件写审计记录。未知 `sub`、未知类型、比已应用事件更早的事件、Machine User 一律 `204` 并忽略；Polaris 会重试任何非 2xx。已应用过的 `webhook-id`（Polaris 重试时不变）再次送达时 `204` 且不改任何东西，不写审计、不动 `updated_at`。事件时间只到秒且投递乱序：同一秒的事件照常应用，但 `user.enabled` 不会撤销同一秒的 `user.disabled`，无论谁先到（fail closed）。每个事件（含 `user.deleted` 的逻辑删除）在一个事务里应用，失败不留痕迹，重试会重新应用 |
 
-**Workspace**
+**Volume**（ADR-0031）
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /workspaces` · `GET /workspaces` · `GET /workspaces/{id}` · `DELETE /workspaces/{id}` | 只创建持久 Workspace；临时 Workspace 随 Sandbox 隐式创建（ADR-0018）。删除 `lost` 的 Workspace 直接变成 `deleted`，不向 Node 下发命令 |
-| `POST /workspaces/{id}/publish` | `{path, resource}` → `202` 和一个 `pending` 的 ResourceVersion；变成 `ready` 时移动 current 指针，失败时不动（ADR-0012、`node-protocol.md`）。接受 `Idempotency-Key`；不要求有运行中的 Sandbox；Node 不可达返回 `503` |
-| `POST /workspaces/{id}/declare-lost` · `POST /workspaces/{id}/abandon` | **admin**。存活 Node 上的单个 Workspace 宣告 lost：挂着它的 Sandbox（运行中的和 stopped 的）变成 `failed/workspace_lost`，Reconciler 停掉它们的 Runtime，其中的 Exec 以 `runtime_lost` 结束。放弃卡在 `deleting` 的清理 |
+| `POST /volumes` · `GET /volumes` · `GET /volumes/{id}` · `DELETE /volumes/{id}` | `{name}`，名字在调用方未删除的卷里唯一，字符规则同 Sandbox 名字；接受 `Idempotency-Key`。卷不绑 Node，没有 provisioning，创建即 `ready`。被 Sandbox 持有时删除返回 `409`；删除立即变成 `deleted`，不向 Node 下发命令，对象由 CAS 清扫回收 |
+| `GET /volumes/{id}/files?path=` · `/files/stat` · `/files/content` · `/files/archive` | 只读，参数和返回同 §5 的同名接口，路径相对卷根。由 Control Plane 读 head Generation 的 manifest，内容经预签名 GET 取，不经 Node，不要求有 Sandbox，不推迟任何 Sandbox 的 Idle Stop。卷被持有时看到的是最近一次提交；还没有 Generation 时是空目录。没有写接口 |
+| `POST /volumes/{id}/publish` | `{path, resource}` → `202` 和一个 `pending` 的 ResourceVersion；Control Plane 从 head Generation 取出 `path` 下的条目写成 manifest，不搬数据，不经 Node（`node-protocol.md`）。接受 `Idempotency-Key` |
 
-字段：`kind`（`ephemeral`/`persistent`）、`node_id`、`state`（`provisioning`、`ready`、`deleting`、`deleted`、`failed`、`lost`；后三个是终态）、`unavailable`（由 Node 可达性派生）、`conditions`（如 `provisioning_stalled`）。
+字段：`name`、`state`（`ready`、`deleted`）、`held_by`（持有它的 Sandbox，没有时为 `null`）、`committed_at`（head Generation 的提交时间，没有时为 `null`）、`size`（head Generation 的字节数）。
 
 **Sandbox**
 
@@ -79,7 +79,8 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `POST /sandboxes` | 见下文请求体 |
 | `GET /sandboxes` | 过滤：`owner`（admin）、`state`、`label`、`node`、`has_gpu` |
 | `GET /sandboxes/{id}` | 支持 `?wait_for=` |
-| `DELETE /sandboxes/{id}` | 先取消正在跑的 Exec，再删除；临时 Workspace 一并删除 |
+| `DELETE /sandboxes/{id}` | 先取消正在跑的 Exec，再删除；它的 Generation 和上次运行它的 Node 上的缓存一并删除（`DropSandboxDisk`），持有的卷随之释放 |
+| `POST /sandboxes/{id}/publish` | `{path, resource}` → `202` 和一个 `pending` 的 ResourceVersion，变成 `ready` 时移动 current 指针，失败时不动（ADR-0012、`node-protocol.md`）。`path` 按 §5 解析；Sandbox 必须是 `ready`，否则 `409`；落在卷或 Resource 挂载点下返回 `400`，卷用 `POST /volumes/{id}/publish`。接受 `Idempotency-Key`；Node 不可达返回 `503` |
 | `POST /sandboxes/{id}/start` · `POST /sandboxes/{id}/stop` | `start` 重新进入 `pending` |
 | `POST /sandboxes/{id}/execs` · `GET /sandboxes/{id}/execs` | 见 §4 |
 | `/sandboxes/{id}/files/...` | 见 §5 |
@@ -90,7 +91,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 ```
 name?, labels?
 runtime?: container|local       # 默认 container；调用方分不出 runc Node 和 runsc Node
-workspace?: {id, mode: rw|ro}     # 不写就隐式创建临时 Workspace，rw
+volumes?: [{volume, path}]        # 最多 16 个，创建后不变；卷 id 或名字；挂载时持有该卷，见下
 snapshot?: SnapshotVersion id 或 Snapshot 名   # 名字解析到 current 版本，先找自己的再找平台的；container 不写就用 `platform_snapshots` 的默认项（`gpu.count > 0` 时用 `default_gpu` 项，没有则退回 `default`），local 没有 Snapshot
 resources?: [{resource, version?, mount?}]   # 创建时解析成具体版本，只读挂载到 /resources/<mount>；mount 是单段名字，默认取 Resource 名
 secrets?: {ENV_NAME: secret_name}
@@ -100,13 +101,21 @@ egress?: {mode: open|none|allowlist, allow?: [CIDR[:port]]}   # 不写等于 {mo
 links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自己的 Sandbox 连进来；写了就只有这些来源能连进来。不写时没有入站链，别的 Node 上的 Sandbox 经 Mesh 连不进来，同一 Node 上的连不连得进来取决于运维是否在 Egress Rules 的 `deny` 里列了 Sandbox 子网（`defaults.md`，`runtime.md` §13）
 ```
 
-每个 Sandbox 只挂一个 Workspace，挂在 `/workspace`（ADR-0009；Local 见下）。响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`state`、`cause`、`node_id`、`conditions`（目前没有定义任何 condition，恒为空数组；`fetching_resources` 已随 ADR-0030 去掉），`pending` 时还有 `queue_position` 和 `blocked_reason`。
+Sandbox 的文件系统属于它自己：根文件系统里写下的一切（装的包、`/workspace` 里的文件）跨 stop 和 start 保留，删除 Sandbox 时才删；停止时提交为 Generation，之后可以在任意可行的 Node 上启动（ADR-0031，`runtime.md` §16）。`/workspace` 是普通目录，是 Exec 的默认 cwd。
+
+`volumes`（ADR-0031）：
+
+- `path` 是绝对路径，规范化后不能是 `/`，不能落在 `/resources`、`/proc`、`/sys`、`/dev`、`/.orrery` 之下，彼此不能互相包含；可以是 `/workspace`，这时卷盖住根文件系统里的 `/workspace`。不合规返回 `400`。
+- 一个卷同一时间只被一个 Sandbox 持有，总是读写：从进入 `pending` 起，到 `stopped`、`failed` 或删除完成为止；从 `stopped`/`failed` 删除不重新持有。创建或 `start` 时卷被别人持有返回 `409`。没有只读挂载：要共享，就把卷 publish 成 Resource 再挂载。
+- 卷不增加放置约束。卷的写入每 60 秒和停止时提交一次，Node 丢失时丢掉最近一次提交之后的写入（`runtime.md` §17）。
+
+响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`volumes`、`state`、`cause`、`node_id`（运行中为所在 Node；停止后为上次运行它的 Node，只作放置偏好）、`conditions`（`commit_stalled`：停止时的提交在重试，Sandbox 停在 `stopping`；`changes_lost`：所在 Node 丢失，最近一次提交之后的改动没了），`pending` 时还有 `queue_position` 和 `blocked_reason`。
 
 `runtime`（ADR-0009）：
 
 - `container` 只放到 containerd Node 上（runc 和 runsc 都算），`local` 只放到 Local Node 上；重启后仍作为准入约束。Isolation Runtime 不能在请求里选；要全部跑在 gVisor 下，就只注册 runsc Node（ADR-0026）。
 - `local` 带了 `snapshot` 或 `resources` 时返回 `422 unsupported`。
-- Local 上没有 `/workspace`：cwd 是 Workspace 在宿主上的路径，也写在环境变量 `ORRERY_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径。同样没有 `/resources`：`ORRERY_RESOURCES` 指向一个目录，其中每个 `<mount>` 是一个只读的 Resource 版本（ADR-0030）。
+- Local 上没有 `/workspace`：cwd 是 Sandbox 工作目录在宿主上的路径，也写在环境变量 `ORRERY_WORKSPACE` 里；Exec 的 `cwd` 相对于这个路径，停止后保留的只有这个目录。卷不挂到 `path`，而是 `ORRERY_VOLUMES` 指向的目录下每个卷名一个子目录。同样没有 `/resources`：`ORRERY_RESOURCES` 指向一个目录，其中每个 `<mount>` 是一个只读的 Resource 版本（ADR-0030）。
 - Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之间没有隔离（文件、信号、loopback 端口都互通），只给可信的内部用户用。GPU 可见性为 `best_effort` 时也接受。
 
 `egress`（ADR-0026）：
@@ -123,7 +132,7 @@ links?: {from: [sandbox_id], ports?: [port]}   # Sandbox Link：允许哪些自�
 - 这一对之间的流量不受来源的 Egress Mode 和运维的 Egress Rules 约束；双方其余的流量照旧受各自 Egress Policy 约束。目标收到的其他一切连接（包括 Node 自己的进程）都被丢弃。
 - 校验：`from` 非空，每个 id 都必须是调用方自己的、未删除的 Sandbox，否则 `400 invalid_request`（别人的 Sandbox 与不存在同样处理）；来源是 `runtime: local` 时 `422 unsupported`；`ports` 每项 1–65535；`from` 和 `ports` 的项数上限见 `defaults.md`。
 - 创建后不可改。来源被删除后，那一项就不再匹配任何地址。
-- 只放到 `sandbox_links` 为 `enforced` 的 Node 上，重启后仍作为准入约束；创建时没有这样的 Node 返回 `422 unsupported`，`runtime: local` 带 `links` 同样是 `422 unsupported`。放置时目标只考虑与每个已放置来源的 Node 相同或有 Mesh 通路的 Node；反过来，来源晚于目标放置时，也只考虑与每个已放置目标的 Node 相同或有通路的 Node（`runtime.md` §15）。候选之中优先已放置的另一端所在的 Node。还在 `pending` 的另一端不约束放置；已经绑定 Node 的 Sandbox（Workspace 已在某台 Node 上）只能去那台，不再要求通路，跨 Node 时连不上直到通路出现。
+- 只放到 `sandbox_links` 为 `enforced` 的 Node 上，重启后仍作为准入约束；创建时没有这样的 Node 返回 `422 unsupported`，`runtime: local` 带 `links` 同样是 `422 unsupported`。放置时目标只考虑与每个已放置来源的 Node 相同或有 Mesh 通路的 Node；反过来，来源晚于目标放置时，也只考虑与每个已放置目标的 Node 相同或有通路的 Node（`runtime.md` §15）。候选之中优先已放置的另一端所在的 Node。还在 `pending` 的另一端不约束放置；重新启动的 Sandbox 和新建的一样按这条规则放置（ADR-0031）。
 - 地址不做 DNS，也不写 `/etc/hosts`：调用方用 `GET /sandboxes/{id}` 的 `address`，目标重启后要重新读。
 
 **Exec**：`GET /execs/{id}` · `POST /execs/{id}/cancel` · `GET /execs/{id}/output` · `GET /execs/{id}/pty`，见 §4。
@@ -141,22 +150,21 @@ Node 的 `status_reason` 说明它为什么 `unavailable`：`heartbeat_stale`（
 
 **容量**（ADR-0015）：`cpu`、`memory` 是 Resource Allocation，不是使用率，形如 `{gpu_pool: {total, allocated}, general_pool: {total, allocated}}`，划分与准入一致：`gpu_pool.total` = GPU 数 × 每卡份额，`general_pool.total` = 扣除宿主预留后的可分配量 − `gpu_pool.total`；`allocated` 分别是有 GPU、无 GPU 的 Sandbox 的 Allocation 之和。没有 GPU 的 Node `gpu_pool` 为 `null`，`general_pool` 即全部可分配量。CPU 单位是核，内存是字节。`disk` 是 `{total, free, watermark}`（字节、字节、比例），没有 `allocated`：磁盘按观测到的剩余空间与 watermark 把关。尚未上报硬件的 Node 这三项都是 `null`。
 
-Paused Node 不接收新的 Workspace 和构建。
+Paused Node 不接收新的 Sandbox（包括重新启动的）和构建，已经在运行的不受影响。
 
 **宣告 lost**（ADR-0014）：
 
-- Node 当前可达时返回 `409`；存活 Node 的存储坏了，用 Workspace 级的 `declare-lost`。
+- Node 当前可达时返回 `409`。
 - 不可撤回：同时清空 Node Token 并置 `paused`。Agent 重连时收到 `UNAUTHENTICATED`，清掉本地身份；这台宿主只能作为新 Node 重新注册。
 - 级联在一个事务里完成：
-  - 这台 Node 上所有未 `deleted` 的 Sandbox（含 `stopped`，以及已绑定到这台 Node 的 `pending`）变成 `failed/node_lost`，释放 Allocation 和 GPU，读写挂载随状态一并释放；
+  - 这台 Node 上运行中、`stopping` 和已绑定到这台 Node 的 `pending` 的 Sandbox 变成 `stopped`，cause 为 `node_lost`，挂上 `changes_lost`，释放 Allocation、GPU 和卷的持有；之后 `start` 从各自的 head Generation 在别处启动（ADR-0031）。已经 `stopped` 的不受影响，它们的数据在 head Generation 里；`deleting` 的直接变成 `deleted`；
   - 未结束的 Exec 以 `node_lost` 结束；
-  - `deleting` 的 Workspace 直接变成 `deleted`，其余非终态的 Workspace 变成 `lost`；
   - 进行中的构建变成 `failed/node_lost`；
   - 进行中的 publish：对应的 ResourceVersion 变成 `failed`，cause 为 `node_lost`。
 
 **删除 Node**：
 
-- 前提：已 paused，没有非终态的 Workspace，也没有非终态的 Sandbox（含构建行），否则 `409`。
+- 前提：已 paused，没有在这台 Node 上运行、`stopping` 或已绑定到它的 `pending` 的 Sandbox（含构建行），否则 `409`。停止的 Sandbox 不阻止删除，它们的放置偏好随之失效。
 - 这一行留作墓碑：写 `deleted_at`，清空 Node Token，删掉它的 `gpus` 行；墓碑不清理。
 - 删除后的 Node 不出现在 `GET /nodes` 和 `/capacity` 里。
 - 还连着的 Agent 收到 `UNAUTHENTICATED`，流被关闭。
@@ -227,7 +235,7 @@ Git Provider 来自部署配置文件 `config.yaml` 的 `git_providers`（`defau
 ```
 argv: [string]        # 不经过 shell
 env?: {k: v}
-cwd?: 相对 /workspace 的路径（Local 上相对 Workspace 的宿主路径）
+cwd?: 相对 /workspace 的路径（Local 上相对 Sandbox 工作目录的宿主路径）
 timeout?: 秒数
 stdin?: string        # 一次性写入后关闭；PTY 模式下忽略
 pty?: {rows, cols}    # 带上就是 PTY 模式
@@ -243,7 +251,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 ## 5. 文件
 
-挂在 Sandbox 下。路径参数 `path` 相对于 `/workspace`（Local 上相对 Workspace 的宿主路径），只能访问 Workspace：Resource 挂载点和 rootfs 要通过 Exec 访问。前提条件：Sandbox 必须是 `ready`，否则 `409`；只读挂载下写入返回 `409`；Node 不可达返回 `503`。
+挂在 Sandbox 下，访问它自己的文件系统（ADR-0031）。路径参数 `path` 相对于 `/workspace`，以 `/` 开头时是根文件系统里的绝对路径（Local 上一律相对 Sandbox 工作目录的宿主路径）。卷和 Resource 的挂载点下不可访问（`400`）：卷用 `/volumes/{id}/files`，Resource 用 manifest 接口。前提条件：Sandbox 必须是 `ready`，否则 `409`；Node 不可达返回 `503`。
 
 | 方法与路径 | 说明 |
 |---|---|
@@ -365,11 +373,11 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | 登录 `/login?return=` | `GET /oidc/login`，只有「使用 Polaris 登录」（ADR-0029） |
 | CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `orrery login` |
 | Git 关联 `/git` | `GET /git-providers`、`/users/me/git-links`、`authorize`；`authorize_url` 指向这里 |
-| Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、workspace（默认临时；或从 `GET /workspaces` 选一个持久的，并选 rw/ro）、idle_stop。resources、secrets、labels 用 CLI |
+| Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、卷（从 `GET /volumes` 选，可加多个，每个填挂载路径）、idle_stop。resources、secrets、labels 用 CLI |
 | Exec | `GET /sandboxes/{id}/execs`、`output?follow=true` 跟随、`POST /execs/{id}/cancel` |
 | 终端 | `POST /sandboxes/{id}/execs` 带 `pty`，argv 默认 `["/bin/sh", "-l"]`，可改；然后 `GET /execs/{id}/pty`。不提供非 PTY 的运行表单 |
-| 文件 | §5 的列目录；单文件上传 `PUT files/content`；下载走同源链接，文件用 `files/content`，目录用 `files/archive`；对当前目录或某个文件、目录「发布为 Resource」：`POST /workspaces/{id}/publish`（名字不存在时新建 Resource），之后轮询该版本直到 `ready` 或 `failed`。不做浏览器内 tar 上传、删除、移动、mkdir、编辑 |
-| Workspace | 列表与详情：`GET /workspaces`、`GET /workspaces/{id}`，显示 kind、state、cause、node、挂着它的 Sandbox；`POST /workspaces` 创建持久 Workspace；删除持久 Workspace。文件不经 Workspace 浏览（§5 要求 Sandbox `ready`），详情页只链到挂着它的 Sandbox |
+| 文件 | §5 的列目录；单文件上传 `PUT files/content`；下载走同源链接，文件用 `files/content`，目录用 `files/archive`；对当前目录或某个文件、目录「发布为 Resource」：`POST /sandboxes/{id}/publish`（名字不存在时新建 Resource），之后轮询该版本直到 `ready` 或 `failed`。不做浏览器内 tar 上传、删除、移动、mkdir、编辑 |
+| 卷 | 列表与详情：`GET /volumes`、`GET /volumes/{id}`，显示名字、state、持有它的 Sandbox、最近一次提交时间、大小；`POST /volumes` 新建；删除（被持有时禁用并说明原因）。详情页用 §5 同样的浏览组件只读浏览 `GET /volumes/{id}/files`（标明「截至最近一次提交」），下载文件和目录归档，「发布为 Resource」走 `POST /volumes/{id}/publish`，另有「用这个卷新建 Sandbox」 |
 | Resource | 列表、详情、删除；版本列表（state、cause、size、provenance、expires_at），标出 current，`PUT /resources/{id}/current` 切换，服务端的 `conflict` 原样显示；`ready` 版本的文件：`GET .../versions/{v}/manifest` 列出条目，单文件下载用 `POST .../downloads` 带 `filename`（条目路径的最后一段）拿预签名 GET；分块存储的大文件不提供浏览器下载，改为显示对应的 `orrery resource pull` 命令。上传（manifest + 分片 PUT）用 `orrery resource push` |
 | 端口 | 详情页输入端口号，`POST /sandboxes/{id}/ports/{port}/ticket` 后打开返回的 URL |
 | Snapshot | 列表、创建、删除；版本：构建（dockerfile、base、secrets）、导入、cancel、删除、设为 current；构建日志。构建的 contexts 用 CLI |
@@ -394,7 +402,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
   - Python ≥ 3.10，唯一依赖是 httpx，模型用 `dataclasses`。
   - 错误类型 `OrreryError(status, code, detail)`。
   - 覆盖范围：Sandbox 生命周期（含 `wait_for`）、Exec（create、wait、按 `after` 跟随输出、cancel）、文件（§5 全部，包括 tar 上传和下载）、Secret。
-  - 不覆盖 Resource 上传、Workspace publish、端口转发和 PTY。
+  - 不覆盖 Resource 上传、Sandbox 和卷的 publish、端口转发和 PTY。
 - **发布**：
   - 不发布到 PyPI，用 `pip install "git+…#subdirectory=sdk/python"` 安装。
   - 版本号与仓库 tag 锁步，不维护兼容矩阵。

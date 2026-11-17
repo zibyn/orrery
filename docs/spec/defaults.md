@@ -10,7 +10,7 @@
 | 判定 Unreachable | 30 秒 | 常量 | 心跳间隔的 2 倍（ADR-0014） |
 | Enrollment Packet 有效期 | 1 小时 | 部署 | 对应 GitHub runner 注册令牌的有效期；Coder 和 Daytona 只有长期 key，相当于我们的 Node Token |
 | purge 周期 | 10 分钟 | 常量 | ADR-0014 |
-| 磁盘水位 | 剩余低于 10% | Node | 低于水位就不接新分配，开始按 LRU 淘汰 Resource 缓存、Agent 的 containerd namespace 里未被本 Node 上任何 Sandbox（含 stopped）引用的镜像和 BuildKit 缓存（`runtime.md` §11）；对应 kubelet 的 `nodefs.available<10%` |
+| 磁盘水位 | 剩余低于 10% | Node | 低于水位就不接新分配，开始按 LRU 淘汰 Resource 缓存、卷的块缓存、已等于 head 的停止 Sandbox 缓存差异、Agent 的 containerd namespace 里未被本 Node 上任何 Sandbox（含 stopped）引用的镜像和 BuildKit 缓存（`runtime.md` §11、§16）；对应 kubelet 的 `nodefs.available<10%` |
 | 宿主预留 | 1 CPU + 2 GiB | Node | 从总量里扣掉，不参与分配 |
 | 每 GPU 份额 | 可分配量 × 3/4 ÷ 卡数 | Node | CPU 和内存各算一份；剩下的 1/4 给无 GPU 的 Sandbox（ADR-0015） |
 | containerd socket | `/run/orrery/containerd/containerd.sock` | Node | `--containerd`，Agent 私有的 containerd（ADR-0028，`runtime.md` §9）；改它只用于开发和测试 |
@@ -28,8 +28,10 @@
 |---|---|---|---|
 | 准入期限 | 1 小时 | 部署 | 到期后以 `failed/admission_timeout` 结束 |
 | Idle Stop | 900 秒 | 部署给默认值，请求可覆盖 | `idle_stop`，`0` 表示关闭；与 Daytona 一致 |
-| Workspace provisioning 重试 | 5 次，间隔 1、2、4、8、16 秒 | 常量 | 第 3 次失败起挂上 `provisioning_stalled`，用尽后 `failed` |
-| Resource 拉取重试 | 5 次，间隔 1、2、4、8、16 秒 | 常量 | 与 Workspace provisioning 同一组退避；用尽后 Sandbox 以 `failed/resource_fetch_failed` 结束 |
+| Resource manifest 读取重试 | 5 次，间隔 1、2、4、8、16 秒 | 常量 | 用尽后 Sandbox 以 `failed/resource_fetch_failed` 结束 |
+| Generation 提交重试 | 间隔从 1 秒起翻倍，封顶 5 分钟，直到成功 | 常量 | 第 3 次失败起挂上 `commit_stalled`；Sandbox 停在 `stopping`（ADR-0031） |
+| 卷的提交间隔 | 60 秒 | 常量 | 有未提交的写入才提交；Sandbox 停止时另提交一次 |
+| 每个 Sandbox 挂载的卷 | 最多 16 个 | 常量 | 创建时超出返回 `400` |
 | MeshPeers / SandboxLinks 重新应用 | 间隔从 1 秒起翻倍，封顶 30 秒，直到成功 | 常量 | Agent 应用一份失败时重试最新一份；新的一份到达或控制流断开即停 |
 | 构建资源上限 | 4 CPU + 8 GiB | 部署 | 构建不计入 User Quota（ADR-0021） |
 | 构建超时 | 1 小时 | 部署 | 超时以 `failed/timed_out` 结束 |

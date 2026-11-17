@@ -1,6 +1,6 @@
 # ADR-0018: Ephemeral Workspaces follow their Sandbox, and the Gateway reaches Nodes through reverse tunnels
 
-- Status: accepted; read-write Attachment replaced by the Sandbox's read-write mount in place by #220
+- Status: accepted; read-write Attachment replaced by the Sandbox's read-write mount in place by #220; Ephemeral Workspace and files amended in place by ADR-0031
 - Date: 2026-10-17
 
 ## Context
@@ -9,11 +9,11 @@
 
 ## Decision
 
-**Ephemeral Workspace.** An ephemeral Workspace is created implicitly when a Sandbox is created without a Workspace, lives through that Sandbox's stops and starts, and is deleted with it. There is no grace window. `POST /workspaces` creates only persistent Workspaces. Daytona's ephemeral storage is likewise bound to its sandbox.
+**Ephemeral Workspace.** An ephemeral Workspace is created implicitly when a Sandbox is created without a Workspace, lives through that Sandbox's stops and starts, and is deleted with it. There is no grace window. `POST /workspaces` creates only persistent Workspaces. Daytona's ephemeral storage is likewise bound to its sandbox. (Amended in place by ADR-0031: there is no ephemeral Workspace; the Sandbox's own filesystem has this lifecycle.)
 
 **Reverse tunnels.** The Node protocol has three RPCs besides enrollment: one `Control` stream, one `ExecOutput` stream per Exec, and `Tunnel`, a raw byte stream the Agent dials back when `Control` asks it to. Through a tunnel the Gateway either reverse-proxies to the Agent's internal HTTP surface (file API, PTY WebSocket) or reaches a Sandbox port. Coder and Daytona alike run an HTTP surface in their agent or daemon and proxy to it.
 
-**Files go through a ready Sandbox.** The file API lives under `/sandboxes/{id}/files`, touches only the Workspace, needs the Sandbox `ready`, and writes only when the Sandbox mounts the Workspace read-write, as in both vendors. `#32`'s rule that every file mutation goes through the single writer stands (amended in place by #220: the read-write mount, not an Attachment row).
+**Files go through a ready Sandbox.** The file API lives under `/sandboxes/{id}/files`, touches only the Workspace, needs the Sandbox `ready`, and writes only when the Sandbox mounts the Workspace read-write, as in both vendors. `#32`'s rule that every file mutation goes through the single writer stands (amended in place by #220: the read-write mount, not an Attachment row). (Amended in place by ADR-0031: the Sandbox file API addresses the Sandbox's own filesystem; Volumes are read without a Node through `/volumes/{id}/files`.)
 
 ## Consequences
 
@@ -24,5 +24,5 @@
 ## Rejected alternatives
 
 - Keeping the grace window: a timer whose only job, collecting orphan ephemeral Workspaces, has nothing left to collect.
-- Host-side file access on a Workspace with no running Sandbox: neither vendor offers it, and it would bypass the single-writer rule.
+- Host-side file access on a Workspace with no running Sandbox: neither vendor offers it, and it would bypass the single-writer rule. (Reversed for reads by ADR-0031: E2B and Modal read volumes without a sandbox, and a read never needed the single writer.)
 - A Protobuf message per data-plane operation: every file verb and PTY control written twice, once in REST and once in Protobuf.
