@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/generation"
 	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/supervisor"
 )
@@ -513,6 +514,27 @@ func (d *localDriver) stopSandbox(ctx context.Context, sandboxID uuid.UUID) erro
 	d.r.forget(sandboxID.String())
 	return nil
 }
+
+// localWorkdir is a Local Sandbox's own working directory, committed whole
+// (runtime.md §10, §16).
+func localWorkdir(dataRoot string, id uuid.UUID) string {
+	return filepath.Join(sandboxPath(dataRoot, id), "workspace")
+}
+
+// commitTarget is the working directory as a tree.
+// shortcut: Local Execs still run in the Workspace until #279 moves them to
+// localWorkdir, so until then there is nothing here to commit.
+func (d *localDriver) commitTarget(_ context.Context, sandboxID uuid.UUID) (commitTarget, bool, error) {
+	dir := localWorkdir(d.r.dataRoot, sandboxID)
+	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+		return commitTarget{}, false, nil
+	}
+	return commitTarget{root: dir, kind: generation.KindTree}, true, nil
+}
+
+// dropSandboxDisk keeps the working directory: it is the Local Sandbox's
+// filesystem, and nothing on this Node restores it yet (#276).
+func (d *localDriver) dropSandboxDisk(context.Context, uuid.UUID) error { return nil }
 
 func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 	sandboxID, err := uuid.Parse(cmd.SandboxId)

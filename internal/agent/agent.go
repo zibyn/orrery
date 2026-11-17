@@ -494,11 +494,12 @@ func runControlStream(ctx context.Context, conn *grpc.ClientConn, rt *Runtime, i
 		reportSandbox(sandboxID, generation, nodeproto.SandboxPhaseRunning, "")
 	})
 	// A Runtime that died takes its Specs with it: end the local records first
-	// so their deliveries end with an exit frame.
+	// so their deliveries end with an exit frame. The filesystem is then
+	// committed as on a Stop, and gone follows the commit (runtime.md §16).
 	reportGone := func(sandboxID string, generation int64) {
 		rt.finalizeLost(sandboxID)
 		rt.awaitDeliveries(sandboxID)
-		reportSandbox(sandboxID, generation, nodeproto.SandboxPhaseGone, "")
+		go runner.runtimeDied(sandboxID, generation) // a commit can retry for minutes
 	}
 	go rt.watchEvents(streamCtx, reportGone)
 	// Repair what a previous Agent process, or an earlier connection, left

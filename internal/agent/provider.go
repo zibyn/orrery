@@ -25,7 +25,13 @@ const (
 // operations and nothing more.
 type runtimeDriver interface {
 	createSandbox(ctx context.Context, cmd *createSandboxSpec) (cause string, err error)
+	// stopSandbox ends the Runtime and keeps its filesystem for the commit.
 	stopSandbox(ctx context.Context, sandboxID uuid.UUID) error
+	// commitTarget is the stopped Sandbox's filesystem; ok is false when
+	// there is none left to commit (runtime.md §16).
+	commitTarget(ctx context.Context, sandboxID uuid.UUID) (target commitTarget, ok bool, err error)
+	// dropSandboxDisk removes the filesystem once committed.
+	dropSandboxDisk(ctx context.Context, sandboxID uuid.UUID) error
 	startExec(ctx context.Context, cmd *nodev1.StartExec) error
 	probe(ctx context.Context) (nodeproto.CapabilityReport, error)
 	healthy(ctx context.Context) bool
@@ -65,14 +71,44 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 	return cause, err
 }
 
-// stopSandbox also releases the Sandbox's Resource versions: StopSandbox is
+// sandboxReport sends one SandboxObserved for the Sandbox being stopped.
+type sandboxReport func(phase nodeproto.SandboxPhase, cause string, retrying bool)
+
+// stopSandbox ends the Runtime, commits its filesystem and reports gone only
+// after the commit (runtime.md §16); StopSandbox and a Runtime death both
+// end here. It also releases the Sandbox's Resource versions: StopSandbox is
 // the last command a Node sees for a stopped or deleted Sandbox, and a
-// restart mounts them again.
-func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
+// restart mounts them again. Callers serialize it per Sandbox.
+func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID, generation int64, report sandboxReport) error {
 	if err := r.driver.stopSandbox(ctx, sandboxID); err != nil {
 		return err
 	}
 	r.releaseResources(ctx, sandboxID)
+	target, ok, err := r.driver.commitTarget(ctx, sandboxID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		report(nodeproto.SandboxPhaseCommitting, "", false)
+		err := r.commitWithRetry(ctx, sandboxID, generation, target, func() {
+			report(nodeproto.SandboxPhaseCommitting, "", true)
+		})
+		if isCommitFailed(err) {
+			// The disk stays until the Sandbox is deleted (runtime.md §16).
+			slog.Error("Sandbox filesystem cannot be committed", "sandbox_id", sandboxID, "error", err)
+			report(nodeproto.SandboxPhaseCommitFailed, string(nodeproto.SandboxPhaseCommitFailed), false)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	// shortcut: the committed disk is dropped, so the next start on this Node
+	// begins from the SnapshotVersion until #276 restores and caches it.
+	if err := r.driver.dropSandboxDisk(ctx, sandboxID); err != nil {
+		return err
+	}
+	report(nodeproto.SandboxPhaseGone, "", false)
 	return nil
 }
 

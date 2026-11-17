@@ -66,6 +66,14 @@ func TestGvisorParity(t *testing.T) {
 		}
 	})
 
+	// overlay2 = "none" keeps root filesystem writes in the upperdir the
+	// stop commits (runtime.md §9, §16).
+	t.Run("stop-commits-the-filesystem", func(t *testing.T) {
+		id := createReadySandbox(t, admin, fmt.Sprintf("runsc-commit-%d", suffix), 128<<20)
+		t.Cleanup(func() { deleteSandbox(t, admin, id) })
+		assertStopCommits(t, admin, id)
+	})
+
 	t.Run("exec-log-stream", func(t *testing.T) {
 		id := createReadySandbox(t, admin, fmt.Sprintf("runsc-exec-%d", suffix), 128<<20)
 		t.Cleanup(func() { deleteSandbox(t, admin, id) })

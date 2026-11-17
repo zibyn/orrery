@@ -768,7 +768,7 @@ func schemas() map[string]any {
 					"required": []string{"count"},
 				},
 				"idle_stop":      map[string]any{"type": "integer"},
-				"conditions":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Current conditions; always empty since Resources mount lazily (ADR-0030)."},
+				"conditions":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Current conditions: commit_stalled while a stop's commit is being retried (ADR-0031)."},
 				"workspace":      schemaRef("SandboxWorkspace"),
 				"queue_position": map[string]any{"type": "integer", "description": "1-based position in the admission queue while pending."},
 				"blocked_reason": nullableString,

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -169,11 +170,7 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			return
 		}
 		go c.run("sandbox:"+cmd.SandboxId, cmd.CommandId, cmd.Generation, func() error {
-			if err := c.rt.stopSandbox(c.ctx, sbID); err != nil {
-				return err
-			}
-			c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseGone, "")
-			return nil
+			return c.stopSandbox(sbID, cmd.Generation)
 		})
 	case *nodev1.ControlMessage_StartExec:
 		cmd := m.StartExec
@@ -269,11 +266,44 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 }
 
 func (c *commandRunner) run(key, commandID string, generation int64, fn func() error) {
+	err := c.serialize(key, generation, fn)
+	commandFailed(commandID, err)
+	c.result(commandID, errString(err))
+}
+
+// stopSandbox ends a Sandbox and commits its filesystem, reporting under the
+// stop's generation.
+func (c *commandRunner) stopSandbox(id uuid.UUID, generation int64) error {
+	return c.rt.stopSandbox(c.ctx, id, generation, func(phase nodeproto.SandboxPhase, cause string, retrying bool) {
+		c.reportSandbox(id.String(), generation, phase, cause, retrying)
+	})
+}
+
+// runtimeDied takes a dead Runtime through the stop's commit path, in line
+// with the Sandbox's commands (runtime.md §16).
+func (c *commandRunner) runtimeDied(sandboxID string, generation int64) {
+	id, err := uuid.Parse(sandboxID)
+	if err != nil {
+		return
+	}
+	if err := c.serialize("sandbox:"+sandboxID, generation, func() error {
+		return c.stopSandbox(id, generation)
+	}); err != nil {
+		slog.Warn("commit a dead Runtime", "sandbox_id", sandboxID, "error", err)
+	}
+}
+
+var (
+	errStaleGeneration = errors.New("stale generation")
+	errSuperseded      = errors.New("superseded by a newer generation")
+)
+
+// serialize runs fn under key's lock unless a newer generation was seen.
+func (c *commandRunner) serialize(key string, generation int64, fn func() error) error {
 	c.mu.Lock()
 	if generation < c.gens[key] {
 		c.mu.Unlock()
-		c.result(commandID, "stale generation")
-		return
+		return errStaleGeneration
 	}
 	c.gens[key] = generation
 	lock := c.locks[key]
@@ -289,12 +319,9 @@ func (c *commandRunner) run(key, commandID string, generation int64, fn func() e
 	stale := c.gens[key] != generation // a newer command arrived while waiting
 	c.mu.Unlock()
 	if stale {
-		c.result(commandID, "superseded by a newer generation")
-		return
+		return errSuperseded
 	}
-	err := fn()
-	commandFailed(commandID, err)
-	c.result(commandID, errString(err))
+	return fn()
 }
 
 // commandFailed logs the error a command reports to the Control Plane; without
@@ -317,6 +344,11 @@ func resourceMounts(in []*nodev1.ResourceMount) []resourceMount {
 // observeSandbox reports a phase; `running` carries the address recorded at
 // Create (node-protocol.md).
 func (c *commandRunner) observeSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string) {
+	c.reportSandbox(id, generation, phase, cause, false)
+}
+
+// reportSandbox is observeSandbox with commit_retrying for `committing`.
+func (c *commandRunner) reportSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string, retrying bool) {
 	var address string
 	if phase == nodeproto.SandboxPhaseRunning {
 		if sbID, err := uuid.Parse(id); err == nil {
@@ -326,6 +358,7 @@ func (c *commandRunner) observeSandbox(id string, generation int64, phase nodepr
 	c.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{
 		SandboxObserved: &nodev1.SandboxObserved{
 			SandboxId: id, Generation: generation, Phase: string(phase), Cause: cause, Address: address,
+			CommitRetrying: retrying,
 		},
 	}})
 }

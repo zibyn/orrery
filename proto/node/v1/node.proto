@@ -216,11 +216,16 @@ message GPU {
 message SandboxObserved {
   string sandbox_id = 1;
   int64 generation = 2;
-  // "running", "gone" or "create_failed".
+  // "running", "committing", "gone", "create_failed" or "commit_failed".
+  // After the Runtime ends the Agent reports "committing" and "gone" only
+  // once the filesystem's Generation is committed (runtime.md §16).
   string phase = 3;
   string cause = 4;
   // The Sandbox's IPv4 address from CNI, sent with "running" (minor 5).
   string address = 5;
+  // With "committing": the commit keeps failing and is being retried; the
+  // Control Plane shows commit_stalled.
+  bool commit_retrying = 6;
 }
 
 message WorkspaceObserved {

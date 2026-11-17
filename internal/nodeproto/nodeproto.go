@@ -76,6 +76,9 @@ const (
 	SandboxPhaseRunning      SandboxPhase = "running"
 	SandboxPhaseGone         SandboxPhase = "gone"
 	SandboxPhaseCreateFailed SandboxPhase = "create_failed"
+	// The Runtime ended and the filesystem is being committed (runtime.md §16).
+	SandboxPhaseCommitting   SandboxPhase = "committing"
+	SandboxPhaseCommitFailed SandboxPhase = "commit_failed"
 )
 
 // WorkspacePhase is what a Node observes about a Workspace's storage.
