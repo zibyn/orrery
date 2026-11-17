@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/netip"
 	"time"
 
@@ -47,10 +48,25 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 		if rows > 0 {
 			n.s.reconcile.notify()
 		}
-	case nodeproto.SandboxPhaseCreateFailed:
+	case nodeproto.SandboxPhaseCommitting:
+		// The stop stays `stopping` until gone; a commit being retried shows
+		// commit_stalled (runtime.md §16).
+		conditions, err := json.Marshal(sandboxConditions{CommitStalled: obs.CommitRetrying})
+		if err == nil {
+			_, err = n.s.q.SetSandboxConditions(ctx, store.SetSandboxConditionsParams{
+				ID: id, Generation: obs.Generation, Conditions: conditions,
+			})
+		}
+		if err != nil {
+			n.s.log.Warn("record SandboxObserved committing", "sandbox_id", id, "error", err)
+		}
+	case nodeproto.SandboxPhaseCreateFailed, nodeproto.SandboxPhaseCommitFailed:
 		cause := obs.Cause
 		if cause == "" {
 			cause = "runtime_create_failed"
+			if nodeproto.SandboxPhase(obs.Phase) == nodeproto.SandboxPhaseCommitFailed {
+				cause = "commit_failed"
+			}
 		}
 		rows, err := n.s.q.MarkSandboxFailed(ctx, store.MarkSandboxFailedParams{
 			ID: id, Generation: obs.Generation, Cause: &cause,

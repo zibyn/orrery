@@ -21,6 +21,7 @@ import (
 	eventtypes "github.com/containerd/containerd/api/events"
 	runtimeoptions "github.com/containerd/containerd/api/types/runtimeoptions/v1"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/defaults"
@@ -35,6 +36,7 @@ import (
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/generation"
 	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/supervisor"
 )
@@ -69,6 +71,9 @@ type containerdDriver struct {
 	lastAddr netip.Addr
 }
 
+// runscOptions is the TOML passed to every runsc container (runtime.md §9).
+const runscOptions = "[runsc_config]\n  host-uds = \"create\"\n  overlay2 = \"none\"\n"
+
 // runsc reports whether this Node runs Sandboxes under runsc.
 func (d *containerdDriver) runsc() bool { return d.runscConfig != "" }
 
@@ -89,9 +94,10 @@ func newContainerdRuntime(socket, subnet, isolation, dataRoot, nodeID string) (*
 		// The guest has no OOM counter; the Agent reads the host's (§9).
 		rt.hostCgroup = "/sys/fs/cgroup"
 		// Sockets the Supervisor creates (PTY ctl.sock, forwards) must be
-		// visible on the host (runtime.md §9).
+		// visible on the host, and so must root filesystem writes, which
+		// the stop commits from the upperdir (runtime.md §9, §16).
 		driver.runscConfig = filepath.Join(dataRoot, "runsc.toml")
-		if err := os.WriteFile(driver.runscConfig, []byte("[runsc_config]\n  host-uds = \"create\"\n"), 0o644); err != nil {
+		if err := os.WriteFile(driver.runscConfig, []byte(runscOptions), 0o644); err != nil {
 			client.Close() //nolint:errcheck // failed constructor
 			return nil, fmt.Errorf("write runsc options: %w", err)
 		}
@@ -313,12 +319,88 @@ func (d *containerdDriver) teardown(ctx context.Context, id uuid.UUID) error {
 	return d.teardownNetwork(ctx, id, sandboxPath(d.r.dataRoot, id))
 }
 
+// stopSandbox kills and deletes the task and removes the network, keeping
+// the container and its snapshot: the container's spec names the mounts the
+// commit leaves out, and the snapshot is the filesystem (runtime.md §9).
 func (d *containerdDriver) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
-	if err := d.teardown(ctx, sandboxID); err != nil {
+	// Untracked first: the kept container's exit event is this Stop's, not a
+	// Runtime death.
+	d.r.forget(sandboxID.String())
+	c, err := d.client.LoadContainer(ctx, containerName(sandboxID))
+	if err == nil {
+		if task, err := c.Task(ctx, nil); err == nil {
+			if _, err := task.Delete(ctx, containerd.WithProcessKill); err != nil && !errdefs.IsNotFound(err) {
+				return fmt.Errorf("delete task: %w", err)
+			}
+		} else if !errdefs.IsNotFound(err) {
+			return err
+		}
+	} else if !errdefs.IsNotFound(err) {
 		return err
 	}
-	d.r.forget(sandboxID.String())
-	return nil
+	return d.teardownNetwork(ctx, sandboxID, sandboxPath(d.r.dataRoot, sandboxID))
+}
+
+// sandboxOwnedPaths are platform directories whose mounts the commit skips
+// whole, not only the mount points inside them (runtime.md §16).
+var sandboxOwnedPaths = []string{".orrery", "resources"}
+
+// commitTarget is the snapshot's upperdir, without the container's mount
+// points. No container means nothing is left to commit.
+func (d *containerdDriver) commitTarget(ctx context.Context, sandboxID uuid.UUID) (commitTarget, bool, error) {
+	c, err := d.client.LoadContainer(ctx, containerName(sandboxID))
+	if errdefs.IsNotFound(err) {
+		return commitTarget{}, false, nil
+	}
+	if err != nil {
+		return commitTarget{}, false, err
+	}
+	info, err := c.Info(ctx)
+	if err != nil {
+		return commitTarget{}, false, err
+	}
+	spec, err := c.Spec(ctx)
+	if err != nil {
+		return commitTarget{}, false, err
+	}
+	mounts, err := d.client.SnapshotService(info.Snapshotter).Mounts(ctx, info.SnapshotKey)
+	if errdefs.IsNotFound(err) {
+		return commitTarget{}, false, nil
+	}
+	if err != nil {
+		return commitTarget{}, false, err
+	}
+	target := commitTarget{kind: generation.KindDiff, exclude: append([]string(nil), sandboxOwnedPaths...)}
+	for _, m := range spec.Mounts {
+		target.exclude = append(target.exclude, m.Destination)
+	}
+	// No upperdir leaves root empty, which the commit fails as unreadable.
+	target.root = upperDir(mounts)
+	return target, true, nil
+}
+
+// upperDir is the writable directory of an overlay snapshot, or the
+// directory of a snapshot without parents.
+func upperDir(mounts []mount.Mount) string {
+	if len(mounts) != 1 {
+		return ""
+	}
+	switch m := mounts[0]; m.Type {
+	case "bind":
+		return m.Source
+	case "overlay":
+		for _, option := range m.Options {
+			if dir, ok := strings.CutPrefix(option, "upperdir="); ok {
+				return dir
+			}
+		}
+	}
+	return ""
+}
+
+// dropSandboxDisk removes the container and its snapshot.
+func (d *containerdDriver) dropSandboxDisk(ctx context.Context, sandboxID uuid.UUID) error {
+	return d.removeContainer(ctx, containerName(sandboxID))
 }
 
 func taskRunning(ctx context.Context, c containerd.Container) (bool, error) {

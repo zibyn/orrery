@@ -512,9 +512,16 @@ UPDATE sandboxes
 SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
+-- SetSandboxConditions writes the Agent-reported condition set under the
+-- generation fence (commit_stalled, runtime.md §16).
+-- name: SetSandboxConditions :execrows
+UPDATE sandboxes
+SET conditions = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted';
+
 -- name: MarkSandboxRuntimeLost :execrows
 UPDATE sandboxes
-SET state = 'stopped', cause = $3, desired_state = 'stopped', address = NULL, updated_at = now()
+SET state = 'stopped', cause = $3, conditions = NULL, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning', 'ready');
 

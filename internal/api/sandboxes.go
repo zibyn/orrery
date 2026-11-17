@@ -1039,6 +1039,28 @@ func (s *Server) waitForSandbox(ctx context.Context, sb store.Sandbox, want Sand
 	return sb
 }
 
+// sandboxConditions is the Sandbox's conditions column. Only the conditions
+// the Agent actually reports are defined (api.md §3).
+type sandboxConditions struct {
+	CommitStalled bool `json:"commit_stalled,omitempty"`
+}
+
+func parseSandboxConditions(raw json.RawMessage) sandboxConditions {
+	var c sandboxConditions
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &c)
+	}
+	return c
+}
+
+func (c sandboxConditions) names() []string {
+	names := []string{}
+	if c.CommitStalled {
+		names = append(names, "commit_stalled")
+	}
+	return names
+}
+
 func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO {
 	labels := map[string]string{}
 	if len(sb.Labels) > 0 {
@@ -1051,7 +1073,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 		State:   sb.State, Cause: sb.Cause, NodeID: uuidPtr(sb.NodeID),
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
-		Conditions: []string{}, // the Agent reports none since ADR-0030
+		Conditions: parseSandboxConditions(sb.Conditions).names(),
 	}
 	if sb.Address != nil {
 		dto.Address = *sb.Address

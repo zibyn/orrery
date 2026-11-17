@@ -1510,13 +1510,18 @@ type SandboxObserved struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	SandboxId  string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
 	Generation int64                  `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
-	// "running", "gone" or "create_failed".
+	// "running", "committing", "gone", "create_failed" or "commit_failed".
+	// After the Runtime ends the Agent reports "committing" and "gone" only
+	// once the filesystem's Generation is committed (runtime.md §16).
 	Phase string `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
 	Cause string `protobuf:"bytes,4,opt,name=cause,proto3" json:"cause,omitempty"`
 	// The Sandbox's IPv4 address from CNI, sent with "running" (minor 5).
-	Address       string `protobuf:"bytes,5,opt,name=address,proto3" json:"address,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Address string `protobuf:"bytes,5,opt,name=address,proto3" json:"address,omitempty"`
+	// With "committing": the commit keeps failing and is being retried; the
+	// Control Plane shows commit_stalled.
+	CommitRetrying bool `protobuf:"varint,6,opt,name=commit_retrying,json=commitRetrying,proto3" json:"commit_retrying,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SandboxObserved) Reset() {
@@ -1582,6 +1587,13 @@ func (x *SandboxObserved) GetAddress() string {
 		return x.Address
 	}
 	return ""
+}
+
+func (x *SandboxObserved) GetCommitRetrying() bool {
+	if x != nil {
+		return x.CommitRetrying
+	}
+	return false
 }
 
 type WorkspaceObserved struct {
@@ -4139,7 +4151,7 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x0e2\x1f.orrery.node.v1.CapabilityValueR\x05value\"/\n" +
 	"\x03GPU\x12\x12\n" +
 	"\x04uuid\x18\x01 \x01(\tR\x04uuid\x12\x14\n" +
-	"\x05model\x18\x02 \x01(\tR\x05model\"\x96\x01\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"\xbf\x01\n" +
 	"\x0fSandboxObserved\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x1e\n" +
@@ -4148,7 +4160,8 @@ const file_node_v1_node_proto_rawDesc = "" +
 	"generation\x12\x14\n" +
 	"\x05phase\x18\x03 \x01(\tR\x05phase\x12\x14\n" +
 	"\x05cause\x18\x04 \x01(\tR\x05cause\x12\x18\n" +
-	"\aaddress\x18\x05 \x01(\tR\aaddress\"\x82\x01\n" +
+	"\aaddress\x18\x05 \x01(\tR\aaddress\x12'\n" +
+	"\x0fcommit_retrying\x18\x06 \x01(\bR\x0ecommitRetrying\"\x82\x01\n" +
 	"\x11WorkspaceObserved\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x1e\n" +
 	"\n" +

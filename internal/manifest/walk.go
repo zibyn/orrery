@@ -70,7 +70,7 @@ func Walk(fsys fs.FS, base string) (Manifest, map[string]Source, error) {
 				return fmt.Errorf("%s: %w", relative, ErrTooLarge)
 			}
 			size := info.Size()
-			digests, err := hashFile(fsys, p, size)
+			digests, err := HashFile(fsys, p, size)
 			if err != nil {
 				return err
 			}
@@ -110,10 +110,10 @@ type Source struct {
 	Offset, Size int64
 }
 
-// hashFile returns the digest of each BlockSize block of a file of size, or
+// HashFile returns the digest of each BlockSize block of a file of size, or
 // the whole file's digest when it is one object. A file that changed size
 // while being read is an error, since its entry would not match its objects.
-func hashFile(fsys fs.FS, name string, size int64) ([]string, error) {
+func HashFile(fsys fs.FS, name string, size int64) ([]string, error) {
 	f, err := fsys.Open(name)
 	if err != nil {
 		return nil, err

@@ -6255,7 +6255,7 @@ func (q *Queries) MarkSandboxReady(ctx context.Context, arg MarkSandboxReadyPara
 
 const markSandboxRuntimeLost = `-- name: MarkSandboxRuntimeLost :execrows
 UPDATE sandboxes
-SET state = 'stopped', cause = $3, desired_state = 'stopped', address = NULL, updated_at = now()
+SET state = 'stopped', cause = $3, conditions = NULL, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning', 'ready')
 `
@@ -7021,6 +7021,28 @@ type SetSandboxAddressParams struct {
 func (q *Queries) SetSandboxAddress(ctx context.Context, arg SetSandboxAddressParams) error {
 	_, err := q.db.Exec(ctx, setSandboxAddress, arg.ID, arg.Generation, arg.Address)
 	return err
+}
+
+const setSandboxConditions = `-- name: SetSandboxConditions :execrows
+UPDATE sandboxes
+SET conditions = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted'
+`
+
+type SetSandboxConditionsParams struct {
+	ID         uuid.UUID
+	Generation int64
+	Conditions json.RawMessage
+}
+
+// SetSandboxConditions writes the Agent-reported condition set under the
+// generation fence (commit_stalled, runtime.md §16).
+func (q *Queries) SetSandboxConditions(ctx context.Context, arg SetSandboxConditionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSandboxConditions, arg.ID, arg.Generation, arg.Conditions)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setSandboxHeadGeneration = `-- name: SetSandboxHeadGeneration :execrows
