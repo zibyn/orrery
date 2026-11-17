@@ -273,6 +273,7 @@ message ControlMessage {
     BuildSnapshot build_snapshot = 10;
     MeshPeers mesh_peers = 11;
     SandboxLinks sandbox_links = 12;
+    DropSandboxDisk drop_sandbox_disk = 13;
   }
 }
 
@@ -416,6 +417,14 @@ message CreateSandbox {
   // records it with the veth and renders the inbound chain, ending in a drop,
   // at Create before the Sandbox runs (runtime.md §13).
   bool link_target = 10;
+  // The Sandbox's head Generation, unset before its first commit. The Agent
+  // reuses a cached diff equal to it, or restores it into a fresh snapshot
+  // before the Runtime starts (runtime.md §16).
+  RestoreGeneration restore = 11;
+}
+
+message RestoreGeneration {
+  string generation_id = 1;
 }
 
 // EgressMode is open, none or allowlist; allow is set only for allowlist, with
@@ -448,6 +457,13 @@ message StopSandbox {
   string command_id = 1;
   string sandbox_id = 2;
   int64 generation = 3;
+}
+
+// DropSandboxDisk removes a deleted Sandbox's cached diff and container
+// snapshot from the Node it last ran on (runtime.md §16).
+message DropSandboxDisk {
+  string command_id = 1;
+  string sandbox_id = 2;
 }
 
 message StartExec {

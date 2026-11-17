@@ -150,6 +150,9 @@ func (n *nodeService) recordSandboxGone(ctx context.Context, id uuid.UUID, gener
 		n.s.log.Warn("commit Sandbox teardown", "sandbox_id", id, "error", err)
 		return
 	}
+	if sb, err := n.s.q.GetSandboxIncludingDeleted(ctx, id); err == nil && SandboxState(sb.State) == SandboxDeleted {
+		n.s.reconcile.dropSandboxDisk(ctx, sb)
+	}
 	n.s.reconcile.notify()
 }
 

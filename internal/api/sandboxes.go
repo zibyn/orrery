@@ -1016,6 +1016,9 @@ func (s *Server) waitForSandbox(ctx context.Context, sb store.Sandbox, want Sand
 // the Agent actually reports are defined (api.md §3).
 type sandboxConditions struct {
 	CommitStalled bool `json:"commit_stalled,omitempty"`
+	// ChangesLost: the Node was declared lost, so what the Sandbox wrote
+	// since its head Generation is gone; cleared when it runs again.
+	ChangesLost bool `json:"changes_lost,omitempty"`
 }
 
 func parseSandboxConditions(raw json.RawMessage) sandboxConditions {
@@ -1030,6 +1033,9 @@ func (c sandboxConditions) names() []string {
 	names := []string{}
 	if c.CommitStalled {
 		names = append(names, "commit_stalled")
+	}
+	if c.ChangesLost {
+		names = append(names, "changes_lost")
 	}
 	return names
 }

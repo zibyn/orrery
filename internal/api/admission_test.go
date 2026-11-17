@@ -120,11 +120,11 @@ func TestAdmissionExhausted(t *testing.T) {
 		{"every Node is too small", []store.Node{small}, request, nil, true},
 		{"unreported Capabilities are not proof", []store.Node{reconnected}, request, nil, false},
 		{
-			"a bound Sandbox only considers its Node",
+			"the Node a Sandbox last ran on does not bind it (ADR-0031)",
 			[]store.Node{small, big},
 			store.Sandbox{Cpu: 4, Memory: 8 << 30, NodeID: &small.ID},
 			nil,
-			true,
+			false,
 		},
 		{
 			"a bound Workspace only considers its Node",
@@ -372,6 +372,15 @@ func TestOrderPlacementNodes(t *testing.T) {
 				mk(2, 20, 0, nil),
 			},
 			want: []byte{2, 1},
+		},
+		"the Node it last ran on goes before created_at, after the card rule": {
+			sb: store.Sandbox{},
+			nodes: []placementNode{
+				mk(1, 10, 0, nil),
+				{node: store.Node{ID: uuid.UUID{2}, CreatedAt: at(20)}, last: true},
+				{node: store.Node{ID: uuid.UUID{3}, CreatedAt: at(5)}, gpus: 4, last: true},
+			},
+			want: []byte{2, 1, 3},
 		},
 		"a complete created_at tie breaks by id": {
 			sb: store.Sandbox{},

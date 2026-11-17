@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -217,7 +218,7 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request, p *pri
 		s.internal(w, "count Node Workspaces", err)
 		return
 	}
-	sandboxes, err := q.CountNodeNonTerminalSandboxes(ctx, &id)
+	sandboxes, err := q.CountNodeNonTerminalSandboxes(ctx, id)
 	if err != nil {
 		s.internal(w, "count Node Sandboxes", err)
 		return
@@ -316,40 +317,9 @@ func (s *Server) handleDeclareNodeLost(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	q := s.q.WithTx(tx)
-	step := func(what string, err error) bool {
-		if err == nil {
-			return false
-		}
-		s.log.Error("declare Node lost: "+what, "node_id", id, "error", err)
+	if err := declareNodeLost(ctx, s.q.WithTx(tx), id); err != nil {
+		s.log.Error("declare Node lost", "node_id", id, "error", err)
 		s.internal(w, "declare Node lost", err)
-		return true
-	}
-	if _, err := q.MarkNodeLost(ctx, id); step("clear Node token", err) {
-		return
-	}
-	if _, err := q.FailSandboxesOnNodeLost(ctx, &id); step("fail Sandboxes", err) {
-		return
-	}
-	if _, err := q.DeleteGPUAllocationsOnNodeLost(ctx, &id); step("release GPU allocations", err) {
-		return
-	}
-	if _, err := q.DeleteAllocationsOnNodeLost(ctx, &id); step("release allocations", err) {
-		return
-	}
-	if _, err := q.FinishExecsOnNodeLost(ctx, &id); step("finish Execs", err) {
-		return
-	}
-	if _, err := q.MarkDeletingWorkspacesDeletedOnNodeLost(ctx, &id); step("finish Workspace deletions", err) {
-		return
-	}
-	if _, err := q.MarkWorkspacesLostOnNodeLost(ctx, &id); step("mark Workspaces lost", err) {
-		return
-	}
-	if _, err := q.FailBuildsOnNodeLost(ctx, &id); step("fail builds", err) {
-		return
-	}
-	if _, err := q.FailPublishesOnNodeLost(ctx, &id); step("fail publishes", err) {
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -373,6 +343,32 @@ func (s *Server) handleDeclareNodeLost(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	writeJSON(w, http.StatusAccepted, dto)
+}
+
+// declareNodeLost is the lost cascade (api.md §3): Execs end node_lost, the
+// Sandboxes running, stopping or bound there stop with changes_lost before
+// their Allocations go, and builds and publishes in flight fail.
+func declareNodeLost(ctx context.Context, q *store.Queries, id uuid.UUID) error {
+	steps := []struct {
+		what string
+		run  func() (int64, error)
+	}{
+		{"clear Node token", func() (int64, error) { return q.MarkNodeLost(ctx, id) }},
+		{"finish Execs", func() (int64, error) { return q.FinishExecsOnNodeLost(ctx, &id) }},
+		{"stop Sandboxes", func() (int64, error) { return q.StopSandboxesOnNodeLost(ctx, id) }},
+		{"release GPU allocations", func() (int64, error) { return q.DeleteGPUAllocationsOnNodeLost(ctx, id) }},
+		{"release allocations", func() (int64, error) { return q.DeleteAllocationsOnNodeLost(ctx, id) }},
+		{"finish Workspace deletions", func() (int64, error) { return q.MarkDeletingWorkspacesDeletedOnNodeLost(ctx, &id) }},
+		{"mark Workspaces lost", func() (int64, error) { return q.MarkWorkspacesLostOnNodeLost(ctx, &id) }},
+		{"fail builds", func() (int64, error) { return q.FailBuildsOnNodeLost(ctx, &id) }},
+		{"fail publishes", func() (int64, error) { return q.FailPublishesOnNodeLost(ctx, &id) }},
+	}
+	for _, step := range steps {
+		if _, err := step.run(); err != nil {
+			return fmt.Errorf("%s: %w", step.what, err)
+		}
+	}
+	return nil
 }
 
 // nodeReachable is liveness, not health: a fresh heartbeat or an open Agent
