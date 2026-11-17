@@ -24,7 +24,7 @@ import (
 const resourceMountRoot = "/resources"
 
 // resourceFetchBackoff is the Resource mount retry schedule (defaults.md:
-// 1, 2, 4, 8, 16 seconds, the same group as Workspace provisioning). A var so
+// 1, 2, 4, 8, 16 seconds). A var so
 // tests can shorten it.
 var resourceFetchBackoff = []time.Duration{
 	time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
@@ -109,8 +109,7 @@ func (refs *resourceRefs) lock(address string) func() {
 }
 
 // retryResourceFetch runs fetch until it succeeds, sleeping the schedule after
-// each failure. len(backoff) retries means len(backoff)+1 attempts, matching
-// the Workspace provisioning loop.
+// each failure. len(backoff) retries means len(backoff)+1 attempts.
 func retryResourceFetch(ctx context.Context, backoff []time.Duration, fetch func() error) error {
 	var err error
 	for attempt := 0; ; attempt++ {

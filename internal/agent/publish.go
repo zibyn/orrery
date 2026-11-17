@@ -26,32 +26,19 @@ const presignBatch = 500
 // transfer client it has no timeout: a legacy object can be 5 GiB.
 var publishHTTP = &http.Client{}
 
-// publishWorkspace walks this Node's copy of a Workspace and publishes it
-// (node-protocol.md "Workspace publish"). No Sandbox is involved: the Agent
-// reads the host directory. The command is redelivered after a reconnect, so
-// every step is repeatable.
-func (r *Runtime) publishWorkspace(ctx context.Context, cmd *nodev1.PublishWorkspace) error {
-	workspaceID, err := uuid.Parse(cmd.GetWorkspaceId())
-	if err != nil {
-		return fmt.Errorf("invalid workspace id: %w", err)
-	}
-	return r.publishDir(ctx, workspacePath(r.dataRoot, workspaceID), cmd.GetVersionId(), cmd.GetPath())
-}
-
-// publishSandbox publishes a path of a running Sandbox (node-protocol.md
-// "Sandbox publish"). The path is relative to /workspace.
-// shortcut: reads the Sandbox's Workspace directory, which is its /workspace
-// until the file API moves to the rootfs view (ADR-0031); switch the root then.
+// publishSandbox publishes a path of a running Sandbox's own filesystem
+// (node-protocol.md "Sandbox publish"). The path is relative to /workspace.
+// The command is redelivered after a reconnect, so every step is repeatable.
 func (r *Runtime) publishSandbox(ctx context.Context, sandboxID uuid.UUID, cmd *nodev1.PublishSandbox) error {
-	ref, ok := readWorkspaceRef(sandboxPath(r.dataRoot, sandboxID))
-	if !ok {
-		return errors.New("the Sandbox has no filesystem on this Node")
-	}
-	workspaceID, err := uuid.Parse(ref.ID)
+	sfs, err := r.driver.filesystem(ctx, sandboxID)
 	if err != nil {
-		return fmt.Errorf("invalid workspace reference: %w", err)
+		return err
 	}
-	return r.publishDir(ctx, workspacePath(r.dataRoot, workspaceID), cmd.GetVersionId(), cmd.GetPath())
+	publishPath, err := sfs.resolve(cmd.GetPath())
+	if err != nil {
+		return err
+	}
+	return r.publishDir(ctx, sfs.dir, cmd.GetVersionId(), publishPath)
 }
 
 // publishDir walks publishPath under dir and publishes it as versionID.
@@ -62,7 +49,7 @@ func (r *Runtime) publishDir(ctx context.Context, dir, versionID, publishPath st
 	}
 	defer root.Close() //nolint:errcheck // read-only handle
 
-	m, files, err := walkWorkspaceManifest(root, publishPath)
+	m, files, err := walkManifest(root, publishPath)
 	if err != nil {
 		return err
 	}
@@ -73,11 +60,11 @@ func (r *Runtime) publishDir(ctx context.Context, dir, versionID, publishPath st
 	return r.uploadPublishObjects(ctx, root, missing, files)
 }
 
-// walkWorkspaceManifest builds the manifest rooted at publishPath inside the
-// Workspace. Symlinks are recorded and never followed, empty directories and
+// walkManifest builds the manifest rooted at publishPath inside root.
+// Symlinks are recorded and never followed, empty directories and
 // the executable bit survive, and devices/FIFOs/sockets are rejected
 // (ADR-0012).
-func walkWorkspaceManifest(root *os.Root, publishPath string) (manifest.Manifest, map[string]manifest.Source, error) {
+func walkManifest(root *os.Root, publishPath string) (manifest.Manifest, map[string]manifest.Source, error) {
 	base, err := localPath(publishPath)
 	if err != nil {
 		return manifest.Manifest{}, nil, err

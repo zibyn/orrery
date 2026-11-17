@@ -21,8 +21,8 @@ const (
 
 // runtimeDriver is the part of the Runtime Provider contract that genuinely
 // differs between Providers (ADR-0009): lifecycle, Exec launch, the
-// registration self-check, and Runtime liveness. Host-path work (Workspace
-// provisioning, Supervisor records, files, publish, resources, tunnels) is
+// registration self-check, and Runtime liveness. Host-path work (Supervisor
+// records, files, publish, resources, tunnels) is
 // identical for every Provider and stays on Runtime, so the seam is these
 // operations and nothing more.
 type runtimeDriver interface {
@@ -34,6 +34,9 @@ type runtimeDriver interface {
 	commitTarget(ctx context.Context, sandboxID uuid.UUID) (target commitTarget, ok bool, err error)
 	// dropSandboxDisk removes the filesystem once committed.
 	dropSandboxDisk(ctx context.Context, sandboxID uuid.UUID) error
+	// filesystem is a running Sandbox's own filesystem for the file API and
+	// publish (api.md §5); errNotRunning without a Runtime here.
+	filesystem(ctx context.Context, sandboxID uuid.UUID) (sandboxFS, error)
 	startExec(ctx context.Context, cmd *nodev1.StartExec) error
 	probe(ctx context.Context) (nodeproto.CapabilityReport, error)
 	healthy(ctx context.Context) bool

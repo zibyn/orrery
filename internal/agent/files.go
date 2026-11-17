@@ -2,9 +2,7 @@ package agent
 
 import (
 	"archive/tar"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -22,10 +20,68 @@ import (
 // maxFileSize mirrors api.md §2: a single file is at most 5 GiB.
 const maxFileSize = int64(5) << 30
 
-// Workspace paths are resolved by os.Root, which applies openat(2) semantics:
+// Sandbox paths are resolved by os.Root, which applies openat(2) semantics:
 // lexical traversal is rejected here, and escaping symlinks are rejected by the
 // kernel (file-transfer-mechanics-and-path-safety.md §9).
-var errBadPath = errors.New("path must be relative to the Workspace and stay inside it")
+var errBadPath = errors.New("path must stay inside the Sandbox's filesystem")
+
+// errMountPath is a path at or under a Volume or Resource mount (api.md §5).
+var errMountPath = errors.New("the path is on a Volume or Resource mount: use /volumes/{id}/files or the Resource manifest")
+
+// errNotRunning is a Sandbox without a running Runtime on this Node.
+var errNotRunning = errors.New("the Sandbox is not running on this Node")
+
+// sandboxFS is a running Sandbox's own filesystem as the file API and publish
+// see it (api.md §5). dir is the host path of its root; a relative path is
+// under base (/workspace in a container, the working directory itself on
+// Local), an absolute one under the root; refused lists the mount points,
+// relative to the root.
+type sandboxFS struct {
+	dir     string
+	base    string
+	refused []string
+}
+
+// resolve turns an API path into one relative to dir.
+func (s sandboxFS) resolve(raw string) (string, error) {
+	abs := strings.HasPrefix(raw, "/")
+	p, err := localPath(strings.TrimLeft(raw, "/"))
+	if err != nil {
+		return "", err
+	}
+	if !abs {
+		p = filepath.Join(s.base, p)
+	}
+	if s.onMount(p) {
+		return "", errMountPath
+	}
+	return p, nil
+}
+
+func (s sandboxFS) onMount(p string) bool {
+	for _, m := range s.refused {
+		if p == m || strings.HasPrefix(p, m+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// isRoot reports the root or the base, which are never moved or deleted.
+func (s sandboxFS) isRoot(p string) bool { return p == "." || p == s.base }
+
+// show names p the way the request named its path: absolute for an absolute
+// request, otherwise relative to base.
+func (s sandboxFS) show(raw, p string) string {
+	if strings.HasPrefix(raw, "/") {
+		return "/" + strings.TrimPrefix(p, ".")
+	}
+	rel, err := filepath.Rel(s.base, p)
+	if err != nil {
+		return p
+	}
+	return rel
+}
 
 type fileEntry struct {
 	Path       string    `json:"path"`
@@ -50,7 +106,7 @@ type moveRequest struct {
 	To   string `json:"to"`
 }
 
-// localPath accepts only a path that is lexically inside the Workspace; it
+// localPath accepts only a path that is lexically inside its root; it
 // never rewrites a path that escapes. Empty and "." both name the root.
 func localPath(raw string) (string, error) {
 	if strings.ContainsRune(raw, 0) {
@@ -85,7 +141,9 @@ func writeFileProblem(w http.ResponseWriter, code, detail string) {
 func writeFileError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errBadPath), isEscapeErr(err):
-		writeFileProblem(w, "invalid_request", "the path must stay inside the Workspace")
+		writeFileProblem(w, "invalid_request", errBadPath.Error())
+	case errors.Is(err, errMountPath):
+		writeFileProblem(w, "invalid_request", errMountPath.Error())
 	case errors.Is(err, fs.ErrNotExist):
 		writeFileProblem(w, "not_found", "no such file or directory")
 	case errors.Is(err, syscall.ENOTEMPTY), errors.Is(err, fs.ErrExist):
@@ -107,41 +165,35 @@ func decodeFileJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return httpjson.Decode(w, r, dst)
 }
 
-// withWorkspace opens a Sandbox's Workspace and applies the read-only rule for
-// mutations (api.md §5). A missing workspace reference means the Sandbox has no
-// Workspace on this Node.
-func (r *Runtime) withWorkspace(w http.ResponseWriter, req *http.Request, write bool, fn func(root *os.Root)) {
+// withSandboxFS opens a running Sandbox's filesystem (api.md §5).
+func (r *Runtime) withSandboxFS(w http.ResponseWriter, req *http.Request, fn func(root *os.Root, sfs sandboxFS)) {
 	sid, err := uuid.Parse(req.PathValue("id"))
 	if err != nil {
 		writeFileProblem(w, "invalid_request", "sandbox id must be a UUID")
 		return
 	}
-	ref, ok := readWorkspaceRef(sandboxPath(r.dataRoot, sid))
-	if !ok {
-		writeFileProblem(w, "not_found", "the Sandbox has no Workspace on this Node")
+	sfs, err := r.driver.filesystem(req.Context(), sid)
+	if errors.Is(err, errNotRunning) {
+		writeFileProblem(w, "not_found", err.Error())
 		return
 	}
-	if write && ref.Mode != "rw" {
-		writeFileProblem(w, "conflict", "the Workspace is attached read-only")
-		return
-	}
-	wid, err := uuid.Parse(ref.ID)
 	if err != nil {
-		writeFileProblem(w, "internal", "the Workspace reference is malformed")
+		writeFileProblem(w, "internal", "find the Sandbox's filesystem")
 		return
 	}
-	root, err := os.OpenRoot(workspacePath(r.dataRoot, wid))
+	root, err := os.OpenRoot(sfs.dir)
 	if err != nil {
-		writeFileProblem(w, "internal", "open the Workspace")
+		writeFileProblem(w, "internal", "open the Sandbox's filesystem")
 		return
 	}
 	defer root.Close() //nolint:errcheck // read-only handle
-	fn(root)
+	fn(root, sfs)
 }
 
 func (r *Runtime) handleFileList(w http.ResponseWriter, req *http.Request) {
-	r.withWorkspace(w, req, false, func(root *os.Root) {
-		path, err := localPath(req.URL.Query().Get("path"))
+	r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+		raw := req.URL.Query().Get("path")
+		path, err := sfs.resolve(raw)
 		if err != nil {
 			writeFileError(w, err)
 			return
@@ -166,15 +218,18 @@ func (r *Runtime) handleFileList(w http.ResponseWriter, req *http.Request) {
 			if err != nil {
 				continue
 			}
-			list.Items = append(list.Items, fileEntryFor(root, filepath.Join(path, d.Name()), info))
+			entry := fileEntryFor(root, filepath.Join(path, d.Name()), info)
+			entry.Path = sfs.show(raw, entry.Path)
+			list.Items = append(list.Items, entry)
 		}
 		writeFileJSON(w, http.StatusOK, list)
 	})
 }
 
 func (r *Runtime) handleFileStat(w http.ResponseWriter, req *http.Request) {
-	r.withWorkspace(w, req, false, func(root *os.Root) {
-		path, err := localPath(req.URL.Query().Get("path"))
+	r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+		raw := req.URL.Query().Get("path")
+		path, err := sfs.resolve(raw)
 		if err != nil {
 			writeFileError(w, err)
 			return
@@ -184,15 +239,18 @@ func (r *Runtime) handleFileStat(w http.ResponseWriter, req *http.Request) {
 			writeFileError(w, err)
 			return
 		}
-		writeFileJSON(w, http.StatusOK, fileEntryFor(root, path, info))
+		entry := fileEntryFor(root, path, info)
+		entry.Path = sfs.show(raw, path)
+		writeFileJSON(w, http.StatusOK, entry)
 	})
 }
 
 func (r *Runtime) handleFileContent(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
-		r.withWorkspace(w, req, false, func(root *os.Root) {
-			path, err := localPath(req.URL.Query().Get("path"))
+		r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+			raw := req.URL.Query().Get("path")
+			path, err := sfs.resolve(raw)
 			if err != nil {
 				writeFileError(w, err)
 				return
@@ -237,8 +295,9 @@ func (r *Runtime) handleFileContent(w http.ResponseWriter, req *http.Request) {
 			http.ServeContent(w, req, opened.Name(), opened.ModTime(), f)
 		})
 	case http.MethodPut:
-		r.withWorkspace(w, req, true, func(root *os.Root) {
-			path, err := localPath(req.URL.Query().Get("path"))
+		r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+			raw := req.URL.Query().Get("path")
+			path, err := sfs.resolve(raw)
 			if err != nil {
 				writeFileError(w, err)
 				return
@@ -266,8 +325,8 @@ func (r *Runtime) handleFileMkdir(w http.ResponseWriter, req *http.Request) {
 	if !decodeFileJSON(w, req, &body) {
 		return
 	}
-	r.withWorkspace(w, req, true, func(root *os.Root) {
-		path, err := localPath(body.Path)
+	r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+		path, err := sfs.resolve(body.Path)
 		if err != nil {
 			writeFileError(w, err)
 			return
@@ -289,19 +348,19 @@ func (r *Runtime) handleFileMove(w http.ResponseWriter, req *http.Request) {
 	if !decodeFileJSON(w, req, &body) {
 		return
 	}
-	r.withWorkspace(w, req, true, func(root *os.Root) {
-		from, err := localPath(body.From)
+	r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+		from, err := sfs.resolve(body.From)
 		if err != nil {
 			writeFileError(w, err)
 			return
 		}
-		to, err := localPath(body.To)
+		to, err := sfs.resolve(body.To)
 		if err != nil {
 			writeFileError(w, err)
 			return
 		}
-		if from == "." || to == "." {
-			writeFileProblem(w, "invalid_request", "the Workspace root cannot be moved")
+		if sfs.isRoot(from) || sfs.isRoot(to) {
+			writeFileProblem(w, "invalid_request", "the root and /workspace cannot be moved")
 			return
 		}
 		if err := root.Rename(from, to); err != nil {
@@ -313,14 +372,15 @@ func (r *Runtime) handleFileMove(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Runtime) handleFileDelete(w http.ResponseWriter, req *http.Request) {
-	r.withWorkspace(w, req, true, func(root *os.Root) {
-		path, err := localPath(req.URL.Query().Get("path"))
+	r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+		raw := req.URL.Query().Get("path")
+		path, err := sfs.resolve(raw)
 		if err != nil {
 			writeFileError(w, err)
 			return
 		}
-		if path == "." {
-			writeFileProblem(w, "invalid_request", "the Workspace root cannot be deleted")
+		if sfs.isRoot(path) {
+			writeFileProblem(w, "invalid_request", "the root and /workspace cannot be deleted")
 			return
 		}
 		// Remove deletes a file, a symlink, or an empty directory; a non-empty
@@ -334,8 +394,9 @@ func (r *Runtime) handleFileDelete(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Runtime) handleArchiveGet(w http.ResponseWriter, req *http.Request) {
-	r.withWorkspace(w, req, false, func(root *os.Root) {
-		path, err := localPath(req.URL.Query().Get("path"))
+	r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+		raw := req.URL.Query().Get("path")
+		path, err := sfs.resolve(raw)
 		if err != nil {
 			writeFileError(w, err)
 			return
@@ -353,6 +414,9 @@ func (r *Runtime) handleArchiveGet(w http.ResponseWriter, req *http.Request) {
 			}
 			if p == "." {
 				return nil
+			}
+			if p != path && sfs.onMount(p) {
+				return fs.SkipDir // a mount below the requested tree is not part of it
 			}
 			info, err := d.Info()
 			if err != nil {
@@ -375,7 +439,9 @@ func (r *Runtime) handleArchiveGet(w http.ResponseWriter, req *http.Request) {
 			if err != nil {
 				return err
 			}
-			hdr.Name = p
+			// Names relative to the request's own root, so unpacking an
+			// archive of src into dst restores src/ beneath it.
+			hdr.Name = strings.TrimPrefix(sfs.show(raw, p), "/")
 			if info.IsDir() {
 				hdr.Name += "/"
 			}
@@ -405,8 +471,9 @@ func (r *Runtime) handleArchiveGet(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Runtime) handleArchivePut(w http.ResponseWriter, req *http.Request) {
-	r.withWorkspace(w, req, true, func(root *os.Root) {
-		path, err := localPath(req.URL.Query().Get("path"))
+	r.withSandboxFS(w, req, func(root *os.Root, sfs sandboxFS) {
+		raw := req.URL.Query().Get("path")
+		path, err := sfs.resolve(raw)
 		if err != nil {
 			writeFileError(w, err)
 			return
@@ -483,7 +550,7 @@ var errTooLarge = errors.New("file exceeds 5 GiB")
 // file-transfer-mechanics-and-path-safety.md §9).
 //
 // ponytail: a crash between create and rename can leave a .orrery-tmp-* file;
-// sweep those when Workspace maintenance exists.
+// sweep those when the Agent gains filesystem maintenance.
 func writeAtomic(root *os.Root, path string, body io.Reader, perm fs.FileMode) (int64, error) {
 	parent := filepath.Dir(path)
 	if err := ensureDir(root, parent); err != nil {
@@ -574,43 +641,4 @@ func fileType(mode fs.FileMode) string {
 
 func tarLocalPath(name string) (string, error) {
 	return localPath(strings.TrimSuffix(name, "/"))
-}
-
-func (r *Runtime) writeWorkspaceRefFile(id uuid.UUID, ref workspaceRef) error {
-	dir := sandboxPath(r.dataRoot, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(ref)
-	if err != nil {
-		return err
-	}
-	tmp := filepath.Join(dir, "workspace.tmp")
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, filepath.Join(dir, "workspace")); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("record Workspace reference: %w", err)
-	}
-	return nil
-}
-
-func readWorkspaceRef(dir string) (workspaceRef, bool) {
-	raw, err := os.ReadFile(filepath.Join(dir, "workspace"))
-	if err != nil {
-		return workspaceRef{}, false
-	}
-	var ref workspaceRef
-	if json.Unmarshal(raw, &ref) != nil || ref.ID == "" {
-		return workspaceRef{}, false
-	}
-	return ref, true
-}
-
-// workspaceRef records which Workspace a Sandbox mounts, so the file API still
-// finds it after an Agent restart.
-type workspaceRef struct {
-	ID   string `json:"id"`
-	Mode string `json:"mode"`
 }

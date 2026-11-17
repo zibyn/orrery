@@ -217,14 +217,14 @@ func TestLocalCapabilities(t *testing.T) {
 		}
 		return out
 	}
-	result := supervisor.Result{WorkspaceWritable: true}
+	result := supervisor.Result{WorkdirWritable: true}
 
 	caps := localCapabilities(result, true, true, true)
 	if caps.RuntimeProvider != ProviderLocal {
 		t.Fatalf("runtime_provider = %q, want local", caps.RuntimeProvider)
 	}
 	v := values(caps)
-	for _, name := range []string{nodeproto.CapCPUMemoryPIDLimits, nodeproto.CapWorkspaceRWMount, nodeproto.CapExecSupervisor, nodeproto.CapGPUDeviceVisibility} {
+	for _, name := range []string{nodeproto.CapCPUMemoryPIDLimits, nodeproto.CapWorkdirWritable, nodeproto.CapExecSupervisor, nodeproto.CapGPUDeviceVisibility} {
 		if v[name] != nodeproto.ValueEnforced {
 			t.Errorf("%s = %q, want enforced", name, v[name])
 		}
@@ -247,23 +247,23 @@ func TestLocalCapabilities(t *testing.T) {
 	if v[nodeproto.CapGPUDeviceVisibility] != nodeproto.ValueUnsupported {
 		t.Errorf("no-card visibility = %q, want unsupported", v[nodeproto.CapGPUDeviceVisibility])
 	}
-	// An unwritable Workspace is not enforced.
+	// An unwritable working directory is not enforced.
 	v = values(localCapabilities(supervisor.Result{}, true, false, false))
-	if v[nodeproto.CapWorkspaceRWMount] != nodeproto.ValueUnsupported {
-		t.Errorf("unwritable Workspace = %q, want unsupported", v[nodeproto.CapWorkspaceRWMount])
+	if v[nodeproto.CapWorkdirWritable] != nodeproto.ValueUnsupported {
+		t.Errorf("unwritable working directory = %q, want unsupported", v[nodeproto.CapWorkdirWritable])
 	}
 }
 
 // Local PATH and Git helper use the Agent's own bin directory, not /.orrery,
-// ORRERY_WORKSPACE names the host Workspace and ORRERY_RESOURCES the Resource
+// ORRERY_WORKSPACE names the working directory and ORRERY_RESOURCES the Resource
 // symlink directory (node-protocol.md, runtime.md §10).
 func TestLocalExecEnv(t *testing.T) {
 	env := localExecEnv(map[string]string{"PATH": "/caller/bin", "KEEP": "kept"},
-		"/fallback/bin", "/agent/bin", "/data/workspaces/ws", "/data/sandboxes/sb/resources", []string{"GPU-a", "GPU-b"})
+		"/fallback/bin", "/agent/bin", "/data/sandboxes/sb/workspace", "/data/sandboxes/sb/resources", []string{"GPU-a", "GPU-b"})
 	if got := env["PATH"]; got != "/caller/bin:/agent/bin" {
 		t.Fatalf("PATH = %q", got)
 	}
-	if env["ORRERY_WORKSPACE"] != "/data/workspaces/ws" {
+	if env["ORRERY_WORKSPACE"] != "/data/sandboxes/sb/workspace" {
 		t.Fatalf("ORRERY_WORKSPACE = %q", env["ORRERY_WORKSPACE"])
 	}
 	if env["ORRERY_RESOURCES"] != "/data/sandboxes/sb/resources" {
@@ -290,20 +290,20 @@ func TestLocalExecEnv(t *testing.T) {
 	}
 }
 
-// api.md §4: cwd is relative to the Workspace, on Local its host path. An
+// api.md §4: cwd is relative to the working directory, on Local its host path. An
 // absolute path or one that escapes the root is refused, never rewritten.
 func TestLocalCwd(t *testing.T) {
-	workspace := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(workspace, "sub", "dir"), 0o755); err != nil {
+	workdir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workdir, "sub", "dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct{ cwd, want string }{
-		{"", workspace},
-		{".", workspace},
-		{"sub/dir", filepath.Join(workspace, "sub", "dir")},
-		{"sub/../sub/dir", filepath.Join(workspace, "sub", "dir")},
+		{"", workdir},
+		{".", workdir},
+		{"sub/dir", filepath.Join(workdir, "sub", "dir")},
+		{"sub/../sub/dir", filepath.Join(workdir, "sub", "dir")},
 	} {
-		got, err := localCwd(workspace, tt.cwd)
+		got, err := localCwd(workdir, tt.cwd)
 		if err != nil {
 			t.Errorf("localCwd(%q): %v", tt.cwd, err)
 			continue
@@ -313,16 +313,16 @@ func TestLocalCwd(t *testing.T) {
 		}
 	}
 	for _, cwd := range []string{"/etc", "../outside", "sub/../../outside"} {
-		if _, err := localCwd(workspace, cwd); err == nil {
-			t.Errorf("localCwd(%q) escaped the Workspace", cwd)
+		if _, err := localCwd(workdir, cwd); err == nil {
+			t.Errorf("localCwd(%q) escaped the working directory", cwd)
 		}
 	}
 
-	// A symlink inside the Workspace must not redirect the cwd outside it.
-	if err := os.Symlink("/etc", filepath.Join(workspace, "escape")); err != nil {
+	// A symlink inside the working directory must not redirect the cwd outside it.
+	if err := os.Symlink("/etc", filepath.Join(workdir, "escape")); err != nil {
 		t.Skipf("cannot create a symlink: %v", err)
 	}
-	if _, err := localCwd(workspace, "escape"); err == nil {
-		t.Error("localCwd followed a symlink out of the Workspace")
+	if _, err := localCwd(workdir, "escape"); err == nil {
+		t.Error("localCwd followed a symlink out of the working directory")
 	}
 }

@@ -211,7 +211,7 @@ func validateBlocks(entry Entry) error {
 
 // RequireBlocks rejects a file over BlockSize without blocks. Validate
 // accepts such legacy entries for versions published before ADR-0030; new
-// uploads and Workspace publishes must split them.
+// uploads and publishes must split them.
 func RequireBlocks(m Manifest) error {
 	for _, entry := range m.Entries {
 		if entry.Type == TypeFile && entry.Blocks == nil && entry.Size != nil && *entry.Size > BlockSize {

@@ -30,7 +30,6 @@ type sandboxCreateInput struct {
 	Name      *string                  `json:"name"`
 	Labels    map[string]string        `json:"labels"`
 	Runtime   *string                  `json:"runtime"`
-	Workspace *client.SandboxWorkspace `json:"workspace"`
 	Volumes   []client.SandboxVolume   `json:"volumes"`
 	Snapshot  *string                  `json:"snapshot"`
 	Resources []client.SandboxResource `json:"resources"`
@@ -47,9 +46,6 @@ func (in *sandboxCreateInput) validate() error {
 	if in.Runtime != nil && *in.Runtime != "container" && *in.Runtime != "local" {
 		return fmt.Errorf("runtime must be container or local")
 	}
-	if in.Workspace != nil && in.Workspace.Mode != "" && in.Workspace.Mode != "rw" && in.Workspace.Mode != "ro" {
-		return fmt.Errorf("workspace.mode must be rw or ro")
-	}
 	return nil
 }
 
@@ -58,7 +54,6 @@ func (s *server) sandboxCreate(ctx context.Context, _ *sdk.CallToolRequest, in s
 		Name:      in.Name,
 		Labels:    in.Labels,
 		Runtime:   in.Runtime,
-		Workspace: in.Workspace,
 		Volumes:   in.Volumes,
 		Snapshot:  in.Snapshot,
 		Resources: in.Resources,

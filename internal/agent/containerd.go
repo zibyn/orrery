@@ -209,10 +209,6 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err != nil {
 		return "runtime_create_failed", err
 	}
-	workspaceID, err := uuid.Parse(cmd.workspaceID)
-	if err != nil {
-		return "runtime_create_failed", err
-	}
 	// runsc would turn on nvproxy for NVIDIA devices instead of failing (runtime.md §9).
 	if d.runsc() && len(cmd.gpuUUIDs) > 0 {
 		return "runtime_create_failed", errors.New("this runsc Node does not attach GPUs")
@@ -225,7 +221,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	if err != nil {
 		return "image_pull_failed", err
 	}
-	workspace, runDir, mode, err := d.r.prepareSandboxHost(id, workspaceID, cmd)
+	runDir, err := d.r.prepareSandboxHost(id, cmd)
 	if err != nil {
 		return "runtime_create_failed", err
 	}
@@ -269,6 +265,10 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 			return "runtime_create_failed", err
 		}
 	}
+	if err := d.prepareWorkdir(ctx, id, name, cmd.volumes); err != nil {
+		d.teardown(context.WithoutCancel(ctx), id) //nolint:errcheck // best effort
+		return "runtime_create_failed", err
+	}
 	resources := d.r.resourceBindMounts(cmd.resources)
 	if _, err = d.setupNetwork(id, sandboxPath(d.r.dataRoot, id), policy, cmd.linkTarget); err == nil {
 		err = d.applyNetwork(ctx)
@@ -279,7 +279,6 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	}
 	etc := filepath.Join(sandboxPath(d.r.dataRoot, id), "etc")
 	mounts := []specs.Mount{
-		bindMount(workspace, workspaceMount, mode),
 		bindMount(filepath.Join(d.r.dataRoot, "bin"), binaryDir, "ro"),
 		bindMount(runDir, runMount, "rw"),
 		bindMount(filepath.Join(etc, "resolv.conf"), "/etc/resolv.conf", "ro"),
@@ -287,11 +286,10 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 		bindMount(filepath.Join(etc, "hostname"), "/etc/hostname", "ro"),
 	}
 	mounts = append(mounts, resources...)
-	// After /workspace, so a Volume mounted there covers the Workspace.
 	mounts = append(mounts, d.r.volumeBindMounts(cmd.volumes)...)
 	opts := append([]oci.SpecOpts{
 		oci.WithProcessArgs(supervisorBin, "init"),
-		oci.WithProcessCwd(workspaceMount),
+		oci.WithProcessCwd(containerWorkdir),
 		oci.WithHostname(id.String()),
 		oci.WithMounts(mounts),
 		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: netnsPath(id)}),
@@ -309,7 +307,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	}
 	if err == nil {
 		var result supervisor.Result
-		if result, err = d.execOutput(ctx, c, supervisorBin, "probe", workspaceMount); err == nil &&
+		if result, err = d.execOutput(ctx, c, supervisorBin, "probe", containerWorkdir); err == nil &&
 			numberedDeviceCount(result.NvidiaDevices) != len(cmd.gpuUUIDs) {
 			err = fmt.Errorf("the Sandbox sees GPU devices %v, want %d cards", result.NvidiaDevices, len(cmd.gpuUUIDs))
 		}
@@ -323,14 +321,10 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 }
 
 // restoreSnapshot prepares a fresh snapshot over the image and writes the
-// head Generation into its upperdir; without a head the snapshot is left to
-// start (runtime.md §9, §16).
+// head Generation, if any, into its upperdir (runtime.md §9, §16).
 func (d *containerdDriver) restoreSnapshot(ctx context.Context, id uuid.UUID, name string, img containerd.Image, restore string) error {
 	if err := d.r.forgetCachedDiff(id); err != nil {
 		return err
-	}
-	if restore == "" {
-		return nil
 	}
 	diffIDs, err := img.RootFS(ctx)
 	if err != nil {
@@ -344,7 +338,100 @@ func (d *containerdDriver) restoreSnapshot(ctx context.Context, id uuid.UUID, na
 	if upper == "" {
 		return errors.New("the new snapshot has no upperdir")
 	}
+	if restore == "" {
+		return nil
+	}
 	return d.r.restoreFilesystem(ctx, id, restore, upper)
+}
+
+// prepareWorkdir makes /workspace an ordinary directory of the Sandbox's
+// filesystem, created world-writable when the image and the head lack it
+// (the image's USER is unknown), and merges a directory from before ADR-0031
+// into it (legacy.go).
+func (d *containerdDriver) prepareWorkdir(ctx context.Context, id uuid.UUID, name string, volumes []volumeMount) error {
+	mounts, err := d.client.SnapshotService(defaults.DefaultSnapshotter).Mounts(ctx, name)
+	if err != nil {
+		return fmt.Errorf("read snapshot mounts: %w", err)
+	}
+	upper := upperDir(mounts)
+	if upper == "" {
+		return errors.New("the snapshot has no upperdir")
+	}
+	workdir := filepath.Join(upper, strings.TrimPrefix(containerWorkdir, "/"))
+	if !snapshotHas(mounts, workdir, containerWorkdir) {
+		if err := os.Mkdir(workdir, 0o777); err != nil {
+			return err
+		}
+		if err := os.Chmod(workdir, 0o777); err != nil {
+			return err
+		}
+	}
+	if err := d.r.seedLegacyVolumes(ctx, volumes); err != nil {
+		return err
+	}
+	legacy, err := takeLegacySandboxDir(d.r.dataRoot, id, volumes)
+	if err != nil || legacy == "" {
+		return err
+	}
+	return mergeLegacyDir(ctx, legacy, workdir)
+}
+
+// filesystem is the running container's root as its init process sees it,
+// mounts included; the spec's mounts other than /workspace (a bind only in a
+// container created before ADR-0031) are refused.
+func (d *containerdDriver) filesystem(ctx context.Context, id uuid.UUID) (sandboxFS, error) {
+	c, err := d.client.LoadContainer(ctx, containerName(id))
+	if errdefs.IsNotFound(err) {
+		return sandboxFS{}, errNotRunning
+	}
+	if err != nil {
+		return sandboxFS{}, err
+	}
+	task, err := c.Task(ctx, nil)
+	if errdefs.IsNotFound(err) {
+		return sandboxFS{}, errNotRunning
+	}
+	if err != nil {
+		return sandboxFS{}, err
+	}
+	spec, err := c.Spec(ctx)
+	if err != nil {
+		return sandboxFS{}, err
+	}
+	refused := append([]string(nil), sandboxOwnedPaths...)
+	for _, m := range spec.Mounts {
+		if m.Destination != containerWorkdir {
+			refused = append(refused, strings.TrimPrefix(filepath.Clean(m.Destination), "/"))
+		}
+	}
+	return sandboxFS{
+		dir:     fmt.Sprintf("/proc/%d/root", task.Pid()),
+		base:    strings.TrimPrefix(containerWorkdir, "/"),
+		refused: refused,
+	}, nil
+}
+
+// snapshotHas reports whether path exists in the upperdir (upperPath) or any
+// lowerdir of an overlay snapshot. A whiteout in the upperdir counts as
+// present: the Sandbox deleted it, and the Agent leaves that alone.
+func snapshotHas(mounts []mount.Mount, upperPath, path string) bool {
+	if _, err := os.Lstat(upperPath); err == nil {
+		return true
+	}
+	for _, m := range mounts {
+		for _, opt := range m.Options {
+			lowers, ok := strings.CutPrefix(opt, "lowerdir=")
+			if !ok {
+				continue
+			}
+			for _, lower := range strings.Split(lowers, ":") {
+				if _, err := os.Lstat(filepath.Join(lower, path)); err == nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // removeContainer kills and deletes the task, the container and its
@@ -583,8 +670,8 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 		return nodeproto.CapabilityReport{}, err
 	}
 	defer os.RemoveAll(dir) //nolint:errcheck // best effort
-	binDir, workspace := filepath.Join(dir, "bin"), filepath.Join(dir, "workspace")
-	for _, sub := range []string{binDir, workspace} {
+	binDir, workdir := filepath.Join(dir, "bin"), filepath.Join(dir, "work")
+	for _, sub := range []string{binDir, workdir} {
 		if err := os.Mkdir(sub, 0o755); err != nil {
 			return nodeproto.CapabilityReport{}, err
 		}
@@ -622,10 +709,10 @@ func (d *containerdDriver) probe(ctx context.Context) (nodeproto.CapabilityRepor
 }
 
 // probeOnce runs one probe container with the given cards attached, in dir
-// (bin/ and workspace/ inside). It reports the limits readback and the
+// (bin/ and work/ inside). It reports the limits readback and the
 // egress and Link self-checks; the caller fills gpuVisible and runsc.
 func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, dir string, gpus []string) (supervisor.Result, probeChecks, error) {
-	binDir, workspace := filepath.Join(dir, "bin"), filepath.Join(dir, "workspace")
+	binDir, workdir := filepath.Join(dir, "bin"), filepath.Join(dir, "work")
 	const cpu = 0.5
 	id := uuid.New()
 	name := probePrefix + id.String()
@@ -643,9 +730,9 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 	}
 	opts := append([]oci.SpecOpts{
 		oci.WithProcessArgs(probeSupervisor, "init"),
-		oci.WithProcessCwd(probeWorkspace),
+		oci.WithProcessCwd(probeWorkdir),
 		oci.WithMounts([]specs.Mount{
-			bindMount(workspace, probeWorkspace, "rw"),
+			bindMount(workdir, probeWorkdir, "rw"),
 			bindMount(binDir, binaryDir, "ro"),
 		}),
 		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: netnsPath(id)}),
@@ -661,7 +748,7 @@ func (d *containerdDriver) probeOnce(ctx context.Context, img containerd.Image, 
 		return supervisor.Result{}, probeChecks{}, err
 	}
 	checks := probeChecks{limits: hostLimitsMatch(ctx, c, cpu, probeMemory)}
-	result, err := d.execOutput(ctx, c, probeSupervisor, "probe", probeWorkspace)
+	result, err := d.execOutput(ctx, c, probeSupervisor, "probe", probeWorkdir)
 	if err != nil {
 		return result, checks, err
 	}
@@ -882,8 +969,7 @@ func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)
 			if probing, _ := d.probing.Load().(string); probing != "" && (c.ID() == probing || c.ID() == probeTargetName(probing)) {
 				continue // this Agent's own self-check, removed when it ends
 			}
-			// The Workspace directory stays untouched: declaring it lost may be
-			// wrong, and the data may have no other copy.
+			// Its snapshot goes with it; the data directory is left alone.
 			slog.Info("removing a Runtime left by another Node",
 				"container_id", c.ID(), "node", labels[labelNode])
 			if err := d.removeContainer(ctx, c.ID()); err != nil {

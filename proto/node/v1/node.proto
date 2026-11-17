@@ -20,9 +20,9 @@ service Node {
   // Presign issues object store URLs for this Node (node-protocol.md
   // "Presign"). It is authenticated by the Node Token.
   rpc Presign(PresignRequest) returns (PresignResponse);
-  // SubmitManifest streams a Workspace publish's tree to the Control Plane.
+  // SubmitManifest streams a Sandbox publish's tree to the Control Plane.
   // The first chunk carries version_id; the reply lists the objects the Node
-  // still has to upload (node-protocol.md "Workspace publish").
+  // still has to upload (node-protocol.md "Sandbox publish").
   rpc SubmitManifest(stream ManifestChunk) returns (ManifestAck);
   // SubmitGeneration streams the changed entries of a Sandbox's filesystem or
   // a Volume and opens an upload; the reply lists the objects still missing
@@ -121,12 +121,13 @@ message RedeemResponse {
 }
 
 message AgentMessage {
+  // Removed by ADR-0031.
+  reserved 5;
   oneof message {
     Hello hello = 1;
     Heartbeat heartbeat = 2;
     Capabilities capabilities = 3;
     SandboxObserved sandbox_observed = 4;
-    WorkspaceObserved workspace_observed = 5;
     CommandResult command_result = 6;
     ExecObserved exec_observed = 7;
     // A Snapshot build reached a terminal state (node-protocol.md "构建").
@@ -228,14 +229,6 @@ message SandboxObserved {
   bool commit_retrying = 6;
 }
 
-message WorkspaceObserved {
-  string workspace_id = 1;
-  int64 generation = 2;
-  // "ready" or "gone".
-  string phase = 3;
-  string cause = 4;
-}
-
 message CommandResult {
   string command_id = 1;
   string error = 2;
@@ -260,16 +253,15 @@ message BuildObserved {
 }
 
 message ControlMessage {
+  // Removed by ADR-0031.
+  reserved 2, 3, 9;
   oneof message {
     HelloAck hello_ack = 1;
-    ProvisionWorkspace provision_workspace = 2;
-    DeleteWorkspace delete_workspace = 3;
     CreateSandbox create_sandbox = 4;
     StopSandbox stop_sandbox = 5;
     StartExec start_exec = 6;
     CancelExec cancel_exec = 7;
     OpenTunnel open_tunnel = 8;
-    PublishWorkspace publish_workspace = 9;
     BuildSnapshot build_snapshot = 10;
     MeshPeers mesh_peers = 11;
     SandboxLinks sandbox_links = 12;
@@ -309,18 +301,9 @@ message MeshPeer {
   string endpoint = 4;
 }
 
-// PublishWorkspace walks a host Workspace directory and publishes it as a
-// ResourceVersion (node-protocol.md "Workspace publish").
-message PublishWorkspace {
-  string command_id = 1;
-  string version_id = 2;
-  string workspace_id = 3;
-  string path = 4;
-}
-
 // PublishSandbox publishes a path of a running Sandbox's live filesystem as
-// a ResourceVersion, through SubmitManifest like PublishWorkspace
-// (node-protocol.md "Sandbox publish"). path is relative to /workspace.
+// a ResourceVersion through SubmitManifest (node-protocol.md "Sandbox
+// publish"). path is relative to /workspace.
 message PublishSandbox {
   string command_id = 1;
   string version_id = 2;
@@ -395,18 +378,6 @@ message PtySpec {
   int32 cols = 2;
 }
 
-message ProvisionWorkspace {
-  string command_id = 1;
-  string workspace_id = 2;
-  int64 generation = 3;
-}
-
-message DeleteWorkspace {
-  string command_id = 1;
-  string workspace_id = 2;
-  int64 generation = 3;
-}
-
 message CreateSandbox {
   string command_id = 1;
   string sandbox_id = 2;
@@ -414,7 +385,8 @@ message CreateSandbox {
   // name@sha256:... pinned image digest.
   string image_digest = 4;
   Limits limits = 5;
-  WorkspaceMount workspace = 6;
+  // Removed by ADR-0031.
+  reserved 6;
   // Whole cards, named by their platform UUID (ADR-0015). The Agent attaches
   // them with CDI and fails a readback that does not show them (runtime.md §9).
   repeated string gpu_uuids = 7;
@@ -469,12 +441,6 @@ message Limits {
   // Cores, e.g. 0.5.
   double cpu = 1;
   int64 memory = 2;
-}
-
-message WorkspaceMount {
-  string workspace_id = 1;
-  // "rw" or "ro".
-  string mode = 2;
 }
 
 message StopSandbox {

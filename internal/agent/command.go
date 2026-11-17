@@ -103,34 +103,6 @@ func (c *commandRunner) afterSelfCheck() error {
 
 func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 	switch m := msg.Message.(type) {
-	case *nodev1.ControlMessage_ProvisionWorkspace:
-		cmd := m.ProvisionWorkspace
-		wsID, err := uuid.Parse(cmd.WorkspaceId)
-		if err != nil {
-			c.result(cmd.CommandId, "invalid workspace id")
-			return
-		}
-		go c.run("workspace:"+cmd.WorkspaceId, cmd.CommandId, cmd.Generation, func() error {
-			if err := c.rt.provisionWorkspace(wsID); err != nil {
-				return err
-			}
-			c.observeWorkspace(cmd.WorkspaceId, cmd.Generation, nodeproto.WorkspacePhaseReady, "")
-			return nil
-		})
-	case *nodev1.ControlMessage_DeleteWorkspace:
-		cmd := m.DeleteWorkspace
-		wsID, err := uuid.Parse(cmd.WorkspaceId)
-		if err != nil {
-			c.result(cmd.CommandId, "invalid workspace id")
-			return
-		}
-		go c.run("workspace:"+cmd.WorkspaceId, cmd.CommandId, cmd.Generation, func() error {
-			if err := c.rt.deleteWorkspace(wsID); err != nil {
-				return err
-			}
-			c.observeWorkspace(cmd.WorkspaceId, cmd.Generation, nodeproto.WorkspacePhaseGone, "")
-			return nil
-		})
 	case *nodev1.ControlMessage_CreateSandbox:
 		cmd := m.CreateSandbox
 		sbID, err := uuid.Parse(cmd.SandboxId)
@@ -143,19 +115,17 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				return err
 			}
 			cause, err := c.rt.createSandbox(c.ctx, &createSandboxSpec{
-				sandboxID:     sbID.String(),
-				generation:    cmd.Generation,
-				imageDigest:   cmd.ImageDigest,
-				cpu:           cmd.Limits.GetCpu(),
-				memory:        cmd.Limits.GetMemory(),
-				workspaceID:   cmd.Workspace.GetWorkspaceId(),
-				workspaceMode: cmd.Workspace.GetMode(),
-				gpuUUIDs:      cmd.GpuUuids,
-				resources:     resourceMounts(cmd.Resources),
-				volumes:       volumeMounts(cmd.Volumes),
-				egress:        egressModeOf(cmd.Egress),
-				linkTarget:    cmd.LinkTarget,
-				restore:       cmd.GetRestore().GetGenerationId(),
+				sandboxID:   sbID.String(),
+				generation:  cmd.Generation,
+				imageDigest: cmd.ImageDigest,
+				cpu:         cmd.Limits.GetCpu(),
+				memory:      cmd.Limits.GetMemory(),
+				gpuUUIDs:    cmd.GpuUuids,
+				resources:   resourceMounts(cmd.Resources),
+				volumes:     volumeMounts(cmd.Volumes),
+				egress:      egressModeOf(cmd.Egress),
+				linkTarget:  cmd.LinkTarget,
+				restore:     cmd.GetRestore().GetGenerationId(),
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)
@@ -210,22 +180,6 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		}
 		go c.run("exec:"+cmd.ExecId, cmd.CommandId, noGenerationFence, func() error {
 			return c.rt.cancelExec(c.ctx, execID)
-		})
-	case *nodev1.ControlMessage_PublishWorkspace:
-		cmd := m.PublishWorkspace
-		if _, err := uuid.Parse(cmd.VersionId); err != nil {
-			c.result(cmd.CommandId, "invalid version id")
-			return
-		}
-		if _, err := uuid.Parse(cmd.WorkspaceId); err != nil {
-			c.result(cmd.CommandId, "invalid workspace id")
-			return
-		}
-		// ResourceVersions have no generation; the Control Plane sends 0. The
-		// version id is part of the key, so only the same publish collapses
-		// onto one lock.
-		go c.run("publish:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
-			return c.rt.publishWorkspace(c.ctx, cmd)
 		})
 	case *nodev1.ControlMessage_PublishSandbox:
 		cmd := m.PublishSandbox
@@ -387,14 +341,6 @@ func (c *commandRunner) reportSandbox(id string, generation int64, phase nodepro
 		SandboxObserved: &nodev1.SandboxObserved{
 			SandboxId: id, Generation: generation, Phase: string(phase), Cause: cause, Address: address,
 			CommitRetrying: retrying,
-		},
-	}})
-}
-
-func (c *commandRunner) observeWorkspace(id string, generation int64, phase nodeproto.WorkspacePhase, cause string) {
-	c.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_WorkspaceObserved{
-		WorkspaceObserved: &nodev1.WorkspaceObserved{
-			WorkspaceId: id, Generation: generation, Phase: string(phase), Cause: cause,
 		},
 	}})
 }

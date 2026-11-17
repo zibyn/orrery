@@ -49,9 +49,9 @@ type NodeClient interface {
 	// Presign issues object store URLs for this Node (node-protocol.md
 	// "Presign"). It is authenticated by the Node Token.
 	Presign(ctx context.Context, in *PresignRequest, opts ...grpc.CallOption) (*PresignResponse, error)
-	// SubmitManifest streams a Workspace publish's tree to the Control Plane.
+	// SubmitManifest streams a Sandbox publish's tree to the Control Plane.
 	// The first chunk carries version_id; the reply lists the objects the Node
-	// still has to upload (node-protocol.md "Workspace publish").
+	// still has to upload (node-protocol.md "Sandbox publish").
 	SubmitManifest(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ManifestChunk, ManifestAck], error)
 	// SubmitGeneration streams the changed entries of a Sandbox's filesystem or
 	// a Volume and opens an upload; the reply lists the objects still missing
@@ -185,9 +185,9 @@ type NodeServer interface {
 	// Presign issues object store URLs for this Node (node-protocol.md
 	// "Presign"). It is authenticated by the Node Token.
 	Presign(context.Context, *PresignRequest) (*PresignResponse, error)
-	// SubmitManifest streams a Workspace publish's tree to the Control Plane.
+	// SubmitManifest streams a Sandbox publish's tree to the Control Plane.
 	// The first chunk carries version_id; the reply lists the objects the Node
-	// still has to upload (node-protocol.md "Workspace publish").
+	// still has to upload (node-protocol.md "Sandbox publish").
 	SubmitManifest(grpc.ClientStreamingServer[ManifestChunk, ManifestAck]) error
 	// SubmitGeneration streams the changed entries of a Sandbox's filesystem or
 	// a Volume and opens an upload; the reply lists the objects still missing

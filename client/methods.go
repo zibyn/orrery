@@ -366,60 +366,6 @@ func (c *Client) PublishSandbox(ctx context.Context, id, path, resource string) 
 	return &out, err
 }
 
-// Workspaces.
-
-// CreateWorkspace creates a persistent Workspace.
-func (c *Client) CreateWorkspace(ctx context.Context, req CreateWorkspaceRequest, idempotencyKey string) (*Workspace, error) {
-	var out Workspace
-	err := c.do(ctx, http.MethodPost, "/api/v1/workspaces", nil, req, &out, idempotencyKey)
-	return &out, err
-}
-
-// ListWorkspaces returns one page of Workspaces.
-func (c *Client) ListWorkspaces(ctx context.Context, limit int, cursor string) (*WorkspaceList, error) {
-	var out WorkspaceList
-	err := c.do(ctx, http.MethodGet, "/api/v1/workspaces", pageQuery(limit, cursor), nil, &out, "")
-	return &out, err
-}
-
-// GetWorkspace returns one Workspace.
-func (c *Client) GetWorkspace(ctx context.Context, id string) (*Workspace, error) {
-	var out Workspace
-	err := c.do(ctx, http.MethodGet, "/api/v1/workspaces/"+url.PathEscape(id), nil, nil, &out, "")
-	return &out, err
-}
-
-// DeleteWorkspace deletes one Workspace.
-func (c *Client) DeleteWorkspace(ctx context.Context, id string) (*Workspace, error) {
-	var out Workspace
-	err := c.do(ctx, http.MethodDelete, "/api/v1/workspaces/"+url.PathEscape(id), nil, nil, &out, "")
-	return &out, err
-}
-
-// PublishWorkspace publishes a Workspace subtree as a Resource Version.
-func (c *Client) PublishWorkspace(ctx context.Context, id, path, resource string) (*ResourceVersion, error) {
-	var out ResourceVersion
-	err := c.do(ctx, http.MethodPost, "/api/v1/workspaces/"+url.PathEscape(id)+"/publish", nil,
-		map[string]string{"path": path, "resource": resource}, &out, "")
-	return &out, err
-}
-
-// DeclareWorkspaceLost marks a Workspace lost after its Node dies.
-func (c *Client) DeclareWorkspaceLost(ctx context.Context, id string) (*Workspace, error) {
-	return c.workspaceAction(ctx, id, "declare-lost")
-}
-
-// AbandonWorkspace abandons a Workspace without waiting for its Node.
-func (c *Client) AbandonWorkspace(ctx context.Context, id string) (*Workspace, error) {
-	return c.workspaceAction(ctx, id, "abandon")
-}
-
-func (c *Client) workspaceAction(ctx context.Context, id, action string) (*Workspace, error) {
-	var out Workspace
-	err := c.do(ctx, http.MethodPost, "/api/v1/workspaces/"+url.PathEscape(id)+"/"+action, nil, nil, &out, "")
-	return &out, err
-}
-
 // Snapshots.
 
 // CreateSnapshot creates a Snapshot by name.
@@ -546,7 +492,7 @@ func (c *Client) StartSandbox(ctx context.Context, id string) (*Sandbox, error) 
 	return c.sandboxAction(ctx, id, "start")
 }
 
-// StopSandbox stops a Sandbox and keeps its Workspace contents.
+// StopSandbox stops a Sandbox; its filesystem is committed and kept.
 func (c *Client) StopSandbox(ctx context.Context, id string) (*Sandbox, error) {
 	return c.sandboxAction(ctx, id, "stop")
 }
@@ -605,7 +551,7 @@ func (c *Client) ExecOutput(ctx context.Context, id string, after int64) ([]Fram
 
 // Files and ports.
 
-// ListFiles lists a Workspace directory (api.md §5).
+// ListFiles lists a directory of the Sandbox's filesystem (api.md §5).
 func (c *Client) ListFiles(ctx context.Context, sandboxID, path string) (*FileList, error) {
 	q := url.Values{"path": {path}}
 	var out FileList
@@ -613,7 +559,7 @@ func (c *Client) ListFiles(ctx context.Context, sandboxID, path string) (*FileLi
 	return &out, err
 }
 
-// StatFile reads one Workspace path's metadata (api.md §5).
+// StatFile reads one Sandbox path's metadata (api.md §5).
 func (c *Client) StatFile(ctx context.Context, sandboxID, path string) (*FileEntry, error) {
 	var out FileEntry
 	err := c.do(ctx, http.MethodGet, "/api/v1/sandboxes/"+url.PathEscape(sandboxID)+"/files/stat",
@@ -621,19 +567,19 @@ func (c *Client) StatFile(ctx context.Context, sandboxID, path string) (*FileEnt
 	return &out, err
 }
 
-// Mkdir creates a directory in the Workspace.
+// Mkdir creates a directory in the Sandbox.
 func (c *Client) Mkdir(ctx context.Context, sandboxID, path string) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/sandboxes/"+url.PathEscape(sandboxID)+"/files/mkdir",
 		nil, map[string]string{"path": path}, nil, "")
 }
 
-// MoveFile moves or renames a Workspace path.
+// MoveFile moves or renames a Sandbox path.
 func (c *Client) MoveFile(ctx context.Context, sandboxID, from, to string) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/sandboxes/"+url.PathEscape(sandboxID)+"/files/move",
 		nil, map[string]string{"from": from, "to": to}, nil, "")
 }
 
-// DeleteFile deletes a Workspace path.
+// DeleteFile deletes a Sandbox path.
 func (c *Client) DeleteFile(ctx context.Context, sandboxID, path string) error {
 	return c.do(ctx, http.MethodDelete, "/api/v1/sandboxes/"+url.PathEscape(sandboxID)+"/files",
 		url.Values{"path": {path}}, nil, nil, "")

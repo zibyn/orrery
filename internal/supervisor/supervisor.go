@@ -18,13 +18,13 @@ import (
 // Result is what `supervisor probe` prints and what the Agent compares against
 // the limits it requested.
 type Result struct {
-	CPUMax            string   `json:"cpu_max"`
-	MemoryMax         string   `json:"memory_max"`
-	PidsMax           string   `json:"pids_max"`
-	NvidiaDevices     []string `json:"nvidia_devices"`
-	PIDNamespace      string   `json:"pid_namespace"`
-	MountNamespace    string   `json:"mount_namespace"`
-	WorkspaceWritable bool     `json:"workspace_writable"`
+	CPUMax          string   `json:"cpu_max"`
+	MemoryMax       string   `json:"memory_max"`
+	PidsMax         string   `json:"pids_max"`
+	NvidiaDevices   []string `json:"nvidia_devices"`
+	PIDNamespace    string   `json:"pid_namespace"`
+	MountNamespace  string   `json:"mount_namespace"`
+	WorkdirWritable bool     `json:"workdir_writable"`
 }
 
 // Init reaps orphans forever. As PID 1 it also has to catch the termination
@@ -49,14 +49,14 @@ func Init() {
 // Probe reports the container's own view of its limits. It never fails the
 // process: a missing file is reported as an empty value so the Agent can mark
 // that one capability unsupported.
-func Probe(workspace string) (Result, error) {
+func Probe(workdir string) (Result, error) {
 	result := Result{
-		CPUMax:            cpuMax(),
-		MemoryMax:         readTrimmed(memoryMaxPath()),
-		PidsMax:           readTrimmed(cgroupFile("pids.max")),
-		PIDNamespace:      NamespaceID("/proc/self/ns/pid"),
-		MountNamespace:    NamespaceID("/proc/self/ns/mnt"),
-		WorkspaceWritable: workspaceWritable(workspace),
+		CPUMax:          cpuMax(),
+		MemoryMax:       readTrimmed(memoryMaxPath()),
+		PidsMax:         readTrimmed(cgroupFile("pids.max")),
+		PIDNamespace:    NamespaceID("/proc/self/ns/pid"),
+		MountNamespace:  NamespaceID("/proc/self/ns/mnt"),
+		WorkdirWritable: workdirWritable(workdir),
 	}
 	result.NvidiaDevices, _ = filepath.Glob("/dev/nvidia*")
 	sort.Strings(result.NvidiaDevices)
@@ -64,8 +64,8 @@ func Probe(workspace string) (Result, error) {
 }
 
 // WriteProbeJSON is the `supervisor probe` command body.
-func WriteProbeJSON(workspace string) error {
-	result, err := Probe(workspace)
+func WriteProbeJSON(workdir string) error {
+	result, err := Probe(workdir)
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func NamespaceID(path string) string {
 	return target
 }
 
-func workspaceWritable(dir string) bool {
+func workdirWritable(dir string) bool {
 	probe := filepath.Join(dir, ".orrery-probe-"+strconv.Itoa(os.Getpid()))
 	if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
 		return false

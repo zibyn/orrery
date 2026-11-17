@@ -26,7 +26,7 @@ const (
 	sandboxPidsLimit = int64(2048)
 	binaryDir        = "/.orrery/bin"
 	supervisorBin    = binaryDir + "/supervisor"
-	workspaceMount   = "/workspace"
+	containerWorkdir = "/workspace"
 	runMount         = "/.orrery/run"
 	// recordSettle is how long a startup reconciliation waits for a
 	// just-created Supervisor to listen before calling it dead (runtime.md §8).
@@ -34,7 +34,7 @@ const (
 )
 
 // Runtime is this Node's Runtime Provider (runtime.md §2, §9). Its data root
-// holds the Workspace directories and per-Sandbox Supervisor records.
+// holds the per-Sandbox directories and Supervisor records.
 type Runtime struct {
 	dataRoot string
 	// nodeID is this Agent's Node identity. Every Runtime instance carries it
@@ -45,7 +45,7 @@ type Runtime struct {
 	provider string
 	// driver is the Provider-specific half of the Runtime contract (ADR-0009):
 	// container lifecycle/Exec/self-check for containerd, systemd for Local.
-	// Host-path work (Workspaces, records, files, publish, resources, tunnels)
+	// Host-path work (records, files, publish, resources, tunnels)
 	// stays on Runtime and is shared.
 	driver runtimeDriver
 	// diskMu orders eviction of a cached diff against a Create taking it
@@ -166,7 +166,6 @@ func (r *Runtime) presign(ctx context.Context, req *nodev1.PresignRequest) (*nod
 func PrepareDataRoot(root string) error {
 	for _, dir := range []string{
 		filepath.Join(root, "bin"),
-		filepath.Join(root, "workspaces"),
 		filepath.Join(root, "sandboxes"),
 		filepath.Join(root, "builds"),
 	} {
@@ -216,10 +215,6 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-func workspacePath(root string, id uuid.UUID) string {
-	return filepath.Join(root, "workspaces", id.String())
-}
-
 func sandboxPath(root string, id uuid.UUID) string {
 	return filepath.Join(root, "sandboxes", id.String())
 }
@@ -252,65 +247,30 @@ func createAdopts(labels map[string]string, nodeID string, generation int64) boo
 	return containerOwnedBy(labels, nodeID) && labels[labelGeneration] == strconv.FormatInt(generation, 10)
 }
 
-func (r *Runtime) provisionWorkspace(workspaceID uuid.UUID) error {
-	path := workspacePath(r.dataRoot, workspaceID)
-	if err := os.MkdirAll(path, 0o777); err != nil {
-		return err
-	}
-	// MkdirAll is subject to umask; the Sandbox user must be able to write.
-	if err := os.Chmod(path, 0o777); err != nil {
-		return err
-	}
-	// A Local Runtime's commands run as its unprivileged user (runtime.md §10).
-	return r.owner.own(path)
-}
-
-func (r *Runtime) deleteWorkspace(workspaceID uuid.UUID) error {
-	// uuid.String() is the only thing that reaches the path, so a malformed
-	// request cannot escape the data root.
-	return os.RemoveAll(workspacePath(r.dataRoot, workspaceID))
-}
-
 // prepareSandboxHost lays out the host side the containerd Provider mounts:
-// the Workspace, the record directory, the file API's Workspace record and
-// the eviction pins (runtime.md §2, §11). It returns the effective mode.
-func (r *Runtime) prepareSandboxHost(id, workspaceID uuid.UUID, cmd *createSandboxSpec) (workspace, runDir, mode string, err error) {
-	workspace = workspacePath(r.dataRoot, workspaceID)
-	if err := os.MkdirAll(workspace, 0o777); err != nil {
-		return "", "", "", err
-	}
-	if err := os.Chmod(workspace, 0o777); err != nil {
-		return "", "", "", err
-	}
+// the record directory and the eviction pins (runtime.md §2, §11).
+func (r *Runtime) prepareSandboxHost(id uuid.UUID, cmd *createSandboxSpec) (runDir string, err error) {
 	// The image's default USER writes here, and the Agent cannot chown it
 	// correctly without knowing the image. ponytail: world-writable, per-uid
 	// chown when USERs become common.
 	runDir = sandboxRunPath(r.dataRoot, id)
 	if err := os.MkdirAll(runDir, 0o777); err != nil {
-		return "", "", "", err
+		return "", err
 	}
 	if err := os.Chmod(runDir, 0o777); err != nil {
-		return "", "", "", err
-	}
-	mode = cmd.workspaceMode
-	if mode != "rw" && mode != "ro" {
-		mode = "rw"
-	}
-	// Recorded before adoption so the file API survives an Agent restart.
-	if err := r.writeWorkspaceRefFile(id, workspaceRef{ID: workspaceID.String(), Mode: mode}); err != nil {
-		return "", "", "", err
+		return "", err
 	}
 	// The pin record survives StopSandbox (a stopped Sandbox still
 	// references its image) and is only dropped when the Sandbox is known to
 	// be gone; see sandboxPins.
 	pins := sandboxPins{ImageDigest: cmd.imageDigest}
 	if err := writeSandboxPins(sandboxPath(r.dataRoot, id), pins); err != nil {
-		return "", "", "", err
+		return "", err
 	}
 	// Any create or adopt counts as a use of the image for LRU eviction
 	// (runtime.md §11).
 	touchImageUsage(r.dataRoot, cmd.imageDigest)
-	return workspace, runDir, mode, nil
+	return runDir, nil
 }
 
 // reconcileRecords applies runtime.md §8 to the records a previous Agent
@@ -517,18 +477,16 @@ func (r *Runtime) managedSnapshot() map[string]int64 {
 
 // createSandboxSpec is the subset of CreateSandbox the drivers use.
 type createSandboxSpec struct {
-	sandboxID     string
-	generation    int64
-	imageDigest   string
-	cpu           float64
-	memory        int64
-	workspaceID   string
-	workspaceMode string
-	gpuUUIDs      []string
-	resources     []resourceMount
-	volumes       []volumeMount
-	egress        egressMode
-	linkTarget    bool
+	sandboxID   string
+	generation  int64
+	imageDigest string
+	cpu         float64
+	memory      int64
+	gpuUUIDs    []string
+	resources   []resourceMount
+	volumes     []volumeMount
+	egress      egressMode
+	linkTarget  bool
 	// restore is the head Generation, empty before the first commit.
 	restore string
 }

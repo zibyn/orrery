@@ -70,7 +70,7 @@ func usage() {
   orrery-agent run [--ca FILE] [--server HOST:PORT] [--state FILE] [--runtime containerd|local] [--local-user USER] [--containerd SOCKET] [--isolation runc|runsc] [--sandbox-subnet CIDR] [--buildkit ADDR] [--data-root DIR] [--reserve-cpu N] [--reserve-memory BYTES] [--mesh-port PORT] [--mesh-endpoint HOST:PORT] [--resourcefs-socket PATH] [--presign-socket PATH]
   orrery-agent resourcefs [--data-root DIR] [--socket PATH] [--presign-socket PATH] [--takeover]
   orrery-agent supervisor init
-  orrery-agent supervisor probe [WORKSPACE]
+  orrery-agent supervisor probe [WORKDIR]
   orrery-agent supervisor run EXEC_ID
   orrery-agent supervisor forward PORT SOCKET
   orrery-agent supervisor dial HOST:PORT
@@ -107,7 +107,7 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.SandboxSubnet, "sandbox-subnet", agent.DefaultSandboxSubnet, "this Node's Sandbox subnet, not overlapping other Nodes' (--runtime containerd)")
 	fs.StringVar(&opts.LocalUser, "local-user", "", "unprivileged user every Local Runtime Exec runs as (required with --runtime local)")
 	fs.StringVar(&opts.Buildkit, "buildkit", agent.DefaultBuildkitAddr, "BuildKit endpoint, a standalone buildkitd; empty turns snapshot builds off")
-	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "Workspace and Supervisor data directory")
+	fs.StringVar(&opts.DataRoot, "data-root", agent.DefaultDataRoot, "Sandbox and Supervisor data directory")
 	fs.Float64Var(&opts.ReserveCPU, "reserve-cpu", agent.DefaultReserveCPU, "CPU cores kept free for the host")
 	fs.Int64Var(&opts.ReserveMemory, "reserve-memory", agent.DefaultReserveBytes, "memory bytes kept free for the host")
 	fs.IntVar(&opts.MeshPort, "mesh-port", agent.DefaultMeshPort, "Node Mesh WireGuard UDP listen port")
@@ -218,11 +218,11 @@ func supervise(args []string) error {
 		supervisor.Init()
 		return nil
 	case "probe":
-		workspace := "/workspace"
+		workdir := "/workspace"
 		if len(args) > 1 {
-			workspace = args[1]
+			workdir = args[1]
 		}
-		return supervisor.WriteProbeJSON(workspace)
+		return supervisor.WriteProbeJSON(workdir)
 	case "run":
 		if len(args) != 2 {
 			usage()
