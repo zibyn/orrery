@@ -78,7 +78,6 @@
 | `links.from` 项数 | 最多 16 项 | 常量 | 创建请求里的 Sandbox Link 来源（`api.md` §3） |
 | `links.ports` 项数 | 最多 16 项 | 常量 | 每一项在来源和目标两边各渲染成 nftables 规则 |
 | `egress.allow` 项数 | 最多 64 项 | 常量 | 创建请求里的 allowlist；每一项在 Node 上渲染成 nftables 规则（`api.md` §3） |
-| Git token 刷新提前量 | 10 秒 | 常量 | 即 `oauth2` 的 `Token.Valid()`；Coder 也直接用它 |
 
 ## 身份
 
@@ -91,13 +90,13 @@
 
 Control Plane 的应用配置只有一个文件：`ORRERY_CONFIG_FILE` 指向的 YAML。安装脚本写入 `/etc/orrery/config/config.yaml`，容器内为 `/config/config.yaml`；文件 `0600`、属主为 server 运行用户，以目录只读挂载。未设置 `ORRERY_CONFIG_FILE` 时，server 读取现有的环境变量，供测试与 CI 使用；那不是部署契约。
 
-键名去掉 `ORRERY_` 前缀、使用 snake_case，按功能分组。标量键可以被「覆盖变量」列的环境变量覆盖；列表和映射只从文件读取。被覆盖的键在启动时逐行打印。未知键、非法值、重复的 provider id、`database.url` 与结构化字段同时出现，都会让启动失败。不做环境变量插值，没有热加载。
+键名去掉 `ORRERY_` 前缀、使用 snake_case，按功能分组。标量键可以被「覆盖变量」列的环境变量覆盖；列表和映射只从文件读取。被覆盖的键在启动时逐行打印。未知键、非法值、`database.url` 与结构化字段同时出现，都会让启动失败。不做环境变量插值，没有热加载。
 
 ### `access`
 
 | 键 | 默认 | 覆盖变量 | 说明 |
 |---|---|---|---|
-| `url` | 空 | `ORRERY_ACCESS_URL` | 外部可达的 `api` 地址，对应 Coder 的 `CODER_ACCESS_URL`。OAuth `redirect_uri`、problem 里的 `authorize_url`、沙箱内的 `ORRERY_URL` 都由它拼出；空时 Git 关联关闭。沙箱内的 CLI 只信任镜像自带的 CA，部署指南要写明：用私有 CA 时，镜像里得装上它 |
+| `url` | 空 | `ORRERY_ACCESS_URL` | 外部可达的 `api` 地址，对应 Coder 的 `CODER_ACCESS_URL`。OAuth `redirect_uri` 和沙箱内的 `ORRERY_URL` 都由它拼出。沙箱内的 CLI 只信任镜像自带的 CA，部署指南要写明：用私有 CA 时，镜像里得装上它 |
 | `apps_domain` | 空 | `ORRERY_APPS_DOMAIN` | 端口转发的泛域名，子域名为 `<port>--<sandbox_id>.<apps_domain>`（`api.md` §6）；空时浏览器 Gateway 关闭，CLI 隧道仍可用 |
 | `ticket_key` | 空 | `ORRERY_PORT_TICKET_KEY` | 端口转发票据与 Gateway cookie 的 HMAC-SHA256 密钥；空时每个进程随机生成，重启后已签发的票据和 cookie 失效 |
 
@@ -151,9 +150,6 @@ Egress Rules（ADR-0026）。两个列表，只从文件读取，没有覆盖变
 ```yaml
 egress:
   allow:
-    # 填 access.url 解析到的地址。Sandbox 要靠它做 Git 认证（ADR-0016），
-    # 它多半落在下面 deny 的私有网段里，不放行 Git 就会失败。
-    # - 10.0.0.5/32:443
     # 填 Sandbox 的 resolv.conf 里的 nameserver（宿主的上游 resolver，runtime.md §2）。
     # 它在私有网段里时不放行，Sandbox 就解析不了域名。
     # - 10.0.0.2/32:53
@@ -165,30 +161,12 @@ egress:
     - 192.168.0.0/16
 ```
 
-- `deny` 了 `api` 的地址又没有 `allow` 回来，Git 认证会失败，平台不检测（ADR-0026）。
 - Control Plane 或 Node 用公网地址时，把这些地址也加进 `deny`，再按需 `allow` `api`。
 - 改了 Sandbox 子网，同步改这里的条目。
 
 ### `encryption_keys`
 
-列表，每项 `{id, key}`；`key` 是 base64 编码的 32 字节。第一项用于加密，所有项都可用于解密。AES-256-GCM，AAD 为 owner 的 user id（`schema.md`）。空列表时 Secret、Git、Sandbox Token 相关功能返回明确错误。不提供 rewrap 命令。
-
-### `git_providers`
-
-列表，为空表示没有 Git Provider。每一项：
-
-| 字段 | 说明 |
-|---|---|
-| `id` | `/git-providers/{id}` 里的 id |
-| `type` | `github`、`gitlab`、`gitea`、`generic` |
-| `client_id`、`client_secret` | OAuth 应用；两者都必填，secret 直接写在文件里 |
-| `base_url` | 按类型推导各 endpoint（ADR-0017）。`github`、`gitlab` 默认指向公网；`gitea` 必须写 |
-| `auth_url`、`token_url`、`validate_url` | 只用于 `generic`，因为它没有类型可推导：`auth_url`、`token_url` 必须写，`validate_url` 可以不配，不配就跳过校验 |
-| `pkce` | 默认 `true`，即 PKCE S256，可按 provider 关闭（ADR-0017） |
-| `host` | 匹配仓库 host 的模式 |
-| `scopes` | 授权时请求的 scope |
-
-校验路径按类型内置，接在 API 基址后：`github` 为 `/user`，`gitlab` 为 `/api/v4/user`，`gitea` 为 `/api/v1/user`。
+列表，每项 `{id, key}`；`key` 是 base64 编码的 32 字节。第一项用于加密，所有项都可用于解密。AES-256-GCM，AAD 为 owner 的 user id（`schema.md`）。空列表时 Secret 相关功能返回明确错误。不提供 rewrap 命令。
 
 ### `oidc`
 
@@ -226,10 +204,10 @@ egress:
 
 列表，每项 `{name, ref, default, default_gpu}`。`ref` 形如 `…@sha256:…`，`name` 是 registry 里的 `platform/<name>`。Control Plane 启动时导入其中还没导入的条目；导入失败不影响启动，只让用到它的 Sandbox 创建失败。平台 Snapshot 所有 User 可读，API 不能增删（ADR-0021）。`default: true` 最多一项，多于一项启动失败；它是不带 `snapshot` 的 `runtime: container` 创建请求的默认值；没有默认项时该请求返回错误，`runtime: local` 不用 Snapshot。`default_gpu: true` 同样最多一项，多于一项启动失败；`gpu.count > 0` 且不带 `snapshot` 的创建请求用它，没有这一项时退回 `default`。名字描述镜像内容（如 `ubuntu-24.04`），是否默认只看这两个标志。空列表表示没有平台 Snapshot。
 
-`install.sh server` 首次安装写两项，都按 digest 固定到该版本发布的 Orrery 沙箱镜像（`deploy/sandbox/Dockerfile`）：`ubuntu-24.04`（`ghcr.io/zibyn/orrery-sandbox`，Ubuntu 24.04 加 bash、git、curl、jq、ripgrep、build-essential、python3、uv、nodejs 等工具，`default: true`）和 `cuda-12.8-ubuntu-24.04`（`ghcr.io/zibyn/orrery-sandbox-cuda`，同样的工具层，基于 `nvidia/cuda:12.8.1-runtime-ubuntu24.04`，仅 amd64，`default_gpu: true`）。digest 在安装时向 ghcr 查询，查不到则安装失败。
+`install.sh server` 首次安装写两项，都按 digest 固定到该版本发布的 Orrery 沙箱镜像（`deploy/sandbox/Dockerfile`）：`ubuntu-24.04`（`ghcr.io/zibyn/orrery-sandbox`，Ubuntu 24.04 加 bash、git、openssh-client、curl、jq、ripgrep、build-essential、python3、uv、nodejs 等工具，`default: true`）和 `cuda-12.8-ubuntu-24.04`（`ghcr.io/zibyn/orrery-sandbox-cuda`，同样的工具层，基于 `nvidia/cuda:12.8.1-runtime-ubuntu24.04`，仅 amd64，`default_gpu: true`）。digest 在安装时向 ghcr 查询，查不到则安装失败。
 
 **不出现在 `config.yaml` 的键**。`api_addr`、`node_addr`、`node_tls_cert`、`node_tls_key` 由代码默认值给出，只可用环境变量（`ORRERY_API_ADDR`、`ORRERY_NODE_ADDR`、`ORRERY_NODE_TLS_CERT`、`ORRERY_NODE_TLS_KEY`）覆盖。
 
-**环境变量模式**。`ORRERY_CONFIG_FILE` 未设置时保留现有变量名，包括 `ORRERY_ENCRYPTION_KEYS_FILE`、`ORRERY_GIT_PROVIDERS_FILE`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_PLATFORM_SNAPSHOTS`、`ORRERY_DEFAULT_SNAPSHOT`、`ORRERY_DEFAULT_GPU_SNAPSHOT`，用于测试和 CI。`ORRERY_TEST_PURGE_INTERVAL` 是测试钩子，不属于部署配置。
+**环境变量模式**。`ORRERY_CONFIG_FILE` 未设置时保留现有变量名，包括 `ORRERY_ENCRYPTION_KEYS_FILE`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_PLATFORM_SNAPSHOTS`、`ORRERY_DEFAULT_SNAPSHOT`、`ORRERY_DEFAULT_GPU_SNAPSHOT`，用于测试和 CI。`ORRERY_TEST_PURGE_INTERVAL` 是测试钩子，不属于部署配置。
 
 **对象存储布局**。只用一个 bucket：CAS 对象在 `cas/<owner_id>/sha256/<hex>`，manifest 在 `manifests/<owner_id>/<address>`，registry 的 s3 driver 用 `rootdirectory: /registry`。registry 里用户 Snapshot 在 `snapshots/<snapshot_id>`，平台 Snapshot 在 `platform/<name>`，一律按 digest 引用，不打 tag。e2e 和参考部署用 RustFS 1.0.2；安装脚本用一个一次性容器建 bucket。

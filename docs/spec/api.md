@@ -6,9 +6,9 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 
 - **前缀**：`/api/v1`。`api` 监听面上另有 `/metrics`（`admin`）、端口转发子域名（§6）和 `/` 下的 Web 控制台（§8）。
 - **ID**：服务端生成的 UUIDv7，不带类型前缀。Sandbox 的 `name` 每个 User 内唯一，只用于过滤，不进路径。
-- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `orr_<id>_<secret>`，Sandbox Token 形如 `ors_<id>_<secret>`；服务端按 id 取行，API Token 比较 secret 的哈希，Sandbox Token 解密 `token_ct` 后做常数时间比较（`schema.md`）。前缀便于 secret scanning。User 在 Polaris 被停用（`disabled_at` 非空）期间，它的 Session、API Token 和它拥有的 Sandbox 的 Sandbox Token 都按 `401` 拒绝（ADR-0029）。
+- **认证**：`Authorization: Bearer <token>`，或者浏览器的 Session cookie。API Token 形如 `orr_<id>_<secret>`；服务端按 id 取行，比较 secret 的哈希（`schema.md`）。前缀便于 secret scanning。User 在 Polaris 被停用（`disabled_at` 非空）期间，它的 Session 和 API Token 都按 `401` 拒绝（ADR-0029）。
 - **Session cookie**：`orrery_session; HttpOnly; Secure; SameSite=Lax; Path=/`，不带 `Domain`，端口转发子域名收不到。值的格式同 API Token，对应 `api_tokens` 里 `kind=session` 的一行。cookie 与 Bearer 等价；用 cookie 认证时，非安全方法要过 `http.CrossOriginProtection`，WebSocket 升级要求 `Origin` 等于 `api` 自己的源（ADR-0020）。
-- **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`；Session 的 admin 权限始终随 User 当前的 admin 状态，不受创建时 scope 限制。Sandbox Token 只能调用 `POST /git/credential`。
+- **Scope**：`read_only` 只能 `GET`；`user` 能操作自己的资源；`admin` 另能调用标 **admin** 的接口。Session 的 scope 是 `user`，admin User 是 `admin`；Session 的 admin 权限始终随 User 当前的 admin 状态，不受创建时 scope 限制。
 - **存在性**：非 owner 访问别人的资源一律 `404 not_found`，不透露是否存在。`admin` 可读写所有资源。
 - **创建**返回 `201` 和初始状态的资源；**动作**（`POST /{资源}/{id}/{动词}`）返回 `202` 和当前资源；删除用 `DELETE`，返回 `202`，资源进入 `deleting`。
 - **幂等**：创建接口接受 `Idempotency-Key` 请求头，按 (User, 接口, key) 唯一（接口含路径参数，所以沙箱下的创建按 (Sandbox, key) 唯一），重复请求返回已有资源，不比较请求体；key 保留 24 小时。例外是 `POST /enrollment-packets`：响应里的 secret 只存哈希，重试拿不回旧值，只能新发一个，所以不读该头。
@@ -212,20 +212,6 @@ ResourceVersion 的 `state`：`pending → ready | failed`，另有 `unavailable
 
 **Secret**：`PUT /secrets/{name}`（创建或覆盖，只写）· `GET /secrets`（只返回名字和更新时间）· `DELETE /secrets/{name}`。
 
-**Git**
-
-| 方法与路径 | 说明 |
-|---|---|
-| `GET /git-providers` | 部署配置的 Git Provider |
-| `GET /git-providers/{id}/authorize` | **只接受 Session cookie**，没有就 302 到控制台登录页。302 到 provider 的授权页（PKCE），`state` 绑定当前 User |
-| `GET /external-auth/{id}/callback` | OAuth 回调。**只接受 Session cookie**，且 `state` 绑定的 User 必须是 Session 的 User，否则 `403` |
-| `GET /users/me/git-links` · `DELETE /users/me/git-links/{provider_id}` | |
-| `POST /git/credential` | **只接受 Sandbox Token**。`{host}` 或 `{provider}` → `{username, password}`；未关联或校验失败时返回 `404 not_found`，`authorize_url` 写在 problem 扩展字段里，指向控制台的 Git 关联页 |
-
-Git Provider 来自部署配置文件 `config.yaml` 的 `git_providers`（`defaults.md`），client secret 直接写在文件里。OAuth `redirect_uri` 和 `authorize_url` 都以 `access.url`（环境变量覆盖名 `ORRERY_ACCESS_URL`）为基址；它未配置时 Git 关联关闭。
-
-沙箱内的 helper 收到 `404` 时，把 `authorize_url` 写到 stderr，stdout 不输出，退出码为 0。平台 helper 是 Exec 里唯一的 helper（镜像和仓库里配置的 helper 已被清空），git 不会再运行其它 helper。Agent 不设 `GIT_TERMINAL_PROMPT`/`GIT_ASKPASS`，所以 PTY Exec 中 git 回退到交互式提示输入凭据，非 PTY Exec 中认证失败。
-
 **审计**：`GET /audit`，**admin**，过滤 `actor`、`action`、`target`、时间区间。
 
 ## 4. Exec
@@ -235,11 +221,20 @@ Git Provider 来自部署配置文件 `config.yaml` 的 `git_providers`（`defau
 ```
 argv: [string]        # 不经过 shell
 env?: {k: v}
+secrets?: {ENV_NAME: secret_name}   # 见下
 cwd?: 相对 /workspace 的路径（Local 上相对 Sandbox 工作目录的宿主路径）
 timeout?: 秒数
 stdin?: string        # 一次性写入后关闭；PTY 模式下忽略
 pty?: {rows, cols}    # 带上就是 PTY 模式
 ```
+
+`secrets`（ADR-0032）：
+
+- 按名字引用 Sandbox owner 的 Secret，与请求者是谁无关。
+- 创建 Exec 时解析一次，值加密存在 Exec 上（`schema.md`），不进 `env` 和 `stdin`。之后改了 Secret，下一个 Exec 就拿到新值，Sandbox 不用重启。
+- 键的校验、引用不存在的 Secret、没有 `encryption_keys` 时的错误，都与 `POST /sandboxes` 的 `secrets` 相同。
+- 与 Sandbox 的 `secrets` 同名时，Exec 的覆盖 Sandbox 的（`node-protocol.md`）。
+- 用同一个 `Idempotency-Key` 重放时返回已有的 Exec，不重新解析。
 
 Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`pending`、`running`、`canceling`、`finished`）；`result: {cause, exit_code?, signal?}`；`log_truncated`。
 
@@ -282,7 +277,6 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 
 - 只走 stdio，命令是 `orrery mcp`。
 - 凭据解析和其它 CLI 子命令一致：`--token` > `ORRERY_SANDBOX_TOKEN` > config 文件。
-- 不接受 Sandbox Token。
 
 **协议**
 
@@ -326,7 +320,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
   - 参数照搬 `CreateSandboxRequest` 的全部字段。
   - 创建后用 `wait_for=ready` 等待，每次最多 60 秒；超时就返回 `pending`，带上 `queue_position` 和 `blocked_reason`。
   - 想继续等，就调用 `sandbox_get{id, wait_for}`。
-- `exec_run{sandbox_id, command, cwd, env, stdin, timeout, wait_seconds}`：
+- `exec_run{sandbox_id, command, cwd, env, secrets, stdin, timeout, wait_seconds}`：
   - `command` 是一个字符串，执行为 argv `["sh","-c",command]`。
   - `timeout` 是 Exec 自己的超时，到点会杀掉进程；`wait_seconds` 只决定这次调用等多久，默认 30，上限 300，不等后进程照常跑。工具描述里写清两者的区别。
   - Exec 结束时，返回 `exec_id`、`state`、`result`、输出尾部 32 KiB（stdout 和 stderr 按帧顺序分开返回）、`log_truncated`，以及下一次读取用的 `after`。
@@ -372,7 +366,6 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 |---|---|
 | 登录 `/login?return=` | `GET /oidc/login`，只有「使用 Polaris 登录」（ADR-0029） |
 | CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `orrery login` |
-| Git 关联 `/git` | `GET /git-providers`、`/users/me/git-links`、`authorize`；`authorize_url` 指向这里 |
 | Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、卷（从 `GET /volumes` 选，可加多个，每个填挂载路径）、idle_stop。resources、secrets、labels 用 CLI |
 | Exec | `GET /sandboxes/{id}/execs`、`output?follow=true` 跟随、`POST /execs/{id}/cancel` |
 | 终端 | `POST /sandboxes/{id}/execs` 带 `pty`，argv 默认 `["/bin/sh", "-l"]`，可改；然后 `GET /execs/{id}/pty`。不提供非 PTY 的运行表单 |

@@ -1,6 +1,6 @@
 # ADR-0032: Orrery manages no Git credentials, and an Exec names its own Secrets
 
-- Status: accepted; supersedes ADR-0013 except its Caller Secrets and their audit; amends in place ADR-0016's Sandbox Token and ADR-0017's Git and Secrets, command lines and `api` reachability; `GLOSSARY.md` drops Git Provider, Git Account Link and Sandbox Token; `api.md`, `defaults.md`, `node-protocol.md`, `runtime.md` and `schema.md` follow, and those ADRs carry the amendment notes
+- Status: accepted; supersedes ADR-0013 except its Caller Secrets and their audit, and ADR-0016's Sandbox Token; amends in place ADR-0017's Git and Secrets, command lines and `api` reachability; `GLOSSARY.md` drops Git Provider, Git Account Link and Sandbox Token; `api.md`, `defaults.md`, `node-protocol.md`, `runtime.md` and `schema.md` follow, and those ADRs carry the amendment notes
 - Date: 2026-11-18
 
 ## Context
@@ -20,7 +20,7 @@ A caller has no other safe way to pass a token. A Sandbox's Secrets are copied w
 **An Exec names its own Secrets.** `POST /sandboxes/{id}/execs` takes `secrets?: {ENV_NAME: secret_name}`.
 
 - Names resolve against the Sandbox owner's Secrets, whoever creates the Exec, as a Sandbox's own Secrets do at start.
-- They resolve once, when the Exec is created. The values are stored encrypted on the Exec row, so a repeated `StartExec` sends the same values, and never in `env` or `stdin`. The ciphertext is cleared when the Exec finishes.
+- They resolve once, when the Exec is created. The values are stored encrypted on the Exec row, never in `env` or `stdin`, so a repeated `StartExec` sends the same values. The ciphertext is cleared when the Exec finishes.
 - An unknown Secret, or an invalid or reserved name, is `400 invalid_request`, as at Sandbox creation.
 - On the same name, the Exec's Secret overrides the Sandbox's.
 - A replay with the same `Idempotency-Key` returns the existing Exec and resolves nothing again.
@@ -34,7 +34,7 @@ A caller rotates a credential with `PUT /secrets/{name}`, and the next Exec gets
 ## Consequences
 
 - A deployment needs `encryption_keys` only for Secrets, and creating a Sandbox no longer generates a token.
-- Sandboxes no longer reach `api` for Git, so Egress Rules need no `allow` entry for it. `ORRERY_URL` is still set for the CLI inside a Sandbox.
+- Sandboxes no longer reach `api` for Git, so Egress Rules need an `allow` entry for `api` only when a caller runs the CLI in a Sandbox. `ORRERY_URL` is still set for that CLI.
 - Clients of the removed routes and commands break at upgrade, with no alias period. Existing Git Account Links are dropped, and Users authorize again in their caller.
 - Orrery's audit no longer records Git token use. The caller that holds the token records its own.
 - A token still enters the Sandbox. A process that can read the Exec's environment sees it while the Exec runs, and the provider's scoping bounds what it reaches, as under ADR-0013.
@@ -48,4 +48,4 @@ A caller rotates a credential with `PUT /secrets/{name}`, and the next Exec gets
 - Passing the token in Exec `env`: `execs.env` stores it in plaintext.
 - Sandbox Secrets with a restart on rotation: a GitHub App user token lasts eight hours, and a restart stops every running Exec and commits the filesystem (ADR-0031).
 - Re-reading a Sandbox's Secrets at every Exec: it changes, for every caller, the rule that a running Sandbox keeps the values it started with (ADR-0013).
-- A platform helper that picks a Secret by host: Orrery keeps Git configuration for what one caller-set `GIT_CONFIG` entry does.
+- A platform helper that picks a Secret by host: it keeps Git logic in Orrery to do what one caller-set `GIT_CONFIG` entry already does.
