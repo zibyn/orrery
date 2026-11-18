@@ -240,6 +240,7 @@ pty?: {rows, cols}    # 带上就是 PTY 模式
 - 键的校验、引用不存在的 Secret、没有 `encryption_keys` 时的错误，都与 `POST /sandboxes` 的 `secrets` 相同。
 - 与 Sandbox 的 `secrets` 同名时，Exec 的覆盖 Sandbox 的（`node-protocol.md`）。
 - 用同一个 `Idempotency-Key` 重放时返回已有的 Exec，不重新解析。
+- 带非空 `secrets` 创建的 Exec 写一条 Audit Record：`action` 为 `sandbox.exec.create`，target 是 Sandbox，actor 是请求者，`detail` 为 `{exec, owner, secrets}`，即 Exec id、Sandbox owner 和引用的 Secret 名字，不含值。重放不写，不带 `secrets` 的 Exec 也不写。
 
 Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`pending`、`running`、`canceling`、`finished`）；`result: {cause, exit_code?, signal?}`；`log_truncated`。
 

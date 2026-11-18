@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -173,6 +175,85 @@ func TestCreateExecSecrets(t *testing.T) {
 		}
 		if got := startedSecretEnv(replay)["TOK"]; got != "v1" {
 			t.Fatalf("replayed Exec's TOK = %q, want v1 from its creation", got)
+		}
+	})
+
+	// auditOf reads, through GET /audit, the sandbox.exec.create Records of
+	// the Exec that rec created.
+	auditOf := func(rec *httptest.ResponseRecorder) []auditDTO {
+		t.Helper()
+		if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+			t.Fatalf("create Exec: %d %s", rec.Code, rec.Body)
+		}
+		var e execDTO
+		if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
+			t.Fatalf("decode Exec: %v (%s)", err, rec.Body)
+		}
+		list := httptest.NewRecorder()
+		s.handleListAudit(list, httptest.NewRequest(http.MethodGet,
+			"/api/v1/audit?action=sandbox.exec.create&target_type=sandbox&target="+sandboxID.String(), nil), admin)
+		var page auditList
+		if err := json.Unmarshal(list.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode audit: %v (%s)", err, list.Body)
+		}
+		var out []auditDTO
+		for _, a := range page.Items {
+			var d struct {
+				Exec string `json:"exec"`
+			}
+			if json.Unmarshal(a.Detail, &d) == nil && d.Exec == e.ID {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+
+	// The owner's Secrets reach whoever creates the Exec, so its creation is
+	// audited with the caller, the owner and the Secret names, never a value
+	// (ADR-0013). Concurrent requests with one key are one Exec: the others
+	// replay it, through the lookup or the insert's conflict, and write nothing.
+	t.Run("audit", func(t *testing.T) {
+		putSecret("audit-tok", "audit-value")
+		secrets := map[string]string{"TOK": "audit-tok", "ALSO": "audit-tok", "OTHER": "exec-tok"}
+		for _, caller := range []struct {
+			name string
+			p    *principal
+		}{{"owner", owner}, {"admin", admin}} {
+			recs := make([]*httptest.ResponseRecorder, 8)
+			var wg sync.WaitGroup
+			for i := range recs {
+				wg.Go(func() { recs[i] = createExec(caller.p, "audit-"+caller.name, secrets) })
+			}
+			wg.Wait()
+			for _, rec := range recs[1:] {
+				auditOf(rec)
+			}
+			records := auditOf(recs[0])
+			if len(records) != 1 {
+				t.Fatalf("%s: %d Audit Records, want 1", caller.name, len(records))
+			}
+			a := records[0]
+			if a.ActorUserID == nil || *a.ActorUserID != caller.p.user.ID.String() {
+				t.Fatalf("%s: actor = %v, want %s", caller.name, a.ActorUserID, caller.p.user.ID)
+			}
+			var d struct {
+				Owner   string   `json:"owner"`
+				Secrets []string `json:"secrets"`
+			}
+			if err := json.Unmarshal(a.Detail, &d); err != nil {
+				t.Fatal(err)
+			}
+			if d.Owner != ownerID.String() || !slices.Equal(d.Secrets, []string{"audit-tok", "exec-tok"}) {
+				t.Fatalf("%s: detail = %s, want owner %s and secrets [audit-tok exec-tok]", caller.name, a.Detail, ownerID)
+			}
+			for _, value := range []string{"audit-value", "from-exec"} {
+				if strings.Contains(string(a.Detail), value) {
+					t.Fatalf("%s: detail %s leaks a Secret value", caller.name, a.Detail)
+				}
+			}
+		}
+		if got := auditOf(createExec(owner, "", nil)); len(got) != 0 {
+			t.Fatalf("an Exec without secrets wrote %d Audit Records, want none", len(got))
 		}
 	})
 }
