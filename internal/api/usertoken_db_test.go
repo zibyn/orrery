@@ -131,3 +131,37 @@ func TestUserTokenAdminKeepsConcurrentQuota(t *testing.T) {
 		t.Fatalf("after promotion is_admin %v gpu_quota %d, want true and %d", got.IsAdmin, got.GpuQuota, user.GpuQuota+7)
 	}
 }
+
+// A deleted machine User releases its name: user-token --name then creates a
+// new User instead of failing on the tombstone.
+func TestUserTokenNameOfDeletedUser(t *testing.T) {
+	s, q := purgeTestServer(t)
+	ctx := context.Background()
+	name := "machine-" + uuid.NewString()
+	old, err := s.machineUser(ctx, name, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.SoftDeleteUser(ctx, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.UserToken(ctx, UserTokenOptions{Name: name, Admin: true, Scope: "admin"})
+	if err != nil {
+		t.Fatalf("user-token --name of a deleted User: %v", err)
+	}
+	user, err := q.GetUserByName(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owner uuid.UUID
+	if err := s.pool.QueryRow(ctx, `SELECT user_id FROM api_tokens WHERE id = $1`, created.ID).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if user.ID == old.ID || owner != user.ID || !user.IsAdmin {
+		t.Fatalf("got User %s (token for %s), want a new admin User, not %s", user.ID, owner, old.ID)
+	}
+	// Two live Users still cannot share a name.
+	if _, err := q.CreateMachineUser(ctx, store.CreateMachineUserParams{ID: uuid.New(), Name: name}); uniqueViolation(err) != "users_name_key" {
+		t.Fatalf("second live User named %q: %v, want users_name_key", name, err)
+	}
+}
