@@ -8,8 +8,9 @@
 | `bench.sh` | 在容器里设置 Go、Node 环境，再调用 `bench.py` |
 | `drive.sh` | 按 `$TARGETS` 逐个目标起容器运行；`BENCH_PHASES` 可以只跑其中几个阶段 |
 | `jfs.sh` | 格式化一个新的 JuiceFS 卷，并在前台挂载 |
-| `volume_bench_test.go.txt` | 卷目标的入口。按 Agent 的方式提交：seal → 逐个上传对象 → 上传 Generation manifest → `VolumeCommitted`，读写都走 RustFS。没有 `ORRERY_BENCH_SCRIPT` 时跳过 |
+| `internal/resourcefs/volume_bench_test.go` | 卷目标的入口 `TestVolumeLocalBench`。按 Agent 的方式提交：seal → 并发上传对象（`castransfer.MaxUploads` 路，和 Agent 同一个常量）→ 上传 Generation manifest → `VolumeCommitted`，读写都走 RustFS。没有 `ORRERY_BENCH_SCRIPT` 时跳过，所以 `go test ./...` 和 CI 不会跑它 |
 | `baseline-*.txt` | 2026-11-18 的原始输出（commit `4eecdeb`） |
+| `after-*.txt` | spec #295 合并后的原始输出 |
 
 ## 准备
 
@@ -20,8 +21,7 @@ docker run -d --name bench-rustfs --network host -v $B/rustfs:/data -e RUSTFS_AC
   -e RUSTFS_SECRET_KEY=benchbench -e RUSTFS_ADDRESS=:9010 -e RUSTFS_CONSOLE_ENABLE=false rustfs/rustfs:latest
 docker pull juicedata/mount:ce-v1.2.3
 tar -C web -cf $B/nm.tar node_modules src/paraglide          # pnpm install 之后
-cp docs/research/volume-bench/volume_bench_test.go.txt internal/resourcefs/zz_volume_bench_test.go
-go test -c -o $B/bin/resourcefs-s3.test ./internal/resourcefs && rm internal/resourcefs/zz_volume_bench_test.go
+go test -c -o $B/bin/resourcefs-s3.test ./internal/resourcefs
 ```
 
 运行容器默认用 `orqestra-sandbox:q3pkgs` 镜像（Ubuntu 24.04，带 git、python3、rg）。Node 和 Go 工具链从宿主挂进容器。
