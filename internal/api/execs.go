@@ -234,7 +234,7 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	}
 	// The Sandbox owner's Secrets, whoever asks; a replay returned above
 	// without re-resolving (api.md §4).
-	secretEnvCt, _, ok := s.writeSecretSnapshot(w, ctx, s.q, sb.OwnerID, secretRefs, "invalid_request")
+	secretEnvCt, secretEnv, ok := s.writeSecretSnapshot(w, ctx, s.q, sb.OwnerID, secretRefs, "invalid_request")
 	if !ok {
 		return
 	}
@@ -253,6 +253,13 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	if replayed {
 		writeJSON(w, http.StatusOK, execToDTO(exec))
 		return
+	}
+	// The owner's Secrets reach whoever creates the Exec, an admin included,
+	// so their names are audited; never a value (ADR-0013).
+	if names := referencedSecretNames(secretEnv); len(names) > 0 {
+		s.audit(ctx, p, "sandbox.exec.create", "sandbox", sandboxID.String(), map[string]any{
+			"exec": exec.ID.String(), "owner": sb.OwnerID.String(), "secrets": names,
+		})
 	}
 	s.activity.touch(sandboxID)
 	s.changed(ctx)
