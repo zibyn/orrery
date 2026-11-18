@@ -708,8 +708,9 @@ SELECT * FROM nodes WHERE deleted_at IS NULL ORDER BY id;
 
 -- name: CreateExec :one
 INSERT INTO execs (
-    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key, pty
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key, pty,
+    secret_env_ct
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING *;
 
 -- name: GetExec :one
@@ -777,12 +778,12 @@ WHERE id = $1;
 
 -- name: FinishExec :execrows
 UPDATE execs
-SET finished_at = now(), cause = $2, exit_code = $3, signal = $4
+SET finished_at = now(), cause = $2, exit_code = $3, signal = $4, secret_env_ct = NULL
 WHERE id = $1 AND finished_at IS NULL;
 
 -- name: FinishSandboxExecs :execrows
 UPDATE execs
-SET finished_at = now(), cause = $2
+SET finished_at = now(), cause = $2, secret_env_ct = NULL
 WHERE sandbox_id = $1 AND finished_at IS NULL AND generation <= $3;
 
 -- name: ListExecOutputChunks :many
@@ -1441,7 +1442,7 @@ WHERE sandbox_id IN (
 
 -- name: FinishExecsOnNodeLost :execrows
 UPDATE execs
-SET finished_at = now(), cause = 'node_lost'
+SET finished_at = now(), cause = 'node_lost', secret_env_ct = NULL
 WHERE finished_at IS NULL
   AND sandbox_id IN (
       SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
@@ -1487,7 +1488,7 @@ WHERE workspace_id = $1 AND state NOT IN ('deleted', 'deleting');
 
 -- name: FinishExecsOnWorkspaceLost :execrows
 UPDATE execs
-SET finished_at = now(), cause = 'runtime_lost'
+SET finished_at = now(), cause = 'runtime_lost', secret_env_ct = NULL
 WHERE finished_at IS NULL
   AND sandbox_id IN (
       SELECT id FROM sandboxes

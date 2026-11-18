@@ -143,7 +143,7 @@ const cancelExec = `-- name: CancelExec :one
 UPDATE execs
 SET cancel_requested_at = COALESCE(cancel_requested_at, now())
 WHERE id = $1 AND finished_at IS NULL
-RETURNING id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state
+RETURNING id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state, secret_env_ct
 `
 
 func (q *Queries) CancelExec(ctx context.Context, id uuid.UUID) (Exec, error) {
@@ -171,6 +171,7 @@ func (q *Queries) CancelExec(ctx context.Context, id uuid.UUID) (Exec, error) {
 		&i.Generation,
 		&i.IdempotencyKey,
 		&i.State,
+		&i.SecretEnvCt,
 	)
 	return i, err
 }
@@ -609,9 +610,10 @@ func (q *Queries) CreateEnrollmentPacket(ctx context.Context, arg CreateEnrollme
 const createExec = `-- name: CreateExec :one
 
 INSERT INTO execs (
-    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key, pty
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state
+    id, sandbox_id, argv, env, cwd, stdin, timeout_seconds, generation, idempotency_key, pty,
+    secret_env_ct
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state, secret_env_ct
 `
 
 type CreateExecParams struct {
@@ -625,6 +627,7 @@ type CreateExecParams struct {
 	Generation     int64
 	IdempotencyKey *string
 	Pty            json.RawMessage
+	SecretEnvCt    []byte
 }
 
 // Execs
@@ -640,6 +643,7 @@ func (q *Queries) CreateExec(ctx context.Context, arg CreateExecParams) (Exec, e
 		arg.Generation,
 		arg.IdempotencyKey,
 		arg.Pty,
+		arg.SecretEnvCt,
 	)
 	var i Exec
 	err := row.Scan(
@@ -664,6 +668,7 @@ func (q *Queries) CreateExec(ctx context.Context, arg CreateExecParams) (Exec, e
 		&i.Generation,
 		&i.IdempotencyKey,
 		&i.State,
+		&i.SecretEnvCt,
 	)
 	return i, err
 }
@@ -1774,7 +1779,7 @@ func (q *Queries) FindPublishObjectOwner(ctx context.Context, arg FindPublishObj
 
 const finishExec = `-- name: FinishExec :execrows
 UPDATE execs
-SET finished_at = now(), cause = $2, exit_code = $3, signal = $4
+SET finished_at = now(), cause = $2, exit_code = $3, signal = $4, secret_env_ct = NULL
 WHERE id = $1 AND finished_at IS NULL
 `
 
@@ -1800,7 +1805,7 @@ func (q *Queries) FinishExec(ctx context.Context, arg FinishExecParams) (int64, 
 
 const finishExecsOnNodeLost = `-- name: FinishExecsOnNodeLost :execrows
 UPDATE execs
-SET finished_at = now(), cause = 'node_lost'
+SET finished_at = now(), cause = 'node_lost', secret_env_ct = NULL
 WHERE finished_at IS NULL
   AND sandbox_id IN (
       SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
@@ -1817,7 +1822,7 @@ func (q *Queries) FinishExecsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) 
 
 const finishExecsOnWorkspaceLost = `-- name: FinishExecsOnWorkspaceLost :execrows
 UPDATE execs
-SET finished_at = now(), cause = 'runtime_lost'
+SET finished_at = now(), cause = 'runtime_lost', secret_env_ct = NULL
 WHERE finished_at IS NULL
   AND sandbox_id IN (
       SELECT id FROM sandboxes
@@ -1835,7 +1840,7 @@ func (q *Queries) FinishExecsOnWorkspaceLost(ctx context.Context, workspaceID *u
 
 const finishSandboxExecs = `-- name: FinishSandboxExecs :execrows
 UPDATE execs
-SET finished_at = now(), cause = $2
+SET finished_at = now(), cause = $2, secret_env_ct = NULL
 WHERE sandbox_id = $1 AND finished_at IS NULL AND generation <= $3
 `
 
@@ -1893,7 +1898,7 @@ func (q *Queries) GetEnrollmentPacket(ctx context.Context, id uuid.UUID) (Enroll
 }
 
 const getExec = `-- name: GetExec :one
-SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state FROM execs WHERE id = $1
+SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state, secret_env_ct FROM execs WHERE id = $1
 `
 
 func (q *Queries) GetExec(ctx context.Context, id uuid.UUID) (Exec, error) {
@@ -1921,12 +1926,13 @@ func (q *Queries) GetExec(ctx context.Context, id uuid.UUID) (Exec, error) {
 		&i.Generation,
 		&i.IdempotencyKey,
 		&i.State,
+		&i.SecretEnvCt,
 	)
 	return i, err
 }
 
 const getExecByIdempotencyKey = `-- name: GetExecByIdempotencyKey :one
-SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state FROM execs WHERE sandbox_id = $1 AND idempotency_key = $2
+SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state, secret_env_ct FROM execs WHERE sandbox_id = $1 AND idempotency_key = $2
 `
 
 type GetExecByIdempotencyKeyParams struct {
@@ -1959,12 +1965,13 @@ func (q *Queries) GetExecByIdempotencyKey(ctx context.Context, arg GetExecByIdem
 		&i.Generation,
 		&i.IdempotencyKey,
 		&i.State,
+		&i.SecretEnvCt,
 	)
 	return i, err
 }
 
 const getExecWithNode = `-- name: GetExecWithNode :one
-SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, s.node_id AS sandbox_node_id
+SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, e.secret_env_ct, s.node_id AS sandbox_node_id
 FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id
 WHERE e.id = $1
@@ -2000,6 +2007,7 @@ func (q *Queries) GetExecWithNode(ctx context.Context, id uuid.UUID) (GetExecWit
 		&i.Exec.Generation,
 		&i.Exec.IdempotencyKey,
 		&i.Exec.State,
+		&i.Exec.SecretEnvCt,
 		&i.SandboxNodeID,
 	)
 	return i, err
@@ -2996,7 +3004,7 @@ func (q *Queries) InsertResourceVersionObject(ctx context.Context, arg InsertRes
 }
 
 const listActiveExecs = `-- name: ListActiveExecs :many
-SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, s.node_id AS sandbox_node_id, s.owner_id AS sandbox_owner_id,
+SELECT e.id, e.sandbox_id, e.argv, e.env, e.cwd, e.stdin, e.pty, e.timeout_seconds, e.accepted_at, e.started_at, e.cancel_requested_at, e.deadline_at, e.finished_at, e.cause, e.exit_code, e.signal, e.log_truncated, e.stored_seq, e.generation, e.idempotency_key, e.state, e.secret_env_ct, s.node_id AS sandbox_node_id, s.owner_id AS sandbox_owner_id,
        s.secret_env_ct AS sandbox_secret_env_ct,
        s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
 FROM execs e
@@ -3045,6 +3053,7 @@ func (q *Queries) ListActiveExecs(ctx context.Context) ([]ListActiveExecsRow, er
 			&i.Exec.Generation,
 			&i.Exec.IdempotencyKey,
 			&i.Exec.State,
+			&i.Exec.SecretEnvCt,
 			&i.SandboxNodeID,
 			&i.SandboxOwnerID,
 			&i.SandboxSecretEnvCt,
@@ -3487,7 +3496,7 @@ func (q *Queries) ListExecOutputChunks(ctx context.Context, arg ListExecOutputCh
 }
 
 const listExecs = `-- name: ListExecs :many
-SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state FROM execs
+SELECT id, sandbox_id, argv, env, cwd, stdin, pty, timeout_seconds, accepted_at, started_at, cancel_requested_at, deadline_at, finished_at, cause, exit_code, signal, log_truncated, stored_seq, generation, idempotency_key, state, secret_env_ct FROM execs
 WHERE sandbox_id = $1
   AND ($2::uuid IS NULL OR id > $2)
 ORDER BY id
@@ -3531,6 +3540,7 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 			&i.Generation,
 			&i.IdempotencyKey,
 			&i.State,
+			&i.SecretEnvCt,
 		); err != nil {
 			return nil, err
 		}

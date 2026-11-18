@@ -330,21 +330,8 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	secretMapping := secretEnvRefs(req.Secrets)
-	if len(secretMapping) > 0 {
-		envNames := make([]string, 0, len(secretMapping))
-		for env := range secretMapping {
-			envNames = append(envNames, env)
-		}
-		slices.Sort(envNames)
-		for _, env := range envNames {
-			if code, detail := secretEnvNameProblem(env); code != "" {
-				writeProblem(w, code, detail)
-				return
-			}
-		}
-		if !s.requireSecrets(w) {
-			return
-		}
+	if !s.checkSecretEnv(w, secretMapping) {
+		return
 	}
 	idleStop := s.cfg.IdleStopSeconds
 	if req.IdleStop != nil {

@@ -206,9 +206,10 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 			return
 		}
 	}
-	// The Secret snapshot is decrypted per StartExec, so an Agent restart or a
-	// repeated command still gets the values (schema.md, node-protocol.md).
-	secretEnv, err := decryptSecretEnv(r.s.cfg.EncryptionKeys, row.SandboxOwnerID, row.SandboxSecretEnvCt)
+	// The Secret snapshots are decrypted per StartExec, so an Agent restart or
+	// a repeated command still gets the values; the Exec's own override the
+	// Sandbox's (schema.md, node-protocol.md).
+	secretEnv, err := decryptSecretEnv(r.s.cfg.EncryptionKeys, row.SandboxOwnerID, row.SandboxSecretEnvCt, e.SecretEnvCt)
 	if err != nil {
 		r.s.log.Warn("reconcile: decrypt Secrets", "exec_id", e.ID, "error", err)
 		r.endExec(ctx, e.ID, ExecStartFailed)

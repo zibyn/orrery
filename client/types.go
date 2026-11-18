@@ -375,6 +375,7 @@ type PTY struct {
 type ExecRequest struct {
 	Argv    []string          `json:"argv"`
 	Env     map[string]string `json:"env,omitempty"`
+	Secrets map[string]string `json:"secrets,omitempty"`
 	Cwd     string            `json:"cwd,omitempty"`
 	Timeout *int64            `json:"timeout,omitempty"`
 	Stdin   *string           `json:"stdin,omitempty"`

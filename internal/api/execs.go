@@ -29,6 +29,7 @@ const outputPageBytes = 256 << 10
 type createExecRequest struct {
 	Argv    []string          `json:"argv"`
 	Env     map[string]string `json:"env"`
+	Secrets map[string]string `json:"secrets"`
 	Cwd     string            `json:"cwd"`
 	Timeout *int64            `json:"timeout"`
 	Stdin   *string           `json:"stdin"`
@@ -196,6 +197,10 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 			return
 		}
 	}
+	secretRefs := secretEnvRefs(req.Secrets)
+	if !s.checkSecretEnv(w, secretRefs) {
+		return
+	}
 	var timeout *int32
 	if req.Timeout != nil {
 		if *req.Timeout < 1 || *req.Timeout > math.MaxInt32 {
@@ -227,12 +232,18 @@ func (s *Server) handleCreateExec(w http.ResponseWriter, r *http.Request, p *pri
 	if req.Stdin != nil && pty == nil { // PTY mode ignores stdin (api.md §4)
 		stdin = []byte(*req.Stdin)
 	}
+	// The Sandbox owner's Secrets, whoever asks; a replay returned above
+	// without re-resolving (api.md §4).
+	secretEnvCt, _, ok := s.writeSecretSnapshot(w, ctx, s.q, sb.OwnerID, secretRefs, "invalid_request")
+	if !ok {
+		return
+	}
 	exec, replayed, err := createIdempotent(key, lookup,
 		func() (store.Exec, error) {
 			return s.q.CreateExec(ctx, store.CreateExecParams{
 				ID: id, SandboxID: sandboxID, Argv: argv, Env: env, Cwd: req.Cwd,
 				Stdin: stdin, TimeoutSeconds: timeout, Generation: sb.Generation,
-				IdempotencyKey: key, Pty: pty,
+				IdempotencyKey: key, Pty: pty, SecretEnvCt: secretEnvCt,
 			})
 		})
 	if err != nil {

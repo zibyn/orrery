@@ -177,6 +177,7 @@ type execRunInput struct {
 	Command     string            `json:"command"`
 	Cwd         string            `json:"cwd"`
 	Env         map[string]string `json:"env"`
+	Secrets     map[string]string `json:"secrets"`
 	Stdin       *string           `json:"stdin"`
 	Timeout     *int64            `json:"timeout"`
 	WaitSeconds *int              `json:"wait_seconds"`
@@ -210,6 +211,7 @@ func (s *server) execRun(ctx context.Context, req *sdk.CallToolRequest, in execR
 		Argv:    []string{"sh", "-c", in.Command},
 		Cwd:     in.Cwd,
 		Env:     in.Env,
+		Secrets: in.Secrets,
 		Stdin:   in.Stdin,
 		Timeout: in.Timeout,
 	}, "")

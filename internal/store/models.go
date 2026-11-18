@@ -95,6 +95,7 @@ type Exec struct {
 	Generation        int64
 	IdempotencyKey    *string
 	State             *string
+	SecretEnvCt       []byte
 }
 
 type ExecLogChunk struct {

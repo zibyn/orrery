@@ -750,6 +750,11 @@ func schemas() map[string]any {
 						"cols": map[string]any{"type": "integer", "minimum": 0, "maximum": 65535},
 					},
 				},
+				"secrets": map[string]any{
+					"type":                 "object",
+					"description":          "Environment variable name to the Sandbox owner's Secret name, resolved now; overrides the Sandbox's secrets of the same name. Not stored in env or stdin.",
+					"additionalProperties": map[string]any{"type": "string"},
+				},
 			},
 		},
 		"ExecResult": map[string]any{

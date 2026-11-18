@@ -254,6 +254,7 @@ func (s *server) register(srv *sdk.Server) {
     "command": {"type": "string", "description": "Command line executed with sh -c."},
     "cwd": {"type": "string", "description": "Working directory relative to /workspace."},
     "env": {"type": "object", "additionalProperties": {"type": "string"}},
+    "secrets": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variable name to the Sandbox owner's Secret name; overrides the Sandbox's secrets of the same name."},
     "stdin": {"type": "string", "description": "Written once and then closed."},
     "timeout": {"type": "integer", "minimum": 1, "description": "The Exec's own timeout in seconds; it kills the process."},
     "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 300, "default": 30, "description": "How long this call waits; it does not limit the process."}`, sandboxID), `"sandbox_id", "command"`),
