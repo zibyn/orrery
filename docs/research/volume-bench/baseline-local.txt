@@ -1,0 +1,15 @@
+##### local 18:50:22
+RESULT clone clone_s=0.61 probe_p50_ms=0.06 probe_p99_ms=0.2 probe_max_ms=0 wall_s=0.6
+RESULT install_node files=22622 extract_s=0.63 probe_p50_ms=0.06 probe_p99_ms=0.2 probe_max_ms=0 wall_s=0.6
+RESULT venv venv_with_pip_s=1.67 probe_p50_ms=0.07 probe_p99_ms=0.3 probe_max_ms=0 wall_s=1.7
+RESULT search rg_all_cold_s=0.36 rg_all_warm_s=0.03 rg_src_warm_s=0.0 files=29784 walk_cold_s=0.82 probe_p50_ms=0.06 probe_p99_ms=145.3 probe_max_ms=203 wall_s=5.0
+RESULT go_build build_cold_s=13.13 build_incr_s=1.14 test_s=0.74 probe_p50_ms=0.17 probe_p99_ms=87.2 probe_max_ms=97 wall_s=15.0
+RESULT web_build tsc_s=2.79 vite_build_s=4.53 probe_p50_ms=0.12 probe_p99_ms=82.6 probe_max_ms=91 wall_s=7.3
+RESULT agent_edit edit_p50_ms=2 edit_p99_ms=103 edit_total_s=1.1 commit_s=0.3 probe_p50_ms=0.13 probe_p99_ms=95.4 probe_max_ms=95 wall_s=1.4
+RESULT git_ops status_warm_s=0.0 checkout_old_s=0.37 checkout_back_s=0.26 log_p_s=0.81 gc_s=1.5 probe_p50_ms=0.07 probe_p99_ms=90.5 probe_max_ms=92 wall_s=3.0
+RESULT smallfiles create_per_s=71428 stat_per_s=575901 read_per_s=187577 rm_s=0.15 probe_p50_ms=0.09 probe_p99_ms=21.2 probe_max_ms=21 wall_s=0.6
+RESULT sqlite_tx delete_tx_per_s=129 wal_tx_per_s=255 probe_p50_ms=0.06 probe_p99_ms=1.8 probe_max_ms=6 wall_s=11.7
+RESULT seqio write_MiB_s=1283 read_MiB_s=1278 probe_p50_ms=0.08 probe_p99_ms=12.7 probe_max_ms=129 wall_s=6.9
+RESULT parallel_io jobs=8 write_MiB_s=407 read_MiB_s=3967 probe_p50_ms=1.03 probe_p99_ms=109.3 probe_max_ms=209 wall_s=11.4
+RESULT append round_s=0.8/0.8/0.8/0.7/0.7/0.8 probe_p50_ms=0.04 probe_p99_ms=8.9 probe_max_ms=14 wall_s=28.7
+RESULT cleanup rm_repo_s=0.38 probe_p50_ms=0.05 probe_p99_ms=0.2 probe_max_ms=0 wall_s=0.4
