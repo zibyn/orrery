@@ -409,9 +409,9 @@ type Sealed struct {
 	Pending []string `json:"pending,omitempty"`
 }
 
-// beforeHash runs as a seal turns to a frozen file, before taking its
+// hashing runs as a seal hashes each block of a frozen file, holding its
 // content lock; a test holds one there.
-var beforeHash = func(uint64) {}
+var hashing = func(uint64) {}
 
 // seal returns the whole tree as a Generation, as of one point in time
 // (runtime.md §17). Under the tree lock it walks the tree and freezes the
@@ -547,7 +547,6 @@ func (f *volumeFS) snapshot() (generation.Manifest, []sealItem) {
 // points n and its manifest entry e at them and thaws n. The write-cache
 // file stays as a clean copy, so the next write copies nothing.
 func (f *volumeFS) sealFile(ino uint64, n *vnode, e *manifest.Entry) error {
-	beforeHash(ino)
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	defer func() {
@@ -575,6 +574,7 @@ func (f *volumeFS) sealFile(ino uint64, n *vnode, e *manifest.Entry) error {
 	objects := map[string]int64{}
 	var blocks []string
 	for i := range max(manifest.BlockCount(size), 1) {
+		hashing(ino)
 		length := int64(0)
 		if size > 0 {
 			length = manifest.BlockLength(size, i)

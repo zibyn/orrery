@@ -158,13 +158,13 @@ func goSeal(v vol) <-chan Sealed {
 	return sealed
 }
 
-// holdSeal stops a seal as it turns to path's frozen file, before hashing
-// it, until release; wait returns once a seal is held there.
+// holdSeal stops a seal as it hashes path's frozen file, until release;
+// wait returns once a seal is held there.
 func holdSeal(v vol, path string) (wait, release func()) {
 	ino := v.ino(path)
 	held, done := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	beforeHash = func(i uint64) {
+	hashing = func(i uint64) {
 		if i == ino {
 			once.Do(func() {
 				close(held)
@@ -175,7 +175,7 @@ func holdSeal(v vol, path string) (wait, release func()) {
 			})
 		}
 	}
-	v.t.Cleanup(func() { beforeHash = func(uint64) {} })
+	v.t.Cleanup(func() { hashing = func(uint64) {} })
 	wait = func() {
 		v.t.Helper()
 		select {
