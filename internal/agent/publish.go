@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/castransfer"
@@ -121,7 +122,8 @@ func (r *Runtime) submitManifest(ctx context.Context, versionID string, m manife
 	return ack.GetMissingSha256(), nil
 }
 
-// uploadPublishObjects PUTs the missing CAS objects through Presign. The
+// uploadPublishObjects PUTs the missing CAS objects through Presign,
+// castransfer.MaxUploads at a time; the first failure cancels the rest. The
 // checksum header is the one the URL was signed with (ADR-0021).
 func (r *Runtime) uploadPublishObjects(ctx context.Context, root *os.Root, missing []string, files map[string]manifest.Source) error {
 	for start := 0; start < len(missing); start += presignBatch {
@@ -137,14 +139,22 @@ func (r *Runtime) uploadPublishObjects(ctx context.Context, root *os.Root, missi
 		if len(response.GetUrls()) != len(batch) {
 			return fmt.Errorf("Presign returned %d URLs for %d objects", len(response.GetUrls()), len(batch))
 		}
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(castransfer.MaxUploads)
 		for i, digest := range batch {
-			local, ok := files[digest]
-			if !ok {
-				return fmt.Errorf("the Control Plane asked for an object this tree does not contain: %s", digest)
+			if gctx.Err() != nil {
+				break // a PUT failed; Wait returns its error
 			}
-			if err := uploadRootObject(ctx, root, local, response.GetUrls()[i], digest); err != nil {
-				return err
-			}
+			g.Go(func() error {
+				local, ok := files[digest]
+				if !ok {
+					return fmt.Errorf("the Control Plane asked for an object this tree does not contain: %s", digest)
+				}
+				return uploadRootObject(gctx, root, local, response.GetUrls()[i], digest)
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -15,6 +15,10 @@ import (
 	"strings"
 )
 
+// MaxUploads is defaults.md "Node 并发对象上传": the object PUTs a Node keeps
+// in flight, as JuiceFS --max-uploads.
+const MaxUploads = 20
+
 // ErrForbidden wraps an HTTP 403 from the object store, which is how an
 // expired presigned URL answers; the caller signs again.
 var ErrForbidden = errors.New("HTTP 403")
