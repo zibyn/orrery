@@ -899,3 +899,100 @@ func TestVolumeReadOfFrozenFileAnswersDuringItsHash(t *testing.T) {
 		t.Fatalf("the seal lacks %q", want)
 	}
 }
+
+// holdWrite stops writes to path inside pwrite, once their first landed
+// bytes are in the write-cache file, until release; wait returns once one
+// is held there.
+func holdWrite(v vol, path string, landed int) (wait, release func()) {
+	name := v.f.dataPath(v.ino(path))
+	held, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	writeAt = func(file *os.File, b []byte, off int64) (int, error) {
+		if file.Name() != name {
+			return file.WriteAt(b, off)
+		}
+		n, err := file.WriteAt(b[:landed], off)
+		if err != nil {
+			return n, err
+		}
+		once.Do(func() {
+			close(held)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second): // free whatever is stuck behind it
+				v.t.Errorf("an op waited for the write to %s", path)
+			}
+		})
+		m, err := file.WriteAt(b[landed:], off+int64(landed))
+		return n + m, err
+	}
+	v.t.Cleanup(func() { writeAt = (*os.File).WriteAt })
+	wait = func() {
+		v.t.Helper()
+		select {
+		case <-held:
+		case <-time.After(5 * time.Second):
+			v.t.Fatalf("no write reached %s", path)
+		}
+	}
+	return wait, sync.OnceFunc(func() { close(done) })
+}
+
+// goWrite writes in the background.
+func goWrite(v vol, path string, off int, data string) <-chan fuse.Status {
+	ino := v.ino(path)
+	wrote := make(chan fuse.Status, 1)
+	go func() {
+		_, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(ino), Offset: uint64(off)}, []byte(data))
+		wrote <- st
+	}()
+	return wrote
+}
+
+// A seal that begins once a write's bytes are readable has them, though
+// the write has not returned: here, to a clean copy.
+func TestVolumeSealHasWhatWasReadable(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("clean", "one")
+	v.seal()               // clean is a clean copy
+	v.create("a", "dirty") // hashed first: where the seal is held
+	wait, release := holdWrite(v, "clean", 3)
+	defer release()
+	wrote := goWrite(v, "clean", 0, "two")
+	wait()
+	if got := v.read("clean", 0, 10); got != "two" {
+		t.Fatalf("clean reads %q while its write runs", got)
+	}
+	waitSeal, releaseSeal := holdSeal(v, "a")
+	defer releaseSeal()
+	sealed := goSeal(v)
+	waitSeal() // the seal has its point in time
+	release()
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	releaseSeal()
+	if want := "clean file 644  " + digest([]byte("two")); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q, read before it began", want)
+	}
+}
+
+// A seal waits for a write already in flight to a file it freezes, so it
+// never hashes half a write.
+func TestVolumeSealWaitsForAWriteInFlight(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("log", "......")
+	wait, release := holdWrite(v, "log", 1)
+	defer release()
+	wrote := goWrite(v, "log", 0, "ab")
+	wait()
+	sealed := goSeal(v)
+	notYet(t, sealed, "the seal hashed a write in flight")
+	release()
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	if want := "log file 644  " + digest([]byte("ab....")); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
+	}
+}

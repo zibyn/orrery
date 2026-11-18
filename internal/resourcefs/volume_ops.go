@@ -163,7 +163,10 @@ const noCopy = -1
 // with n.file open; keep other than noCopy first copies committed content
 // up, keeping keep bytes. Opening or copying takes the lock exclusively,
 // even when shared was asked for. A change (exclusive, or a copy asked for)
-// to a frozen file waits until the seal has hashed it.
+// to a frozen file waits until the seal has hashed it. A copy asked for
+// means a write or truncate follows: local content turns dirty in the step
+// that finds it not frozen, before its bytes move, so a seal from then on
+// freezes it and waits rather than recording a clean copy's old digests.
 func (f *volumeFS) lockContent(ino uint64, exclusive bool, keep int64) (*vnode, func(), fuse.Status) {
 	f.treeMu.Lock()
 	n, ok := f.st.Nodes[ino]
@@ -183,6 +186,9 @@ func (f *volumeFS) lockContent(ino uint64, exclusive bool, keep int64) (*vnode, 
 		lock()
 		f.treeMu.Lock()
 		alive, local, frozen := f.st.Nodes[ino] == n, n.Local, n.frozen
+		if alive && local && frozen == nil && keep != noCopy {
+			n.SHA256, n.Blocks = "", nil
+		}
 		f.treeMu.Unlock()
 		switch {
 		case !alive:
@@ -612,13 +618,16 @@ func (f *volumeFS) Read(_ <-chan struct{}, in *fuse.ReadIn, dest []byte) (fuse.R
 	return fuse.ReadResultData(dest[:got]), fuse.OK
 }
 
+// writeAt is pwrite(2); a test holds one partway.
+var writeAt = (*os.File).WriteAt
+
 func (f *volumeFS) Write(_ <-chan struct{}, in *fuse.WriteIn, data []byte) (uint32, fuse.Status) {
 	n, unlock, st := f.lockContent(in.NodeId, false, math.MaxInt64)
 	if !st.Ok() {
 		return 0, st
 	}
 	defer unlock()
-	written, err := n.file.WriteAt(data, int64(in.Offset))
+	written, err := writeAt(n.file, data, int64(in.Offset))
 	if err != nil {
 		return uint32(written), fuse.ToStatus(err)
 	}
