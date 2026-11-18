@@ -105,6 +105,36 @@ type ExecLogChunk struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type Generation struct {
+	ID          uuid.UUID
+	OwnerID     uuid.UUID
+	SandboxID   *uuid.UUID
+	Seq         int64
+	Kind        string
+	ManifestKey string
+	Size        int64
+	CreatedAt   pgtype.Timestamptz
+	VolumeID    *uuid.UUID
+}
+
+type GenerationObject struct {
+	GenerationID uuid.UUID
+	Sha256       string
+}
+
+type GenerationUpload struct {
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	SandboxID        uuid.UUID
+	NodeID           uuid.UUID
+	Generation       int64
+	BaseGenerationID *uuid.UUID
+	Missing          []string
+	ExpiresAt        pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+	VolumeID         *uuid.UUID
+}
+
 type GitLink struct {
 	UserID         uuid.UUID
 	ProviderID     string
@@ -126,6 +156,14 @@ type GpuAllocation struct {
 	GpuUuid   string
 	SandboxID uuid.UUID
 	CreatedAt pgtype.Timestamptz
+}
+
+type LegacyDir struct {
+	ID        uuid.UUID
+	NodeID    uuid.UUID
+	SandboxID *uuid.UUID
+	VolumeID  *uuid.UUID
+	Started   bool
 }
 
 type Node struct {
@@ -179,8 +217,9 @@ type ResourceVersion struct {
 	IdempotencyKey        *string
 	ExpiresAt             pgtype.Timestamptz
 	CreatedAt             pgtype.Timestamptz
-	PublishWorkspaceID    *uuid.UUID
 	PublishIdempotencyKey *string
+	PublishSandboxID      *uuid.UUID
+	PublishVolumeID       *uuid.UUID
 }
 
 type ResourceVersionObject struct {
@@ -189,45 +228,51 @@ type ResourceVersionObject struct {
 }
 
 type Sandbox struct {
-	ID              uuid.UUID
-	OwnerID         uuid.UUID
-	Name            string
-	Labels          json.RawMessage
-	DesiredState    string
-	State           string
-	Cause           *string
-	NodeID          *uuid.UUID
-	SnapshotDigest  string
-	Cpu             float64
-	Memory          int64
-	GpuCount        int32
-	IdleStopSeconds int32
-	LastActivityAt  pgtype.Timestamptz
-	TokenCt         []byte
-	SecretEnvCt     []byte
-	Generation      int64
-	IdempotencyKey  *string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-	DeletedAt       pgtype.Timestamptz
-	GpuModel        *string
-	WorkspaceID     *uuid.UUID
-	WorkspaceMode   string
-	TokenKeyID      *string
-	Conditions      json.RawMessage
-	Kind            string
-	Runtime         string
-	EgressMode      string
-	EgressAllow     []string
-	Address         *string
-	LinksFrom       []uuid.UUID
-	LinksPorts      []int32
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	Name             string
+	Labels           json.RawMessage
+	DesiredState     string
+	State            string
+	Cause            *string
+	NodeID           *uuid.UUID
+	SnapshotDigest   string
+	Cpu              float64
+	Memory           int64
+	GpuCount         int32
+	IdleStopSeconds  int32
+	LastActivityAt   pgtype.Timestamptz
+	TokenCt          []byte
+	SecretEnvCt      []byte
+	Generation       int64
+	IdempotencyKey   *string
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	DeletedAt        pgtype.Timestamptz
+	GpuModel         *string
+	TokenKeyID       *string
+	Conditions       json.RawMessage
+	Kind             string
+	Runtime          string
+	EgressMode       string
+	EgressAllow      []string
+	Address          *string
+	LinksFrom        []uuid.UUID
+	LinksPorts       []int32
+	HeadGenerationID *uuid.UUID
 }
 
 type SandboxResource struct {
 	SandboxID         uuid.UUID
 	ResourceVersionID uuid.UUID
 	Mount             string
+}
+
+type SandboxVolume struct {
+	SandboxID uuid.UUID
+	VolumeID  uuid.UUID
+	Path      string
+	Held      bool
 }
 
 type Secret struct {
@@ -295,19 +340,14 @@ type User struct {
 	PolarisDisabledAt pgtype.Timestamptz
 }
 
-type Workspace struct {
-	ID             uuid.UUID
-	OwnerID        uuid.UUID
-	Kind           string
-	SandboxID      *uuid.UUID
-	NodeID         *uuid.UUID
-	State          string
-	Cause          *string
-	StorageHandle  *string
-	Conditions     json.RawMessage
-	Generation     int64
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	DeletedAt      pgtype.Timestamptz
-	IdempotencyKey *string
+type Volume struct {
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	Name             string
+	State            string
+	HeadGenerationID *uuid.UUID
+	IdempotencyKey   *string
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	DeletedAt        pgtype.Timestamptz
 }

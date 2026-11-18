@@ -109,11 +109,11 @@ func TestSandboxTokenScope(t *testing.T) {
 		}
 	}
 
-	// The token is never persisted: not in the Workspace, not in the
+	// The token is never persisted: not under /workspace, not in the
 	// container configuration.
-	workspace, _ := run("sh", "-c", `grep -rl "$ORRERY_SANDBOX_TOKEN" /workspace 2>/dev/null || true`)
-	if workspace != "" {
-		t.Fatalf("the Sandbox Token is written under /workspace: %s", workspace)
+	found, _ := run("sh", "-c", `grep -rl "$ORRERY_SANDBOX_TOKEN" /workspace 2>/dev/null || true`)
+	if found != "" {
+		t.Fatalf("the Sandbox Token is written under /workspace: %s", found)
 	}
 	home, _ := run("sh", "-c", `ls "$HOME/.gitconfig" "$HOME/.git-credentials" 2>/dev/null || true`)
 	if home != "" {

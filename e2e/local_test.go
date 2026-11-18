@@ -17,7 +17,7 @@ import (
 // TestLocalRuntime is the "local-runtime" acceptance scenario (#97): the Agent
 // runs as root with --runtime local on a remote host and creates a
 // runtime: local Sandbox whose Execs run as the configured unprivileged user
-// in the Workspace's host directory.
+// in the Sandbox's working directory on the host.
 //
 //	ORRERY_E2E_GPU_SSH=user@host ORRERY_E2E_LOCAL_USER=builder make e2e -run LocalRuntime
 //
@@ -47,7 +47,7 @@ func TestLocalRuntime(t *testing.T) {
 	if values["egress_policy"] != "unsupported" {
 		t.Errorf("egress_policy = %q, want unsupported", values["egress_policy"])
 	}
-	for _, name := range []string{"cpu_memory_pid_limits", "workspace_rw_mount", "exec_supervisor"} {
+	for _, name := range []string{"cpu_memory_pid_limits", "workdir_writable", "exec_supervisor"} {
 		if values[name] != "enforced" {
 			t.Errorf("%s = %q, want enforced (capabilities %v)", name, values[name], node.Capabilities)
 		}
@@ -74,23 +74,20 @@ func TestLocalRuntime(t *testing.T) {
 	if sb.Runtime != "local" {
 		t.Fatalf("created Sandbox runtime = %q, want local", sb.Runtime)
 	}
-	if sb.Workspace == nil {
-		t.Fatal("a local Sandbox has no Workspace")
-	}
 	t.Cleanup(func() { deleteSandbox(t, admin, sb.ID) })
 	waitForSandboxReady(t, admin, sb.ID)
 
-	// The Workspace host path is <remote data-root>/workspaces/<id>; the e2e
-	// harness always passes <dir>/data as --data-root.
-	workspace := host.dir + "/data/workspaces/" + sb.Workspace.ID
+	// The working directory is <remote data-root>/sandboxes/<id>/workspace
+	// (runtime.md §10); the e2e harness always passes <dir>/data as --data-root.
+	workdir := host.dir + "/data/sandboxes/" + sb.ID + "/workspace"
 
 	pwd := createExec(t, admin, sb.ID, map[string]any{"argv": []string{"pwd"}})
 	stdout, _, _, result := followExec(t, admin, pwd.ID, 30*time.Second)
 	if result.Cause != "exited" || result.ExitCode == nil || *result.ExitCode != 0 {
 		t.Fatalf("pwd result = %+v, stdout %q", result, stdout)
 	}
-	if got := strings.TrimSpace(string(stdout)); got != workspace {
-		t.Fatalf("pwd = %q, want the Workspace host path %q", got, workspace)
+	if got := strings.TrimSpace(string(stdout)); got != workdir {
+		t.Fatalf("pwd = %q, want the working directory %q", got, workdir)
 	}
 
 	envExec := createExec(t, admin, sb.ID, map[string]any{
@@ -100,8 +97,8 @@ func TestLocalRuntime(t *testing.T) {
 	if result.Cause != "exited" || *result.ExitCode != 0 {
 		t.Fatalf("ORRERY_WORKSPACE result = %+v", result)
 	}
-	if got := strings.TrimSpace(string(stdout)); got != workspace {
-		t.Fatalf("ORRERY_WORKSPACE = %q, want %q", got, workspace)
+	if got := strings.TrimSpace(string(stdout)); got != workdir {
+		t.Fatalf("ORRERY_WORKSPACE = %q, want %q", got, workdir)
 	}
 
 	// Resources: the unprivileged Exec reads the version mount through the

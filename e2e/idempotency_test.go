@@ -206,29 +206,30 @@ func TestIdempotencyKeyAfterDelete(t *testing.T) {
 		t.Fatalf("oversized Idempotency-Key: %d %s, want 400", status, data)
 	}
 
-	// Workspace: the tombstone reaches deleted once the Node removes storage.
-	workspaceKey := fmt.Sprintf("replay-workspace-key-%d", suffix)
-	status, data = withIdempotencyKey(t, http.MethodPost, "/api/v1/workspaces", admin, workspaceKey, nil)
+	// Volume: deleting needs no Node, so the tombstone is deleted at once.
+	volumeKey := fmt.Sprintf("replay-volume-key-%d", suffix)
+	volumeBody := map[string]string{"name": fmt.Sprintf("replay-volume-%d", suffix)}
+	status, data = withIdempotencyKey(t, http.MethodPost, "/api/v1/volumes", admin, volumeKey, volumeBody)
 	if status != http.StatusCreated {
-		t.Fatalf("create Workspace: %d %s", status, data)
+		t.Fatalf("create Volume: %d %s", status, data)
 	}
-	var firstWorkspace workspaceView
-	mustJSON(t, data, &firstWorkspace)
-	waitForWorkspaceState(t, admin, firstWorkspace.ID, "ready", 60*time.Second)
-	if status, data := call(t, http.MethodDelete, "/api/v1/workspaces/"+firstWorkspace.ID, admin, nil); status != http.StatusAccepted {
-		t.Fatalf("delete Workspace: %d %s", status, data)
+	var firstVolume struct {
+		ID string `json:"id"`
 	}
-	waitForWorkspaceState(t, admin, firstWorkspace.ID, "deleted", 60*time.Second)
-	status, data = withIdempotencyKey(t, http.MethodPost, "/api/v1/workspaces", admin, workspaceKey, nil)
+	mustJSON(t, data, &firstVolume)
+	if status, data := call(t, http.MethodDelete, "/api/v1/volumes/"+firstVolume.ID, admin, nil); status != http.StatusAccepted {
+		t.Fatalf("delete Volume: %d %s", status, data)
+	}
+	status, data = withIdempotencyKey(t, http.MethodPost, "/api/v1/volumes", admin, volumeKey, volumeBody)
 	if status != http.StatusCreated {
-		t.Fatalf("replay Workspace key after delete: %d %s, want 201", status, data)
+		t.Fatalf("replay Volume key after delete: %d %s, want 201", status, data)
 	}
-	var secondWorkspace workspaceView
-	mustJSON(t, data, &secondWorkspace)
-	if secondWorkspace.ID == firstWorkspace.ID {
-		t.Fatalf("replayed Workspace reused the tombstone %s", firstWorkspace.ID)
+	secondVolume := firstVolume
+	mustJSON(t, data, &secondVolume)
+	if secondVolume.ID == firstVolume.ID {
+		t.Fatalf("replayed Volume reused the tombstone %s", firstVolume.ID)
 	}
-	t.Cleanup(func() { _, _ = call(t, http.MethodDelete, "/api/v1/workspaces/"+secondWorkspace.ID, admin, nil) })
+	t.Cleanup(func() { _, _ = call(t, http.MethodDelete, "/api/v1/volumes/"+secondVolume.ID, admin, nil) })
 
 	// Sandbox: the tombstone is visible to the lookup until the Agent reports
 	// the Runtime gone, so the replay waits for that deletion.

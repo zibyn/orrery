@@ -37,10 +37,10 @@ const sandboxSchema = `{
       "model": {"type": ["string", "null"]}
     }},
     "idle_stop": {"type": "integer"},
-    "workspace": {"type": ["object", "null"], "properties": {
-      "id": {"type": "string"},
-      "mode": {"type": "string"}
-    }},
+    "volumes": {"type": ["array", "null"], "items": {"type": "object", "properties": {
+      "volume": {"type": "string"},
+      "path": {"type": "string"}
+    }}},
     "conditions": {"type": ["array", "null"], "items": {"type": "string"}},
     "queue_position": {"type": ["integer", "null"]},
     "blocked_reason": {"type": ["string", "null"]},
@@ -140,7 +140,7 @@ var execCancelSchema = json.RawMessage(fmt.Sprintf(`{
 }`, execResultSchema))
 
 const sandboxID = `"sandbox_id": {"type": "string", "description": "The Sandbox id."}`
-const pathProp = `"path": {"type": "string", "description": "Path relative to /workspace."}`
+const pathProp = `"path": {"type": "string", "description": "Path relative to /workspace, or absolute in the Sandbox's filesystem; Volume and Resource mount points are refused."}`
 
 func objectSchema(properties, required string) json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(`{
@@ -161,10 +161,10 @@ func (s *server) register(srv *sdk.Server) {
     "name": {"type": "string", "description": "Name, unique per User."},
     "labels": {"type": "object", "additionalProperties": {"type": "string"}},
     "runtime": {"type": "string", "enum": ["container", "local"]},
-    "workspace": {"type": "object", "additionalProperties": false, "properties": {
-      "id": {"type": "string"},
-      "mode": {"type": "string", "enum": ["rw", "ro"]}
-    }, "required": ["id"]},
+    "volumes": {"type": "array", "maxItems": 16, "description": "Volumes mounted read-write for the Sandbox's life; a Volume another Sandbox holds is a conflict.", "items": {"type": "object", "additionalProperties": false, "properties": {
+      "volume": {"type": "string", "description": "Volume id or name."},
+      "path": {"type": "string", "description": "Absolute, normalized mount path; may be /workspace."}
+    }, "required": ["volume", "path"]}},
     "snapshot": {"type": "string", "description": "SnapshotVersion id or Snapshot name."},
     "resources": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
       "resource": {"type": "string"},
@@ -229,7 +229,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:         "sandbox_stop",
 		Title:        "Stop Sandbox",
-		Description:  "Stop a Sandbox. Its Workspace contents are kept.",
+		Description:  "Stop a Sandbox. Its filesystem is committed and kept for the next start.",
 		InputSchema:  objectSchema(sandboxID, `"sandbox_id"`),
 		OutputSchema: json.RawMessage(sandboxSchema),
 		Annotations:  &sdk.ToolAnnotations{IdempotentHint: true},
@@ -238,7 +238,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:         "sandbox_delete",
 		Title:        "Delete Sandbox",
-		Description:  "Delete a Sandbox. Running Execs are canceled and an ephemeral Workspace is removed.",
+		Description:  "Delete a Sandbox. Running Execs are canceled and its filesystem is removed; Volumes are kept.",
 		InputSchema:  objectSchema(sandboxID, `"sandbox_id"`),
 		OutputSchema: json.RawMessage(sandboxSchema),
 		Annotations:  &sdk.ToolAnnotations{IdempotentHint: true, DestructiveHint: boolPtr(true)},
@@ -286,7 +286,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:         "file_list",
 		Title:        "List Files",
-		Description:  "List a directory in the Sandbox Workspace.",
+		Description:  "List a directory of the Sandbox's filesystem (relative to /workspace, or absolute).",
 		InputSchema:  objectSchema(sandboxID+","+pathProp, `"sandbox_id", "path"`),
 		OutputSchema: fileListSchema,
 		Annotations:  &sdk.ToolAnnotations{ReadOnlyHint: true},
@@ -295,7 +295,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:         "file_stat",
 		Title:        "Stat File",
-		Description:  "Read a Workspace file's metadata.",
+		Description:  "Read a Sandbox file's metadata.",
 		InputSchema:  objectSchema(sandboxID+","+pathProp, `"sandbox_id", "path"`),
 		OutputSchema: fileEntrySchema,
 		Annotations:  &sdk.ToolAnnotations{ReadOnlyHint: true},
@@ -304,7 +304,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:  "file_read",
 		Title: "Read File",
-		Description: "Read up to 1 MiB of a Workspace file. UTF-8 content is returned as text, an image/* file as image content, " +
+		Description: "Read up to 1 MiB of a Sandbox file. UTF-8 content is returned as text, an image/* file as image content, " +
 			"and any other binary content as content_base64 with encoding base64. Use Exec with tar for archives and larger files.",
 		InputSchema: objectSchema(sandboxID+","+pathProp+`,
     "offset": {"type": "integer", "minimum": 0, "default": 0},
@@ -328,7 +328,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:  "file_write",
 		Title: "Write File",
-		Description: "Write a Workspace file, at most 1 MiB. encoding text (the default) writes content as UTF-8; " +
+		Description: "Write a Sandbox file, at most 1 MiB. encoding text (the default) writes content as UTF-8; " +
 			"encoding base64 decodes content first.",
 		InputSchema: objectSchema(sandboxID+","+pathProp+`,
     "content": {"type": "string"},
@@ -347,7 +347,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:         "file_mkdir",
 		Title:        "Make Directory",
-		Description:  "Create a directory in the Workspace.",
+		Description:  "Create a directory in the Sandbox.",
 		InputSchema:  objectSchema(sandboxID+","+pathProp, `"sandbox_id", "path"`),
 		OutputSchema: json.RawMessage(`{"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}`),
 		Annotations:  &sdk.ToolAnnotations{IdempotentHint: true, DestructiveHint: boolPtr(false)},
@@ -356,7 +356,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:         "file_move",
 		Title:        "Move File",
-		Description:  "Move or rename a Workspace path.",
+		Description:  "Move or rename a Sandbox path.",
 		InputSchema:  objectSchema(sandboxID+`,"from": {"type": "string"}, "to": {"type": "string"}`, `"sandbox_id", "from", "to"`),
 		OutputSchema: json.RawMessage(`{"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}`),
 		Annotations:  &sdk.ToolAnnotations{DestructiveHint: boolPtr(true)},
@@ -365,7 +365,7 @@ func (s *server) register(srv *sdk.Server) {
 	addTool(srv, &sdk.Tool{
 		Name:         "file_delete",
 		Title:        "Delete File",
-		Description:  "Delete a Workspace path.",
+		Description:  "Delete a Sandbox path.",
 		InputSchema:  objectSchema(sandboxID+","+pathProp, `"sandbox_id", "path"`),
 		OutputSchema: json.RawMessage(`{"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}`),
 		Annotations:  &sdk.ToolAnnotations{IdempotentHint: true, DestructiveHint: boolPtr(true)},

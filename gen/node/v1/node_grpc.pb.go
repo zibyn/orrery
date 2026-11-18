@@ -19,12 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Node_Redeem_FullMethodName         = "/orrery.node.v1.Node/Redeem"
-	Node_Control_FullMethodName        = "/orrery.node.v1.Node/Control"
-	Node_ExecOutput_FullMethodName     = "/orrery.node.v1.Node/ExecOutput"
-	Node_Tunnel_FullMethodName         = "/orrery.node.v1.Node/Tunnel"
-	Node_Presign_FullMethodName        = "/orrery.node.v1.Node/Presign"
-	Node_SubmitManifest_FullMethodName = "/orrery.node.v1.Node/SubmitManifest"
+	Node_Redeem_FullMethodName           = "/orrery.node.v1.Node/Redeem"
+	Node_Control_FullMethodName          = "/orrery.node.v1.Node/Control"
+	Node_ExecOutput_FullMethodName       = "/orrery.node.v1.Node/ExecOutput"
+	Node_Tunnel_FullMethodName           = "/orrery.node.v1.Node/Tunnel"
+	Node_Presign_FullMethodName          = "/orrery.node.v1.Node/Presign"
+	Node_SubmitManifest_FullMethodName   = "/orrery.node.v1.Node/SubmitManifest"
+	Node_SubmitGeneration_FullMethodName = "/orrery.node.v1.Node/SubmitGeneration"
+	Node_CommitGeneration_FullMethodName = "/orrery.node.v1.Node/CommitGeneration"
 )
 
 // NodeClient is the client API for Node service.
@@ -47,10 +49,17 @@ type NodeClient interface {
 	// Presign issues object store URLs for this Node (node-protocol.md
 	// "Presign"). It is authenticated by the Node Token.
 	Presign(ctx context.Context, in *PresignRequest, opts ...grpc.CallOption) (*PresignResponse, error)
-	// SubmitManifest streams a Workspace publish's tree to the Control Plane.
+	// SubmitManifest streams a Sandbox publish's tree to the Control Plane.
 	// The first chunk carries version_id; the reply lists the objects the Node
-	// still has to upload (node-protocol.md "Workspace publish").
+	// still has to upload (node-protocol.md "Sandbox publish").
 	SubmitManifest(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ManifestChunk, ManifestAck], error)
+	// SubmitGeneration streams the changed entries of a Sandbox's filesystem or
+	// a Volume and opens an upload; the reply lists the objects still missing
+	// (node-protocol.md "Generation 提交", ADR-0031).
+	SubmitGeneration(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[GenerationChunk, GenerationAck], error)
+	// CommitGeneration verifies an upload's manifest and objects and advances
+	// the head Generation in one transaction.
+	CommitGeneration(ctx context.Context, in *CommitGenerationRequest, opts ...grpc.CallOption) (*CommitGenerationResponse, error)
 }
 
 type nodeClient struct {
@@ -133,6 +142,29 @@ func (c *nodeClient) SubmitManifest(ctx context.Context, opts ...grpc.CallOption
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Node_SubmitManifestClient = grpc.ClientStreamingClient[ManifestChunk, ManifestAck]
 
+func (c *nodeClient) SubmitGeneration(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[GenerationChunk, GenerationAck], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Node_ServiceDesc.Streams[4], Node_SubmitGeneration_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GenerationChunk, GenerationAck]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_SubmitGenerationClient = grpc.ClientStreamingClient[GenerationChunk, GenerationAck]
+
+func (c *nodeClient) CommitGeneration(ctx context.Context, in *CommitGenerationRequest, opts ...grpc.CallOption) (*CommitGenerationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommitGenerationResponse)
+	err := c.cc.Invoke(ctx, Node_CommitGeneration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeServer is the server API for Node service.
 // All implementations must embed UnimplementedNodeServer
 // for forward compatibility.
@@ -153,10 +185,17 @@ type NodeServer interface {
 	// Presign issues object store URLs for this Node (node-protocol.md
 	// "Presign"). It is authenticated by the Node Token.
 	Presign(context.Context, *PresignRequest) (*PresignResponse, error)
-	// SubmitManifest streams a Workspace publish's tree to the Control Plane.
+	// SubmitManifest streams a Sandbox publish's tree to the Control Plane.
 	// The first chunk carries version_id; the reply lists the objects the Node
-	// still has to upload (node-protocol.md "Workspace publish").
+	// still has to upload (node-protocol.md "Sandbox publish").
 	SubmitManifest(grpc.ClientStreamingServer[ManifestChunk, ManifestAck]) error
+	// SubmitGeneration streams the changed entries of a Sandbox's filesystem or
+	// a Volume and opens an upload; the reply lists the objects still missing
+	// (node-protocol.md "Generation 提交", ADR-0031).
+	SubmitGeneration(grpc.ClientStreamingServer[GenerationChunk, GenerationAck]) error
+	// CommitGeneration verifies an upload's manifest and objects and advances
+	// the head Generation in one transaction.
+	CommitGeneration(context.Context, *CommitGenerationRequest) (*CommitGenerationResponse, error)
 	mustEmbedUnimplementedNodeServer()
 }
 
@@ -184,6 +223,12 @@ func (UnimplementedNodeServer) Presign(context.Context, *PresignRequest) (*Presi
 }
 func (UnimplementedNodeServer) SubmitManifest(grpc.ClientStreamingServer[ManifestChunk, ManifestAck]) error {
 	return status.Errorf(codes.Unimplemented, "method SubmitManifest not implemented")
+}
+func (UnimplementedNodeServer) SubmitGeneration(grpc.ClientStreamingServer[GenerationChunk, GenerationAck]) error {
+	return status.Errorf(codes.Unimplemented, "method SubmitGeneration not implemented")
+}
+func (UnimplementedNodeServer) CommitGeneration(context.Context, *CommitGenerationRequest) (*CommitGenerationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CommitGeneration not implemented")
 }
 func (UnimplementedNodeServer) mustEmbedUnimplementedNodeServer() {}
 func (UnimplementedNodeServer) testEmbeddedByValue()              {}
@@ -270,6 +315,31 @@ func _Node_SubmitManifest_Handler(srv interface{}, stream grpc.ServerStream) err
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Node_SubmitManifestServer = grpc.ClientStreamingServer[ManifestChunk, ManifestAck]
 
+func _Node_SubmitGeneration_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(NodeServer).SubmitGeneration(&grpc.GenericServerStream[GenerationChunk, GenerationAck]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_SubmitGenerationServer = grpc.ClientStreamingServer[GenerationChunk, GenerationAck]
+
+func _Node_CommitGeneration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CommitGenerationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServer).CommitGeneration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Node_CommitGeneration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServer).CommitGeneration(ctx, req.(*CommitGenerationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Node_ServiceDesc is the grpc.ServiceDesc for Node service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -284,6 +354,10 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Presign",
 			Handler:    _Node_Presign_Handler,
+		},
+		{
+			MethodName: "CommitGeneration",
+			Handler:    _Node_CommitGeneration_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
@@ -308,6 +382,11 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SubmitManifest",
 			Handler:       _Node_SubmitManifest_Handler,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "SubmitGeneration",
+			Handler:       _Node_SubmitGeneration_Handler,
 			ClientStreams: true,
 		},
 	},

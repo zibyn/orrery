@@ -119,6 +119,15 @@ func validate(m Manifest, maxEntries int) error {
 	return nil
 }
 
+// ValidateEntry checks one entry's path and fields without the tree rules
+// Validate adds; Generation manifests (internal/generation) reuse it.
+func ValidateEntry(entry Entry) error {
+	if err := validatePath(entry.Path); err != nil {
+		return err
+	}
+	return validateEntry(entry)
+}
+
 func validatePath(path string) error {
 	switch {
 	case path == "":
@@ -202,7 +211,7 @@ func validateBlocks(entry Entry) error {
 
 // RequireBlocks rejects a file over BlockSize without blocks. Validate
 // accepts such legacy entries for versions published before ADR-0030; new
-// uploads and Workspace publishes must split them.
+// uploads and publishes must split them.
 func RequireBlocks(m Manifest) error {
 	for _, entry := range m.Entries {
 		if entry.Type == TypeFile && entry.Blocks == nil && entry.Size != nil && *entry.Size > BlockSize {

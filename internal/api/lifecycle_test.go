@@ -1,10 +1,6 @@
 package api
 
-import (
-	"testing"
-
-	"github.com/zibyn/orrery/internal/store"
-)
+import "testing"
 
 // sandboxStep must route exactly as the Reconciler's switch did: desired state
 // picks the sweep, and a running Sandbox only acts while it has not reached a
@@ -92,36 +88,6 @@ func TestExecStep(t *testing.T) {
 			if got := execStep(tt.facts, tt.connected, tt.delivered); got != tt.want {
 				t.Fatalf("execStep(%+v, connected=%v, delivered=%v) = %v, want %v",
 					tt.facts, tt.connected, tt.delivered, got, tt.want)
-			}
-		})
-	}
-}
-
-// finalizeAction decides what follows releasing a gone Runtime's resources.
-func TestFinalizeAction(t *testing.T) {
-	ephemeral := &store.Workspace{Kind: "ephemeral"}
-	persistent := &store.Workspace{Kind: "persistent"}
-
-	tests := []struct {
-		name      string
-		state     SandboxState
-		desired   SandboxDesiredState
-		workspace *store.Workspace
-		want      goneAction
-	}{
-		{"failed keeps the row, running desired", SandboxFailed, SandboxDesiredRunning, ephemeral, goneReleaseOnly},
-		{"failed keeps the row", SandboxFailed, SandboxDesiredStopped, ephemeral, goneReleaseOnly},
-		{"stopped releases only", SandboxStopped, SandboxDesiredStopped, ephemeral, goneReleaseOnly},
-		{"ready still wanted releases only", SandboxReady, SandboxDesiredRunning, ephemeral, goneReleaseOnly},
-		{"deleting an ephemeral Workspace", SandboxDeleting, SandboxDesiredDeleted, ephemeral, goneWorkspaceDeleting},
-		{"deleting a persistent Workspace", SandboxDeleting, SandboxDesiredDeleted, persistent, goneSandboxDeleted},
-		{"deleting without a Workspace", SandboxDeleting, SandboxDesiredDeleted, nil, goneSandboxDeleted},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := finalizeAction(tt.state, tt.desired, tt.workspace); got != tt.want {
-				t.Fatalf("finalizeAction(%s, %s, %v) = %v, want %v",
-					tt.state, tt.desired, tt.workspace, got, tt.want)
 			}
 		})
 	}

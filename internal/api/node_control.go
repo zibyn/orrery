@@ -133,8 +133,6 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 				n.s.reconcile.notify() // admission waited for this report
 			case *nodev1.AgentMessage_SandboxObserved:
 				n.recordSandboxObserved(ctx, node.ID, m.SandboxObserved)
-			case *nodev1.AgentMessage_WorkspaceObserved:
-				n.recordWorkspaceObserved(ctx, node.ID, m.WorkspaceObserved)
 			case *nodev1.AgentMessage_ExecObserved:
 				n.recordExecObserved(ctx, node.ID, m.ExecObserved)
 			case *nodev1.AgentMessage_BuildObserved:
@@ -142,7 +140,7 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 			case *nodev1.AgentMessage_MeshReport:
 				n.s.mesh.report(node.ID, m.MeshReport.Peers)
 			case *nodev1.AgentMessage_CommandResult:
-				// A Workspace publish is finalized from its CommandResult: success
+				// A Sandbox publish is finalized from its CommandResult: success
 				// verifies the objects, failure ends the version (node-protocol.md).
 				n.handlePublishCommandResult(ctx, node, m.CommandResult)
 				if m.CommandResult.Error != "" {
@@ -150,7 +148,6 @@ func (n *nodeService) Control(stream nodev1.Node_ControlServer) error {
 						"node_id", node.ID, "command_id", m.CommandResult.CommandId, "error", m.CommandResult.Error)
 					// A failed command is not lost: the next sweep derives it again.
 					n.s.reconcile.hub.failed(node.ID, m.CommandResult.CommandId)
-					n.recordWorkspaceCommandFailure(ctx, m.CommandResult.CommandId)
 					n.s.reconcile.notify()
 				}
 			default:

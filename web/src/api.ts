@@ -92,7 +92,7 @@ export type Sandbox = {
   memory: number
   gpu?: { count: number; model?: string }
   idle_stop: number
-  workspace?: { id: string; mode: 'rw' | 'ro' }
+  volumes?: SandboxVolume[]
   conditions: string[]
   queue_position?: number
   blocked_reason?: string
@@ -105,8 +105,27 @@ export type CreateSandboxRequest = {
   cpu: number
   memory: number
   gpu?: { count: number; model?: string }
-  workspace?: { id: string; mode: 'rw' | 'ro' }
+  volumes?: SandboxVolume[]
   idle_stop?: number
+}
+
+// `volume` is the Volume id in responses; a request may also give its name.
+export type SandboxVolume = { volume: string; path: string }
+
+export type Volume = {
+  id: string
+  name: string
+  state: 'ready' | 'deleted'
+  // The Sandbox holding the Volume, if any (api.md §3).
+  held_by: string | null
+  // From the head Generation; null until the first commit.
+  committed_at: string | null
+  size: number
+  // Migrated from a Workspace whose directory is still on its Node: the
+  // content shows up after a Sandbox mounting it starts there and commits.
+  pending_migration: boolean
+  created_at: string
+  deleted_at: string | null
 }
 
 export type Snapshot = {
@@ -146,19 +165,6 @@ export type SnapshotVersion = {
   created_at: string | null
 }
 
-export type Workspace = {
-  id: string
-  kind: 'ephemeral' | 'persistent'
-  node_id: string | null
-  state: 'provisioning' | 'ready' | 'deleting' | 'deleted' | 'failed' | 'lost'
-  cause: string | null
-  unavailable: boolean
-  conditions: string[]
-  sandbox_id: string | null
-  created_at: string
-  deleted_at: string | null
-}
-
 export type Resource = {
   id: string
   name: string
@@ -176,7 +182,8 @@ export type ResourceVersion = {
   size: number
   state: ResourceVersionState
   cause: string | null
-  // {source: 'upload'} or {source: 'workspace', workspace: {id, path}}.
+  // {source: 'upload'}, {source: 'sandbox', sandbox: {id, path}} or
+  // {source: 'volume', volume: {id, path, generation_id}}.
   provenance: Record<string, unknown>
   created_at: string
   expires_at: string | null

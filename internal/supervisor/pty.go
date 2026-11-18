@@ -30,7 +30,7 @@ func runPTY(dir string, spec Spec, ctl *controlServer) error {
 
 	oomBefore := oomKills()
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
-	cmd.Dir = workspaceDir(spec.Cwd)
+	cmd.Dir = workdir(spec.Cwd)
 	cmd.Env = commandEnv(spec)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}

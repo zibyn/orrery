@@ -24,7 +24,7 @@ import (
 const resourceMountRoot = "/resources"
 
 // resourceFetchBackoff is the Resource mount retry schedule (defaults.md:
-// 1, 2, 4, 8, 16 seconds, the same group as Workspace provisioning). A var so
+// 1, 2, 4, 8, 16 seconds). A var so
 // tests can shorten it.
 var resourceFetchBackoff = []time.Duration{
 	time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
@@ -109,8 +109,7 @@ func (refs *resourceRefs) lock(address string) func() {
 }
 
 // retryResourceFetch runs fetch until it succeeds, sleeping the schedule after
-// each failure. len(backoff) retries means len(backoff)+1 attempts, matching
-// the Workspace provisioning loop.
+// each failure. len(backoff) retries means len(backoff)+1 attempts.
 func retryResourceFetch(ctx context.Context, backoff []time.Duration, fetch func() error) error {
 	var err error
 	for attempt := 0; ; attempt++ {
@@ -271,19 +270,29 @@ func (r *Runtime) servePresign(ctx context.Context, socket string) {
 		slog.Error("listen for resourcefs presign requests", "socket", socket, "error", err)
 		return
 	}
-	resourcefs.ServePresign(ctx, l, presignFunc(func(ctx context.Context, objects, manifests []string) ([]string, error) {
-		resp, err := r.presign(ctx, &nodev1.PresignRequest{Sha256: objects, Manifests: manifests, Method: "GET"})
-		if err != nil {
-			return nil, err
-		}
-		return resp.GetUrls(), nil
-	}), slog.Default())
+	resourcefs.ServePresign(ctx, l, runtimePresigner{r}, slog.Default())
+}
+
+// runtimePresigner signs the daemon's GETs: objects and manifests, and a
+// Volume's head Generation.
+type runtimePresigner struct{ r *Runtime }
+
+func (p runtimePresigner) Presign(ctx context.Context, objects, manifests []string) ([]string, error) {
+	return p.r.presignGET(ctx, objects, manifests)
 }
 
 type presignFunc func(ctx context.Context, objects, manifests []string) ([]string, error)
 
 func (f presignFunc) Presign(ctx context.Context, objects, manifests []string) ([]string, error) {
 	return f(ctx, objects, manifests)
+}
+
+func (p runtimePresigner) PresignGenerations(ctx context.Context, ids []string) ([]string, error) {
+	resp, err := p.r.presign(ctx, &nodev1.PresignRequest{Generations: ids, Method: "GET"})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetUrls(), nil
 }
 
 // removeLegacyResourceCache deletes the eager path's object cache and version

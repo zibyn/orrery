@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -102,34 +103,6 @@ func (c *commandRunner) afterSelfCheck() error {
 
 func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 	switch m := msg.Message.(type) {
-	case *nodev1.ControlMessage_ProvisionWorkspace:
-		cmd := m.ProvisionWorkspace
-		wsID, err := uuid.Parse(cmd.WorkspaceId)
-		if err != nil {
-			c.result(cmd.CommandId, "invalid workspace id")
-			return
-		}
-		go c.run("workspace:"+cmd.WorkspaceId, cmd.CommandId, cmd.Generation, func() error {
-			if err := c.rt.provisionWorkspace(wsID); err != nil {
-				return err
-			}
-			c.observeWorkspace(cmd.WorkspaceId, cmd.Generation, nodeproto.WorkspacePhaseReady, "")
-			return nil
-		})
-	case *nodev1.ControlMessage_DeleteWorkspace:
-		cmd := m.DeleteWorkspace
-		wsID, err := uuid.Parse(cmd.WorkspaceId)
-		if err != nil {
-			c.result(cmd.CommandId, "invalid workspace id")
-			return
-		}
-		go c.run("workspace:"+cmd.WorkspaceId, cmd.CommandId, cmd.Generation, func() error {
-			if err := c.rt.deleteWorkspace(wsID); err != nil {
-				return err
-			}
-			c.observeWorkspace(cmd.WorkspaceId, cmd.Generation, nodeproto.WorkspacePhaseGone, "")
-			return nil
-		})
 	case *nodev1.ControlMessage_CreateSandbox:
 		cmd := m.CreateSandbox
 		sbID, err := uuid.Parse(cmd.SandboxId)
@@ -142,17 +115,17 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 				return err
 			}
 			cause, err := c.rt.createSandbox(c.ctx, &createSandboxSpec{
-				sandboxID:     sbID.String(),
-				generation:    cmd.Generation,
-				imageDigest:   cmd.ImageDigest,
-				cpu:           cmd.Limits.GetCpu(),
-				memory:        cmd.Limits.GetMemory(),
-				workspaceID:   cmd.Workspace.GetWorkspaceId(),
-				workspaceMode: cmd.Workspace.GetMode(),
-				gpuUUIDs:      cmd.GpuUuids,
-				resources:     resourceMounts(cmd.Resources),
-				egress:        egressModeOf(cmd.Egress),
-				linkTarget:    cmd.LinkTarget,
+				sandboxID:   sbID.String(),
+				generation:  cmd.Generation,
+				imageDigest: cmd.ImageDigest,
+				cpu:         cmd.Limits.GetCpu(),
+				memory:      cmd.Limits.GetMemory(),
+				gpuUUIDs:    cmd.GpuUuids,
+				resources:   resourceMounts(cmd.Resources),
+				volumes:     volumeMounts(cmd.Volumes),
+				egress:      egressModeOf(cmd.Egress),
+				linkTarget:  cmd.LinkTarget,
+				restore:     cmd.GetRestore().GetGenerationId(),
 			})
 			if err != nil {
 				c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseCreateFailed, cause)
@@ -169,11 +142,19 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 			return
 		}
 		go c.run("sandbox:"+cmd.SandboxId, cmd.CommandId, cmd.Generation, func() error {
-			if err := c.rt.stopSandbox(c.ctx, sbID); err != nil {
-				return err
-			}
-			c.observeSandbox(cmd.SandboxId, cmd.Generation, nodeproto.SandboxPhaseGone, "")
-			return nil
+			return c.stopSandbox(sbID, cmd.Generation)
+		})
+	case *nodev1.ControlMessage_DropSandboxDisk:
+		cmd := m.DropSandboxDisk
+		sbID, err := uuid.Parse(cmd.SandboxId)
+		if err != nil {
+			c.result(cmd.CommandId, "invalid sandbox id")
+			return
+		}
+		// Sent once the Sandbox is deleted: no generation follows, so the
+		// Sandbox's lock is taken without a fence.
+		go c.run("disk:"+cmd.SandboxId, cmd.CommandId, noGenerationFence, func() error {
+			return c.rt.dropSandboxDisk(c.ctx, sbID)
 		})
 	case *nodev1.ControlMessage_StartExec:
 		cmd := m.StartExec
@@ -200,21 +181,19 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 		go c.run("exec:"+cmd.ExecId, cmd.CommandId, noGenerationFence, func() error {
 			return c.rt.cancelExec(c.ctx, execID)
 		})
-	case *nodev1.ControlMessage_PublishWorkspace:
-		cmd := m.PublishWorkspace
+	case *nodev1.ControlMessage_PublishSandbox:
+		cmd := m.PublishSandbox
 		if _, err := uuid.Parse(cmd.VersionId); err != nil {
 			c.result(cmd.CommandId, "invalid version id")
 			return
 		}
-		if _, err := uuid.Parse(cmd.WorkspaceId); err != nil {
-			c.result(cmd.CommandId, "invalid workspace id")
+		sandboxID, err := uuid.Parse(cmd.SandboxId)
+		if err != nil {
+			c.result(cmd.CommandId, "invalid sandbox id")
 			return
 		}
-		// ResourceVersions have no generation; the Control Plane sends 0. The
-		// version id is part of the key, so only the same publish collapses
-		// onto one lock.
 		go c.run("publish:"+cmd.VersionId, cmd.CommandId, noGenerationFence, func() error {
-			return c.rt.publishWorkspace(c.ctx, cmd)
+			return c.rt.publishSandbox(c.ctx, sandboxID, cmd)
 		})
 	case *nodev1.ControlMessage_BuildSnapshot:
 		cmd := m.BuildSnapshot
@@ -269,11 +248,44 @@ func (c *commandRunner) handle(msg *nodev1.ControlMessage) {
 }
 
 func (c *commandRunner) run(key, commandID string, generation int64, fn func() error) {
+	err := c.serialize(key, generation, fn)
+	commandFailed(commandID, err)
+	c.result(commandID, errString(err))
+}
+
+// stopSandbox ends a Sandbox and commits its filesystem, reporting under the
+// stop's generation.
+func (c *commandRunner) stopSandbox(id uuid.UUID, generation int64) error {
+	return c.rt.stopSandbox(c.ctx, id, generation, func(phase nodeproto.SandboxPhase, cause string, retrying bool) {
+		c.reportSandbox(id.String(), generation, phase, cause, retrying)
+	})
+}
+
+// runtimeDied takes a dead Runtime through the stop's commit path, in line
+// with the Sandbox's commands (runtime.md §16).
+func (c *commandRunner) runtimeDied(sandboxID string, generation int64) {
+	id, err := uuid.Parse(sandboxID)
+	if err != nil {
+		return
+	}
+	if err := c.serialize("sandbox:"+sandboxID, generation, func() error {
+		return c.stopSandbox(id, generation)
+	}); err != nil {
+		slog.Warn("commit a dead Runtime", "sandbox_id", sandboxID, "error", err)
+	}
+}
+
+var (
+	errStaleGeneration = errors.New("stale generation")
+	errSuperseded      = errors.New("superseded by a newer generation")
+)
+
+// serialize runs fn under key's lock unless a newer generation was seen.
+func (c *commandRunner) serialize(key string, generation int64, fn func() error) error {
 	c.mu.Lock()
 	if generation < c.gens[key] {
 		c.mu.Unlock()
-		c.result(commandID, "stale generation")
-		return
+		return errStaleGeneration
 	}
 	c.gens[key] = generation
 	lock := c.locks[key]
@@ -289,12 +301,9 @@ func (c *commandRunner) run(key, commandID string, generation int64, fn func() e
 	stale := c.gens[key] != generation // a newer command arrived while waiting
 	c.mu.Unlock()
 	if stale {
-		c.result(commandID, "superseded by a newer generation")
-		return
+		return errSuperseded
 	}
-	err := fn()
-	commandFailed(commandID, err)
-	c.result(commandID, errString(err))
+	return fn()
 }
 
 // commandFailed logs the error a command reports to the Control Plane; without
@@ -317,6 +326,11 @@ func resourceMounts(in []*nodev1.ResourceMount) []resourceMount {
 // observeSandbox reports a phase; `running` carries the address recorded at
 // Create (node-protocol.md).
 func (c *commandRunner) observeSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string) {
+	c.reportSandbox(id, generation, phase, cause, false)
+}
+
+// reportSandbox is observeSandbox with commit_retrying for `committing`.
+func (c *commandRunner) reportSandbox(id string, generation int64, phase nodeproto.SandboxPhase, cause string, retrying bool) {
 	var address string
 	if phase == nodeproto.SandboxPhaseRunning {
 		if sbID, err := uuid.Parse(id); err == nil {
@@ -326,14 +340,7 @@ func (c *commandRunner) observeSandbox(id string, generation int64, phase nodepr
 	c.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{
 		SandboxObserved: &nodev1.SandboxObserved{
 			SandboxId: id, Generation: generation, Phase: string(phase), Cause: cause, Address: address,
-		},
-	}})
-}
-
-func (c *commandRunner) observeWorkspace(id string, generation int64, phase nodeproto.WorkspacePhase, cause string) {
-	c.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_WorkspaceObserved{
-		WorkspaceObserved: &nodev1.WorkspaceObserved{
-			WorkspaceId: id, Generation: generation, Phase: string(phase), Cause: cause,
+			CommitRetrying: retrying,
 		},
 	}})
 }
