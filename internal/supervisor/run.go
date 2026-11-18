@@ -263,7 +263,7 @@ func closePipes(pipes ...pipe) {
 
 func buildCommand(spec Spec) *exec.Cmd {
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
-	cmd.Dir = workspaceDir(spec.Cwd)
+	cmd.Dir = workdir(spec.Cwd)
 	cmd.Env = commandEnv(spec)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if len(spec.Stdin) > 0 {
@@ -272,7 +272,7 @@ func buildCommand(spec Spec) *exec.Cmd {
 	return cmd
 }
 
-func workspaceDir(cwd string) string {
+func workdir(cwd string) string {
 	if cwd == "" {
 		return "/workspace"
 	}

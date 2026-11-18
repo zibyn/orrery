@@ -23,10 +23,13 @@ const waitForLimit = 60 * time.Second
 const maxMemoryBytes = 1 << 50 // 1 PiB, a sanity bound only
 
 type createSandboxRequest struct {
-	Name      *string                  `json:"name"`
-	Labels    map[string]string        `json:"labels"`
-	Runtime   *string                  `json:"runtime"`
-	Workspace *sandboxWorkspaceRequest `json:"workspace"`
+	Name    *string           `json:"name"`
+	Labels  map[string]string `json:"labels"`
+	Runtime *string           `json:"runtime"`
+	// Removed by ADR-0031 without an alias period; present only to name
+	// its replacement when a caller still sends it.
+	Removed   json.RawMessage          `json:"workspace"`
+	Volumes   []sandboxVolumeDTO       `json:"volumes"`
 	Snapshot  *string                  `json:"snapshot"`
 	Resources []sandboxResourceRequest `json:"resources"`
 	Secrets   map[string]string        `json:"secrets"`
@@ -201,21 +204,9 @@ type sandboxResourceRequest struct {
 	Mount    *string `json:"mount"`
 }
 
-// sandboxWorkspaceRequest attaches an existing Workspace; omitting it creates
-// an implicit ephemeral one (ADR-0018).
-type sandboxWorkspaceRequest struct {
-	ID   string `json:"id"`
-	Mode string `json:"mode"`
-}
-
 type sandboxGPURequest struct {
 	Count int32   `json:"count"`
 	Model *string `json:"model"`
-}
-
-type sandboxWorkspaceDTO struct {
-	ID   string `json:"id"`
-	Mode string `json:"mode"`
 }
 
 type sandboxGPUDTO struct {
@@ -224,26 +215,26 @@ type sandboxGPUDTO struct {
 }
 
 type sandboxDTO struct {
-	ID            string               `json:"id"`
-	Name          string               `json:"name"`
-	Labels        map[string]string    `json:"labels"`
-	Runtime       string               `json:"runtime"`
-	Egress        sandboxEgress        `json:"egress"`
-	Links         *sandboxLinks        `json:"links,omitempty"`
-	Address       string               `json:"address"`
-	State         string               `json:"state"`
-	Cause         *string              `json:"cause"`
-	NodeID        *string              `json:"node_id"`
-	Snapshot      string               `json:"snapshot"`
-	CPU           float64              `json:"cpu"`
-	Memory        int64                `json:"memory"`
-	GPU           *sandboxGPUDTO       `json:"gpu,omitempty"`
-	IdleStop      int32                `json:"idle_stop"`
-	Workspace     *sandboxWorkspaceDTO `json:"workspace,omitempty"`
-	Conditions    []string             `json:"conditions"`
-	QueuePosition *int64               `json:"queue_position,omitempty"`
-	BlockedReason *string              `json:"blocked_reason,omitempty"`
-	CreatedAt     time.Time            `json:"created_at"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Labels        map[string]string  `json:"labels"`
+	Runtime       string             `json:"runtime"`
+	Egress        sandboxEgress      `json:"egress"`
+	Links         *sandboxLinks      `json:"links,omitempty"`
+	Address       string             `json:"address"`
+	State         string             `json:"state"`
+	Cause         *string            `json:"cause"`
+	NodeID        *string            `json:"node_id"`
+	Snapshot      string             `json:"snapshot"`
+	CPU           float64            `json:"cpu"`
+	Memory        int64              `json:"memory"`
+	GPU           *sandboxGPUDTO     `json:"gpu,omitempty"`
+	IdleStop      int32              `json:"idle_stop"`
+	Volumes       []sandboxVolumeDTO `json:"volumes"`
+	Conditions    []string           `json:"conditions"`
+	QueuePosition *int64             `json:"queue_position,omitempty"`
+	BlockedReason *string            `json:"blocked_reason,omitempty"`
+	CreatedAt     time.Time          `json:"created_at"`
 }
 
 type sandboxList struct {
@@ -271,6 +262,10 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 
 	var req createSandboxRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Removed != nil {
+		writeProblem(w, "invalid_request", `workspace was removed: /workspace is part of the Sandbox's own filesystem; mount data with volumes: [{"volume": ..., "path": ...}]`)
 		return
 	}
 	if !s.requireSandboxTokens(w) {
@@ -444,41 +439,9 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !ok {
 		return
 	}
-	// An explicit Workspace is mounted as requested; otherwise the Sandbox
-	// gets an implicit ephemeral one (ADR-0018).
-	var attached *store.Workspace
-	workspaceMode := "rw"
-	if req.Workspace != nil {
-		workspaceID, err := uuid.Parse(req.Workspace.ID)
-		if err != nil {
-			writeProblem(w, "invalid_request", "workspace.id must be a UUID")
-			return
-		}
-		ws, err := q.GetWorkspace(ctx, workspaceID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeProblem(w, "not_found", "no such Workspace")
-			return
-		}
-		if err != nil {
-			s.internal(w, "get Workspace", err)
-			return
-		}
-		if !ownerOrAdmin(p, ws.OwnerID) {
-			writeProblem(w, "not_found", "no such Workspace")
-			return
-		}
-		if !workspaceUsable(ws) {
-			writeProblem(w, "conflict", "the Workspace is not usable")
-			return
-		}
-		attached = &ws
-		if req.Workspace.Mode != "" {
-			if req.Workspace.Mode != "rw" && req.Workspace.Mode != "ro" {
-				writeProblem(w, "invalid_request", "workspace.mode must be rw or ro")
-				return
-			}
-			workspaceMode = req.Workspace.Mode
-		}
+	volumes, ok := s.resolveSandboxVolumes(w, ctx, q, p, req.Volumes)
+	if !ok {
+		return
 	}
 	// The first start's Secret snapshot is written with the row: creation is a
 	// start, so the ciphertexts are copied now and on every later start
@@ -518,34 +481,18 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 			return
 		}
 	}
-	workspaceID := uuid.Nil
-	if attached != nil {
-		workspaceID = attached.ID
-	} else {
-		var err error
-		workspaceID, err = uuid.NewV7()
-		if err != nil {
-			s.internal(w, "generate Workspace id", err)
-			return
-		}
-		if _, err := q.CreateWorkspace(ctx, store.CreateWorkspaceParams{
-			ID: workspaceID, OwnerID: p.user.ID, Kind: "ephemeral", SandboxID: &sandbox.ID,
-		}); err != nil {
-			s.internal(w, "create Workspace", err)
+	// Creation enters pending, so each Volume is held from now on; another
+	// holder fails sandbox_volumes_held (ADR-0031).
+	for _, v := range volumes {
+		v.SandboxID = sandbox.ID
+		if err := q.CreateSandboxVolume(ctx, v); err != nil {
+			if writeConstraintProblem(w, err) {
+				return
+			}
+			s.internal(w, "record Sandbox Volume", err)
 			return
 		}
 	}
-	// A second rw mount of the Workspace fails sandboxes_workspace_rw.
-	if err := q.SetSandboxWorkspace(ctx, store.SetSandboxWorkspaceParams{
-		ID: sandbox.ID, WorkspaceID: &workspaceID, WorkspaceMode: workspaceMode,
-	}); err != nil {
-		if writeConstraintProblem(w, err) {
-			return
-		}
-		s.internal(w, "record Sandbox Workspace", err)
-		return
-	}
-	sandbox.WorkspaceID, sandbox.WorkspaceMode = &workspaceID, workspaceMode
 	if err := s.enqueueAdmission(ctx, q, sandbox.ID); err != nil {
 		s.internal(w, "enqueue admission request", err)
 		return
@@ -832,8 +779,8 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		s.internal(w, "count active Sandboxes", err)
 		return
 	}
-	// Entering pending re-acquires an rw mount: another writer fails
-	// sandboxes_workspace_rw (ADR-0018).
+	// Entering pending re-acquires the Volumes: another holder fails
+	// sandbox_volumes_held (ADR-0031).
 	started, err := q.StartSandbox(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeProblem(w, "conflict", "the Sandbox state changed; retry")
@@ -869,17 +816,12 @@ func (s *Server) handleStartSandbox(w http.ResponseWriter, r *http.Request, p *p
 		writeJSON(w, http.StatusAccepted, s.sandboxToDTO(ctx, failed))
 		return
 	}
-	ws, err := q.GetSandboxWorkspace(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeProblem(w, "conflict", "the Sandbox has no Workspace")
-		return
-	}
-	if err != nil {
-		s.internal(w, "look up Workspace", err)
-		return
-	}
-	if !workspaceUsable(ws) {
-		writeProblem(w, "conflict", "the Workspace is not usable")
+	if problem, err := lockStartVolumes(ctx, q, id); err != nil || problem != "" {
+		if err != nil {
+			s.internal(w, "lock Sandbox Volumes", err)
+			return
+		}
+		writeProblem(w, "conflict", problem)
 		return
 	}
 	// Admission re-acquires the Allocation.
@@ -1012,6 +954,34 @@ func (s *Server) waitForSandbox(ctx context.Context, sb store.Sandbox, want Sand
 	return sb
 }
 
+// sandboxConditions is the Sandbox's conditions column. Only the conditions
+// the Agent actually reports are defined (api.md §3).
+type sandboxConditions struct {
+	CommitStalled bool `json:"commit_stalled,omitempty"`
+	// ChangesLost: the Node was declared lost, so what the Sandbox wrote
+	// since its head Generation is gone; cleared when it runs again.
+	ChangesLost bool `json:"changes_lost,omitempty"`
+}
+
+func parseSandboxConditions(raw json.RawMessage) sandboxConditions {
+	var c sandboxConditions
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &c)
+	}
+	return c
+}
+
+func (c sandboxConditions) names() []string {
+	names := []string{}
+	if c.CommitStalled {
+		names = append(names, "commit_stalled")
+	}
+	if c.ChangesLost {
+		names = append(names, "changes_lost")
+	}
+	return names
+}
+
 func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO {
 	labels := map[string]string{}
 	if len(sb.Labels) > 0 {
@@ -1024,7 +994,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 		State:   sb.State, Cause: sb.Cause, NodeID: uuidPtr(sb.NodeID),
 		Snapshot: sb.SnapshotDigest, CPU: sb.Cpu, Memory: sb.Memory,
 		IdleStop: sb.IdleStopSeconds, CreatedAt: sb.CreatedAt.Time.UTC(),
-		Conditions: []string{}, // the Agent reports none since ADR-0030
+		Conditions: parseSandboxConditions(sb.Conditions).names(),
 	}
 	if sb.Address != nil {
 		dto.Address = *sb.Address
@@ -1038,9 +1008,7 @@ func (s *Server) sandboxToDTO(ctx context.Context, sb store.Sandbox) sandboxDTO 
 	if sb.GpuCount > 0 {
 		dto.GPU = &sandboxGPUDTO{Count: sb.GpuCount, Model: sb.GpuModel}
 	}
-	if sb.WorkspaceID != nil {
-		dto.Workspace = &sandboxWorkspaceDTO{ID: sb.WorkspaceID.String(), Mode: sb.WorkspaceMode}
-	}
+	dto.Volumes = s.sandboxVolumes(ctx, sb.ID)
 	// queue_position exists only while the admission request is open. Ignoring
 	// a failed read degrades the display, not the response.
 	if SandboxState(sb.State) == SandboxPending {

@@ -35,9 +35,9 @@ func publishTestRoot(t *testing.T) (*os.Root, string) {
 	return root, ws
 }
 
-func TestWalkWorkspaceManifestRecordsTheTree(t *testing.T) {
+func TestWalkManifestRecordsTheTree(t *testing.T) {
 	root, _ := publishTestRoot(t)
-	m, files, err := walkWorkspaceManifest(root, ".")
+	m, files, err := walkManifest(root, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,16 +67,16 @@ func TestWalkWorkspaceManifestRecordsTheTree(t *testing.T) {
 	}
 }
 
-func TestWalkWorkspaceManifestRootsAtThePublishedPath(t *testing.T) {
+func TestWalkManifestRootsAtThePublishedPath(t *testing.T) {
 	root, _ := publishTestRoot(t)
-	m, _, err := walkWorkspaceManifest(root, "bin")
+	m, _, err := walkManifest(root, "bin")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(m.Entries) != 1 || m.Entries[0].Path != "run.sh" {
 		t.Fatalf("publishing bin/ entries = %+v", m.Entries)
 	}
-	m, _, err = walkWorkspaceManifest(root, "bin/run.sh")
+	m, _, err = walkManifest(root, "bin/run.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,26 +85,26 @@ func TestWalkWorkspaceManifestRootsAtThePublishedPath(t *testing.T) {
 	}
 }
 
-func TestWalkWorkspaceManifestRejectsUnsafePaths(t *testing.T) {
+func TestWalkManifestRejectsUnsafePaths(t *testing.T) {
 	root, ws := publishTestRoot(t)
-	if _, _, err := walkWorkspaceManifest(root, "../outside"); err == nil {
+	if _, _, err := walkManifest(root, "../outside"); err == nil {
 		t.Fatal("traversal path was accepted")
 	}
-	if _, _, err := walkWorkspaceManifest(root, "missing"); err == nil {
+	if _, _, err := walkManifest(root, "missing"); err == nil {
 		t.Fatal("missing path was accepted")
 	}
 	if err := syscall.Mkfifo(filepath.Join(ws, "pipe"), 0o644); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
-	if _, _, err := walkWorkspaceManifest(root, "pipe"); err == nil {
+	if _, _, err := walkManifest(root, "pipe"); err == nil {
 		t.Fatal("FIFO was accepted")
 	}
 }
 
-// A Workspace file over 4 MiB is published as blocks: the entry carries them,
+// A file over 4 MiB is published as blocks: the entry carries them,
 // each block uploads from its byte range, and the Control Plane computes the
 // file's sha256.
-func TestWalkWorkspaceManifestSplitsLargeFiles(t *testing.T) {
+func TestWalkManifestSplitsLargeFiles(t *testing.T) {
 	root, ws := publishTestRoot(t)
 	big := make([]byte, 5<<20)
 	for i := range big {
@@ -113,7 +113,7 @@ func TestWalkWorkspaceManifestSplitsLargeFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "big.bin"), big, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m, files, err := walkWorkspaceManifest(root, ".")
+	m, files, err := walkManifest(root, ".")
 	if err != nil {
 		t.Fatal(err)
 	}

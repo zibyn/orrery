@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,7 +13,7 @@ import (
 )
 
 // runExecScript runs a shell command in a Sandbox and waits for it to exit
-// successfully. The M4 publish scenarios use it to populate the Workspace the
+// successfully. The M4 publish scenarios use it to populate /workspace the
 // way a Sandbox would.
 func runExecScript(t *testing.T, admin, sandboxID, script string) {
 	t.Helper()
@@ -47,6 +46,28 @@ type publishedVersion struct {
 type publishedResource struct {
 	ID               string  `json:"id"`
 	CurrentVersionID *string `json:"current_version_id"`
+}
+
+// publishSandbox publishes a path of a ready Sandbox, relative to /workspace,
+// and waits for the version to leave pending.
+func publishSandbox(t *testing.T, admin, sandboxID, path, resource string) publishedVersion {
+	t.Helper()
+	status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+sandboxID+"/publish", admin,
+		map[string]string{"path": path, "resource": resource})
+	if status != http.StatusAccepted {
+		t.Fatalf("publish Sandbox: %d %s", status, data)
+	}
+	var version publishedVersion
+	mustJSON(t, data, &version)
+	deadline := time.Now().Add(120 * time.Second)
+	for version.State == "pending" {
+		if time.Now().After(deadline) {
+			t.Fatalf("version %s stayed pending", version.ID)
+		}
+		time.Sleep(250 * time.Millisecond)
+		version = getVersion(t, admin, version.ResourceID, version.ID)
+	}
+	return version
 }
 
 func getVersion(t *testing.T, admin, resourceID, versionID string) publishedVersion {
@@ -94,11 +115,11 @@ func writeExpectedTree(t *testing.T) string {
 	return root
 }
 
-// TestPublishFromWorkspace is the "publish-from-workspace" acceptance scenario
-// (#87): a persistent Workspace with a running Sandbox publishes a path; the
+// TestPublishFromSandbox is the "publish-from-sandbox" acceptance scenario
+// (#87, ADR-0031): a ready Sandbox publishes a path of its filesystem; the
 // version becomes ready, moves the current pointer, and pulls back byte for
 // byte (including the executable bit, a symlink and an empty directory).
-func TestPublishFromWorkspace(t *testing.T) {
+func TestPublishFromSandbox(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
 	suffix := time.Now().UnixNano()
@@ -107,20 +128,10 @@ func TestPublishFromWorkspace(t *testing.T) {
 	startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
 
-	ws := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
-	status, data := createSandboxWithWorkspace(t, admin, fmt.Sprintf("publish-%d", suffix), ws.ID, "rw", 0)
-	if status != http.StatusCreated {
-		t.Fatalf("create Sandbox: %d %s", status, data)
-	}
-	var sb sandboxView
-	mustJSON(t, data, &sb)
-	defer deleteSandbox(t, admin, sb.ID)
-	status, data = call(t, http.MethodGet, "/api/v1/sandboxes/"+sb.ID+"?wait_for=ready", admin, nil)
-	if status != http.StatusOK {
-		t.Fatalf("wait_for=ready: %d %s", status, data)
-	}
+	sbID := createReadySandbox(t, admin, fmt.Sprintf("publish-%d", suffix), 128<<20)
+	defer deleteSandbox(t, admin, sbID)
 
-	runExecScript(t, admin, sb.ID, `set -eu
+	runExecScript(t, admin, sbID, `set -eu
 mkdir -p /workspace/src/empty /workspace/src/bin
 printf 'hello stars\n' > /workspace/src/hello.txt
 printf '#!/bin/sh\necho run\n' > /workspace/src/bin/run.sh
@@ -133,8 +144,7 @@ chmod -R a+rwX /workspace/src
 
 	name := fmt.Sprintf("ws-publish-%d", suffix)
 	cli := newCLIRunner(t, admin)
-	var version publishedVersion
-	mustJSON(t, cli.run(t, "", "workspace", "publish", ws.ID, "/workspace/src", name), &version)
+	version := publishSandbox(t, admin, sbID, "src", name)
 	if version.State != "ready" || version.Address == nil {
 		t.Fatalf("published version = %+v, want a ready version with an address", version)
 	}
@@ -151,7 +161,7 @@ chmod -R a+rwX /workspace/src
 	// ORRERY_TEST_PURGE_INTERVAL=1s (scripts/e2e.sh). A Sandbox pins the first
 	// version; two more publishes make it non-current, and the middle one
 	// becomes a non-current version with no reference.
-	status, data = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
+	status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
 		"name":      fmt.Sprintf("ttl-pin-%d", suffix),
 		"cpu":       0.5,
 		"memory":    128 << 20,
@@ -169,14 +179,12 @@ chmod -R a+rwX /workspace/src
 	// Change the tree so the middle version has its own address, then publish
 	// the same tree twice: v2 is stale once v3 is current, but v3 still uses
 	// its content-addressed manifest.
-	runExecScript(t, admin, sb.ID, `printf 'second generation\n' > /workspace/src/hello.txt`)
-	var stale publishedVersion
-	mustJSON(t, cli.run(t, "", "workspace", "publish", ws.ID, "/workspace/src", name), &stale)
+	runExecScript(t, admin, sbID, `printf 'second generation\n' > /workspace/src/hello.txt`)
+	stale := publishSandbox(t, admin, sbID, "src", name)
 	if stale.ID == version.ID || stale.State != "ready" || stale.Address == nil {
 		t.Fatalf("second published version = %+v", stale)
 	}
-	var current publishedVersion
-	mustJSON(t, cli.run(t, "", "workspace", "publish", ws.ID, "/workspace/src", name), &current)
+	current := publishSandbox(t, admin, sbID, "src", name)
 	if current.ID == stale.ID || current.Address == nil || *current.Address != *stale.Address {
 		t.Fatalf("third published version = %+v, want the middle version's content", current)
 	}
@@ -219,7 +227,8 @@ func TestPublishAgentRestart(t *testing.T) {
 	agent := startAgent(t, state, dataRoot)
 	waitForNodeReady(t, admin, nodeName)
 
-	ws := waitForWorkspaceState(t, admin, createWorkspace(t, admin).ID, "ready", 60*time.Second)
+	sbID := createReadySandbox(t, admin, fmt.Sprintf("publish-restart-%d", suffix), 128<<20)
+	defer deleteSandbox(t, admin, sbID)
 
 	// A Resource that already exists makes the unchanged current pointer
 	// observable across the publish.
@@ -234,30 +243,19 @@ func TestPublishAgentRestart(t *testing.T) {
 		t.Fatalf("new Resource already has a current version: %v", resource.CurrentVersionID)
 	}
 
-	// Populate the host Workspace directly: the Agent publishes the directory,
-	// no Sandbox is required. Enough data keeps a real publish busy for a
-	// moment even though the freeze below is what makes the test deterministic.
-	src := filepath.Join(dataRoot, "workspaces", ws.ID, "tree")
-	if err := os.MkdirAll(filepath.Join(src, "many"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	blob := bytes.Repeat([]byte("orrery\n"), 1<<19) // 8 MiB
-	if err := os.WriteFile(filepath.Join(src, "blob.bin"), blob, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 50; i++ {
-		name := fmt.Sprintf("file-%02d.txt", i)
-		if err := os.WriteFile(filepath.Join(src, "many", name), []byte(name), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// Enough data keeps a real publish busy for a moment even though the
+	// freeze below is what makes the test deterministic.
+	runExecScript(t, admin, sbID, `set -eu
+mkdir -p /workspace/tree/many
+yes orrery | head -c 8388608 > /workspace/tree/blob.bin
+for i in $(seq -w 0 49); do printf "file-$i.txt" > /workspace/tree/many/file-$i.txt; done`)
 
 	// Freeze the Agent so the command cannot run before we observe the pending
 	// version. Its Control stream stays connected, so the publish is accepted.
 	if err := agent.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
 		t.Fatalf("freeze Agent: %v", err)
 	}
-	status, data = call(t, http.MethodPost, "/api/v1/workspaces/"+ws.ID+"/publish", admin, map[string]string{
+	status, data = call(t, http.MethodPost, "/api/v1/sandboxes/"+sbID+"/publish", admin, map[string]string{
 		"path": "tree", "resource": resourceName,
 	})
 	if status != http.StatusAccepted {

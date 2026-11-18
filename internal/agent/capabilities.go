@@ -10,7 +10,7 @@ import (
 const (
 	probeImage      = "alpine:3.22"
 	probeMemory     = int64(64 << 20)
-	probeWorkspace  = "/workspace"
+	probeWorkdir    = "/workspace"
 	probeSupervisor = "/.orrery/bin/supervisor"
 	probeLinkPort   = 8080 // the Link self-check target listens here
 	probePrefix     = "orrery-probe-"
@@ -71,7 +71,7 @@ func capabilities(r supervisor.Result, checks probeChecks) nodeproto.CapabilityR
 		Entries: []nodeproto.CapabilityEntry{
 			{Name: nodeproto.CapProcessMountNamespace, Value: value(isolated)},
 			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(checks.limits)},
-			{Name: nodeproto.CapWorkspaceRWMount, Value: value(r.WorkspaceWritable)},
+			{Name: nodeproto.CapWorkdirWritable, Value: value(r.WorkdirWritable)},
 			{Name: nodeproto.CapExecSupervisor, Value: nodeproto.ValueEnforced},
 			// Whole-card visibility is enforced by CDI; GPU memory limits stay
 			// unsupported (ADR-0009).

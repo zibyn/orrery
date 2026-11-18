@@ -6,6 +6,7 @@ package objectstore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -171,9 +172,62 @@ func (s *Store) PutManifest(ctx context.Context, ownerID, address string, data [
 
 // GetManifest reads a version's stored canonical manifest bytes.
 func (s *Store) GetManifest(ctx context.Context, ownerID, address string) ([]byte, error) {
+	return s.get(ctx, ManifestKey(ownerID, address))
+}
+
+// GenerationKey is where a Generation manifest is stored (schema.md).
+func GenerationKey(ownerID, id string) string {
+	return "generations/" + ownerID + "/" + id
+}
+
+// PresignGenerationGetURL signs a download of a Generation manifest.
+func (s *Store) PresignGenerationGetURL(ctx context.Context, ownerID, id string) (string, error) {
+	return s.presignGet(ctx, GenerationKey(ownerID, id))
+}
+
+// PresignGenerationPutURL signs the Agent's upload of a Generation manifest.
+// It declares no checksum: the Control Plane parses and validates the bytes
+// before it commits them.
+func (s *Store) PresignGenerationPutURL(ctx context.Context, ownerID, id string) (string, error) {
+	req, err := s.presign.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(GenerationKey(ownerID, id)),
+	}, s3.WithPresignExpires(PresignTTL))
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
+}
+
+// GetGeneration reads a Generation manifest, or ErrNotFound.
+func (s *Store) GetGeneration(ctx context.Context, ownerID, id string) ([]byte, error) {
+	return s.get(ctx, GenerationKey(ownerID, id))
+}
+
+// GetObject reads a CAS object over the internal endpoint and rejects bytes
+// whose SHA-256 is not sha256hex. It is for the Control Plane's own reads
+// (Volume files): presigned URLs name the public endpoint, which the Control
+// Plane need not reach. Objects are at most one 4 MiB block in Volumes.
+func (s *Store) GetObject(ctx context.Context, ownerID, sha256hex string) ([]byte, error) {
+	data, err := s.get(ctx, CASKey(ownerID, sha256hex))
+	if err != nil {
+		return nil, err
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != sha256hex {
+		return nil, fmt.Errorf("object %s has sha256 %x", sha256hex, sum)
+	}
+	return data, nil
+}
+
+// DeleteGeneration removes a Generation manifest; a missing one is success.
+func (s *Store) DeleteGeneration(ctx context.Context, ownerID, id string) error {
+	return s.delete(ctx, GenerationKey(ownerID, id))
+}
+
+func (s *Store) get(ctx context.Context, key string) ([]byte, error) {
 	out, err := s.ops.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(ManifestKey(ownerID, address)),
+		Key:    aws.String(key),
 	})
 	if err != nil {
 		if isNotFound(err) {

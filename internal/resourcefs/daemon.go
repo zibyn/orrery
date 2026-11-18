@@ -48,10 +48,13 @@ type Config struct {
 	Notify func(state string)
 }
 
+// mount is one FUSE session: a ResourceVersion by address, or, when volume
+// is set, a writable Volume by its id.
 type mount struct {
 	address string
 	dir     string
 	srv     *fuse.Server
+	volume  *volumeFS
 }
 
 type daemon struct {
@@ -60,6 +63,7 @@ type daemon struct {
 
 	mu         sync.Mutex // serializes commands with each other and with a handover
 	mounts     map[string]*mount
+	volumes    map[string]*mount
 	handedOver bool
 	done       chan struct{} // closed once a successor serves every mount
 }
@@ -72,10 +76,11 @@ func Run(ctx context.Context, cfg Config) error {
 		cfg.Log = slog.Default()
 	}
 	d := &daemon{
-		cfg:    cfg,
-		store:  newStore(filepath.Join(cfg.DataRoot, "cache", "blocks"), cfg.Presigner),
-		mounts: map[string]*mount{},
-		done:   make(chan struct{}),
+		cfg:     cfg,
+		store:   newStore(filepath.Join(cfg.DataRoot, "cache", "blocks"), cfg.Presigner),
+		mounts:  map[string]*mount{},
+		volumes: map[string]*mount{},
+		done:    make(chan struct{}),
 	}
 	if err := d.store.cleanTemp(); err != nil {
 		return err
@@ -118,7 +123,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer l.Close() //nolint:errcheck // SetUnlinkOnClose(false): the path may be a successor's
-	cfg.Log.Info("resourcefs serving", "socket", cfg.ControlSocket, "mounts", len(d.mounts))
+	cfg.Log.Info("resourcefs serving", "socket", cfg.ControlSocket, "mounts", len(d.mounts), "volumes", len(d.volumes))
 	notify("READY=1")
 	go d.accept(l)
 	select {
@@ -168,6 +173,10 @@ func (d *daemon) command(req request, resp *response) error {
 	if d.handedOver {
 		return ErrHandedOver
 	}
+	switch req.Op {
+	case "mount-volume", "unmount-volume", "seal-volume", "upload-volume", "committed-volume":
+		return d.volumeCommand(req, resp)
+	}
 	if req.Op == "mount" && validAddress(req.Address) {
 		// The manifest read can take a minute; it needs no lock.
 		d.mu.Unlock()
@@ -191,6 +200,11 @@ func (d *daemon) command(req request, resp *response) error {
 			resp.Mounts = append(resp.Mounts, address)
 		}
 		sort.Strings(resp.Mounts)
+		resp.Volumes = make([]string, 0, len(d.volumes))
+		for volume := range d.volumes {
+			resp.Volumes = append(resp.Volumes, volume)
+		}
+		sort.Strings(resp.Volumes)
 		return nil
 	case "selftest":
 		return d.selfTest()
@@ -234,13 +248,17 @@ func (d *daemon) mount(address string, m manifest.Manifest) error {
 // serve runs a server and forgets its mount when the session ends without a
 // handover, e.g. after an external umount.
 func (d *daemon) serve(mt *mount) {
-	d.mounts[mt.address] = mt
+	mounts := d.mounts
+	if mt.volume != nil {
+		mounts = d.volumes
+	}
+	mounts[mt.address] = mt
 	go func() {
 		mt.srv.Serve()
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		if !d.handedOver && d.mounts[mt.address] == mt {
-			delete(d.mounts, mt.address)
+		if !d.handedOver && mounts[mt.address] == mt {
+			delete(mounts, mt.address)
 		}
 	}()
 }

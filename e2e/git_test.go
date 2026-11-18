@@ -361,8 +361,8 @@ func newGitFixture(t *testing.T, admin string, link bool) *gitFixture {
 
 	nodeName := fmt.Sprintf("git-cred-node-%d", suffix)
 	state, dataRoot := enrollAgent(t, admin, nodeName)
-	// Git inside a Sandbox runs as root and leaves root-owned files under the
-	// Workspace; hand them back before t.TempDir removes the tree.
+	// Git inside a Sandbox runs as root and leaves root-owned files in the
+	// Sandbox directories; hand them back before t.TempDir removes the tree.
 	t.Cleanup(func() {
 		_ = exec.Command("docker", "run", "--rm", "-v", dataRoot+":/w",
 			"alpine:3.22", "chmod", "-R", "a+rwX", "/w").Run()
@@ -502,7 +502,7 @@ func credentialPassword(t *testing.T, sandboxToken string, body map[string]strin
 
 // TestGitLinkClonePush is the git-link-clone-push scenario (#80): a linked
 // User clones and pushes a private repository with plain git, and neither the
-// Workspace nor the container configuration retains the token.
+// Sandbox filesystem nor the container configuration retains the token.
 func TestGitLinkClonePush(t *testing.T) {
 	admin := adminToken(t)
 	fixture := newGitFixture(t, admin, true)
@@ -526,7 +526,7 @@ func TestGitLinkClonePush(t *testing.T) {
 	}
 
 	// The credential is issued per use and never persisted: compare what the
-	// endpoint returns now against the Workspace and the container config.
+	// endpoint returns now against /workspace and the container config.
 	token := credentialPassword(t, fixture.sandboxToken, map[string]string{"provider": gitProviderID()})
 	if token == "" {
 		t.Fatal("the endpoint returned an empty token")

@@ -14,6 +14,9 @@ import (
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
+
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
 // evictionInterval is how often the Node re-checks the disk watermark. It is
@@ -21,12 +24,14 @@ import (
 // for a new Sandbox, and light enough to be a no-op when space is fine.
 const evictionInterval = 15 * time.Second
 
-// evictionKind is one of the three caches the disk budget covers
-// (runtime.md §11): Resource blocks, local images and BuildKit cache.
+// evictionKind is one of the caches the disk budget covers (runtime.md §11,
+// §16): Resource blocks, stopped Sandboxes' committed diffs, local images and
+// BuildKit cache.
 type evictionKind int
 
 const (
 	evictBlock evictionKind = iota
+	evictSandboxDisk
 	evictImage
 	evictBuildCache
 )
@@ -35,7 +40,7 @@ const (
 // orders all three classes together.
 type evictionCandidate struct {
 	kind     evictionKind
-	key      string // block path, image id, or "build-cache"
+	key      string // block path, Sandbox id, image id, or "build-cache"
 	size     int64  // bytes, when known
 	lastUsed time.Time
 }
@@ -244,6 +249,8 @@ func (r *Runtime) evictOnce(ctx context.Context, watermark float64) {
 			if err := os.Remove(candidate.key); err != nil && !os.IsNotExist(err) {
 				slog.Warn("evict Resource block", "path", candidate.key, "error", err)
 			}
+		case evictSandboxDisk:
+			r.evictSandboxDisk(ctx, candidate.key)
 		case evictImage:
 			// Only an imageStore lists image candidates (evictionCandidates).
 			if store, ok := r.driver.(imageStore); ok {
@@ -282,6 +289,18 @@ func (r *Runtime) evictionCandidates(ctx context.Context, imagePins map[string]b
 			})
 		}
 	}
+	// A stopped Sandbox's diff is evictable once it is what was committed;
+	// the mark's mtime is the stop that committed it.
+	marks, _ := filepath.Glob(filepath.Join(r.dataRoot, "sandboxes", "*", filepath.Base(cleanMarkPath("", uuid.Nil))))
+	for _, mark := range marks {
+		info, err := os.Stat(mark)
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, evictionCandidate{
+			kind: evictSandboxDisk, key: filepath.Base(filepath.Dir(mark)), lastUsed: info.ModTime(),
+		})
+	}
 	if store, ok := r.driver.(imageStore); ok {
 		images, _ := store.listImages(ctx) // an unreachable store has no candidates
 		usage := loadImageUsage(r.dataRoot)
@@ -302,6 +321,31 @@ func (r *Runtime) evictionCandidates(ctx context.Context, imagePins map[string]b
 		kind: evictBuildCache, key: "build-cache", lastUsed: time.Now(),
 	})
 	return candidates
+}
+
+// evictSandboxDisk drops a committed diff unless a Create took it since it
+// was listed. The next start restores it from its Generation.
+func (r *Runtime) evictSandboxDisk(ctx context.Context, key string) {
+	id, err := uuid.Parse(key)
+	if err != nil {
+		return
+	}
+	r.diskMu.Lock()
+	defer r.diskMu.Unlock()
+	if _, err := os.Stat(cleanMarkPath(r.dataRoot, id)); err != nil {
+		return
+	}
+	if err := r.dropSandboxDiskLocked(ctx, id); err != nil {
+		slog.Warn("evict a stopped Sandbox's disk", "sandbox_id", id, "error", err)
+		return
+	}
+	// The Control Plane stops preferring this Node for it (node-protocol.md).
+	// A report lost with the stream only costs a restore here.
+	if r.send != nil {
+		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{SandboxObserved: &nodev1.SandboxObserved{
+			SandboxId: id.String(), Phase: string(nodeproto.SandboxPhaseDiskDropped),
+		}}})
+	}
 }
 
 func (r *Runtime) managesImage(image cachedImage) bool {

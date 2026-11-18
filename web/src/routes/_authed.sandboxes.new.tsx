@@ -1,6 +1,7 @@
 import { useForm } from '@tanstack/react-form'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { Plus, X } from 'lucide-react'
 import { useState } from 'react'
 
 import {
@@ -11,7 +12,7 @@ import {
   type ListResponse,
   type Sandbox,
   type Snapshot,
-  type Workspace,
+  type Volume,
 } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { notifyError } from '@/lib/notify'
@@ -29,14 +30,14 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/c
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useLocale } from '@/lib/i18n'
-import { buildCreateSandboxBody, createSandboxSchema } from '@/lib/sandbox-form'
+import { buildCreateSandboxBody, createSandboxSchema, volumeMountProblem } from '@/lib/sandbox-form'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/new')({
-  // Snapshot and Workspace pages link here with their own value prefilled.
-  validateSearch: (search: Record<string, unknown>): { snapshot?: string; workspace?: string } => ({
+  // Snapshot and Volume pages link here with their own value prefilled.
+  validateSearch: (search: Record<string, unknown>): { snapshot?: string; volume?: string } => ({
     snapshot: typeof search.snapshot === 'string' ? search.snapshot : undefined,
-    workspace: typeof search.workspace === 'string' ? search.workspace : undefined,
+    volume: typeof search.volume === 'string' ? search.volume : undefined,
   }),
   component: NewSandboxPage,
 })
@@ -55,9 +56,9 @@ function NewSandboxPage() {
     queryKey: ['capacity'],
     queryFn: () => api<ListResponse<CapacityNode>>('GET', '/capacity'),
   })
-  const workspaces = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => listAll<Workspace>('/workspaces'),
+  const volumes = useQuery({
+    queryKey: ['volumes'],
+    queryFn: () => listAll<Volume>('/volumes'),
   })
 
   const gpuModels = Array.from(
@@ -67,11 +68,7 @@ function NewSandboxPage() {
       ),
     ),
   )
-  const attachable = (workspaces.data ?? []).filter(
-    (workspace) =>
-      workspace.kind === 'persistent' &&
-      (workspace.state === 'ready' || workspace.state === 'provisioning'),
-  )
+  const attachable = (volumes.data ?? []).filter((volume) => volume.state === 'ready')
 
   const form = useForm({
     defaultValues: {
@@ -81,8 +78,7 @@ function NewSandboxPage() {
       memoryMiB: '512',
       gpuCount: '0',
       gpuModel: '',
-      workspaceId: prefill.workspace ?? '',
-      workspaceMode: 'rw' as 'rw' | 'ro',
+      volumes: prefill.volume ? [{ volume: prefill.volume, path: '/workspace' }] : [],
       idleStop: '900',
     },
     onSubmit: async ({ value }) => {
@@ -279,55 +275,102 @@ function NewSandboxPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>{m.label_workspace()}</CardTitle>
-            <CardDescription>{m.new_workspace_description()}</CardDescription>
+            <CardTitle>{m.label_volumes()}</CardTitle>
+            <CardDescription>{m.new_volumes_description()}</CardDescription>
           </CardHeader>
           <CardContent>
             <FieldGroup>
-              <form.Field name="workspaceId">
-                {(field) => (
-                  <Field>
-                    <FieldLabel htmlFor={field.name}>{m.label_workspace()}</FieldLabel>
-                    <NativeSelect
-                      id={field.name}
-                      className="w-full"
-                      value={field.state.value}
-                      onChange={(e) => field.handleChange(e.target.value)}
-                    >
-                      <NativeSelectOption value="">{m.new_ephemeral()}</NativeSelectOption>
-                      {attachable.map((workspace) => (
-                        <NativeSelectOption key={workspace.id} value={workspace.id}>
-                          {workspace.id}
-                        </NativeSelectOption>
-                      ))}
-                    </NativeSelect>
-                  </Field>
+              <form.Field name="volumes" mode="array">
+                {(mounts) => (
+                  <>
+                    {mounts.state.value.map((mount, i) => {
+                      const earlier = mounts.state.value.slice(0, i)
+                      // The same rules the server applies, shown as you type.
+                      const problem =
+                        mount.path.trim() &&
+                        volumeMountProblem(
+                          mount.path.trim(),
+                          earlier.map((other) => other.path.trim()),
+                        )
+                      return (
+                        <div key={i} className="grid grid-cols-[1fr_1fr_auto] items-start gap-2">
+                          <form.Field name={`volumes[${i}].volume`}>
+                            {(field) => (
+                              <Field>
+                                <FieldLabel htmlFor={`volume-${i}`} className="sr-only">
+                                  {m.label_volume()}
+                                </FieldLabel>
+                                <NativeSelect
+                                  id={`volume-${i}`}
+                                  className="w-full"
+                                  value={field.state.value}
+                                  onChange={(e) => field.handleChange(e.target.value)}
+                                >
+                                  <NativeSelectOption value="">{m.new_volume_choose()}</NativeSelectOption>
+                                  {attachable.map((volume) => (
+                                    <NativeSelectOption
+                                      key={volume.id}
+                                      value={volume.id}
+                                      disabled={volume.held_by !== null}
+                                    >
+                                      {volume.held_by
+                                        ? m.new_volume_in_use({ name: volume.name })
+                                        : volume.name}
+                                    </NativeSelectOption>
+                                  ))}
+                                </NativeSelect>
+                              </Field>
+                            )}
+                          </form.Field>
+                          <form.Field name={`volumes[${i}].path`}>
+                            {(field) => (
+                              <Field data-invalid={problem ? true : undefined}>
+                                <FieldLabel htmlFor={`volume-path-${i}`} className="sr-only">
+                                  {m.new_volume_path()}
+                                </FieldLabel>
+                                <Input
+                                  id={`volume-path-${i}`}
+                                  placeholder="/data"
+                                  aria-invalid={problem ? true : undefined}
+                                  value={field.state.value}
+                                  onChange={(e) => field.handleChange(e.target.value)}
+                                />
+                                {problem && <FieldError>{problem}</FieldError>}
+                              </Field>
+                            )}
+                          </form.Field>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            aria-label={m.new_volume_remove()}
+                            onClick={() => mounts.removeValue(i)}
+                          >
+                            <X />
+                          </Button>
+                        </div>
+                      )
+                    })}
+                    <div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={mounts.state.value.length >= 16}
+                        onClick={() =>
+                          mounts.pushValue({
+                            volume: '',
+                            path: mounts.state.value.length === 0 ? '/workspace' : '',
+                          })
+                        }
+                      >
+                        <Plus data-icon="inline-start" />
+                        {m.new_volume_add()}
+                      </Button>
+                    </div>
+                  </>
                 )}
               </form.Field>
-
-              <form.Subscribe selector={(state) => state.values.workspaceId}>
-                {(workspaceId) =>
-                  workspaceId ? (
-                    <form.Field name="workspaceMode">
-                      {(field) => (
-                        <Field>
-                          <FieldLabel htmlFor={field.name}>{m.new_workspace_mode()}</FieldLabel>
-                          <NativeSelect
-                            id={field.name}
-                            className="w-full"
-                            value={field.state.value}
-                            onChange={(e) => field.handleChange(e.target.value as 'rw' | 'ro')}
-                          >
-                            <NativeSelectOption value="rw">{m.new_read_write()}</NativeSelectOption>
-                            <NativeSelectOption value="ro">{m.new_read_only()}</NativeSelectOption>
-                          </NativeSelect>
-                        </Field>
-                      )}
-                    </form.Field>
-                  ) : null
-                }
-              </form.Subscribe>
-
             </FieldGroup>
           </CardContent>
           <CardFooter className="justify-end">

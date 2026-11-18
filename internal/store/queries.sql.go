@@ -218,6 +218,28 @@ func (q *Queries) CancelSnapshotVersion(ctx context.Context, id uuid.UUID) (Snap
 	return i, err
 }
 
+const clearDeletedSandboxHead = `-- name: ClearDeletedSandboxHead :exec
+UPDATE sandboxes SET head_generation_id = NULL
+WHERE head_generation_id = $1 AND deleted_at IS NOT NULL
+`
+
+// A deleted Sandbox's head goes with it (ADR-0031).
+func (q *Queries) ClearDeletedSandboxHead(ctx context.Context, headGenerationID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearDeletedSandboxHead, headGenerationID)
+	return err
+}
+
+const clearDeletedVolumeHead = `-- name: ClearDeletedVolumeHead :exec
+UPDATE volumes SET head_generation_id = NULL
+WHERE head_generation_id = $1 AND state = 'deleted'
+`
+
+// A deleted Volume's head goes with it (ADR-0031).
+func (q *Queries) ClearDeletedVolumeHead(ctx context.Context, headGenerationID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearDeletedVolumeHead, headGenerationID)
+	return err
+}
+
 const clearResourceCurrent = `-- name: ClearResourceCurrent :exec
 UPDATE resources SET current_version_id = NULL
 WHERE id = $1 AND deleted_at IS NOT NULL
@@ -236,6 +258,20 @@ WHERE id = $1 AND deleted_at IS NOT NULL
 func (q *Queries) ClearSnapshotCurrent(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, clearSnapshotCurrent, id)
 	return err
+}
+
+const consumeGenerationUpload = `-- name: ConsumeGenerationUpload :execrows
+DELETE FROM generation_uploads WHERE id = $1 AND expires_at > now()
+`
+
+// ConsumeGenerationUpload ends an upload in its commit. It must still be
+// unexpired: the purge removes an expired upload's manifest.
+func (q *Queries) ConsumeGenerationUpload(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeGenerationUpload, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const countActiveExecs = `-- name: CountActiveExecs :one
@@ -286,29 +322,13 @@ func (q *Queries) CountBuildingSnapshotImports(ctx context.Context, snapshotID u
 }
 
 const countNodeNonTerminalSandboxes = `-- name: CountNodeNonTerminalSandboxes :one
-SELECT count(*)::bigint FROM sandboxes
-WHERE node_id = $1 AND state NOT IN ('deleted', 'failed')
-  AND NOT (kind = 'build' AND state = 'stopped')
+SELECT count(*)::bigint FROM allocations WHERE node_id = $1
 `
 
-func (q *Queries) CountNodeNonTerminalSandboxes(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+// A Sandbox running, stopping or bound there holds an Allocation on the Node;
+// a stopped one only prefers it and does not block (api.md §3, ADR-0031).
+func (q *Queries) CountNodeNonTerminalSandboxes(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countNodeNonTerminalSandboxes, nodeID)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
-const countNodeNonTerminalWorkspaces = `-- name: CountNodeNonTerminalWorkspaces :one
-SELECT count(*)::bigint FROM workspaces
-WHERE node_id = $1 AND state NOT IN ('deleted', 'failed', 'lost')
-`
-
-// Deletion requires no non-terminal Workspace (deleted, failed and lost are
-// terminal) and no non-terminal Sandbox, build rows included (api.md §3). A
-// build row at stopped is finished and has no Runtime, so it is terminal; a
-// stopped user Sandbox still blocks.
-func (q *Queries) CountNodeNonTerminalWorkspaces(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countNodeNonTerminalWorkspaces, nodeID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -509,7 +529,7 @@ INSERT INTO sandboxes (
     id, owner_id, kind, name, labels, desired_state, state, snapshot_digest,
     cpu, memory, gpu_count, idle_stop_seconds, generation, secret_env_ct
 ) VALUES ($1, $2, 'build', $3, '{}', 'running', 'pending', $4, $5, $6, 0, 0, 1, $7)
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 type CreateBuildSandboxParams struct {
@@ -524,7 +544,7 @@ type CreateBuildSandboxParams struct {
 
 // CreateBuildSandbox is the internal row that carries a Snapshot build's
 // Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no
-// Workspace and no Runtime; secret_env_ct holds the build's Secret snapshot.
+// Volume and no Runtime; secret_env_ct holds the build's Secret snapshot.
 func (q *Queries) CreateBuildSandbox(ctx context.Context, arg CreateBuildSandboxParams) (Sandbox, error) {
 	row := q.db.QueryRow(ctx, createBuildSandbox,
 		arg.ID,
@@ -559,8 +579,6 @@ func (q *Queries) CreateBuildSandbox(ctx context.Context, arg CreateBuildSandbox
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
-		&i.WorkspaceID,
-		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
 		&i.Kind,
@@ -570,6 +588,7 @@ func (q *Queries) CreateBuildSandbox(ctx context.Context, arg CreateBuildSandbox
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -684,6 +703,38 @@ type CreateGPUAllocationParams struct {
 // Sandbox with fewer cards than it asked for.
 func (q *Queries) CreateGPUAllocation(ctx context.Context, arg CreateGPUAllocationParams) error {
 	_, err := q.db.Exec(ctx, createGPUAllocation, arg.GpuUuid, arg.SandboxID)
+	return err
+}
+
+const createGenerationUpload = `-- name: CreateGenerationUpload :exec
+INSERT INTO generation_uploads (id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, volume_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+`
+
+type CreateGenerationUploadParams struct {
+	ID               uuid.UUID
+	OwnerID          uuid.UUID
+	SandboxID        uuid.UUID
+	NodeID           uuid.UUID
+	Generation       int64
+	BaseGenerationID *uuid.UUID
+	Missing          []string
+	ExpiresAt        pgtype.Timestamptz
+	VolumeID         *uuid.UUID
+}
+
+func (q *Queries) CreateGenerationUpload(ctx context.Context, arg CreateGenerationUploadParams) error {
+	_, err := q.db.Exec(ctx, createGenerationUpload,
+		arg.ID,
+		arg.OwnerID,
+		arg.SandboxID,
+		arg.NodeID,
+		arg.Generation,
+		arg.BaseGenerationID,
+		arg.Missing,
+		arg.ExpiresAt,
+		arg.VolumeID,
+	)
 	return err
 }
 
@@ -843,29 +894,32 @@ func (q *Queries) CreateOIDCUser(ctx context.Context, arg CreateOIDCUserParams) 
 
 const createPendingResourceVersion = `-- name: CreatePendingResourceVersion :one
 INSERT INTO resource_versions (
-    id, resource_id, provenance, state, publish_workspace_id,
-    publish_idempotency_key
-) VALUES ($1, $2, $3, 'pending', $4, $5)
-RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+    id, resource_id, provenance, state,
+    publish_sandbox_id, publish_volume_id, publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5, $6)
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_idempotency_key, publish_sandbox_id, publish_volume_id
 `
 
 type CreatePendingResourceVersionParams struct {
 	ID                    uuid.UUID
 	ResourceID            uuid.UUID
 	Provenance            json.RawMessage
-	PublishWorkspaceID    *uuid.UUID
+	PublishSandboxID      *uuid.UUID
+	PublishVolumeID       *uuid.UUID
 	PublishIdempotencyKey *string
 }
 
-// CreatePendingResourceVersion is the Workspace publish path: the version
-// starts pending and the Agent fills in the manifest (node-protocol.md
-// "Workspace publish").
+// CreatePendingResourceVersion is the Sandbox and Volume publish
+// path: the version starts pending, and the Agent (or, for a Volume, the
+// Control Plane) fills in the manifest (node-protocol.md "Sandbox publish").
+// Exactly one of the publish_*_id columns is set.
 func (q *Queries) CreatePendingResourceVersion(ctx context.Context, arg CreatePendingResourceVersionParams) (ResourceVersion, error) {
 	row := q.db.QueryRow(ctx, createPendingResourceVersion,
 		arg.ID,
 		arg.ResourceID,
 		arg.Provenance,
-		arg.PublishWorkspaceID,
+		arg.PublishSandboxID,
+		arg.PublishVolumeID,
 		arg.PublishIdempotencyKey,
 	)
 	var i ResourceVersion
@@ -881,8 +935,9 @@ func (q *Queries) CreatePendingResourceVersion(ctx context.Context, arg CreatePe
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
-		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
@@ -928,7 +983,7 @@ INSERT INTO resource_versions (
     id, resource_id, address, manifest_key, size, provenance,
     state, idempotency_key
 ) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
-RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_idempotency_key, publish_sandbox_id, publish_volume_id
 `
 
 type CreateResourceVersionParams struct {
@@ -965,8 +1020,9 @@ func (q *Queries) CreateResourceVersion(ctx context.Context, arg CreateResourceV
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
-		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
@@ -979,7 +1035,7 @@ INSERT INTO sandboxes (
     idempotency_key, secret_env_ct, token_ct, token_key_id, egress_mode, egress_allow,
     links_from, links_ports
 ) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15, $16, $17, $18, $19)
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 type CreateSandboxParams struct {
@@ -1051,8 +1107,6 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
-		&i.WorkspaceID,
-		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
 		&i.Kind,
@@ -1062,6 +1116,7 @@ func (q *Queries) CreateSandbox(ctx context.Context, arg CreateSandboxParams) (S
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -1082,6 +1137,22 @@ type CreateSandboxResourceParams struct {
 // created with (runtime.md §11).
 func (q *Queries) CreateSandboxResource(ctx context.Context, arg CreateSandboxResourceParams) error {
 	_, err := q.db.Exec(ctx, createSandboxResource, arg.SandboxID, arg.ResourceVersionID, arg.Mount)
+	return err
+}
+
+const createSandboxVolume = `-- name: CreateSandboxVolume :exec
+INSERT INTO sandbox_volumes (sandbox_id, volume_id, path, held)
+VALUES ($1, $2, $3, true)
+`
+
+type CreateSandboxVolumeParams struct {
+	SandboxID uuid.UUID
+	VolumeID  uuid.UUID
+	Path      string
+}
+
+func (q *Queries) CreateSandboxVolume(ctx context.Context, arg CreateSandboxVolumeParams) error {
+	_, err := q.db.Exec(ctx, createSandboxVolume, arg.SandboxID, arg.VolumeID, arg.Path)
 	return err
 }
 
@@ -1266,48 +1337,39 @@ func (q *Queries) CreateUpload(ctx context.Context, arg CreateUploadParams) (Upl
 	return i, err
 }
 
-const createWorkspace = `-- name: CreateWorkspace :one
+const createVolume = `-- name: CreateVolume :one
 
-INSERT INTO workspaces (id, owner_id, kind, sandbox_id, state, storage_handle, generation, idempotency_key)
-VALUES ($1, $2, $3, $4, 'provisioning', $5, 1, $6)
-RETURNING id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key
+INSERT INTO volumes (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at
 `
 
-type CreateWorkspaceParams struct {
+type CreateVolumeParams struct {
 	ID             uuid.UUID
 	OwnerID        uuid.UUID
-	Kind           string
-	SandboxID      *uuid.UUID
-	StorageHandle  *string
+	Name           string
 	IdempotencyKey *string
 }
 
-// Workspaces
-func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, createWorkspace,
+// Volumes (ADR-0031, api.md §3 "Volume").
+func (q *Queries) CreateVolume(ctx context.Context, arg CreateVolumeParams) (Volume, error) {
+	row := q.db.QueryRow(ctx, createVolume,
 		arg.ID,
 		arg.OwnerID,
-		arg.Kind,
-		arg.SandboxID,
-		arg.StorageHandle,
+		arg.Name,
 		arg.IdempotencyKey,
 	)
-	var i Workspace
+	var i Volume
 	err := row.Scan(
 		&i.ID,
 		&i.OwnerID,
-		&i.Kind,
-		&i.SandboxID,
-		&i.NodeID,
+		&i.Name,
 		&i.State,
-		&i.Cause,
-		&i.StorageHandle,
-		&i.Conditions,
-		&i.Generation,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
-		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -1322,13 +1384,10 @@ func (q *Queries) DeleteAllocation(ctx context.Context, sandboxID uuid.UUID) err
 }
 
 const deleteAllocationsOnNodeLost = `-- name: DeleteAllocationsOnNodeLost :execrows
-DELETE FROM allocations
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-)
+DELETE FROM allocations WHERE node_id = $1
 `
 
-func (q *Queries) DeleteAllocationsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+func (q *Queries) DeleteAllocationsOnNodeLost(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteAllocationsOnNodeLost, nodeID)
 	if err != nil {
 		return 0, err
@@ -1410,17 +1469,36 @@ func (q *Queries) DeleteGPUAllocations(ctx context.Context, sandboxID uuid.UUID)
 
 const deleteGPUAllocationsOnNodeLost = `-- name: DeleteGPUAllocationsOnNodeLost :execrows
 DELETE FROM gpu_allocations
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-)
+WHERE gpu_uuid IN (SELECT uuid FROM gpus WHERE node_id = $1)
 `
 
-func (q *Queries) DeleteGPUAllocationsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
+func (q *Queries) DeleteGPUAllocationsOnNodeLost(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteGPUAllocationsOnNodeLost, nodeID)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteGarbageGeneration = `-- name: DeleteGarbageGeneration :exec
+DELETE FROM generations g
+WHERE g.id = $1
+  AND NOT EXISTS (SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id)
+  AND NOT EXISTS (SELECT 1 FROM volumes v WHERE v.head_generation_id = g.id)
+`
+
+func (q *Queries) DeleteGarbageGeneration(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteGarbageGeneration, id)
+	return err
+}
+
+const deleteGenerationUpload = `-- name: DeleteGenerationUpload :exec
+DELETE FROM generation_uploads WHERE id = $1
+`
+
+func (q *Queries) DeleteGenerationUpload(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteGenerationUpload, id)
+	return err
 }
 
 const deleteGitLink = `-- name: DeleteGitLink :one
@@ -1457,6 +1535,19 @@ func (q *Queries) DeleteNodeGPUs(ctx context.Context, nodeID uuid.UUID) error {
 	return err
 }
 
+const deleteNodeLegacyDirs = `-- name: DeleteNodeLegacyDirs :execrows
+DELETE FROM legacy_dirs WHERE node_id = $1
+`
+
+// A directory on a lost or deleted Node is lost.
+func (q *Queries) DeleteNodeLegacyDirs(ctx context.Context, nodeID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteNodeLegacyDirs, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteResourceVersion = `-- name: DeleteResourceVersion :exec
 DELETE FROM resource_versions WHERE id = $1
 `
@@ -1478,15 +1569,11 @@ func (q *Queries) DeleteResourceVersionObjects(ctx context.Context, versionID uu
 const deleteSandbox = `-- name: DeleteSandbox :one
 UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
-    workspace_mode = CASE WHEN state IN ('stopped', 'failed') THEN 'ro' ELSE workspace_mode END,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
-// DeleteSandbox records a stopped or failed Sandbox read-only: it holds no
-// write, and deleting must not take it back. The states are the complement of
-// the sandboxes_workspace_rw predicate (#220).
 func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
 	row := q.db.QueryRow(ctx, deleteSandbox, id)
 	var i Sandbox
@@ -1513,8 +1600,6 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
-		&i.WorkspaceID,
-		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
 		&i.Kind,
@@ -1524,6 +1609,7 @@ func (q *Queries) DeleteSandbox(ctx context.Context, id uuid.UUID) (Sandbox, err
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -1663,6 +1749,15 @@ func (q *Queries) DeleteUserSessions(ctx context.Context, userID uuid.UUID) (int
 	return result.RowsAffected(), nil
 }
 
+const deleteVolumeLegacyDir = `-- name: DeleteVolumeLegacyDir :exec
+DELETE FROM legacy_dirs WHERE volume_id = $1
+`
+
+func (q *Queries) DeleteVolumeLegacyDir(ctx context.Context, volumeID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteVolumeLegacyDir, volumeID)
+	return err
+}
+
 const endAdmissionRequest = `-- name: EndAdmissionRequest :execrows
 UPDATE admission_requests
 SET ended_at = now(), outcome = $2
@@ -1736,7 +1831,7 @@ const failPublishesOnNodeLost = `-- name: FailPublishesOnNodeLost :execrows
 UPDATE resource_versions
 SET state = 'failed', cause = 'node_lost'
 WHERE state = 'pending'
-  AND publish_workspace_id IN (SELECT id FROM workspaces WHERE node_id = $1)
+  AND publish_sandbox_id IN (SELECT sb.id FROM sandboxes sb WHERE sb.node_id = $1)
 `
 
 func (q *Queries) FailPublishesOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
@@ -1747,36 +1842,95 @@ func (q *Queries) FailPublishesOnNodeLost(ctx context.Context, nodeID *uuid.UUID
 	return result.RowsAffected(), nil
 }
 
-const failSandboxesOnNodeLost = `-- name: FailSandboxesOnNodeLost :execrows
-UPDATE sandboxes
-SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
-    conditions = NULL, address = NULL, updated_at = now()
-WHERE node_id = $1 AND state <> 'deleted'
+const findGenerationUploadObjectOwner = `-- name: FindGenerationUploadObjectOwner :one
+
+SELECT u.owner_id FROM generation_uploads u
+JOIN sandboxes s ON s.id = u.sandbox_id
+WHERE u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
+  AND u.expires_at > now() AND $2::text = ANY (u.missing)
+LIMIT 1
 `
 
-// Every non-deleted Sandbox on the Node, including stopped and bound pending
-// ones and build rows, becomes failed/node_lost (api.md §3).
-func (q *Queries) FailSandboxesOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, failSandboxesOnNodeLost, nodeID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+type FindGenerationUploadObjectOwnerParams struct {
+	NodeID uuid.UUID
+	Sha256 string
 }
 
-const failSandboxesOnWorkspaceLost = `-- name: FailSandboxesOnWorkspaceLost :execrows
-UPDATE sandboxes
-SET state = 'failed', cause = 'workspace_lost', desired_state = 'stopped',
-    conditions = NULL, updated_at = now()
-WHERE workspace_id = $1 AND state NOT IN ('deleted', 'deleting')
+// Presign authorization (node-protocol.md "Presign"). An open upload signs
+// PUTs only while its Sandbox is on this Node under the same fence.
+func (q *Queries) FindGenerationUploadObjectOwner(ctx context.Context, arg FindGenerationUploadObjectOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findGenerationUploadObjectOwner, arg.NodeID, arg.Sha256)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
+}
+
+const findGenerationUploadOwner = `-- name: FindGenerationUploadOwner :one
+SELECT u.owner_id FROM generation_uploads u
+JOIN sandboxes s ON s.id = u.sandbox_id
+WHERE u.id = $2 AND u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
+  AND u.expires_at > now()
 `
 
-func (q *Queries) FailSandboxesOnWorkspaceLost(ctx context.Context, workspaceID *uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, failSandboxesOnWorkspaceLost, workspaceID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+type FindGenerationUploadOwnerParams struct {
+	NodeID uuid.UUID
+	ID     uuid.UUID
+}
+
+func (q *Queries) FindGenerationUploadOwner(ctx context.Context, arg FindGenerationUploadOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findGenerationUploadOwner, arg.NodeID, arg.ID)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
+}
+
+const findNodeHeadGenerationObjectOwner = `-- name: FindNodeHeadGenerationObjectOwner :one
+SELECT s.owner_id FROM sandboxes s
+JOIN generation_objects go ON go.generation_id = s.head_generation_id
+WHERE s.node_id = $1 AND s.state <> 'deleted' AND go.sha256 = $2
+UNION ALL
+SELECT v.owner_id FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id AND sv.held
+JOIN sandboxes s ON s.id = sv.sandbox_id
+JOIN generation_objects go ON go.generation_id = v.head_generation_id
+WHERE s.node_id = $1 AND go.sha256 = $2
+LIMIT 1
+`
+
+type FindNodeHeadGenerationObjectOwnerParams struct {
+	NodeID *uuid.UUID
+	Sha256 string
+}
+
+func (q *Queries) FindNodeHeadGenerationObjectOwner(ctx context.Context, arg FindNodeHeadGenerationObjectOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findNodeHeadGenerationObjectOwner, arg.NodeID, arg.Sha256)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
+}
+
+const findNodeHeadGenerationOwner = `-- name: FindNodeHeadGenerationOwner :one
+SELECT s.owner_id FROM sandboxes s
+WHERE s.node_id = $1 AND s.state <> 'deleted' AND s.head_generation_id = $2
+UNION ALL
+SELECT v.owner_id FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id AND sv.held
+JOIN sandboxes s ON s.id = sv.sandbox_id
+WHERE s.node_id = $1 AND v.head_generation_id = $2
+LIMIT 1
+`
+
+type FindNodeHeadGenerationOwnerParams struct {
+	NodeID           *uuid.UUID
+	HeadGenerationID *uuid.UUID
+}
+
+// A Volume's head counts for the Node of the Sandbox holding it.
+func (q *Queries) FindNodeHeadGenerationOwner(ctx context.Context, arg FindNodeHeadGenerationOwnerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findNodeHeadGenerationOwner, arg.NodeID, arg.HeadGenerationID)
+	var owner_id uuid.UUID
+	err := row.Scan(&owner_id)
+	return owner_id, err
 }
 
 const findPublishObjectOwner = `-- name: FindPublishObjectOwner :one
@@ -1784,10 +1938,9 @@ SELECT r.owner_id
 FROM resource_version_objects rvo
 JOIN resource_versions rv ON rv.id = rvo.version_id
 JOIN resources r ON r.id = rv.resource_id
-JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN sandboxes s ON s.id = rv.publish_sandbox_id
 WHERE rv.state = 'pending'
-  AND rv.publish_workspace_id IS NOT NULL
-  AND w.node_id = $1
+  AND s.node_id = $1
   AND rvo.sha256 = $2
 LIMIT 1
 `
@@ -1850,22 +2003,18 @@ func (q *Queries) FinishExecsOnNodeLost(ctx context.Context, nodeID *uuid.UUID) 
 	return result.RowsAffected(), nil
 }
 
-const finishExecsOnWorkspaceLost = `-- name: FinishExecsOnWorkspaceLost :execrows
-UPDATE execs
-SET finished_at = now(), cause = 'runtime_lost'
-WHERE finished_at IS NULL
-  AND sandbox_id IN (
-      SELECT id FROM sandboxes
-      WHERE workspace_id = $1 AND state = 'failed' AND cause = 'workspace_lost'
-  )
+const finishLegacyDirs = `-- name: FinishLegacyDirs :exec
+DELETE FROM legacy_dirs
+WHERE started
+  AND (sandbox_id = $1::uuid
+       OR volume_id IN (SELECT sv.volume_id FROM sandbox_volumes sv WHERE sv.sandbox_id = $1::uuid))
 `
 
-func (q *Queries) FinishExecsOnWorkspaceLost(ctx context.Context, workspaceID *uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, finishExecsOnWorkspaceLost, workspaceID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// FinishLegacyDirs drops them once the Sandbox committed after that Create:
+// its stop commits the Volumes first, then its own filesystem.
+func (q *Queries) FinishLegacyDirs(ctx context.Context, sandboxID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, finishLegacyDirs, sandboxID)
+	return err
 }
 
 const finishSandboxExecs = `-- name: FinishSandboxExecs :execrows
@@ -1882,6 +2031,28 @@ type FinishSandboxExecsParams struct {
 
 func (q *Queries) FinishSandboxExecs(ctx context.Context, arg FinishSandboxExecsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, finishSandboxExecs, arg.SandboxID, arg.Cause, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const forgetSandboxNode = `-- name: ForgetSandboxNode :execrows
+UPDATE sandboxes SET node_id = NULL, updated_at = now()
+WHERE sandboxes.id = $1 AND sandboxes.node_id = $2
+  AND NOT EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = $1)
+`
+
+type ForgetSandboxNodeParams struct {
+	ID     uuid.UUID
+	NodeID *uuid.UUID
+}
+
+// ForgetSandboxNode drops the placement preference of a Sandbox whose Node
+// evicted its cached diff (runtime.md §16). A Sandbox placed since keeps its
+// Node: the report is about a disk its Create no longer uses.
+func (q *Queries) ForgetSandboxNode(ctx context.Context, arg ForgetSandboxNodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, forgetSandboxNode, arg.ID, arg.NodeID)
 	if err != nil {
 		return 0, err
 	}
@@ -2040,6 +2211,49 @@ func (q *Queries) GetExecWithNode(ctx context.Context, id uuid.UUID) (GetExecWit
 	return i, err
 }
 
+const getGeneration = `-- name: GetGeneration :one
+SELECT id, owner_id, sandbox_id, seq, kind, manifest_key, size, created_at, volume_id FROM generations WHERE id = $1
+`
+
+func (q *Queries) GetGeneration(ctx context.Context, id uuid.UUID) (Generation, error) {
+	row := q.db.QueryRow(ctx, getGeneration, id)
+	var i Generation
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.SandboxID,
+		&i.Seq,
+		&i.Kind,
+		&i.ManifestKey,
+		&i.Size,
+		&i.CreatedAt,
+		&i.VolumeID,
+	)
+	return i, err
+}
+
+const getGenerationUpload = `-- name: GetGenerationUpload :one
+SELECT id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, created_at, volume_id FROM generation_uploads WHERE id = $1 AND expires_at > now()
+`
+
+func (q *Queries) GetGenerationUpload(ctx context.Context, id uuid.UUID) (GenerationUpload, error) {
+	row := q.db.QueryRow(ctx, getGenerationUpload, id)
+	var i GenerationUpload
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.SandboxID,
+		&i.NodeID,
+		&i.Generation,
+		&i.BaseGenerationID,
+		&i.Missing,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.VolumeID,
+	)
+	return i, err
+}
+
 const getGitLink = `-- name: GetGitLink :one
 SELECT user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at FROM git_links WHERE user_id = $1 AND provider_id = $2
 `
@@ -2117,6 +2331,32 @@ func (q *Queries) GetLiveResourceByName(ctx context.Context, arg GetLiveResource
 	return i, err
 }
 
+const getLiveVolumeByNameShare = `-- name: GetLiveVolumeByNameShare :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE owner_id = $1 AND name = $2 AND state <> 'deleted' FOR SHARE
+`
+
+type GetLiveVolumeByNameShareParams struct {
+	OwnerID uuid.UUID
+	Name    string
+}
+
+func (q *Queries) GetLiveVolumeByNameShare(ctx context.Context, arg GetLiveVolumeByNameShareParams) (Volume, error) {
+	row := q.db.QueryRow(ctx, getLiveVolumeByNameShare, arg.OwnerID, arg.Name)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const getNode = `-- name: GetNode :one
 SELECT id, name, token_hash, paused, lost_at, agent_version, proto_major, proto_minor, last_seen_at, runtime_health, capabilities, hardware, created_at, reserved_cpu, reserved_memory, cpu_per_gpu, memory_per_gpu, deleted_at, mesh_public_key, mesh_endpoint, sandbox_subnet FROM nodes WHERE id = $1 AND deleted_at IS NULL
 `
@@ -2183,17 +2423,16 @@ func (q *Queries) GetNodeByName(ctx context.Context, name string) (Node, error) 
 	return i, err
 }
 
-const getPendingWorkspacePublish = `-- name: GetPendingWorkspacePublish :one
-SELECT rv.id, rv.resource_id, rv.address, rv.manifest_key, rv.size, rv.provenance, rv.state, rv.cause, rv.idempotency_key, rv.expires_at, rv.created_at, rv.publish_workspace_id, rv.publish_idempotency_key, w.node_id, r.owner_id
+const getPendingSandboxPublish = `-- name: GetPendingSandboxPublish :one
+SELECT rv.id, rv.resource_id, rv.address, rv.manifest_key, rv.size, rv.provenance, rv.state, rv.cause, rv.idempotency_key, rv.expires_at, rv.created_at, rv.publish_idempotency_key, rv.publish_sandbox_id, rv.publish_volume_id, s.node_id, r.owner_id
 FROM resource_versions rv
-JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN sandboxes s ON s.id = rv.publish_sandbox_id
 JOIN resources r ON r.id = rv.resource_id
 WHERE rv.id = $1
   AND rv.state = 'pending'
-  AND rv.publish_workspace_id IS NOT NULL
 `
 
-type GetPendingWorkspacePublishRow struct {
+type GetPendingSandboxPublishRow struct {
 	ID                    uuid.UUID
 	ResourceID            uuid.UUID
 	Address               *string
@@ -2205,17 +2444,18 @@ type GetPendingWorkspacePublishRow struct {
 	IdempotencyKey        *string
 	ExpiresAt             pgtype.Timestamptz
 	CreatedAt             pgtype.Timestamptz
-	PublishWorkspaceID    *uuid.UUID
 	PublishIdempotencyKey *string
+	PublishSandboxID      *uuid.UUID
+	PublishVolumeID       *uuid.UUID
 	NodeID                *uuid.UUID
 	OwnerID               uuid.UUID
 }
 
-// GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
-// version must still be pending and its Workspace bound to the calling Node.
-func (q *Queries) GetPendingWorkspacePublish(ctx context.Context, id uuid.UUID) (GetPendingWorkspacePublishRow, error) {
-	row := q.db.QueryRow(ctx, getPendingWorkspacePublish, id)
-	var i GetPendingWorkspacePublishRow
+// GetPendingSandboxPublish authorizes SubmitManifest and CommandResult: the
+// version must still be pending and its Sandbox on the calling Node.
+func (q *Queries) GetPendingSandboxPublish(ctx context.Context, id uuid.UUID) (GetPendingSandboxPublishRow, error) {
+	row := q.db.QueryRow(ctx, getPendingSandboxPublish, id)
+	var i GetPendingSandboxPublishRow
 	err := row.Scan(
 		&i.ID,
 		&i.ResourceID,
@@ -2228,8 +2468,9 @@ func (q *Queries) GetPendingWorkspacePublish(ctx context.Context, id uuid.UUID) 
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
-		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 		&i.NodeID,
 		&i.OwnerID,
 	)
@@ -2303,7 +2544,7 @@ func (q *Queries) GetResourceByIdempotencyKey(ctx context.Context, arg GetResour
 }
 
 const getResourceVersion = `-- name: GetResourceVersion :one
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE id = $1
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions WHERE id = $1
 `
 
 func (q *Queries) GetResourceVersion(ctx context.Context, id uuid.UUID) (ResourceVersion, error) {
@@ -2321,14 +2562,15 @@ func (q *Queries) GetResourceVersion(ctx context.Context, id uuid.UUID) (Resourc
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
-		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
 
 const getResourceVersionByIdempotencyKey = `-- name: GetResourceVersionByIdempotencyKey :one
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions WHERE resource_id = $1 AND idempotency_key = $2
 `
 
 type GetResourceVersionByIdempotencyKeyParams struct {
@@ -2351,24 +2593,25 @@ func (q *Queries) GetResourceVersionByIdempotencyKey(ctx context.Context, arg Ge
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
-		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
 
-const getResourceVersionByPublishIdempotencyKey = `-- name: GetResourceVersionByPublishIdempotencyKey :one
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions
-WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2
+const getResourceVersionBySandboxPublishIdempotencyKey = `-- name: GetResourceVersionBySandboxPublishIdempotencyKey :one
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions
+WHERE publish_sandbox_id = $1 AND publish_idempotency_key = $2
 `
 
-type GetResourceVersionByPublishIdempotencyKeyParams struct {
-	PublishWorkspaceID    *uuid.UUID
+type GetResourceVersionBySandboxPublishIdempotencyKeyParams struct {
+	PublishSandboxID      *uuid.UUID
 	PublishIdempotencyKey *string
 }
 
-func (q *Queries) GetResourceVersionByPublishIdempotencyKey(ctx context.Context, arg GetResourceVersionByPublishIdempotencyKeyParams) (ResourceVersion, error) {
-	row := q.db.QueryRow(ctx, getResourceVersionByPublishIdempotencyKey, arg.PublishWorkspaceID, arg.PublishIdempotencyKey)
+func (q *Queries) GetResourceVersionBySandboxPublishIdempotencyKey(ctx context.Context, arg GetResourceVersionBySandboxPublishIdempotencyKeyParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, getResourceVersionBySandboxPublishIdempotencyKey, arg.PublishSandboxID, arg.PublishIdempotencyKey)
 	var i ResourceVersion
 	err := row.Scan(
 		&i.ID,
@@ -2382,14 +2625,47 @@ func (q *Queries) GetResourceVersionByPublishIdempotencyKey(ctx context.Context,
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
-		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
+	)
+	return i, err
+}
+
+const getResourceVersionByVolumePublishIdempotencyKey = `-- name: GetResourceVersionByVolumePublishIdempotencyKey :one
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions
+WHERE publish_volume_id = $1 AND publish_idempotency_key = $2
+`
+
+type GetResourceVersionByVolumePublishIdempotencyKeyParams struct {
+	PublishVolumeID       *uuid.UUID
+	PublishIdempotencyKey *string
+}
+
+func (q *Queries) GetResourceVersionByVolumePublishIdempotencyKey(ctx context.Context, arg GetResourceVersionByVolumePublishIdempotencyKeyParams) (ResourceVersion, error) {
+	row := q.db.QueryRow(ctx, getResourceVersionByVolumePublishIdempotencyKey, arg.PublishVolumeID, arg.PublishIdempotencyKey)
+	var i ResourceVersion
+	err := row.Scan(
+		&i.ID,
+		&i.ResourceID,
+		&i.Address,
+		&i.ManifestKey,
+		&i.Size,
+		&i.Provenance,
+		&i.State,
+		&i.Cause,
+		&i.IdempotencyKey,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
 
 const getSandbox = `-- name: GetSandbox :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes WHERE id = $1 AND kind = 'user' AND state <> 'deleted'
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes WHERE id = $1 AND kind = 'user' AND state <> 'deleted'
 `
 
 func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -2418,8 +2694,6 @@ func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error)
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
-		&i.WorkspaceID,
-		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
 		&i.Kind,
@@ -2429,12 +2703,13 @@ func (q *Queries) GetSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error)
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
 
 const getSandboxByIdempotencyKey = `-- name: GetSandboxByIdempotencyKey :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes
 WHERE owner_id = $1 AND kind = 'user' AND idempotency_key = $2 AND state <> 'deleted'
 `
 
@@ -2469,8 +2744,6 @@ func (q *Queries) GetSandboxByIdempotencyKey(ctx context.Context, arg GetSandbox
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
-		&i.WorkspaceID,
-		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
 		&i.Kind,
@@ -2480,12 +2753,13 @@ func (q *Queries) GetSandboxByIdempotencyKey(ctx context.Context, arg GetSandbox
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
 
 const getSandboxIncludingDeleted = `-- name: GetSandboxIncludingDeleted :one
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes WHERE id = $1
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes WHERE id = $1
 `
 
 // GetSandboxIncludingDeleted does not filter kind: a build Exec's log is
@@ -2516,8 +2790,6 @@ func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) 
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
-		&i.WorkspaceID,
-		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
 		&i.Kind,
@@ -2527,36 +2799,7 @@ func (q *Queries) GetSandboxIncludingDeleted(ctx context.Context, id uuid.UUID) 
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
-	)
-	return i, err
-}
-
-const getSandboxWorkspace = `-- name: GetSandboxWorkspace :one
-SELECT w.id, w.owner_id, w.kind, w.sandbox_id, w.node_id, w.state, w.cause, w.storage_handle, w.conditions, w.generation, w.created_at, w.updated_at, w.deleted_at, w.idempotency_key FROM workspaces w
-JOIN sandboxes s ON s.workspace_id = w.id
-WHERE s.id = $1 AND w.state <> 'deleted'
-`
-
-// GetSandboxWorkspace is the Sandbox's Workspace through the durable
-// association.
-func (q *Queries) GetSandboxWorkspace(ctx context.Context, id uuid.UUID) (Workspace, error) {
-	row := q.db.QueryRow(ctx, getSandboxWorkspace, id)
-	var i Workspace
-	err := row.Scan(
-		&i.ID,
-		&i.OwnerID,
-		&i.Kind,
-		&i.SandboxID,
-		&i.NodeID,
-		&i.State,
-		&i.Cause,
-		&i.StorageHandle,
-		&i.Conditions,
-		&i.Generation,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeletedAt,
-		&i.IdempotencyKey,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -2965,62 +3208,64 @@ func (q *Queries) GetUserByOIDCIdentity(ctx context.Context, arg GetUserByOIDCId
 	return i, err
 }
 
-const getWorkspace = `-- name: GetWorkspace :one
-SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE id = $1
+const getVolume = `-- name: GetVolume :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1
 `
 
-func (q *Queries) GetWorkspace(ctx context.Context, id uuid.UUID) (Workspace, error) {
-	row := q.db.QueryRow(ctx, getWorkspace, id)
-	var i Workspace
+func (q *Queries) GetVolume(ctx context.Context, id uuid.UUID) (Volume, error) {
+	row := q.db.QueryRow(ctx, getVolume, id)
+	var i Volume
 	err := row.Scan(
 		&i.ID,
 		&i.OwnerID,
-		&i.Kind,
-		&i.SandboxID,
-		&i.NodeID,
+		&i.Name,
 		&i.State,
-		&i.Cause,
-		&i.StorageHandle,
-		&i.Conditions,
-		&i.Generation,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
-		&i.IdempotencyKey,
 	)
 	return i, err
 }
 
-const getWorkspaceByIdempotencyKey = `-- name: GetWorkspaceByIdempotencyKey :one
-SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces
+const getVolumeByIdempotencyKey = `-- name: GetVolumeByIdempotencyKey :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes
 WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted'
 `
 
-type GetWorkspaceByIdempotencyKeyParams struct {
+type GetVolumeByIdempotencyKeyParams struct {
 	OwnerID        uuid.UUID
 	IdempotencyKey *string
 }
 
-func (q *Queries) GetWorkspaceByIdempotencyKey(ctx context.Context, arg GetWorkspaceByIdempotencyKeyParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, getWorkspaceByIdempotencyKey, arg.OwnerID, arg.IdempotencyKey)
-	var i Workspace
+func (q *Queries) GetVolumeByIdempotencyKey(ctx context.Context, arg GetVolumeByIdempotencyKeyParams) (Volume, error) {
+	row := q.db.QueryRow(ctx, getVolumeByIdempotencyKey, arg.OwnerID, arg.IdempotencyKey)
+	var i Volume
 	err := row.Scan(
 		&i.ID,
 		&i.OwnerID,
-		&i.Kind,
-		&i.SandboxID,
-		&i.NodeID,
+		&i.Name,
 		&i.State,
-		&i.Cause,
-		&i.StorageHandle,
-		&i.Conditions,
-		&i.Generation,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
-		&i.IdempotencyKey,
 	)
 	return i, err
+}
+
+const getVolumeHolder = `-- name: GetVolumeHolder :one
+SELECT sandbox_id FROM sandbox_volumes WHERE volume_id = $1 AND held
+`
+
+// GetVolumeHolder is the Sandbox holding the Volume, if any.
+func (q *Queries) GetVolumeHolder(ctx context.Context, volumeID uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getVolumeHolder, volumeID)
+	var sandbox_id uuid.UUID
+	err := row.Scan(&sandbox_id)
+	return sandbox_id, err
 }
 
 const insertAudit = `-- name: InsertAudit :exec
@@ -3051,6 +3296,51 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 		arg.CorrelationID,
 		arg.Detail,
 	)
+	return err
+}
+
+const insertGeneration = `-- name: InsertGeneration :exec
+INSERT INTO generations (id, owner_id, sandbox_id, seq, kind, manifest_key, size, volume_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type InsertGenerationParams struct {
+	ID          uuid.UUID
+	OwnerID     uuid.UUID
+	SandboxID   *uuid.UUID
+	Seq         int64
+	Kind        string
+	ManifestKey string
+	Size        int64
+	VolumeID    *uuid.UUID
+}
+
+func (q *Queries) InsertGeneration(ctx context.Context, arg InsertGenerationParams) error {
+	_, err := q.db.Exec(ctx, insertGeneration,
+		arg.ID,
+		arg.OwnerID,
+		arg.SandboxID,
+		arg.Seq,
+		arg.Kind,
+		arg.ManifestKey,
+		arg.Size,
+		arg.VolumeID,
+	)
+	return err
+}
+
+const insertGenerationObject = `-- name: InsertGenerationObject :exec
+INSERT INTO generation_objects (generation_id, sha256) VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+`
+
+type InsertGenerationObjectParams struct {
+	GenerationID uuid.UUID
+	Sha256       string
+}
+
+func (q *Queries) InsertGenerationObject(ctx context.Context, arg InsertGenerationObjectParams) error {
+	_, err := q.db.Exec(ctx, insertGenerationObject, arg.GenerationID, arg.Sha256)
 	return err
 }
 
@@ -3283,7 +3573,7 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 }
 
 const listBuildRuns = `-- name: ListBuildRuns :many
-SELECT v.id, v.snapshot_id, v.digest, v.state, v.cause, v.source, v.build_sandbox_id, v.build_exec_id, v.provenance, v.idempotency_key, v.created_at, v.request, v.deleted_at, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind, s.runtime, s.egress_mode, s.egress_allow, s.address, s.links_from, s.links_ports,
+SELECT v.id, v.snapshot_id, v.digest, v.state, v.cause, v.source, v.build_sandbox_id, v.build_exec_id, v.provenance, v.idempotency_key, v.created_at, v.request, v.deleted_at, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.token_key_id, s.conditions, s.kind, s.runtime, s.egress_mode, s.egress_allow, s.address, s.links_from, s.links_ports, s.head_generation_id,
        e.id AS exec_id, e.accepted_at AS exec_accepted_at,
        e.started_at AS exec_started_at, e.deadline_at AS exec_deadline_at,
        e.cancel_requested_at AS exec_cancel_requested_at,
@@ -3360,8 +3650,6 @@ func (q *Queries) ListBuildRuns(ctx context.Context) ([]ListBuildRunsRow, error)
 			&i.Sandbox.UpdatedAt,
 			&i.Sandbox.DeletedAt,
 			&i.Sandbox.GpuModel,
-			&i.Sandbox.WorkspaceID,
-			&i.Sandbox.WorkspaceMode,
 			&i.Sandbox.TokenKeyID,
 			&i.Sandbox.Conditions,
 			&i.Sandbox.Kind,
@@ -3371,6 +3659,7 @@ func (q *Queries) ListBuildRuns(ctx context.Context) ([]ListBuildRunsRow, error)
 			&i.Sandbox.Address,
 			&i.Sandbox.LinksFrom,
 			&i.Sandbox.LinksPorts,
+			&i.Sandbox.HeadGenerationID,
 			&i.ExecID,
 			&i.ExecAcceptedAt,
 			&i.ExecStartedAt,
@@ -3507,45 +3796,6 @@ func (q *Queries) ListDeletedSnapshots(ctx context.Context, limit int32) ([]Snap
 	return items, nil
 }
 
-const listDeletingWorkspaces = `-- name: ListDeletingWorkspaces :many
-SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE state = 'deleting' ORDER BY id
-`
-
-func (q *Queries) ListDeletingWorkspaces(ctx context.Context) ([]Workspace, error) {
-	rows, err := q.db.Query(ctx, listDeletingWorkspaces)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Workspace{}
-	for rows.Next() {
-		var i Workspace
-		if err := rows.Scan(
-			&i.ID,
-			&i.OwnerID,
-			&i.Kind,
-			&i.SandboxID,
-			&i.NodeID,
-			&i.State,
-			&i.Cause,
-			&i.StorageHandle,
-			&i.Conditions,
-			&i.Generation,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.DeletedAt,
-			&i.IdempotencyKey,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listExecOutputChunks = `-- name: ListExecOutputChunks :many
 SELECT exec_id, first_seq, last_seq, frames, created_at FROM exec_log_chunks
 WHERE exec_id = $1 AND last_seq > $2
@@ -3640,6 +3890,44 @@ func (q *Queries) ListExecs(ctx context.Context, arg ListExecsParams) ([]Exec, e
 	return items, nil
 }
 
+const listExpiredGenerationUploads = `-- name: ListExpiredGenerationUploads :many
+SELECT id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, created_at, volume_id FROM generation_uploads WHERE expires_at <= now() - interval '1 hour'
+ORDER BY expires_at LIMIT $1
+`
+
+// The hour past expiry keeps the purge clear of a commit that read the
+// manifest just before the upload expired.
+func (q *Queries) ListExpiredGenerationUploads(ctx context.Context, limit int32) ([]GenerationUpload, error) {
+	rows, err := q.db.Query(ctx, listExpiredGenerationUploads, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GenerationUpload{}
+	for rows.Next() {
+		var i GenerationUpload
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.SandboxID,
+			&i.NodeID,
+			&i.Generation,
+			&i.BaseGenerationID,
+			&i.Missing,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.VolumeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpiredResourceVersions = `-- name: ListExpiredResourceVersions :many
 
 SELECT rv.id, rv.address, rv.manifest_key, rv.state, rv.created_at,
@@ -3705,6 +3993,56 @@ func (q *Queries) ListExpiredResourceVersions(ctx context.Context, arg ListExpir
 	return items, nil
 }
 
+const listGarbageGenerations = `-- name: ListGarbageGenerations :many
+SELECT g.id, g.owner_id, g.sandbox_id, g.seq, g.kind, g.manifest_key, g.size, g.created_at, g.volume_id FROM generations g
+WHERE NOT EXISTS (
+    SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id AND s.deleted_at IS NULL
+)
+  AND NOT EXISTS (
+    SELECT 1 FROM volumes v WHERE v.head_generation_id = g.id AND v.state <> 'deleted'
+)
+  AND NOT EXISTS (
+    SELECT 1 FROM resource_versions rv
+    WHERE rv.state = 'pending' AND rv.publish_volume_id IS NOT NULL
+      AND rv.provenance -> 'volume' ->> 'generation_id' = g.id::text
+)
+ORDER BY g.created_at
+LIMIT $1
+`
+
+// ListGarbageGenerations finds Generations that are no live Sandbox's or
+// Volume's head and that no pending Volume publish reads. Heads only move
+// forward, so such a row never becomes a head again.
+func (q *Queries) ListGarbageGenerations(ctx context.Context, limit int32) ([]Generation, error) {
+	rows, err := q.db.Query(ctx, listGarbageGenerations, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Generation{}
+	for rows.Next() {
+		var i Generation
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.SandboxID,
+			&i.Seq,
+			&i.Kind,
+			&i.ManifestKey,
+			&i.Size,
+			&i.CreatedAt,
+			&i.VolumeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitLinks = `-- name: ListGitLinks :many
 SELECT user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at, created_at, updated_at FROM git_links WHERE user_id = $1 ORDER BY provider_id
 `
@@ -3739,7 +4077,7 @@ func (q *Queries) ListGitLinks(ctx context.Context, userID uuid.UUID) ([]GitLink
 }
 
 const listIdleSandboxes = `-- name: ListIdleSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes
 WHERE kind = 'user' AND state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
 ORDER BY id
 `
@@ -3778,8 +4116,6 @@ func (q *Queries) ListIdleSandboxes(ctx context.Context) ([]Sandbox, error) {
 			&i.UpdatedAt,
 			&i.DeletedAt,
 			&i.GpuModel,
-			&i.WorkspaceID,
-			&i.WorkspaceMode,
 			&i.TokenKeyID,
 			&i.Conditions,
 			&i.Kind,
@@ -3789,10 +4125,42 @@ func (q *Queries) ListIdleSandboxes(ctx context.Context) ([]Sandbox, error) {
 			&i.Address,
 			&i.LinksFrom,
 			&i.LinksPorts,
+			&i.HeadGenerationID,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLegacyDirNodes = `-- name: ListLegacyDirNodes :many
+
+SELECT DISTINCT node_id FROM legacy_dirs
+WHERE sandbox_id = $1::uuid
+   OR volume_id IN (SELECT sv.volume_id FROM sandbox_volumes sv WHERE sv.sandbox_id = $1::uuid)
+`
+
+// Legacy directories (#279, migration 000035): Node-local directories from
+// before ADR-0031 that their Node merges at the Sandbox's next Create there.
+// ListLegacyDirNodes is where a Sandbox must start while its own directory or
+// one of its Volumes' is still on a Node.
+func (q *Queries) ListLegacyDirNodes(ctx context.Context, sandboxID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listLegacyDirNodes, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var node_id uuid.UUID
+		if err := rows.Scan(&node_id); err != nil {
+			return nil, err
+		}
+		items = append(items, node_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -4076,7 +4444,7 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 }
 
 const listOpenAdmissionRequests = `-- name: ListOpenAdmissionRequests :many
-SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.workspace_id, s.workspace_mode, s.token_key_id, s.conditions, s.kind, s.runtime, s.egress_mode, s.egress_allow, s.address, s.links_from, s.links_ports
+SELECT a.id, a.sandbox_id, a.priority, a.enqueued_at, a.deadline_at, a.ended_at, a.outcome, s.id, s.owner_id, s.name, s.labels, s.desired_state, s.state, s.cause, s.node_id, s.snapshot_digest, s.cpu, s.memory, s.gpu_count, s.idle_stop_seconds, s.last_activity_at, s.token_ct, s.secret_env_ct, s.generation, s.idempotency_key, s.created_at, s.updated_at, s.deleted_at, s.gpu_model, s.token_key_id, s.conditions, s.kind, s.runtime, s.egress_mode, s.egress_allow, s.address, s.links_from, s.links_ports, s.head_generation_id
 FROM admission_requests a
 JOIN sandboxes s ON s.id = a.sandbox_id
 WHERE a.ended_at IS NULL
@@ -4129,8 +4497,6 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 			&i.Sandbox.UpdatedAt,
 			&i.Sandbox.DeletedAt,
 			&i.Sandbox.GpuModel,
-			&i.Sandbox.WorkspaceID,
-			&i.Sandbox.WorkspaceMode,
 			&i.Sandbox.TokenKeyID,
 			&i.Sandbox.Conditions,
 			&i.Sandbox.Kind,
@@ -4140,6 +4506,7 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 			&i.Sandbox.Address,
 			&i.Sandbox.LinksFrom,
 			&i.Sandbox.LinksPorts,
+			&i.Sandbox.HeadGenerationID,
 		); err != nil {
 			return nil, err
 		}
@@ -4151,38 +4518,36 @@ func (q *Queries) ListOpenAdmissionRequests(ctx context.Context) ([]ListOpenAdmi
 	return items, nil
 }
 
-const listPendingWorkspacePublishes = `-- name: ListPendingWorkspacePublishes :many
-SELECT rv.id, rv.resource_id, rv.provenance, rv.publish_workspace_id, w.node_id
+const listPendingSandboxPublishes = `-- name: ListPendingSandboxPublishes :many
+SELECT rv.id, rv.provenance, rv.publish_sandbox_id, s.node_id
 FROM resource_versions rv
-JOIN workspaces w ON w.id = rv.publish_workspace_id
-WHERE rv.state = 'pending' AND rv.publish_workspace_id IS NOT NULL
+JOIN sandboxes s ON s.id = rv.publish_sandbox_id
+WHERE rv.state = 'pending' AND rv.publish_sandbox_id IS NOT NULL
 ORDER BY rv.id
 `
 
-type ListPendingWorkspacePublishesRow struct {
-	ID                 uuid.UUID
-	ResourceID         uuid.UUID
-	Provenance         json.RawMessage
-	PublishWorkspaceID *uuid.UUID
-	NodeID             *uuid.UUID
+type ListPendingSandboxPublishesRow struct {
+	ID               uuid.UUID
+	Provenance       json.RawMessage
+	PublishSandboxID *uuid.UUID
+	NodeID           *uuid.UUID
 }
 
-// ListPendingWorkspacePublishes is the Reconciler's desired-state query. The
-// path lives in provenance (schema.md).
-func (q *Queries) ListPendingWorkspacePublishes(ctx context.Context) ([]ListPendingWorkspacePublishesRow, error) {
-	rows, err := q.db.Query(ctx, listPendingWorkspacePublishes)
+// ListPendingSandboxPublishes is the Reconciler's desired-state query for
+// Sandbox publishes, sent to the Node the Sandbox runs on.
+func (q *Queries) ListPendingSandboxPublishes(ctx context.Context) ([]ListPendingSandboxPublishesRow, error) {
+	rows, err := q.db.Query(ctx, listPendingSandboxPublishes)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListPendingWorkspacePublishesRow{}
+	items := []ListPendingSandboxPublishesRow{}
 	for rows.Next() {
-		var i ListPendingWorkspacePublishesRow
+		var i ListPendingSandboxPublishesRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.ResourceID,
 			&i.Provenance,
-			&i.PublishWorkspaceID,
+			&i.PublishSandboxID,
 			&i.NodeID,
 		); err != nil {
 			return nil, err
@@ -4195,34 +4560,60 @@ func (q *Queries) ListPendingWorkspacePublishes(ctx context.Context) ([]ListPend
 	return items, nil
 }
 
-const listProvisioningWorkspaces = `-- name: ListProvisioningWorkspaces :many
-SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces WHERE state = 'provisioning' ORDER BY id
+const listPendingVolumePublishes = `-- name: ListPendingVolumePublishes :many
+SELECT rv.id, rv.resource_id, rv.address, rv.manifest_key, rv.size, rv.provenance, rv.state, rv.cause, rv.idempotency_key, rv.expires_at, rv.created_at, rv.publish_idempotency_key, rv.publish_sandbox_id, rv.publish_volume_id, r.owner_id
+FROM resource_versions rv
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.state = 'pending' AND rv.publish_volume_id IS NOT NULL
+ORDER BY rv.id
+LIMIT $1
 `
 
-func (q *Queries) ListProvisioningWorkspaces(ctx context.Context) ([]Workspace, error) {
-	rows, err := q.db.Query(ctx, listProvisioningWorkspaces)
+type ListPendingVolumePublishesRow struct {
+	ID                    uuid.UUID
+	ResourceID            uuid.UUID
+	Address               *string
+	ManifestKey           *string
+	Size                  int64
+	Provenance            json.RawMessage
+	State                 string
+	Cause                 *string
+	IdempotencyKey        *string
+	ExpiresAt             pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	PublishIdempotencyKey *string
+	PublishSandboxID      *uuid.UUID
+	PublishVolumeID       *uuid.UUID
+	OwnerID               uuid.UUID
+}
+
+// ListPendingVolumePublishes is the Control Plane's own publish work: no Node
+// is involved.
+func (q *Queries) ListPendingVolumePublishes(ctx context.Context, limit int32) ([]ListPendingVolumePublishesRow, error) {
+	rows, err := q.db.Query(ctx, listPendingVolumePublishes, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Workspace{}
+	items := []ListPendingVolumePublishesRow{}
 	for rows.Next() {
-		var i Workspace
+		var i ListPendingVolumePublishesRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.OwnerID,
-			&i.Kind,
-			&i.SandboxID,
-			&i.NodeID,
+			&i.ResourceID,
+			&i.Address,
+			&i.ManifestKey,
+			&i.Size,
+			&i.Provenance,
 			&i.State,
 			&i.Cause,
-			&i.StorageHandle,
-			&i.Conditions,
-			&i.Generation,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.DeletedAt,
 			&i.IdempotencyKey,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.PublishIdempotencyKey,
+			&i.PublishSandboxID,
+			&i.PublishVolumeID,
+			&i.OwnerID,
 		); err != nil {
 			return nil, err
 		}
@@ -4236,10 +4627,10 @@ func (q *Queries) ListProvisioningWorkspaces(ctx context.Context) ([]Workspace, 
 
 const listReconcilableSandboxes = `-- name: ListReconcilableSandboxes :many
 
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes
 WHERE kind = 'user'
   AND (state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
-       -- A failed Sandbox can still hold a Runtime (workspace_lost); the stop
+       -- A failed Sandbox can still hold a Runtime; the stop
        -- command runs until the Node observes it gone and the compute is
        -- released (ADR-0017).
        OR (state = 'failed'
@@ -4281,8 +4672,6 @@ func (q *Queries) ListReconcilableSandboxes(ctx context.Context) ([]Sandbox, err
 			&i.UpdatedAt,
 			&i.DeletedAt,
 			&i.GpuModel,
-			&i.WorkspaceID,
-			&i.WorkspaceMode,
 			&i.TokenKeyID,
 			&i.Conditions,
 			&i.Kind,
@@ -4292,6 +4681,7 @@ func (q *Queries) ListReconcilableSandboxes(ctx context.Context) ([]Sandbox, err
 			&i.Address,
 			&i.LinksFrom,
 			&i.LinksPorts,
+			&i.HeadGenerationID,
 		); err != nil {
 			return nil, err
 		}
@@ -4328,7 +4718,7 @@ func (q *Queries) ListResourceVersionObjects(ctx context.Context, versionID uuid
 }
 
 const listResourceVersions = `-- name: ListResourceVersions :many
-SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key FROM resource_versions
+SELECT id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_idempotency_key, publish_sandbox_id, publish_volume_id FROM resource_versions
 WHERE resource_id = $1
   AND ($2::uuid IS NULL OR id < $2)
 ORDER BY id DESC
@@ -4362,8 +4752,9 @@ func (q *Queries) ListResourceVersions(ctx context.Context, arg ListResourceVers
 			&i.IdempotencyKey,
 			&i.ExpiresAt,
 			&i.CreatedAt,
-			&i.PublishWorkspaceID,
 			&i.PublishIdempotencyKey,
+			&i.PublishSandboxID,
+			&i.PublishVolumeID,
 		); err != nil {
 			return nil, err
 		}
@@ -4580,8 +4971,76 @@ func (q *Queries) ListSandboxResourceMounts(ctx context.Context, sandboxID uuid.
 	return items, nil
 }
 
+const listSandboxVolumeMounts = `-- name: ListSandboxVolumeMounts :many
+SELECT sv.volume_id, sv.path, v.name, v.head_generation_id
+FROM sandbox_volumes sv JOIN volumes v ON v.id = sv.volume_id
+WHERE sv.sandbox_id = $1 ORDER BY sv.path
+`
+
+type ListSandboxVolumeMountsRow struct {
+	VolumeID         uuid.UUID
+	Path             string
+	Name             string
+	HeadGenerationID *uuid.UUID
+}
+
+// ListSandboxVolumeMounts is CreateSandbox's volumes (node-protocol.md).
+func (q *Queries) ListSandboxVolumeMounts(ctx context.Context, sandboxID uuid.UUID) ([]ListSandboxVolumeMountsRow, error) {
+	rows, err := q.db.Query(ctx, listSandboxVolumeMounts, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSandboxVolumeMountsRow{}
+	for rows.Next() {
+		var i ListSandboxVolumeMountsRow
+		if err := rows.Scan(
+			&i.VolumeID,
+			&i.Path,
+			&i.Name,
+			&i.HeadGenerationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSandboxVolumes = `-- name: ListSandboxVolumes :many
+SELECT sandbox_id, volume_id, path, held FROM sandbox_volumes WHERE sandbox_id = $1 ORDER BY path
+`
+
+func (q *Queries) ListSandboxVolumes(ctx context.Context, sandboxID uuid.UUID) ([]SandboxVolume, error) {
+	rows, err := q.db.Query(ctx, listSandboxVolumes, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SandboxVolume{}
+	for rows.Next() {
+		var i SandboxVolume
+		if err := rows.Scan(
+			&i.SandboxID,
+			&i.VolumeID,
+			&i.Path,
+			&i.Held,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSandboxes = `-- name: ListSandboxes :many
-SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports FROM sandboxes
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes
 WHERE owner_id = $1
   AND kind = 'user'
   AND state <> 'deleted'
@@ -4648,8 +5107,6 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 			&i.UpdatedAt,
 			&i.DeletedAt,
 			&i.GpuModel,
-			&i.WorkspaceID,
-			&i.WorkspaceMode,
 			&i.TokenKeyID,
 			&i.Conditions,
 			&i.Kind,
@@ -4659,6 +5116,7 @@ func (q *Queries) ListSandboxes(ctx context.Context, arg ListSandboxesParams) ([
 			&i.Address,
 			&i.LinksFrom,
 			&i.LinksPorts,
+			&i.HeadGenerationID,
 		); err != nil {
 			return nil, err
 		}
@@ -4867,6 +5325,12 @@ WHERE c.created_at < $1
   )
   AND NOT EXISTS (
     SELECT 1
+    FROM generation_objects go
+    JOIN generations g ON g.id = go.generation_id
+    WHERE g.owner_id = c.owner_id AND go.sha256 = c.sha256
+  )
+  AND NOT EXISTS (
+    SELECT 1
     FROM uploads u
     JOIN resources r ON r.id = u.resource_id
     WHERE r.owner_id = c.owner_id
@@ -4892,8 +5356,8 @@ type ListSweepableCASObjectsRow struct {
 }
 
 // ListSweepableCASObjects finds objects past the grace window that no version
-// of the same owner references and no unexpired upload will still write. The
-// owner join is what makes the sweep owner-scoped (ADR-0021).
+// or Generation of the same owner references and no unexpired upload will
+// still write. The owner join is what makes the sweep owner-scoped (ADR-0021).
 func (q *Queries) ListSweepableCASObjects(ctx context.Context, arg ListSweepableCASObjectsParams) ([]ListSweepableCASObjectsRow, error) {
 	rows, err := q.db.Query(ctx, listSweepableCASObjects, arg.Cutoff, arg.Limit)
 	if err != nil {
@@ -5048,8 +5512,8 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 	return items, nil
 }
 
-const listWorkspaces = `-- name: ListWorkspaces :many
-SELECT id, owner_id, kind, sandbox_id, node_id, state, cause, storage_handle, conditions, generation, created_at, updated_at, deleted_at, idempotency_key FROM workspaces
+const listVolumes = `-- name: ListVolumes :many
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes
 WHERE owner_id = $1
   AND state <> 'deleted'
   AND ($2::uuid IS NULL OR id > $2)
@@ -5057,36 +5521,31 @@ ORDER BY id
 LIMIT $3
 `
 
-type ListWorkspacesParams struct {
+type ListVolumesParams struct {
 	OwnerID uuid.UUID
 	After   *uuid.UUID
 	Limit   int32
 }
 
-func (q *Queries) ListWorkspaces(ctx context.Context, arg ListWorkspacesParams) ([]Workspace, error) {
-	rows, err := q.db.Query(ctx, listWorkspaces, arg.OwnerID, arg.After, arg.Limit)
+func (q *Queries) ListVolumes(ctx context.Context, arg ListVolumesParams) ([]Volume, error) {
+	rows, err := q.db.Query(ctx, listVolumes, arg.OwnerID, arg.After, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Workspace{}
+	items := []Volume{}
 	for rows.Next() {
-		var i Workspace
+		var i Volume
 		if err := rows.Scan(
 			&i.ID,
 			&i.OwnerID,
-			&i.Kind,
-			&i.SandboxID,
-			&i.NodeID,
+			&i.Name,
 			&i.State,
-			&i.Cause,
-			&i.StorageHandle,
-			&i.Conditions,
-			&i.Generation,
+			&i.HeadGenerationID,
+			&i.IdempotencyKey,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
-			&i.IdempotencyKey,
 		); err != nil {
 			return nil, err
 		}
@@ -5109,6 +5568,98 @@ func (q *Queries) LockExecStoredSeq(ctx context.Context, id uuid.UUID) (int64, e
 	return stored_seq, err
 }
 
+const lockGenerationSandbox = `-- name: LockGenerationSandbox :one
+
+SELECT id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id FROM sandboxes WHERE id = $1 FOR UPDATE
+`
+
+// Generations (ADR-0031, node-protocol.md "Generation 提交").
+// LockGenerationSandbox reads the committing Sandbox under a row lock, so
+// the fence and head checks and the head move are one step.
+func (q *Queries) LockGenerationSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
+	row := q.db.QueryRow(ctx, lockGenerationSandbox, id)
+	var i Sandbox
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Labels,
+		&i.DesiredState,
+		&i.State,
+		&i.Cause,
+		&i.NodeID,
+		&i.SnapshotDigest,
+		&i.Cpu,
+		&i.Memory,
+		&i.GpuCount,
+		&i.IdleStopSeconds,
+		&i.LastActivityAt,
+		&i.TokenCt,
+		&i.SecretEnvCt,
+		&i.Generation,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.GpuModel,
+		&i.TokenKeyID,
+		&i.Conditions,
+		&i.Kind,
+		&i.Runtime,
+		&i.EgressMode,
+		&i.EgressAllow,
+		&i.Address,
+		&i.LinksFrom,
+		&i.LinksPorts,
+		&i.HeadGenerationID,
+	)
+	return i, err
+}
+
+const lockGenerationVolume = `-- name: LockGenerationVolume :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1 FOR UPDATE
+`
+
+// LockGenerationVolume reads the committing Volume under a row lock, after
+// its holder Sandbox's.
+func (q *Queries) LockGenerationVolume(ctx context.Context, id uuid.UUID) (Volume, error) {
+	row := q.db.QueryRow(ctx, lockGenerationVolume, id)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const lockLiveVolumeShare = `-- name: LockLiveVolumeShare :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1 AND state <> 'deleted' FOR SHARE
+`
+
+func (q *Queries) LockLiveVolumeShare(ctx context.Context, id uuid.UUID) (Volume, error) {
+	row := q.db.QueryRow(ctx, lockLiveVolumeShare, id)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const lockResource = `-- name: LockResource :one
 SELECT id, owner_id, name, current_version_id, idempotency_key, deleted_at, created_at FROM resources WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `
@@ -5127,6 +5678,46 @@ func (q *Queries) LockResource(ctx context.Context, id uuid.UUID) (Resource, err
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const lockSandboxVolumes = `-- name: LockSandboxVolumes :many
+SELECT v.id, v.owner_id, v.name, v.state, v.head_generation_id, v.idempotency_key, v.created_at, v.updated_at, v.deleted_at FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id
+WHERE sv.sandbox_id = $1
+ORDER BY v.id
+FOR SHARE OF v
+`
+
+// LockSandboxVolumes takes the Sandbox's Volumes FOR SHARE on start, so a
+// concurrent delete waits; a deleted one refuses the start.
+func (q *Queries) LockSandboxVolumes(ctx context.Context, sandboxID uuid.UUID) ([]Volume, error) {
+	rows, err := q.db.Query(ctx, lockSandboxVolumes, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Volume{}
+	for rows.Next() {
+		var i Volume
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.State,
+			&i.HeadGenerationID,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockSnapshot = `-- name: LockSnapshot :one
@@ -5180,6 +5771,29 @@ func (q *Queries) LockUser(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const lockVolume = `-- name: LockVolume :one
+SELECT id, owner_id, name, state, head_generation_id, idempotency_key, created_at, updated_at, deleted_at FROM volumes WHERE id = $1 FOR UPDATE
+`
+
+// LockVolume serializes a delete against a create or start that takes the
+// Volume (which lock it FOR SHARE).
+func (q *Queries) LockVolume(ctx context.Context, id uuid.UUID) (Volume, error) {
+	row := q.db.QueryRow(ctx, lockVolume, id)
+	var i Volume
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.State,
+		&i.HeadGenerationID,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const markBuildSandboxDone = `-- name: MarkBuildSandboxDone :execrows
 UPDATE sandboxes
 SET state = 'stopped', desired_state = 'stopped', updated_at = now()
@@ -5190,22 +5804,6 @@ WHERE id = $1 AND kind = 'build' AND state <> 'stopped'
 // sweeps once its version is terminal. It has no Runtime to stop.
 func (q *Queries) MarkBuildSandboxDone(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, markBuildSandboxDone, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const markDeletingWorkspacesDeletedOnNodeLost = `-- name: MarkDeletingWorkspacesDeletedOnNodeLost :execrows
-UPDATE workspaces
-SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE node_id = $1 AND state = 'deleting'
-`
-
-// A Workspace being deleted on a lost Node reaches deleted without a command;
-// every other non-terminal one becomes lost (ADR-0014).
-func (q *Queries) MarkDeletingWorkspacesDeletedOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, markDeletingWorkspacesDeletedOnNodeLost, nodeID)
 	if err != nil {
 		return 0, err
 	}
@@ -5354,7 +5952,7 @@ func (q *Queries) MarkSandboxReady(ctx context.Context, arg MarkSandboxReadyPara
 
 const markSandboxRuntimeLost = `-- name: MarkSandboxRuntimeLost :execrows
 UPDATE sandboxes
-SET state = 'stopped', cause = $3, desired_state = 'stopped', address = NULL, updated_at = now()
+SET state = 'stopped', cause = $3, conditions = NULL, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning', 'ready')
 `
@@ -5459,109 +6057,45 @@ func (q *Queries) MarkSnapshotVersionReady(ctx context.Context, arg MarkSnapshot
 	return i, err
 }
 
-const markWorkspaceAbandoned = `-- name: MarkWorkspaceAbandoned :execrows
-UPDATE workspaces
+const markVolumeDeleted = `-- name: MarkVolumeDeleted :execrows
+UPDATE volumes v
 SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE id = $1 AND state = 'deleting'
+WHERE v.id = $1 AND v.state = 'ready'
+  AND NOT EXISTS (SELECT 1 FROM sandbox_volumes sv WHERE sv.volume_id = v.id AND sv.held)
 `
 
-// Abandoning a Workspace stuck in deleting reaches deleted with no Node
-// command (api.md §3).
-func (q *Queries) MarkWorkspaceAbandoned(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, markWorkspaceAbandoned, id)
+// MarkVolumeDeleted runs after LockVolume, so the hold check sees every
+// committed create and start.
+func (q *Queries) MarkVolumeDeleted(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markVolumeDeleted, id)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const markWorkspaceDeleted = `-- name: MarkWorkspaceDeleted :execrows
-UPDATE workspaces
-SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE id = $1 AND generation = $2
+const nextGenerationSeq = `-- name: NextGenerationSeq :one
+SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE sandbox_id = $1
 `
 
-type MarkWorkspaceDeletedParams struct {
-	ID         uuid.UUID
-	Generation int64
+// seq is monotonic per Sandbox: the head is never purged, so the maximum
+// survives retention.
+func (q *Queries) NextGenerationSeq(ctx context.Context, sandboxID *uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, nextGenerationSeq, sandboxID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
-func (q *Queries) MarkWorkspaceDeleted(ctx context.Context, arg MarkWorkspaceDeletedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markWorkspaceDeleted, arg.ID, arg.Generation)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const markWorkspaceFailed = `-- name: MarkWorkspaceFailed :execrows
-UPDATE workspaces
-SET state = 'failed', cause = $3, updated_at = now()
-WHERE id = $1 AND generation = $2 AND state = 'provisioning'
+const nextVolumeGenerationSeq = `-- name: NextVolumeGenerationSeq :one
+SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE volume_id = $1
 `
 
-type MarkWorkspaceFailedParams struct {
-	ID         uuid.UUID
-	Generation int64
-	Cause      *string
-}
-
-func (q *Queries) MarkWorkspaceFailed(ctx context.Context, arg MarkWorkspaceFailedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markWorkspaceFailed, arg.ID, arg.Generation, arg.Cause)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const markWorkspaceLost = `-- name: MarkWorkspaceLost :execrows
-UPDATE workspaces
-SET state = 'lost', updated_at = now()
-WHERE id = $1 AND state IN ('provisioning', 'ready')
-`
-
-// A Workspace declared lost on a live Node: its attached Sandboxes become
-// failed/workspace_lost and their Execs end runtime_lost (ADR-0017). A row
-// already deleting keeps its own teardown.
-func (q *Queries) MarkWorkspaceLost(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, markWorkspaceLost, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const markWorkspaceReady = `-- name: MarkWorkspaceReady :execrows
-UPDATE workspaces
-SET state = 'ready', updated_at = now()
-WHERE id = $1 AND generation = $2 AND state = 'provisioning'
-`
-
-type MarkWorkspaceReadyParams struct {
-	ID         uuid.UUID
-	Generation int64
-}
-
-func (q *Queries) MarkWorkspaceReady(ctx context.Context, arg MarkWorkspaceReadyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markWorkspaceReady, arg.ID, arg.Generation)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const markWorkspacesLostOnNodeLost = `-- name: MarkWorkspacesLostOnNodeLost :execrows
-UPDATE workspaces
-SET state = 'lost', updated_at = now()
-WHERE node_id = $1 AND state IN ('provisioning', 'ready')
-`
-
-func (q *Queries) MarkWorkspacesLostOnNodeLost(ctx context.Context, nodeID *uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, markWorkspacesLostOnNodeLost, nodeID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+func (q *Queries) NextVolumeGenerationSeq(ctx context.Context, volumeID *uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, nextVolumeGenerationSeq, volumeID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const nodeHeartbeat = `-- name: NodeHeartbeat :exec
@@ -5846,13 +6380,13 @@ func (q *Queries) PurgeUserIdempotencyKeys(ctx context.Context) error {
 	return err
 }
 
-const purgeWorkspaceIdempotencyKeys = `-- name: PurgeWorkspaceIdempotencyKeys :exec
-UPDATE workspaces SET idempotency_key = NULL
+const purgeVolumeIdempotencyKeys = `-- name: PurgeVolumeIdempotencyKeys :exec
+UPDATE volumes SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours'
 `
 
-func (q *Queries) PurgeWorkspaceIdempotencyKeys(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, purgeWorkspaceIdempotencyKeys)
+func (q *Queries) PurgeVolumeIdempotencyKeys(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeVolumeIdempotencyKeys)
 	return err
 }
 
@@ -5957,6 +6491,19 @@ func (q *Queries) ReusableUpload(ctx context.Context, arg ReusableUploadParams) 
 	return i, err
 }
 
+const sandboxPlaced = `-- name: SandboxPlaced :one
+SELECT EXISTS (SELECT 1 FROM allocations WHERE sandbox_id = $1)
+`
+
+// SandboxPlaced: an admitted Sandbox holds an Allocation until its Runtime is
+// gone; node_id alone is only where it last ran (ADR-0031).
+func (q *Queries) SandboxPlaced(ctx context.Context, sandboxID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, sandboxPlaced, sandboxID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const setExecStarted = `-- name: SetExecStarted :exec
 UPDATE execs
 SET started_at = COALESCE(started_at, $2),
@@ -6022,7 +6569,7 @@ const setResourceVersionManifest = `-- name: SetResourceVersionManifest :one
 UPDATE resource_versions
 SET address = $2, manifest_key = $3, size = $4
 WHERE id = $1 AND state = 'pending'
-RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_workspace_id, publish_idempotency_key
+RETURNING id, resource_id, address, manifest_key, size, provenance, state, cause, idempotency_key, expires_at, created_at, publish_idempotency_key, publish_sandbox_id, publish_volume_id
 `
 
 type SetResourceVersionManifestParams struct {
@@ -6054,8 +6601,9 @@ func (q *Queries) SetResourceVersionManifest(ctx context.Context, arg SetResourc
 		&i.IdempotencyKey,
 		&i.ExpiresAt,
 		&i.CreatedAt,
-		&i.PublishWorkspaceID,
 		&i.PublishIdempotencyKey,
+		&i.PublishSandboxID,
+		&i.PublishVolumeID,
 	)
 	return i, err
 }
@@ -6080,10 +6628,51 @@ func (q *Queries) SetSandboxAddress(ctx context.Context, arg SetSandboxAddressPa
 	return err
 }
 
+const setSandboxConditions = `-- name: SetSandboxConditions :execrows
+UPDATE sandboxes
+SET conditions = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted'
+`
+
+type SetSandboxConditionsParams struct {
+	ID         uuid.UUID
+	Generation int64
+	Conditions json.RawMessage
+}
+
+// SetSandboxConditions writes the Agent-reported condition set under the
+// generation fence (commit_stalled, runtime.md §16).
+func (q *Queries) SetSandboxConditions(ctx context.Context, arg SetSandboxConditionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSandboxConditions, arg.ID, arg.Generation, arg.Conditions)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setSandboxHeadGeneration = `-- name: SetSandboxHeadGeneration :execrows
+UPDATE sandboxes SET head_generation_id = $2::uuid, updated_at = now()
+WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM $3::uuid
+`
+
+type SetSandboxHeadGenerationParams struct {
+	ID   uuid.UUID
+	Head uuid.UUID
+	Base *uuid.UUID
+}
+
+func (q *Queries) SetSandboxHeadGeneration(ctx context.Context, arg SetSandboxHeadGenerationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSandboxHeadGeneration, arg.ID, arg.Head, arg.Base)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setSandboxNode = `-- name: SetSandboxNode :execrows
 UPDATE sandboxes
 SET node_id = $2, updated_at = now()
-WHERE id = $1 AND node_id IS NULL AND state = 'pending' AND desired_state = 'running'
+WHERE id = $1 AND state = 'pending' AND desired_state = 'running'
 `
 
 type SetSandboxNodeParams struct {
@@ -6156,23 +6745,6 @@ func (q *Queries) SetSandboxStopping(ctx context.Context, id uuid.UUID) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const setSandboxWorkspace = `-- name: SetSandboxWorkspace :exec
-UPDATE sandboxes
-SET workspace_id = $2, workspace_mode = $3, updated_at = now()
-WHERE id = $1
-`
-
-type SetSandboxWorkspaceParams struct {
-	ID            uuid.UUID
-	WorkspaceID   *uuid.UUID
-	WorkspaceMode string
-}
-
-func (q *Queries) SetSandboxWorkspace(ctx context.Context, arg SetSandboxWorkspaceParams) error {
-	_, err := q.db.Exec(ctx, setSandboxWorkspace, arg.ID, arg.WorkspaceID, arg.WorkspaceMode)
-	return err
 }
 
 const setSnapshotCurrentVersion = `-- name: SetSnapshotCurrentVersion :one
@@ -6268,47 +6840,19 @@ func (q *Queries) SetUserQuota(ctx context.Context, arg SetUserQuotaParams) (Use
 	return i, err
 }
 
-const setWorkspaceConditions = `-- name: SetWorkspaceConditions :exec
-UPDATE workspaces SET conditions = $2, updated_at = now() WHERE id = $1
+const setVolumeHeadGeneration = `-- name: SetVolumeHeadGeneration :execrows
+UPDATE volumes SET head_generation_id = $2::uuid, updated_at = now()
+WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM $3::uuid
 `
 
-type SetWorkspaceConditionsParams struct {
-	ID         uuid.UUID
-	Conditions json.RawMessage
+type SetVolumeHeadGenerationParams struct {
+	ID   uuid.UUID
+	Head uuid.UUID
+	Base *uuid.UUID
 }
 
-func (q *Queries) SetWorkspaceConditions(ctx context.Context, arg SetWorkspaceConditionsParams) error {
-	_, err := q.db.Exec(ctx, setWorkspaceConditions, arg.ID, arg.Conditions)
-	return err
-}
-
-const setWorkspaceDeleting = `-- name: SetWorkspaceDeleting :execrows
-UPDATE workspaces
-SET state = 'deleting', generation = generation + 1, updated_at = now()
-WHERE id = $1 AND state <> 'deleted'
-`
-
-func (q *Queries) SetWorkspaceDeleting(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, setWorkspaceDeleting, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const setWorkspaceNode = `-- name: SetWorkspaceNode :execrows
-UPDATE workspaces
-SET node_id = $2, state = 'provisioning', generation = generation + 1, updated_at = now()
-WHERE id = $1 AND node_id IS NULL
-`
-
-type SetWorkspaceNodeParams struct {
-	ID     uuid.UUID
-	NodeID *uuid.UUID
-}
-
-func (q *Queries) SetWorkspaceNode(ctx context.Context, arg SetWorkspaceNodeParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setWorkspaceNode, arg.ID, arg.NodeID)
+func (q *Queries) SetVolumeHeadGeneration(ctx context.Context, arg SetVolumeHeadGenerationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setVolumeHeadGeneration, arg.ID, arg.Head, arg.Base)
 	if err != nil {
 		return 0, err
 	}
@@ -6368,12 +6912,25 @@ func (q *Queries) SoftDeleteUser(ctx context.Context, id uuid.UUID) (User, error
 	return i, err
 }
 
+const startLegacyDirs = `-- name: StartLegacyDirs :exec
+UPDATE legacy_dirs SET started = true
+WHERE sandbox_id = $1::uuid
+   OR volume_id IN (SELECT sv.volume_id FROM sandbox_volumes sv WHERE sv.sandbox_id = $1::uuid)
+`
+
+// StartLegacyDirs marks the directories a just-admitted Sandbox's Create
+// merges.
+func (q *Queries) StartLegacyDirs(ctx context.Context, sandboxID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, startLegacyDirs, sandboxID)
+	return err
+}
+
 const startSandbox = `-- name: StartSandbox :one
 UPDATE sandboxes
 SET desired_state = 'running', state = 'pending', cause = NULL, address = NULL,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state = 'stopped'
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -6402,8 +6959,6 @@ func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, erro
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
-		&i.WorkspaceID,
-		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
 		&i.Kind,
@@ -6413,6 +6968,7 @@ func (q *Queries) StartSandbox(ctx context.Context, id uuid.UUID) (Sandbox, erro
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
 }
@@ -6422,7 +6978,7 @@ UPDATE sandboxes
 SET desired_state = 'stopped', state = 'stopping',
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state IN ('pending', 'provisioning', 'ready')
-RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, workspace_id, workspace_mode, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports
+RETURNING id, owner_id, name, labels, desired_state, state, cause, node_id, snapshot_digest, cpu, memory, gpu_count, idle_stop_seconds, last_activity_at, token_ct, secret_env_ct, generation, idempotency_key, created_at, updated_at, deleted_at, gpu_model, token_key_id, conditions, kind, runtime, egress_mode, egress_allow, address, links_from, links_ports, head_generation_id
 `
 
 func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error) {
@@ -6451,8 +7007,6 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.GpuModel,
-		&i.WorkspaceID,
-		&i.WorkspaceMode,
 		&i.TokenKeyID,
 		&i.Conditions,
 		&i.Kind,
@@ -6462,8 +7016,36 @@ func (q *Queries) StopSandbox(ctx context.Context, id uuid.UUID) (Sandbox, error
 		&i.Address,
 		&i.LinksFrom,
 		&i.LinksPorts,
+		&i.HeadGenerationID,
 	)
 	return i, err
+}
+
+const stopSandboxesOnNodeLost = `-- name: StopSandboxesOnNodeLost :execrows
+UPDATE sandboxes s
+SET state = CASE WHEN s.state = 'deleting' THEN 'deleted'
+                 WHEN s.kind = 'build' THEN 'failed' ELSE 'stopped' END,
+    cause = CASE WHEN s.state = 'deleting' THEN s.cause ELSE 'node_lost' END,
+    desired_state = CASE WHEN s.state = 'deleting' THEN s.desired_state ELSE 'stopped' END,
+    conditions = CASE WHEN s.state = 'deleting' OR s.kind = 'build' THEN NULL
+                      ELSE '{"changes_lost": true}'::jsonb END,
+    address = NULL, updated_at = now()
+WHERE s.state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+  AND (EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = s.id AND a.node_id = $1)
+       OR (s.state = 'deleting' AND s.node_id = $1))
+`
+
+// A Sandbox runs on, or is bound to, the Node that holds its Allocation. On a
+// lost Node those stop with node_lost and changes_lost and start again
+// elsewhere from their head Generation; a deleting one is deleted; build rows
+// fail. Stopped and failed Sandboxes keep their state: their data is the head
+// (api.md §3, ADR-0031). Runs before the Allocations are released.
+func (q *Queries) StopSandboxesOnNodeLost(ctx context.Context, nodeID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, stopSandboxesOnNodeLost, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const syncOIDCUser = `-- name: SyncOIDCUser :one
@@ -6770,4 +7352,17 @@ func (q *Queries) UpsertSecret(ctx context.Context, arg UpsertSecretParams) (Sec
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const volumePendingMigration = `-- name: VolumePendingMigration :one
+SELECT EXISTS (SELECT 1 FROM legacy_dirs WHERE volume_id = $1)
+`
+
+// VolumePendingMigration: the Volume's Workspace directory is still on a
+// Node, waiting for the next start there (legacy_dirs).
+func (q *Queries) VolumePendingMigration(ctx context.Context, volumeID *uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, volumePendingMigration, volumeID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
