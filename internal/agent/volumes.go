@@ -178,7 +178,8 @@ func (r *Runtime) startVolumeCommits(id uuid.UUID, generation int64) {
 			case <-ticker.C:
 			}
 			for _, v := range volumes {
-				if err := r.commitVolumeOnce(ctx, generation, v.ID); err != nil && ctx.Err() == nil {
+				// Per tick: a loop resumed at adoption may start before the Token is set.
+				if err := r.commitVolumeOnce(r.authorized(ctx), generation, v.ID); err != nil && ctx.Err() == nil {
 					slog.Warn("periodic Volume commit", "sandbox_id", id, "volume_id", v.ID, "error", err)
 				}
 			}

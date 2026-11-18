@@ -470,6 +470,7 @@ func runControlStream(ctx context.Context, conn *grpc.ClientConn, rt *Runtime, i
 	// self-check below only holds back new placements (#178).
 	runner := newCommandRunner(streamCtx, rt, send)
 	reportSandbox := runner.observeSandbox
+	rt.setNodeToken(id.NodeToken)
 	rt.connect(nodev1.NewNodeClient(conn), send)
 	recvErr := make(chan error, 1)
 	go func() {

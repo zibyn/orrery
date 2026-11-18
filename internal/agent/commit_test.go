@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
@@ -37,6 +38,7 @@ type fakeGenerationNode struct {
 	submitted   [][]string // sha256 of the submitted file entries, per submit
 	objects     map[string][]byte
 	manifests   map[string][]byte
+	auth        []string // the authorization metadata of each SubmitGeneration
 }
 
 func newFakeGenerationNode(t *testing.T) *fakeGenerationNode {
@@ -101,7 +103,11 @@ func (s *fakeGenerationStream) CloseAndRecv() (*nodev1.GenerationAck, error) {
 	return &nodev1.GenerationAck{UploadId: uuid.NewString(), MissingSha256: missing}, nil
 }
 
-func (f *fakeGenerationNode) SubmitGeneration(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[nodev1.GenerationChunk, nodev1.GenerationAck], error) {
+func (f *fakeGenerationNode) SubmitGeneration(ctx context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[nodev1.GenerationChunk, nodev1.GenerationAck], error) {
+	md, _ := metadata.FromOutgoingContext(ctx)
+	f.mu.Lock()
+	f.auth = append(f.auth, strings.Join(md.Get("authorization"), ","))
+	f.mu.Unlock()
 	return &fakeGenerationStream{f: f}, nil
 }
 

@@ -11,9 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/metadata"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/registry"
@@ -64,9 +66,12 @@ type Runtime struct {
 
 	// Execs are launched from the Control stream; the output stream is opened
 	// per Exec against the same connection.
-	execStream     func(context.Context) (nodev1.Node_ExecOutputClient, error)
-	tunnelStream   func(context.Context) (nodev1.Node_TunnelClient, error)
-	send           func(*nodev1.AgentMessage)
+	execStream   func(context.Context) (nodev1.Node_ExecOutputClient, error)
+	tunnelStream func(context.Context) (nodev1.Node_TunnelClient, error)
+	send         func(*nodev1.AgentMessage)
+	// nodeToken authorizes RPCs made outside a command (the periodic Volume
+	// commit); commands use the Control stream's context, which has it.
+	nodeToken      atomic.Pointer[string]
 	execMu         sync.Mutex
 	execs          map[string]struct{} // exec id -> output delivery in flight
 	ptyAttachments map[string]int      // exec id -> live tunnel attachments
@@ -128,6 +133,18 @@ func (r *Runtime) connect(client nodev1.NodeClient, send func(*nodev1.AgentMessa
 	r.tunnelStream = func(ctx context.Context) (nodev1.Node_TunnelClient, error) {
 		return client.Tunnel(ctx)
 	}
+}
+
+func (r *Runtime) setNodeToken(token string) { r.nodeToken.Store(&token) }
+
+// authorized adds the Node Token to ctx's outgoing metadata, as the Control
+// stream's context carries it.
+func (r *Runtime) authorized(ctx context.Context) context.Context {
+	token := r.nodeToken.Load()
+	if token == nil {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+*token)
 }
 
 // setRegistryCredential stores the deployment credential from HelloAck. A
