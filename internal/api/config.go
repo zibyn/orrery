@@ -72,15 +72,13 @@ type Config struct {
 	// PortTicketKey signs port-forward tickets and Gateway cookies. Empty
 	// means a per-process random key, which only invalidates live cookies.
 	PortTicketKey []byte
-	// EncryptionKeys encrypts Secrets, Git tokens and Sandbox Tokens. Nil
-	// means those features answer with an explicit error (defaults.md).
+	// EncryptionKeys encrypts Secrets. Nil means Secrets answer with an
+	// explicit error (defaults.md).
 	EncryptionKeys *keyring.Keyring
 	// AccessURL is the externally reachable `api` address. It becomes
-	// ORRERY_URL in every Exec and the base of Git OAuth URLs; empty turns Git
-	// account linking off (defaults.md).
+	// ORRERY_URL in every Exec and the base of the OIDC redirect_uri
+	// (defaults.md).
 	AccessURL string
-	// GitProviders is the deployment's OAuth applications (ADR-0013).
-	GitProviders []GitProvider
 	// OIDC is Polaris, the only identity provider (ADR-0029). Every field is
 	// required.
 	OIDC OIDCConfig
@@ -238,11 +236,6 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if err := cfg.loadOIDC(); err != nil {
 		return Config{}, err
-	}
-	if path := os.Getenv("ORRERY_GIT_PROVIDERS_FILE"); path != "" {
-		if cfg.GitProviders, err = loadGitProviders(path); err != nil {
-			return Config{}, err
-		}
 	}
 	if path := os.Getenv("ORRERY_ENCRYPTION_KEYS_FILE"); path != "" {
 		if cfg.EncryptionKeys, err = keyring.LoadFile(path); err != nil {

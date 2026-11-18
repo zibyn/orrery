@@ -90,12 +90,11 @@ func timeoutPtr(seconds int64) *int64 {
 }
 
 // execEnv merges the platform's values last: the caller's variables first,
-// then PATH with binDir appended, then the Git config that clears the image's
-// helpers and installs ours (node-protocol.md). binDir is /.orrery/bin for a
-// container Runtime and the Agent's own bin directory for Local (runtime.md
-// §10).
+// then PATH with binDir appended (node-protocol.md). binDir is /.orrery/bin
+// for a container Runtime and the Agent's own bin directory for Local
+// (runtime.md §10).
 func execEnv(caller map[string]string, basePath, binDir string) map[string]string {
-	env := make(map[string]string, len(caller)+7)
+	env := make(map[string]string, len(caller)+1)
 	for key, value := range caller {
 		env[key] = value
 	}
@@ -108,11 +107,6 @@ func execEnv(caller map[string]string, basePath, binDir string) map[string]strin
 	} else {
 		env["PATH"] = path + ":" + binDir
 	}
-	env["GIT_CONFIG_COUNT"] = "2"
-	env["GIT_CONFIG_KEY_0"] = "credential.helper"
-	env["GIT_CONFIG_VALUE_0"] = ""
-	env["GIT_CONFIG_KEY_1"] = "credential.helper"
-	env["GIT_CONFIG_VALUE_1"] = binDir + "/orrery git-credential"
 	return env
 }
 

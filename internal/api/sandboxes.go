@@ -273,9 +273,6 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !s.requireSandboxTokens(w) {
-		return
-	}
 	runtime, runtimeCode, runtimeDetail := sandboxRuntime(req)
 	if runtimeCode != "" {
 		writeProblem(w, runtimeCode, runtimeDetail)
@@ -376,13 +373,6 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	id, err := uuid.NewV7()
 	if err != nil {
 		s.internal(w, "generate Sandbox id", err)
-		return
-	}
-	// The Sandbox Token is minted with the row and lives until deletion
-	// (ADR-0016, schema.md).
-	tokenCt, tokenKeyID, err := s.issueSandboxToken(p.user.ID)
-	if err != nil {
-		s.internal(w, "issue Sandbox Token", err)
 		return
 	}
 	name := id.String()
@@ -494,7 +484,6 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 				SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
 				GpuCount: gpuCount, GpuModel: gpuModel,
 				IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
-				TokenCt: tokenCt, TokenKeyID: tokenKeyID,
 				EgressMode: egressMode, EgressAllow: egressAllow,
 				LinksFrom: linksFrom, LinksPorts: linksPorts,
 			})

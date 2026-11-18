@@ -254,7 +254,7 @@ func TestLocalCapabilities(t *testing.T) {
 	}
 }
 
-// Local PATH and Git helper use the Agent's own bin directory, not /.orrery,
+// Local PATH uses the Agent's own bin directory, not /.orrery,
 // ORRERY_WORKSPACE names the host Workspace and ORRERY_RESOURCES the Resource
 // symlink directory (node-protocol.md, runtime.md §10).
 func TestLocalExecEnv(t *testing.T) {
@@ -269,8 +269,8 @@ func TestLocalExecEnv(t *testing.T) {
 	if env["ORRERY_RESOURCES"] != "/data/sandboxes/sb/resources" {
 		t.Fatalf("ORRERY_RESOURCES = %q", env["ORRERY_RESOURCES"])
 	}
-	if env["GIT_CONFIG_VALUE_1"] != "/agent/bin/orrery git-credential" {
-		t.Fatalf("credential helper = %q", env["GIT_CONFIG_VALUE_1"])
+	if _, ok := env["GIT_CONFIG_COUNT"]; ok {
+		t.Fatalf("Local Exec env has Git config: %v", env)
 	}
 	if env["CUDA_VISIBLE_DEVICES"] != "GPU-a,GPU-b" {
 		t.Fatalf("CUDA_VISIBLE_DEVICES = %q", env["CUDA_VISIBLE_DEVICES"])

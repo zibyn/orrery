@@ -16,9 +16,6 @@ type principal struct {
 	user      store.User
 	token     store.GetTokenWithUserRow
 	viaCookie bool
-	// sandbox is set only for a Sandbox Token. Such a principal can call
-	// exactly one endpoint (ADR-0016).
-	sandbox *store.Sandbox
 }
 
 // isAdmin is the effective authority: an admin-scoped token only acts as admin
@@ -26,21 +23,13 @@ type principal struct {
 // either way, so one started before a later login granted admin gets it too
 // (ADR-0029).
 func (p *principal) isAdmin() bool {
-	return p.sandbox == nil && p.token.UserIsAdmin && (p.token.Scope == "admin" || p.token.Kind == "session")
+	return p.token.UserIsAdmin && (p.token.Scope == "admin" || p.token.Kind == "session")
 }
 
 func (s *Server) wrapAuth(level string, next handlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := s.authenticate(w, r)
 		if !ok {
-			return
-		}
-		if p.sandbox != nil && level != "sandbox" {
-			writeProblem(w, "permission_denied", "a Sandbox Token may only call POST /git/credential")
-			return
-		}
-		if level == "sandbox" && p.sandbox == nil {
-			writeProblem(w, "permission_denied", "this endpoint requires a Sandbox Token")
 			return
 		}
 		if level == "admin" && !p.isAdmin() {
@@ -56,9 +45,6 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*principa
 	if raw == "" {
 		writeUnauthenticated(w, "a Bearer API token or a Session cookie is required")
 		return nil, false
-	}
-	if parts, ok := ParseSandboxToken(raw); ok {
-		return s.authenticateSandbox(w, r, parts)
 	}
 	parts, ok := ParseToken(raw)
 	if !ok {
@@ -118,51 +104,6 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*principa
 		s.log.Warn("touch token failed", "token_id", row.ID, "error", err)
 	}
 	return &principal{user: user, token: row, viaCookie: viaCookie}, true
-}
-
-// authenticateSandbox resolves a Sandbox Token by the Sandbox id embedded in
-// it, decrypts the stored secret and compares in constant time (api.md §1,
-// schema.md).
-func (s *Server) authenticateSandbox(w http.ResponseWriter, r *http.Request, parts TokenParts) (*principal, bool) {
-	ctx := r.Context()
-	sb, err := s.q.GetSandboxIncludingDeleted(ctx, parts.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeUnauthenticated(w, "unknown or revoked Sandbox Token")
-		return nil, false
-	}
-	if err != nil {
-		s.internal(w, "look up Sandbox Token", err)
-		return nil, false
-	}
-	if !sandboxTokenLive(sb) {
-		writeUnauthenticated(w, "unknown or revoked Sandbox Token")
-		return nil, false
-	}
-	secret, err := sandboxTokenSecret(s.cfg.EncryptionKeys, sb.OwnerID, sb.TokenCt, sb.TokenKeyID)
-	if err != nil {
-		// An unopenable row is as good as unknown; the reason is for the
-		// operator's log, not the caller.
-		s.log.Warn("open Sandbox Token", "sandbox_id", sb.ID, "error", err)
-		writeUnauthenticated(w, "unknown or revoked Sandbox Token")
-		return nil, false
-	}
-	if subtle.ConstantTimeCompare([]byte(secret), []byte(parts.Secret)) != 1 {
-		writeUnauthenticated(w, "unknown or revoked Sandbox Token")
-		return nil, false
-	}
-	// A disabled or deleted owner's Sandbox Token is rejected like their
-	// other credentials (ADR-0029). owner_id references users, so no row
-	// means the owner was soft-deleted.
-	owner, err := s.q.GetUser(ctx, sb.OwnerID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		s.internal(w, "look up Sandbox owner", err)
-		return nil, false
-	}
-	if err != nil || owner.DisabledAt.Valid {
-		writeUnauthenticated(w, "unknown or revoked Sandbox Token")
-		return nil, false
-	}
-	return &principal{sandbox: &sb}, true
 }
 
 // credential accepts a Bearer token or the Session cookie. A Bearer header

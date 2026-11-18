@@ -105,17 +105,6 @@ type ExecLogChunk struct {
 	CreatedAt pgtype.Timestamptz
 }
 
-type GitLink struct {
-	UserID         uuid.UUID
-	ProviderID     string
-	AccessTokenCt  []byte
-	RefreshTokenCt []byte
-	KeyID          string
-	ExpiresAt      pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-}
-
 type Gpu struct {
 	Uuid   string
 	NodeID uuid.UUID
@@ -203,7 +192,6 @@ type Sandbox struct {
 	GpuCount        int32
 	IdleStopSeconds int32
 	LastActivityAt  pgtype.Timestamptz
-	TokenCt         []byte
 	SecretEnvCt     []byte
 	Generation      int64
 	IdempotencyKey  *string
@@ -213,7 +201,6 @@ type Sandbox struct {
 	GpuModel        *string
 	WorkspaceID     *uuid.UUID
 	WorkspaceMode   string
-	TokenKeyID      *string
 	Conditions      json.RawMessage
 	Kind            string
 	Runtime         string

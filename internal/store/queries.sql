@@ -321,9 +321,9 @@ WHERE used_at IS NOT NULL OR expires_at < now();
 INSERT INTO sandboxes (
     id, owner_id, name, labels, runtime, desired_state, state, snapshot_digest,
     cpu, memory, gpu_count, gpu_model, idle_stop_seconds, generation,
-    idempotency_key, secret_env_ct, token_ct, token_key_id, egress_mode, egress_allow,
+    idempotency_key, secret_env_ct, egress_mode, egress_allow,
     links_from, links_ports
-) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15, $16, $17, $18, $19)
+) VALUES ($1, $2, $3, $4, $5, 'running', 'pending', $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15, $16, $17)
 RETURNING *;
 
 -- ListSandboxLinkEnds is every Sandbox Link whose target is addressed, with
@@ -359,8 +359,8 @@ WHERE sqlc.arg(source_id)::uuid = ANY (t.links_from) AND t.deleted_at IS NULL AN
   AND t.state NOT IN ('pending', 'failed', 'deleted');
 
 -- CreateBuildSandbox is the internal row that carries a Snapshot build's
--- Allocation and Exec (schema.md, ADR-0021). It has no Sandbox Token, no
--- Workspace and no Runtime; secret_env_ct holds the build's Secret snapshot.
+-- Allocation and Exec (schema.md, ADR-0021). It has no Workspace and no
+-- Runtime; secret_env_ct holds the build's Secret snapshot.
 -- name: CreateBuildSandbox :one
 INSERT INTO sandboxes (
     id, owner_id, kind, name, labels, desired_state, state, snapshot_digest,
@@ -794,7 +794,6 @@ LIMIT 32;
 -- name: ListActiveExecs :many
 SELECT sqlc.embed(e), s.node_id AS sandbox_node_id, s.owner_id AS sandbox_owner_id,
        s.secret_env_ct AS sandbox_secret_env_ct,
-       s.token_ct AS sandbox_token_ct, s.token_key_id AS sandbox_token_key_id,
        s.state AS sandbox_state, s.desired_state AS sandbox_desired_state
 FROM execs e
 JOIN sandboxes s ON s.id = e.sandbox_id
@@ -843,31 +842,6 @@ LIMIT sqlc.arg('limit');
 
 -- name: DeleteSecret :one
 DELETE FROM secrets WHERE owner_id = $1 AND name = $2 RETURNING *;
-
--- Git account links
-
--- name: UpsertGitLink :one
-INSERT INTO git_links (user_id, provider_id, access_token_ct, refresh_token_ct, key_id, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (user_id, provider_id) DO UPDATE
-SET access_token_ct = EXCLUDED.access_token_ct,
-    refresh_token_ct = EXCLUDED.refresh_token_ct,
-    key_id = EXCLUDED.key_id,
-    expires_at = EXCLUDED.expires_at,
-    updated_at = now()
-RETURNING *;
-
--- name: ListGitLinks :many
-SELECT * FROM git_links WHERE user_id = $1 ORDER BY provider_id;
-
--- name: GetGitLink :one
-SELECT * FROM git_links WHERE user_id = $1 AND provider_id = $2;
-
--- name: GetGitLinkForUpdate :one
-SELECT * FROM git_links WHERE user_id = $1 AND provider_id = $2 FOR UPDATE;
-
--- name: DeleteGitLink :one
-DELETE FROM git_links WHERE user_id = $1 AND provider_id = $2 RETURNING *;
 
 -- Resources
 

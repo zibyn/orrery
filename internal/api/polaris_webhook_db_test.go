@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // The fake signs exactly as Polaris does: Polaris's own test vector.
@@ -76,27 +75,6 @@ func callBearer(h http.Handler, token, method, path, body string) int {
 	return rec.Code
 }
 
-// sandboxToken gives the User a Sandbox and returns its Sandbox Token.
-func sandboxToken(t *testing.T, pool *pgxpool.Pool, owner uuid.UUID) string {
-	t.Helper()
-	s := &Server{cfg: Config{EncryptionKeys: testKeyring(t)}}
-	ct, keyID, err := s.issueSandboxToken(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := uuid.New()
-	if _, err := pool.Exec(context.Background(), `INSERT INTO sandboxes
-		(id, owner_id, name, snapshot_digest, cpu, memory, token_ct, token_key_id)
-		VALUES ($1, $2, $3, 'sha256:x', 1, 1, $4, $5)`, id, owner, "sb-"+id.String()[:8], ct, keyID); err != nil {
-		t.Fatal(err)
-	}
-	secret, err := sandboxTokenSecret(s.cfg.EncryptionKeys, owner, ct, keyID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return SandboxToken(id, secret)
-}
-
 func noSessionCookie(t *testing.T, resp *http.Response) {
 	t.Helper()
 	for _, c := range resp.Cookies() {
@@ -109,19 +87,10 @@ func noSessionCookie(t *testing.T, resp *http.Response) {
 // Disabling a person in Polaris rejects every Orrery credential of theirs and
 // refuses a new login; enabling them restores their API Token.
 func TestPolarisWebhookDisableAndEnable(t *testing.T) {
-	h, op, pool := polarisTestServer(t)
+	h, op, _ := polarisTestServer(t)
 	sub := "dis-" + uuid.NewString()
 	session := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub}))
-	user := me(t, h, session)
 	token := scopedToken(t, h, session, "user")
-	sandbox := sandboxToken(t, pool, uuid.MustParse(user.ID))
-	// An authenticated Sandbox Token gets 404 for an unknown provider.
-	credential := func() int {
-		return callBearer(h, sandbox, http.MethodPost, "/api/v1/git/credential", `{"provider":"none"}`)
-	}
-	if code := credential(); code != http.StatusNotFound {
-		t.Fatalf("Sandbox Token before disable = %d, want 404", code)
-	}
 
 	if code := op.Webhook(t, h, polarisEvent{Type: "user.disabled", Sub: sub}); code != http.StatusNoContent {
 		t.Fatalf("user.disabled webhook = %d, want 204", code)
@@ -131,9 +100,6 @@ func TestPolarisWebhookDisableAndEnable(t *testing.T) {
 	}
 	if code := callBearer(h, token, http.MethodGet, "/api/v1/users/me", ""); code != http.StatusUnauthorized {
 		t.Errorf("API Token of a disabled User = %d, want 401", code)
-	}
-	if code := credential(); code != http.StatusUnauthorized {
-		t.Errorf("Sandbox Token of a disabled User = %d, want 401", code)
 	}
 	resp := op.Login(t, h, polarisLogin{Sub: sub})
 	if resp.StatusCode != http.StatusForbidden {
@@ -152,18 +118,11 @@ func TestPolarisWebhookDisableAndEnable(t *testing.T) {
 
 // Deleting a person in Polaris deletes their User as DELETE /users/{id} does.
 func TestPolarisWebhookDeleteRemovesUser(t *testing.T) {
-	h, op, pool := polarisTestServer(t)
+	h, op, _ := polarisTestServer(t)
 	admin := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: "adm-" + uuid.NewString(), Entitlements: []string{adminEntitlement}}))
 	sub := "del-" + uuid.NewString()
 	session := sessionCookie(t, op.Login(t, h, polarisLogin{Sub: sub}))
 	user := me(t, h, session)
-	sandbox := sandboxToken(t, pool, uuid.MustParse(user.ID))
-	credential := func() int {
-		return callBearer(h, sandbox, http.MethodPost, "/api/v1/git/credential", `{"provider":"none"}`)
-	}
-	if code := credential(); code != http.StatusNotFound {
-		t.Fatalf("Sandbox Token before delete = %d, want 404", code)
-	}
 
 	if code := op.Webhook(t, h, polarisEvent{Type: "user.deleted", Sub: sub}); code != http.StatusNoContent {
 		t.Fatalf("user.deleted webhook = %d, want 204", code)
@@ -173,10 +132,6 @@ func TestPolarisWebhookDeleteRemovesUser(t *testing.T) {
 	}
 	if code := asSession(t, h, session, "/api/v1/users/me", nil); code != http.StatusUnauthorized {
 		t.Errorf("Session of a deleted User = %d, want 401", code)
-	}
-	// The deleted User's Sandbox row outlives them; its token must not.
-	if code := credential(); code != http.StatusUnauthorized {
-		t.Errorf("Sandbox Token of a deleted User = %d, want 401", code)
 	}
 }
 

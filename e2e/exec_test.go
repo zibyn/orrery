@@ -82,6 +82,44 @@ func createReadySandboxWith(t *testing.T, admin string, body map[string]any) str
 	return sb.ID
 }
 
+func setUserSandboxQuota(t *testing.T, admin, userID string, sandboxes int) {
+	t.Helper()
+	status, data := call(t, http.MethodPut, "/api/v1/users/"+userID+"/quota", admin, map[string]any{
+		"gpus": 0, "sandboxes": sandboxes,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("set quota for %s: %d %s", userID, status, data)
+	}
+}
+
+// execInSandbox runs one Exec and returns its streams and exit code.
+func execInSandbox(t *testing.T, admin, sandboxID string, argv ...string) (string, string, int) {
+	t.Helper()
+	e := createExec(t, admin, sandboxID, map[string]any{"argv": argv})
+	stdout, stderr, _, result := followExec(t, admin, e.ID, 180*time.Second)
+	if result.Cause != "exited" {
+		t.Fatalf("%v: cause = %q, stderr %s", argv, result.Cause, stderr)
+	}
+	code := -1
+	if result.ExitCode != nil {
+		code = int(*result.ExitCode)
+	}
+	return string(stdout), string(stderr), code
+}
+
+// installGit adds git to an Alpine Sandbox from the package mirror. It skips
+// on a Node whose Sandboxes cannot reach the mirror, which the harness
+// declares with ORRERY_E2E_SANDBOX_NO_EGRESS (the shared containerd host).
+func installGit(t *testing.T, admin, sandboxID string) {
+	t.Helper()
+	if os.Getenv("ORRERY_E2E_SANDBOX_NO_EGRESS") != "" {
+		t.Skip("ORRERY_E2E_SANDBOX_NO_EGRESS: this Node's Sandboxes do not reach the Alpine mirror")
+	}
+	if out, errOut, code := execInSandbox(t, admin, sandboxID, "apk", "add", "--no-cache", "git"); code != 0 {
+		t.Fatalf("install git: exit %d\n%s%s", code, out, errOut)
+	}
+}
+
 func createExec(t *testing.T, admin, sandboxID string, body map[string]any) execView {
 	t.Helper()
 	status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+sandboxID+"/execs", admin, body)
@@ -414,4 +452,50 @@ func TestExecDeleteCascade(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	waitForSandboxDeleted(t, sandboxID, 60*time.Second)
+}
+
+// TestExecEnvironment checks what the platform adds to an Exec's environment
+// (node-protocol.md): ORRERY_URL and the staged CLI on PATH, but no Sandbox
+// Token and no Git config, so the caller's own GIT_CONFIG_* reaches git as
+// given (ADR-0032).
+func TestExecEnvironment(t *testing.T) {
+	admin := adminToken(t)
+	raiseSandboxQuota(t, admin, 10)
+	sandboxID := readyExecSandbox(t, admin, 256<<20)
+
+	run := func(body map[string]any) string {
+		t.Helper()
+		e := createExec(t, admin, sandboxID, body)
+		stdout, stderr, _, result := followExec(t, admin, e.ID, 180*time.Second)
+		if result.Cause != "exited" || result.ExitCode == nil || *result.ExitCode != 0 {
+			t.Fatalf("%v: result = %+v, stderr %s", body["argv"], result, stderr)
+		}
+		return string(stdout)
+	}
+
+	env := run(map[string]any{"argv": []string{"env"}})
+	for _, name := range []string{"GIT_CONFIG_COUNT", "ORRERY_SANDBOX_TOKEN"} {
+		if strings.Contains(env, name+"=") {
+			t.Fatalf("the Exec environment has %s:\n%s", name, env)
+		}
+	}
+	if orreryURL := run(map[string]any{"argv": []string{"sh", "-c", `printf %s "$ORRERY_URL"`}}); orreryURL == "" {
+		t.Fatal("ORRERY_URL is empty; ORRERY_ACCESS_URL did not reach the Exec")
+	}
+	if out := run(map[string]any{"argv": []string{"sh", "-c", `test -x /.orrery/bin/orrery && echo ok`}}); strings.TrimSpace(out) != "ok" {
+		t.Fatal("the external CLI is not staged in /.orrery/bin")
+	}
+	if path := run(map[string]any{"argv": []string{"sh", "-c", `printf %s "$PATH"`}}); !strings.HasSuffix(path, ":/.orrery/bin") && path != "/.orrery/bin" {
+		t.Fatalf("PATH = %q, want /.orrery/bin appended", path)
+	}
+
+	installGit(t, admin, sandboxID)
+	run(map[string]any{"argv": []string{"git", "--version"}})
+	got := run(map[string]any{
+		"argv": []string{"git", "config", "x.y"},
+		"env":  map[string]string{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "x.y", "GIT_CONFIG_VALUE_0": "z"},
+	})
+	if strings.TrimSpace(got) != "z" {
+		t.Fatalf("git config x.y = %q, want the caller's z", got)
+	}
 }

@@ -167,7 +167,7 @@ func secretEnvNameProblem(name string) (code, detail string) {
 		return "invalid_request", "secrets keys must be non-empty, trimmed, and contain no '=' or NUL"
 	}
 	if reservedSecretName(name) {
-		return "invalid_request", "secrets keys may not use a reserved name: GIT_*, LD_*, ORRERY_*, PATH and HOME are not allowed"
+		return "invalid_request", "secrets keys may not use a reserved name: LD_*, ORRERY_*, PATH and HOME are not allowed"
 	}
 	return "", ""
 }

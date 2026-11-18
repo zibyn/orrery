@@ -8,13 +8,12 @@ import (
 
 // The MCP server runs over stdio, so anything on stdout would corrupt the
 // protocol; refusals are plain errors on stderr.
-func TestMCPRejectsSandboxTokensAndArguments(t *testing.T) {
+func TestMCPRejectsArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"sandbox token", []string{"--token", "ors_0123456789abcdef_secret", "mcp"}, "Sandbox Token"},
 		{"extra argument", []string{"--token", "orr_0123456789abcdef_secret", "mcp", "start"}, "takes no arguments"},
 	} {
 		var stdout, stderr bytes.Buffer

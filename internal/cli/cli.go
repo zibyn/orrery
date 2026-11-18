@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,10 +105,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runPortForward(c, rest[1:])
 	case "mcp":
 		err = runMCP(c, rest[1:], stderr)
-	case "git-credential":
-		err = runGitCredential(c, rest[1:], stdout, stderr)
-	case "git":
-		err = runGit(c, rest[1:], stderr)
 	default:
 		err = fmt.Errorf("unknown command %q", rest[0])
 	}
@@ -127,10 +122,6 @@ commands:
   login            log in through the Web console and store an API Token
   user list|get|update|delete|quota
   token list|create|revoke
-  token <provider>                  fetch a Git credential by provider id
-  git-credential get|store|erase    git credential helper (Sandbox only)
-  git links                         list linked Git providers
-  git unlink <provider-id>          unlink a Git account
   secret set [--file PATH] <name>   write a value from stdin or a file
   secret list
   secret rm <name>
@@ -186,8 +177,6 @@ examples:
   orrery files ls <sandbox-id> src
   orrery files cp ./config.toml <sandbox-id>:src/config.toml
   orrery files cp <sandbox-id>:out/report.txt .
-  orrery git links
-  orrery git unlink gitea
   orrery port-forward <sandbox-id> 8080:3000
 `)
 }
@@ -477,25 +466,6 @@ func runToken(c *client, args []string, stderr io.Writer) error {
 		}
 		return c.print(token)
 	default:
-		// `token <provider>` fetches a Git credential for the Sandbox's owner.
-		// The API Token verbs above keep their names. Only the token goes to
-		// stdout, so GH_TOKEN=$(orrery token github) works (api.md §3).
-		if len(args) == 1 && !strings.HasPrefix(args[0], "-") {
-			cred, err := c.GitCredential(ctx, orreryclient.GitCredentialRequest{Provider: args[0]})
-			if err != nil {
-				var problem *orreryclient.Error
-				if errors.As(err, &problem) && problem.Status == http.StatusNotFound && problem.AuthorizeURL != "" {
-					return fmt.Errorf("no Git account is linked for %s; authorize at %s",
-						args[0], problem.AuthorizeURL)
-				}
-				return err
-			}
-			if cred.Password == "" {
-				return fmt.Errorf("the API returned an empty Git token")
-			}
-			fmt.Fprintln(c.out, cred.Password)
-			return nil
-		}
 		return fmt.Errorf("unknown token command %q", args[0])
 	}
 }

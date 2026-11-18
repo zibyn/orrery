@@ -59,7 +59,6 @@ type fileConfig struct {
 		CASGrace           string `yaml:"cas_grace"`
 	} `yaml:"logs"`
 	EncryptionKeys []encryptionKeyFile `yaml:"encryption_keys"`
-	GitProviders   []gitProviderYAML   `yaml:"git_providers"`
 	OIDC           struct {
 		IssuerURL     string `yaml:"issuer_url"`
 		ClientID      string `yaml:"client_id"`
@@ -94,22 +93,6 @@ type fileConfig struct {
 type encryptionKeyFile struct {
 	ID  string `yaml:"id"`
 	Key string `yaml:"key"`
-}
-
-// gitProviderYAML is one config.yaml git_providers entry; unlike the
-// environment-mode JSON file, the client secret is inline (ADR-0024).
-type gitProviderYAML struct {
-	ID           string    `yaml:"id"`
-	Type         string    `yaml:"type"`
-	ClientID     string    `yaml:"client_id"`
-	ClientSecret string    `yaml:"client_secret"`
-	BaseURL      string    `yaml:"base_url"`
-	AuthURL      string    `yaml:"auth_url"`
-	TokenURL     string    `yaml:"token_url"`
-	ValidateURL  string    `yaml:"validate_url"`
-	PKCE         *bool     `yaml:"pkce"`
-	Host         string    `yaml:"host"`
-	Scopes       *[]string `yaml:"scopes"`
 }
 
 type platformSnapshotFile struct {
@@ -416,9 +399,6 @@ func (f *fileConfig) toConfig(logger *slog.Logger) (Config, error) {
 	if cfg.EncryptionKeys, err = f.keyring(); err != nil {
 		return Config{}, err
 	}
-	if cfg.GitProviders, err = f.gitProviders(); err != nil {
-		return Config{}, err
-	}
 	if err := f.oidc(&cfg); err != nil {
 		return Config{}, err
 	}
@@ -503,44 +483,6 @@ func (f *fileConfig) keyring() (*keyring.Keyring, error) {
 		fmt.Fprintf(&b, "%s %s\n", k.ID, k.Key)
 	}
 	return keyring.Parse(b.Bytes())
-}
-
-func (f *fileConfig) gitProviders() ([]GitProvider, error) {
-	providers := make([]GitProvider, 0, len(f.GitProviders))
-	seen := map[string]bool{}
-	for n, e := range f.GitProviders {
-		if e.ClientSecret == "" {
-			return nil, fmt.Errorf("git_providers[%d]: client_secret is required", n)
-		}
-		// defaults.md lists the required fields; scopes is not one of them, so
-		// an omitted list requests none.
-		scopes := e.Scopes
-		if scopes == nil {
-			scopes = &[]string{}
-		}
-		provider, err := resolveGitProvider(gitProviderSpec{
-			ID:           e.ID,
-			Type:         e.Type,
-			ClientID:     e.ClientID,
-			ClientSecret: e.ClientSecret,
-			BaseURL:      e.BaseURL,
-			AuthURL:      e.AuthURL,
-			TokenURL:     e.TokenURL,
-			ValidateURL:  e.ValidateURL,
-			PKCE:         e.PKCE,
-			Host:         e.Host,
-			Scopes:       scopes,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("git_providers[%d]: %w", n, err)
-		}
-		if seen[provider.ID] {
-			return nil, fmt.Errorf("git_providers[%d]: duplicate id %q", n, provider.ID)
-		}
-		seen[provider.ID] = true
-		providers = append(providers, provider)
-	}
-	return providers, nil
 }
 
 func (f *fileConfig) oidc(cfg *Config) error {

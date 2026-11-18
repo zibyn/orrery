@@ -268,14 +268,15 @@ func TestFinalizeLostEndsUnfinishedExecs(t *testing.T) {
 }
 
 // execEnv merges the platform's values last: PATH gets /.orrery/bin appended
-// without hiding the image's commands, and the helper config clears any
-// inherited helpers first (node-protocol.md).
+// without hiding the image's commands, and the caller's Git config is left as
+// given (node-protocol.md).
 func TestExecEnv(t *testing.T) {
 	caller := map[string]string{
-		"PATH":             "/usr/local/bin:/usr/bin",
-		"GIT_CONFIG_COUNT": "1",
-		"GIT_CONFIG_KEY_0": "credential.helper",
-		"KEEP":             "kept",
+		"PATH":               "/usr/local/bin:/usr/bin",
+		"GIT_CONFIG_COUNT":   "1",
+		"GIT_CONFIG_KEY_0":   "credential.https://example.com.helper",
+		"GIT_CONFIG_VALUE_0": "!caller-helper",
+		"KEEP":               "kept",
 	}
 	env := execEnv(caller, "/image/bin", binaryDir)
 
@@ -285,17 +286,13 @@ func TestExecEnv(t *testing.T) {
 	if env["KEEP"] != "kept" {
 		t.Fatalf("caller variable dropped: %v", env)
 	}
-	wantConfig := map[string]string{
-		"GIT_CONFIG_COUNT":   "2",
-		"GIT_CONFIG_KEY_0":   "credential.helper",
-		"GIT_CONFIG_VALUE_0": "",
-		"GIT_CONFIG_KEY_1":   "credential.helper",
-		"GIT_CONFIG_VALUE_1": "/.orrery/bin/orrery git-credential",
-	}
-	for key, want := range wantConfig {
-		if got := env[key]; got != want {
-			t.Errorf("%s = %q, want %q", key, got, want)
+	for _, key := range []string{"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"} {
+		if env[key] != caller[key] {
+			t.Errorf("%s = %q, want the caller's %q", key, env[key], caller[key])
 		}
+	}
+	if len(env) != len(caller) {
+		t.Errorf("execEnv added variables besides PATH: %v", env)
 	}
 	if caller["PATH"] != "/usr/local/bin:/usr/bin" {
 		t.Fatalf("execEnv mutated the caller's map: %v", caller)

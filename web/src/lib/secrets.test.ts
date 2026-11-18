@@ -5,6 +5,7 @@ import { secretNameError } from './secrets'
 describe('secretNameError', () => {
   it('accepts an ordinary name', () => {
     expect(secretNameError('GITHUB_TOKEN')).toBeNull()
+    expect(secretNameError('GIT_ASKPASS')).toBeNull()
     expect(secretNameError('  api-key  ')).toBeNull()
   })
 
@@ -21,7 +22,6 @@ describe('secretNameError', () => {
   it('rejects the reserved names and prefixes the server enforces', () => {
     expect(secretNameError('PATH')).not.toBeNull()
     expect(secretNameError('HOME')).not.toBeNull()
-    expect(secretNameError('GIT_ASKPASS')).not.toBeNull()
     expect(secretNameError('LD_PRELOAD')).not.toBeNull()
     expect(secretNameError('ORRERY_TOKEN')).not.toBeNull()
   })

@@ -15,7 +15,7 @@ func TestProblemError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"code":"not_found","detail":"no such thing","authorize_url":"https://orrery.example/git"}`)
+		_, _ = io.WriteString(w, `{"code":"not_found","detail":"no such thing"}`)
 	}))
 	defer srv.Close()
 
@@ -26,9 +26,6 @@ func TestProblemError(t *testing.T) {
 	}
 	if problem.Status != http.StatusNotFound || problem.Code != "not_found" || problem.Detail != "no such thing" {
 		t.Fatalf("problem = %+v", problem)
-	}
-	if problem.AuthorizeURL != "https://orrery.example/git" {
-		t.Fatalf("authorize_url = %q", problem.AuthorizeURL)
 	}
 	if got := problem.Error(); got != "not_found: no such thing" {
 		t.Fatalf("Error() = %q", got)
@@ -89,11 +86,11 @@ func TestSendCarriesAuthBodyAndIdempotencyKey(t *testing.T) {
 func TestCreatedTokenEmbedsTokenAndDecodesPlaintext(t *testing.T) {
 	var got CreatedToken
 	body := `{"id":"t1","kind":"api","name":"ci","scope":"user",` +
-		`"created_at":"2026-01-01T00:00:00Z","token":"ors_secret"}`
+		`"created_at":"2026-01-01T00:00:00Z","token":"orr_secret"}`
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.ID != "t1" || got.Name != "ci" || got.Scope != "user" || got.Plaintext != "ors_secret" {
+	if got.ID != "t1" || got.Name != "ci" || got.Scope != "user" || got.Plaintext != "orr_secret" {
 		t.Fatalf("CreatedToken = %+v", got)
 	}
 }

@@ -2,7 +2,6 @@ import { useMutation } from '@tanstack/react-query'
 import { createFileRoute, Link, Outlet, redirect, useRouterState } from '@tanstack/react-router'
 import {
   Boxes,
-  GitBranch,
   HardDrive,
   KeyRound,
   Layers,
@@ -58,7 +57,7 @@ export const Route = createFileRoute('/_authed')({
 })
 
 type NavItem = {
-  to: '/sandboxes' | '/snapshots' | '/workspaces' | '/resources' | '/secrets' | '/git' | '/cli-auth' | '/admin/users' | '/admin/nodes' | '/admin/audit'
+  to: '/sandboxes' | '/snapshots' | '/workspaces' | '/resources' | '/secrets' | '/cli-auth' | '/admin/users' | '/admin/nodes' | '/admin/audit'
   label: () => string
   icon: React.ComponentType
 }
@@ -79,7 +78,6 @@ const NAV: { label: () => string; items: readonly NavItem[] }[] = [
     label: () => m.nav_group_developer(),
     items: [
       { to: '/secrets', label: () => m.nav_secrets(), icon: KeyRound },
-      { to: '/git', label: () => m.nav_git(), icon: GitBranch },
       { to: '/cli-auth', label: () => m.nav_cli(), icon: Terminal },
     ],
   },

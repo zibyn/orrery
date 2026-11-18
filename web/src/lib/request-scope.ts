@@ -14,7 +14,7 @@ const HTTP_LIKE = new Set(['http:', 'https:', 'ws:', 'wss:'])
 // to name the routes instead of trusting the fallback; `/metrics` and any
 // other `/api` prefix are private.
 const CONSOLE_ROUTE =
-  /^\/(?:login|sandboxes|snapshots|git|cli-auth|secrets|account)(?:\/|$)|^\/admin\/(?:users|nodes|audit)(?:\/|$)/
+  /^\/(?:login|sandboxes|snapshots|cli-auth|secrets|account)(?:\/|$)|^\/admin\/(?:users|nodes|audit)(?:\/|$)/
 
 function isPublicConsolePath(pathname: string): boolean {
   // The browser asks for /favicon.ico by default; the console serves the SPA.

@@ -31,8 +31,7 @@ func (s *Server) OpenAPIDocument() map[string]any {
 			if name == "port" {
 				schema = map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}
 			}
-			if name == "name" || name == "provider_id" ||
-				(name == "id" && (strings.HasPrefix(rt.Path, "/git-providers/") || strings.HasPrefix(rt.Path, "/external-auth/"))) {
+			if name == "name" {
 				schema = map[string]any{"type": "string"}
 			}
 			params = append(params, map[string]any{
@@ -144,7 +143,7 @@ func responsesFor(rt route) map[string]any {
 		responses["413"] = problemResponse("payload_too_large")
 		responses["429"] = problemResponse("quota_exceeded")
 		responses["503"] = problemResponse("unavailable")
-	case "listSecrets", "deleteSecret", "getGitCredential":
+	case "listSecrets", "deleteSecret":
 		responses["503"] = problemResponse("unavailable")
 	case "createSnapshot", "createSnapshotVersion":
 		// An Idempotency-Key replay returns the resource that already exists.
@@ -334,47 +333,6 @@ func schemas() map[string]any {
 					"description": "At most 24 KiB of UTF-8 bytes."},
 			},
 		},
-		"GitProvider": map[string]any{
-			"type":     "object",
-			"required": []string{"id", "type", "host"},
-			"properties": map[string]any{
-				"id":   map[string]any{"type": "string", "description": "The id used in /git-providers/{id}/authorize."},
-				"type": map[string]any{"type": "string", "enum": []string{"github", "gitlab", "gitea", "generic"}},
-				"host": map[string]any{"type": "string", "description": "Pattern matching repository hosts."},
-			},
-		},
-		"GitProviderList": map[string]any{
-			"type":     "object",
-			"required": []string{"items", "next_cursor"},
-			"properties": map[string]any{
-				"items":       map[string]any{"type": "array", "items": schemaRef("GitProvider")},
-				"next_cursor": nullableString,
-			},
-		},
-		"GitLink": map[string]any{
-			"type":     "object",
-			"required": []string{"provider_id", "linked_at"},
-			"properties": map[string]any{
-				"provider_id": map[string]any{"type": "string"},
-				"linked_at":   map[string]any{"type": "string", "format": "date-time"},
-			},
-		},
-		"GitLinkList": map[string]any{
-			"type":     "object",
-			"required": []string{"items", "next_cursor"},
-			"properties": map[string]any{
-				"items":       map[string]any{"type": "array", "items": schemaRef("GitLink")},
-				"next_cursor": nullableString,
-			},
-		},
-		"GitCredentialRequest": map[string]any{
-			"type":        "object",
-			"description": "Exactly one of host or provider.",
-			"properties": map[string]any{
-				"host":     map[string]any{"type": "string", "description": "Repository host, matched against the providers' host patterns."},
-				"provider": map[string]any{"type": "string", "description": "A provider id from GET /git-providers."},
-			},
-		},
 		"PolarisWebhookEvent": map[string]any{
 			"type":        "object",
 			"description": "A Polaris User event, signed the Standard Webhooks way (webhook-id, webhook-timestamp, webhook-signature) with oidc.webhook_secret. An unknown type or sub, a stale event or a machine User is acknowledged with 204 and ignored.",
@@ -390,14 +348,6 @@ func schemas() map[string]any {
 						"changed": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "For user.updated; roles clears admin."},
 					},
 				},
-			},
-		},
-		"GitCredential": map[string]any{
-			"type":     "object",
-			"required": []string{"username", "password"},
-			"properties": map[string]any{
-				"username": map[string]any{"type": "string"},
-				"password": map[string]any{"type": "string"},
 			},
 		},
 		"AuditRecord": map[string]any{

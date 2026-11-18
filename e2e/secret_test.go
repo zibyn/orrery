@@ -56,7 +56,7 @@ func TestSecrets(t *testing.T) {
 	}
 
 	// Reserved names and the 24 KiB cap are rejected (ADR-0017).
-	status, body := call(t, http.MethodPut, "/api/v1/secrets/GIT_TOKEN", admin, map[string]string{"value": "x"})
+	status, body := call(t, http.MethodPut, "/api/v1/secrets/LD_PRELOAD", admin, map[string]string{"value": "x"})
 	if status != http.StatusBadRequest {
 		t.Fatalf("reserved Secret name: %d %s, want 400", status, body)
 	}
@@ -156,7 +156,7 @@ func TestSecretInject(t *testing.T) {
 	// A reserved environment name and an unknown Secret name are both 400.
 	status, body = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
 		"cpu": 0.5, "memory": 128 << 20, "idle_stop": 0,
-		"secrets": map[string]string{"GIT_TOKEN": secretName},
+		"secrets": map[string]string{"LD_PRELOAD": secretName},
 	})
 	if status != http.StatusBadRequest {
 		t.Fatalf("reserved secrets key: %d %s, want 400", status, body)

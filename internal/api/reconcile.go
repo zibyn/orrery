@@ -214,19 +214,6 @@ func (r *reconciler) startExec(ctx context.Context, row store.ListActiveExecsRow
 		r.endExec(ctx, e.ID, ExecStartFailed)
 		return
 	}
-	// The Sandbox Token travels in secret_env, not in CreateSandbox, so a
-	// restarted Agent or a repeated command still receives it (ADR-0016).
-	secret, err := sandboxTokenSecret(r.s.cfg.EncryptionKeys, row.SandboxOwnerID,
-		row.SandboxTokenCt, row.SandboxTokenKeyID)
-	if err != nil {
-		r.s.log.Warn("reconcile: open Sandbox Token", "exec_id", e.ID, "error", err)
-		r.endExec(ctx, e.ID, ExecStartFailed)
-		return
-	}
-	if secretEnv == nil {
-		secretEnv = make(map[string]string, 1)
-	}
-	secretEnv["ORRERY_SANDBOX_TOKEN"] = SandboxToken(e.SandboxID, secret)
 	// ORRERY_URL is the Sandbox's only clue about where `api` lives
 	// (node-protocol.md). An unconfigured deployment leaves it out.
 	if r.s.cfg.AccessURL != "" {
