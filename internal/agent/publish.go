@@ -24,8 +24,14 @@ const publishChunkEntries = 500
 const presignBatch = 500
 
 // publishHTTP uploads CAS objects through presigned URLs. Like the CLI's
-// transfer client it has no timeout: a legacy object can be 5 GiB.
-var publishHTTP = &http.Client{}
+// transfer client it has no timeout: a legacy object can be 5 GiB. It keeps
+// a connection per PUT in flight, not net/http's 2 per host, so concurrent
+// uploads reuse their TLS sessions.
+var publishHTTP = &http.Client{Transport: func() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = castransfer.MaxUploads
+	return t
+}()}
 
 // publishSandbox publishes a path of a running Sandbox's own filesystem
 // (node-protocol.md "Sandbox publish"). The path is resolved like the file API (api.md §5).
@@ -126,6 +132,11 @@ func (r *Runtime) submitManifest(ctx context.Context, versionID string, m manife
 // castransfer.MaxUploads at a time; the first failure cancels the rest. The
 // checksum header is the one the URL was signed with (ADR-0021).
 func (r *Runtime) uploadPublishObjects(ctx context.Context, root *os.Root, missing []string, files map[string]manifest.Source) error {
+	for _, digest := range missing {
+		if _, ok := files[digest]; !ok {
+			return fmt.Errorf("the Control Plane asked for an object this tree does not contain: %s", digest)
+		}
+	}
 	for start := 0; start < len(missing); start += presignBatch {
 		end := start + presignBatch
 		if end > len(missing) {
@@ -142,15 +153,11 @@ func (r *Runtime) uploadPublishObjects(ctx context.Context, root *os.Root, missi
 		g, gctx := errgroup.WithContext(ctx)
 		g.SetLimit(castransfer.MaxUploads)
 		for i, digest := range batch {
-			if gctx.Err() != nil {
-				break // a PUT failed; Wait returns its error
-			}
 			g.Go(func() error {
-				local, ok := files[digest]
-				if !ok {
-					return fmt.Errorf("the Control Plane asked for an object this tree does not contain: %s", digest)
+				if err := gctx.Err(); err != nil {
+					return err // a PUT failed (Wait returns its error) or ctx ended
 				}
-				return uploadRootObject(gctx, root, local, response.GetUrls()[i], digest)
+				return uploadRootObject(gctx, root, files[digest], response.GetUrls()[i], digest)
 			})
 		}
 		if err := g.Wait(); err != nil {
