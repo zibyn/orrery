@@ -147,6 +147,9 @@ func (f *volumeFS) unlockTree() {
 		frozen := n.frozen
 		f.treeMu.Unlock()
 		if frozen != nil {
+			// shortcut: the Forget, unlink or rename freeing n answers only
+			// once a seal has hashed it, seconds for a large file; drop the
+			// file in the background if that stall shows up.
 			<-frozen
 		}
 		n.mu.Lock()

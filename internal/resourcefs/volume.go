@@ -411,6 +411,11 @@ type Sealed struct {
 	Pending []string `json:"pending,omitempty"`
 }
 
+// maxSealWorkers is defaults.md "卷提交并行处理的文件数": hashing is
+// CPU-bound, so a seal hashes on every CPU but at most 8, leaving the rest to
+// the Node's Sandboxes.
+const maxSealWorkers = 8
+
 // hashing runs as a seal hashes each block of a frozen file, holding its
 // content lock; a test holds one there.
 var hashing = func(uint64) {}
@@ -443,7 +448,7 @@ func (f *volumeFS) seal() (Sealed, error) {
 	}
 	f.treeMu.Unlock()
 	var g errgroup.Group
-	g.SetLimit(min(runtime.NumCPU(), 8))
+	g.SetLimit(min(runtime.NumCPU(), maxSealWorkers))
 	for _, c := range clean {
 		g.Go(func() error { f.dropClean(c.ino, c.n); return nil })
 	}
@@ -577,6 +582,9 @@ func (f *volumeFS) sealFile(ino uint64, n *vnode, e *manifest.Entry) error {
 	}
 	n.mu.RLock()
 	defer n.mu.RUnlock()
+	// shortcut: a seal failing partway leaves the objects it wrote in objects/
+	// outside Pending until the mount is torn down, add them to Pending as
+	// they are written if failed seals start filling the disk.
 	objects := map[string]int64{}
 	var blocks []string
 	for i := range max(manifest.BlockCount(size), 1) {
