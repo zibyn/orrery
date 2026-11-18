@@ -3,6 +3,7 @@ package resourcefs
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -126,8 +127,12 @@ func (v vol) seal() (Sealed, []string) {
 	if err != nil {
 		v.t.Fatal(err)
 	}
+	return s, treeLines(s)
+}
+
+func treeLines(s Sealed) []string {
 	if s.Manifest == nil {
-		return s, nil
+		return nil
 	}
 	var lines []string
 	for _, e := range s.Manifest.Entries {
@@ -137,7 +142,59 @@ func (v vol) seal() (Sealed, []string) {
 		}
 		lines = append(lines, line)
 	}
-	return s, lines
+	return lines
+}
+
+// goSeal seals in the background.
+func goSeal(v vol) <-chan Sealed {
+	sealed := make(chan Sealed, 1)
+	go func() {
+		s, err := v.f.seal()
+		if err != nil {
+			v.t.Error(err)
+		}
+		sealed <- s
+	}()
+	return sealed
+}
+
+// holdSeal stops a seal as it turns to path's frozen file, before hashing
+// it, until release; wait returns once a seal is held there.
+func holdSeal(v vol, path string) (wait, release func()) {
+	ino := v.ino(path)
+	held, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	beforeHash = func(i uint64) {
+		if i == ino {
+			once.Do(func() {
+				close(held)
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second): // were others stuck behind it, free them to fail
+				}
+			})
+		}
+	}
+	v.t.Cleanup(func() { beforeHash = func(uint64) {} })
+	wait = func() {
+		v.t.Helper()
+		select {
+		case <-held:
+		case <-time.After(5 * time.Second):
+			v.t.Fatalf("no seal reached %s", path)
+		}
+	}
+	return wait, sync.OnceFunc(func() { close(done) })
+}
+
+// notYet fails if c delivers within a moment.
+func notYet[T any](t *testing.T, c <-chan T, what string) {
+	t.Helper()
+	select {
+	case <-c:
+		t.Fatal(what)
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func newTestVolume(t *testing.T) (vol, *objectServer) {
@@ -548,5 +605,270 @@ func TestVolumeHandoverKeepsUncommittedState(t *testing.T) {
 	s, _ := w.seal()
 	if !s.Dirty || s.Upload != "upload-1" || s.UploadSeq != 7 {
 		t.Fatalf("successor seal = %+v", s)
+	}
+}
+
+// A seal hashing a large dirty file holds up no other file (runtime.md §17):
+// open, read, write and create of others answer meanwhile.
+func TestVolumeSealHoldsUpNoOtherFile(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("large", string(pattern(6<<20, 9)))
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	v.check("open", v.f.Open(nil, &fuse.OpenIn{InHeader: hdr(v.ino("docs/a.txt"))}, &fuse.OpenOut{}))
+	v.write("docs/a.txt", 5, "+more")
+	if got := v.read("docs/a.txt", 0, 100); got != "alpha+more" {
+		t.Fatalf("docs/a.txt reads %q", got)
+	}
+	if got := v.read("big", 5<<20, 10); got != string(pattern(9<<20, 3)[5<<20:5<<20+10]) {
+		t.Fatal("a committed file reads other bytes")
+	}
+	v.create("late", "new")
+	if got := v.read("late", 0, 10); got != "new" {
+		t.Fatalf("late reads %q", got)
+	}
+	select {
+	case <-sealed:
+		t.Fatal("other files waited for the seal of large")
+	default:
+	}
+	release()
+	if s := <-sealed; !s.Dirty {
+		t.Fatal("the seal found nothing dirty")
+	}
+}
+
+// A seal is one point in time (runtime.md §17): what changes after it
+// begins is absent or old in its manifest, and in the next one.
+func TestVolumeSealIsAPointInTime(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("large", string(data))
+	v.create("clean", "one")
+	v.seal() // clean is a clean copy now
+	v.write("large", 0, string(data[:1]))
+	ino := v.ino("large")
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	v.write("docs/a.txt", 5, "+more")
+	v.write("clean", 3, " two")
+	v.create("late", "new")
+	v.check("rename", v.rename("keep", "moved"))
+	v.unlink("large")
+	forgot := make(chan struct{})
+	go func() { v.f.Forget(ino, math.MaxUint64); close(forgot) }() // its last reference
+	select {
+	case <-forgot:
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	lines := treeLines(<-sealed)
+	<-forgot
+	for _, want := range []string{
+		"clean file 644  " + digest([]byte("one")),
+		"docs/a.txt file 644  " + digest([]byte("alpha")),
+		"keep file 644  " + digest([]byte("k")),
+		"large file 644  " + digestOf(data),
+	} {
+		if !contains(lines, want) {
+			t.Errorf("the seal lacks %q", want)
+		}
+	}
+	for _, path := range []string{"late", "moved"} {
+		if slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, path+" ") }) {
+			t.Errorf("the seal has %s, made after it began", path)
+		}
+	}
+
+	_, lines = v.seal()
+	for _, want := range []string{
+		"clean file 644  " + digest([]byte("one two")),
+		"docs/a.txt file 644  " + digest([]byte("alpha+more")),
+		"late file 644  " + digest([]byte("new")),
+		"moved hardlink 0 keep2",
+	} {
+		if !contains(lines, want) {
+			t.Errorf("the next seal lacks %q", want)
+		}
+	}
+	if slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "large ") }) {
+		t.Error("the next seal still has large")
+	}
+}
+
+// A write to a frozen file waits until the seal has hashed that file, and
+// goes into the next commit.
+func TestVolumeWriteToFrozenFileWaitsForItsHash(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("large", string(data))
+	ino := v.ino("large")
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	wrote := make(chan fuse.Status, 1)
+	go func() {
+		_, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(ino), Offset: 1 << 20}, []byte("X"))
+		wrote <- st
+	}()
+	notYet(t, wrote, "a write to a frozen file landed before its hash")
+	release()
+	if want := "large file 644  " + digestOf(data); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
+	}
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	data[1<<20] = 'X'
+	if _, lines := v.seal(); !contains(lines, "large file 644  "+digestOf(data)) {
+		t.Fatal("the next seal lacks the write")
+	}
+}
+
+// After a commit, an append copies nothing: the write-cache file stays, its
+// bytes untouched, and the next seal hashes the whole file.
+func TestVolumeAppendAfterCommitCopiesNothing(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("log", "one ")
+	path := v.f.dataPath(v.ino("log"))
+	s, _ := v.seal()
+	if err := v.f.committed("gen-2", s.Seq); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal("the commit dropped the write-cache file")
+	}
+	v.write("log", 4, "two")
+	after, err := os.Stat(path)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("the append replaced the write-cache file")
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != "one two" {
+		t.Fatalf("the write-cache file holds %q", raw)
+	}
+	if got := v.read("log", 0, 100); got != "one two" {
+		t.Fatalf("log reads %q", got)
+	}
+	if _, lines := v.seal(); !contains(lines, "log file 644  "+digest([]byte("one two"))) {
+		t.Fatalf("the next seal lacks the append: %v", lines)
+	}
+}
+
+// A clean copy unwritten for a commit period is dropped; the file then
+// reads the same bytes from the block cache.
+func TestVolumeUnwrittenCleanCopyIsDropped(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(5<<20, 7)
+	v.create("ckpt", string(data))
+	path := v.f.dataPath(v.ino("ckpt"))
+	s, _ := v.seal()
+	if err := v.f.committed("gen-2", s.Seq); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("the commit dropped the write-cache file")
+	}
+	if s, _ := v.seal(); s.Dirty { // the next periodic commit: nothing changed
+		t.Fatal("an unchanged Volume is dirty")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("a clean copy unwritten for a commit stayed")
+	}
+	if got := v.read("ckpt", 0, len(data)); got != string(data) {
+		t.Fatal("after the drop ckpt reads other bytes")
+	}
+}
+
+// Moving a commit's objects into the block cache holds up no other op.
+func TestVolumeCommittedMovesObjectsOffTheTreeLock(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("a", "1")
+	s, _ := v.seal()
+	entered, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	moveObject = func(from, to string) error {
+		once.Do(func() {
+			close(entered)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second): // were others stuck behind it, free them to fail
+			}
+		})
+		return os.Rename(from, to)
+	}
+	t.Cleanup(func() { moveObject = os.Rename })
+	committed := make(chan error, 1)
+	go func() { committed <- v.f.committed("gen-2", s.Seq) }()
+	<-entered
+
+	v.create("b", "2")
+	if got := v.read("a", 0, 10); got != "1" {
+		t.Fatalf("a reads %q", got)
+	}
+	select {
+	case <-committed:
+		t.Fatal("other ops waited for the objects to move")
+	default:
+	}
+	close(done)
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(v.f.store.path(digest([]byte("1")))); err != nil {
+		t.Fatal("the sealed object did not move into the block cache")
+	}
+}
+
+// A handover during a seal waits for it, then hands every uncommitted write
+// over: those the seal hashed, and those made while it ran.
+func TestVolumeHandoverDuringSealKeepsUncommittedWrites(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("draft", "unsaved")
+	v.create("large", string(data))
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+	v.write("docs/a.txt", 5, "+more")
+	v.create("late", "new")
+	paused := make(chan error, 1)
+	go func() { paused <- v.f.pause() }()
+	notYet(t, paused, "the handover did not wait for the seal")
+	release()
+	<-sealed
+	if err := <-paused; err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := loadVolumeFS(v.f.dir, v.f.store, testLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := vol{t: t, f: next}
+	want := map[string]string{"draft": "unsaved", "large": string(data), "docs/a.txt": "alpha+more", "late": "new"}
+	for path, content := range want {
+		if got := w.read(path, 0, len(content)+1); got != content {
+			t.Errorf("%s reads %d bytes after the handover, want %d", path, len(got), len(content))
+		}
+	}
+	_, lines := w.seal()
+	for path, content := range want {
+		d := digest([]byte(content))
+		if path == "large" {
+			d = digestOf(data)
+		}
+		if line := fmt.Sprintf("%s file 644  %s", path, d); !contains(lines, line) {
+			t.Errorf("the successor's seal lacks %q", line)
+		}
 	}
 }
