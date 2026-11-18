@@ -313,6 +313,7 @@ func TestVolumeConcurrentIOAcrossCommits(t *testing.T) {
 	// The Agent's commit loop, back to back; every sealed ref is one whole
 	// version of it.
 	commits := 0
+	var last *generation.Manifest
 	background.Go(func() {
 		for {
 			select {
@@ -334,6 +335,7 @@ func TestVolumeConcurrentIOAcrossCommits(t *testing.T) {
 				}
 			}
 			commits++
+			last = s.Manifest
 			if err := h.client().VolumeCommitted(ctx, testVolume, fmt.Sprintf("gen-%d", commits), s.Seq); err != nil {
 				t.Error(err)
 				return
@@ -355,8 +357,12 @@ func TestVolumeConcurrentIOAcrossCommits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Clean when the loop's last commit began after the last write.
+	if s.Dirty {
+		last = s.Manifest
+	}
 	got := map[string]generation.Entry{}
-	for _, e := range s.Manifest.Entries {
+	for _, e := range last.Entries {
 		got[e.Path] = e
 	}
 	for path, content := range want {

@@ -85,10 +85,10 @@ type vnode struct {
 	// session is drained and no seal runs.
 	mu   sync.RWMutex
 	file *os.File
-	// frozen, set under the tree lock, is open from a seal's snapshot until
-	// the seal has hashed the file: its content must stay as of then, so
-	// every change waits for it.
-	frozen chan struct{}
+	// frozen, set under the tree lock, is the file's from a seal's snapshot
+	// until it is hashed: its content must stay as of then, so every change
+	// waits for it, hashing it first if no seal worker has begun.
+	frozen *frozenFile
 }
 
 func (n *vnode) isDir() bool { return n.Type == manifest.TypeDir }
@@ -424,8 +424,8 @@ var hashing = func(uint64) {}
 // (runtime.md §17). Under the tree lock it walks the tree and freezes the
 // dirty files; outside it, they are hashed into CAS objects in parallel,
 // each under its own content lock, so a write waits only for its own
-// frozen file. A clean copy a seal finds has gone a commit unwritten and is
-// dropped.
+// frozen file, and hashes it itself if no worker has begun. A clean copy a
+// seal finds has gone a commit unwritten and is dropped.
 func (f *volumeFS) seal() (Sealed, error) {
 	f.sealMu.Lock()
 	defer f.sealMu.Unlock()
@@ -436,7 +436,8 @@ func (f *volumeFS) seal() (Sealed, error) {
 	}
 	out := Sealed{Base: f.st.Base, Upload: f.st.Upload, UploadSeq: f.st.UploadSeq, Seq: f.st.Seq,
 		Dirty: f.st.Seq != f.st.CommittedSeq}
-	var clean, dirty []sealItem
+	var clean []sealItem
+	var dirty []*frozenFile
 	for ino, n := range f.st.Nodes {
 		if n.Local && !n.dirty() {
 			clean = append(clean, sealItem{ino: ino, n: n})
@@ -452,10 +453,10 @@ func (f *volumeFS) seal() (Sealed, error) {
 	for _, c := range clean {
 		g.Go(func() error { f.dropClean(c.ino, c.n); return nil })
 	}
-	for _, d := range dirty {
+	for _, z := range dirty {
 		g.Go(func() error {
-			if err := f.sealFile(d.ino, d.n, &m.Entries[d.entry].Entry); err != nil {
-				return fmt.Errorf("seal %d: %w", d.ino, err)
+			if err := f.hash(z); err != nil {
+				return fmt.Errorf("seal %d: %w", z.ino, err)
 			}
 			return nil
 		})
@@ -478,12 +479,27 @@ func (f *volumeFS) seal() (Sealed, error) {
 	return out, nil
 }
 
-// sealItem is a write-cache file a seal hashes or drops; entry is a
-// hashed file's in the manifest.
+// sealItem is a clean copy a seal drops.
 type sealItem struct {
+	ino uint64
+	n   *vnode
+}
+
+// frozenFile is a file a seal froze, to hash into its entry in the seal's
+// manifest. The first to need the hash, a seal worker or a change waiting
+// for the file, runs it, once; the others wait for it.
+type frozenFile struct {
 	ino   uint64
 	n     *vnode
-	entry int
+	entry *manifest.Entry
+	once  sync.Once
+	err   error
+}
+
+// hash hashes z unless that has begun, and waits for it; no lock is held.
+func (f *volumeFS) hash(z *frozenFile) error {
+	z.once.Do(func() { z.err = f.sealFile(z.ino, z.n, z.entry) })
+	return z.err
 }
 
 // dropClean drops n's clean copy unless it was written meanwhile; its reads
@@ -505,9 +521,10 @@ func (f *volumeFS) dropClean(ino uint64, n *vnode) {
 
 // snapshot walks the tree into a manifest with f.treeMu held, freezing each
 // dirty file; its entry gets its content once hashed.
-func (f *volumeFS) snapshot() (generation.Manifest, []sealItem) {
+func (f *volumeFS) snapshot() (generation.Manifest, []*frozenFile) {
 	m := generation.Manifest{Kind: generation.KindTree}
-	var dirty []sealItem
+	var dirty []*frozenFile
+	var at []int // dirty's entries, as indexes while the walk appends
 	first := map[uint64]string{}
 	var walk func(ino uint64, prefix string)
 	walk = func(ino uint64, prefix string) {
@@ -528,8 +545,9 @@ func (f *volumeFS) snapshot() (generation.Manifest, []sealItem) {
 				}
 				first[k.Ino] = path
 				if n.dirty() {
-					n.frozen = make(chan struct{})
-					dirty = append(dirty, sealItem{ino: k.Ino, n: n, entry: len(m.Entries)})
+					n.frozen = &frozenFile{ino: k.Ino, n: n}
+					dirty = append(dirty, n.frozen)
+					at = append(at, len(m.Entries))
 				} else {
 					size := n.Size
 					e.Size, e.SHA256, e.Blocks = &size, n.SHA256, n.Blocks
@@ -548,6 +566,9 @@ func (f *volumeFS) snapshot() (generation.Manifest, []sealItem) {
 		}
 	}
 	walk(rootID, "")
+	for i, z := range dirty {
+		z.entry = &m.Entries[at[i]].Entry
+	}
 	return m, dirty
 }
 
@@ -557,7 +578,6 @@ func (f *volumeFS) snapshot() (generation.Manifest, []sealItem) {
 func (f *volumeFS) sealFile(ino uint64, n *vnode, e *manifest.Entry) error {
 	defer func() {
 		f.treeMu.Lock()
-		close(n.frozen)
 		n.frozen = nil
 		f.treeMu.Unlock()
 	}()

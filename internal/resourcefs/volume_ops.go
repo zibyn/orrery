@@ -148,9 +148,9 @@ func (f *volumeFS) unlockTree() {
 		f.treeMu.Unlock()
 		if frozen != nil {
 			// shortcut: the Forget, unlink or rename freeing n answers only
-			// once a seal has hashed it, seconds for a large file; drop the
-			// file in the background if that stall shows up.
-			<-frozen
+			// once n is hashed, seconds for a large file; drop the file in
+			// the background if that stall shows up.
+			f.hash(frozen) //nolint:errcheck // its seal reports it
 		}
 		n.mu.Lock()
 		f.dropLocal(ino, n)
@@ -166,7 +166,8 @@ const noCopy = -1
 // with n.file open; keep other than noCopy first copies committed content
 // up, keeping keep bytes. Opening or copying takes the lock exclusively,
 // even when shared was asked for. A change (exclusive, or a copy asked for)
-// to a frozen file waits until the seal has hashed it. A copy asked for
+// to a frozen file waits until it is hashed, hashing it first if no seal
+// worker has begun, so it never queues behind other files. A copy asked for
 // means a write or truncate follows: local content turns dirty in the step
 // that finds it not frozen, before its bytes move, so a seal from then on
 // freezes it and waits rather than recording a clean copy's old digests.
@@ -199,7 +200,7 @@ func (f *volumeFS) lockContent(ino uint64, exclusive bool, keep int64) (*vnode, 
 			return nil, nil, fuse.ENOENT
 		case change && frozen != nil:
 			unlock()
-			<-frozen
+			f.hash(frozen) //nolint:errcheck // its seal reports it
 			continue
 		case (local && n.file != nil) || (!local && keep == noCopy):
 			return n, unlock, fuse.OK
