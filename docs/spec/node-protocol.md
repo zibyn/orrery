@@ -50,14 +50,10 @@ Agent 发的第一条消息必须是 `Hello`；Control Plane 回 `HelloAck`，�
 
 ### Exec 的环境变量
 
-Sandbox Token 不在 `CreateSandbox` 里，而是随每个 `StartExec` 下发，所以 Agent 重启、Reconciler 重复下发都拿得到它。前例是 Coder 的 `workspace_agents.auth_token`：明文存储，放进每个进程的环境（`docs/research/recheck-identity-network-channel-vs-coder-daytona.md` I3、C1）。
-
-- **Control Plane** 往 `secret_env` 放 Secret 快照（`schema.md`）和 `ORRERY_SANDBOX_TOKEN`，往 `env` 放 `ORRERY_URL`（取部署配置的 `access.url`，未配置时不放）。这几项都不写入 `execs.env`。
-- **Agent** 再追加两组。下面的 `<bin>` 是 `/.orrery/bin`；Local Runtime 没有 `/.orrery`，`<bin>` 是 Agent 自己的 bin 目录，即 Agent 可执行文件所在、旁边放着 `orrery` 的目录（`runtime.md` §2、§10）：
-  - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`，先写一条 `credential.helper=` 清空镜像的 helper 列表，再写 `credential.helper=<bin>/orrery git-credential`；
-  - `PATH`：取调用方 `env` 里的 `PATH`，没有就取镜像配置里的 `PATH`（Local Runtime 取 Agent 自身的 `PATH`），在末尾追加 `<bin>`，不遮挡镜像里的同名命令。
+- **Control Plane** 往 `secret_env` 先放 Sandbox 的 Secret 快照，再放这个 Exec 自己的 Secret（`schema.md`），同名时 Exec 的覆盖 Sandbox 的；往 `env` 放 `ORRERY_URL`（取部署配置的 `access.url`，未配置时不放）。这几项都不写入 `execs.env`。
+- **Agent** 再追加 `PATH`：取调用方 `env` 里的 `PATH`，没有就取镜像配置里的 `PATH`（Local Runtime 取 Agent 自身的 `PATH`），在末尾追加 `<bin>`，不遮挡镜像里的同名命令。`<bin>` 是 `/.orrery/bin`；Local Runtime 没有 `/.orrery`，`<bin>` 是 Agent 自己的 bin 目录，即 Agent 可执行文件所在、旁边放着 `orrery` 的目录（`runtime.md` §2、§10）。
 - **Local Runtime** 另设 `ORRERY_WORKSPACE`，值为 Sandbox 工作目录在宿主上的路径，以及 `ORRERY_VOLUMES`，值为每个卷一个子目录的挂载目录（`runtime.md` §10）。
-- **合并顺序**：调用方的 Exec `env` 在前，平台写入的值最后合并，同名时覆盖调用方；唯一例外是 `PATH`，按上面的规则追加而不覆盖。Exec `env` 不做保留名校验，保留名只约束 Secret（ADR-0017）。PTY Exec 走同一条路径。
+- **合并顺序**：调用方的 Exec `env`，然后平台写入 `env` 的值，然后 Sandbox 的 Secret，最后 Exec 的 Secret（后两者由 Control Plane 合成一个 `secret_env`），同名时后者覆盖前者；唯一例外是 `PATH`，按上面的规则追加而不覆盖。平台不写 Git 配置，调用方在 Exec `env` 里写的 `GIT_CONFIG_*` 原样生效（ADR-0032）。Exec `env` 不做保留名校验，保留名只约束 Secret（ADR-0017）。PTY Exec 走同一条路径。
 
 ## Presign：Node 取放对象
 

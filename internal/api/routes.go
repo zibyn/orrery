@@ -12,7 +12,7 @@ type handlerFunc func(http.ResponseWriter, *http.Request, *principal)
 type route struct {
 	Method        string
 	Path          string // without the /api/v1 prefix
-	Auth          string // "", "user", "admin", or "sandbox"
+	Auth          string // "", "user", or "admin"
 	OperationID   string
 	Summary       string
 	Request       string // schema name, or empty
@@ -37,12 +37,6 @@ func (s *Server) routes() []route {
 		{http.MethodPut, "/secrets/{name}", "user", "putSecret", "Create or overwrite a Secret", "PutSecretRequest", "Secret", nil, http.StatusOK, s.handlePutSecret},
 		{http.MethodGet, "/secrets", "user", "listSecrets", "List Secrets", "", "SecretList", []string{"limit", "cursor"}, http.StatusOK, s.handleListSecrets},
 		{http.MethodDelete, "/secrets/{name}", "user", "deleteSecret", "Delete a Secret", "", "Secret", nil, http.StatusAccepted, s.handleDeleteSecret},
-		{http.MethodPost, "/git/credential", "sandbox", "getGitCredential", "Fetch a Git credential", "GitCredentialRequest", "GitCredential", nil, http.StatusOK, s.handleGitCredential},
-		{http.MethodGet, "/git-providers", "user", "listGitProviders", "List Git Providers", "", "GitProviderList", nil, http.StatusOK, s.handleListGitProviders},
-		{http.MethodGet, "/git-providers/{id}/authorize", "", "authorizeGitProvider", "Start linking a Git account", "", "", nil, http.StatusFound, s.handleGitAuthorize},
-		{http.MethodGet, "/external-auth/{id}/callback", "", "finishGitAuthorization", "Finish linking a Git account", "", "", []string{"code", "state", "error"}, http.StatusFound, s.handleGitCallback},
-		{http.MethodGet, "/users/me/git-links", "user", "listGitLinks", "List the calling User's Git links", "", "GitLinkList", nil, http.StatusOK, s.handleListGitLinks},
-		{http.MethodDelete, "/users/me/git-links/{provider_id}", "user", "deleteGitLink", "Unlink a Git account", "", "GitLink", nil, http.StatusAccepted, s.handleDeleteGitLink},
 		{http.MethodDelete, "/sessions/current", "user", "deleteCurrentSession", "Log out the current Session", "", "Token", nil, http.StatusAccepted, s.handleDeleteCurrentSession},
 		{http.MethodGet, "/oidc/login", "", "oidcLogin", "Start an OIDC login", "", "", []string{"return"}, http.StatusFound, s.handleOIDCLogin},
 		{http.MethodGet, "/oidc/callback", "", "oidcCallback", "Finish an OIDC login", "", "", []string{"code", "state", "error"}, http.StatusFound, s.handleOIDCCallback},
@@ -121,7 +115,7 @@ func (s *Server) Handler() http.Handler {
 		h := rt.Handler
 		var handler http.HandlerFunc
 		switch rt.Auth {
-		case "admin", "user", "sandbox":
+		case "admin", "user":
 			handler = s.wrapAuth(rt.Auth, h)
 		default:
 			handler = func(w http.ResponseWriter, r *http.Request) { h(w, r, nil) }

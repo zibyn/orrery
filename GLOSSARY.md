@@ -172,7 +172,7 @@ _Avoid_: timed lock, TTL
 
 **User**:
 A human or automation principal that owns resources and acts through scoped credentials. A person's User is linked to their Polaris identity and created at their first login; Polaris says who they are, Orrery decides what they may do.
-_Avoid_: Tenant, global administrator, account (except in Polaris's own terms, such as its account center, and for the account a Git Account Link names)
+_Avoid_: Tenant, global administrator, account (except in Polaris's own terms, such as its account center)
 
 **Machine User**:
 A User with no Polaris identity, for automation such as CI and bots. It holds only API Tokens, is created only by `orrery-server user-token` on the server host, and is never touched by Polaris events.
@@ -232,18 +232,6 @@ _Avoid_: firewall, Egress Opening
 Caller-originated credential material that the platform holds for a User and may deliver into the User's Sandboxes. Its value can be written but never read back.
 _Avoid_: environment variable, config value, password
 
-**Git Provider**:
-A platform-configured Git hosting service, public or self-hosted, through which Users may link accounts.
-_Avoid_: Repository, remote
-
-**Git Account Link**:
-A User's authorization of the platform to act for that User's account on one Git Provider. Git inside the User's Sandboxes authenticates through it.
-_Avoid_: Repository, deploy key, PAT
-
-**Sandbox Token**:
-A credential given to one Sandbox at creation by which code inside it asks the platform for its owner's Git access, and nothing else. It ends with the Sandbox.
-_Avoid_: agent token, API Token
-
 **Audit Record**:
 An append-only statement that a platform mutation happened, recorded after the change and kept for a configured period.
 _Avoid_: log line, telemetry event, metric
@@ -299,7 +287,6 @@ The console's Chinese locale (`web/messages/zh.json`) uses these names for the t
 | Runtime | 运行时 |
 | Control Plane | 控制面 |
 | Enrollment Packet | 注册包 |
-| Git Account Link | Git 账号 |
 | User Quota | 配额 |
 | Resource Allocation | 已分配 (as a Node's amount; never 使用) |
 | Node Utilization | 使用率 |

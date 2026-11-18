@@ -1,6 +1,6 @@
 # ADR-0017: The whole system, completed against Coder and Daytona
 
-- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92; MCP and SDK entries amended in place by #107 (ADR-0022); periodic work advisory lock scope amended in place by #128; port-forward path corrected in place by ADR-0026; Git helper fallthrough corrected in place by #221; read-write mount amended in place by #220; upload limit and Node Resource cache amended in place by ADR-0030; `workspace_lost`, Workspace, paused and deleted Nodes, publishing and the fetch backoff amended in place by ADR-0031
+- Status: accepted; Sandbox causes, Node Resource cache, Snapshot import and build, default Snapshot and object store access amended in place by #82 (ADR-0021); build endpoint, paused and deleted Nodes, `node_lost` cascade and `workspace_lost` amended in place by #92; MCP and SDK entries amended in place by #107 (ADR-0022); periodic work advisory lock scope amended in place by #128; port-forward path corrected in place by ADR-0026; Git helper fallthrough corrected in place by #221; read-write mount amended in place by #220; upload limit and Node Resource cache amended in place by ADR-0030; `workspace_lost`, Workspace, paused and deleted Nodes, publishing and the fetch backoff amended in place by ADR-0031; Git and Secrets, command lines and `api` reachability amended in place by ADR-0032
 - Date: 2026-10-17
 
 ## Context
@@ -59,6 +59,8 @@ The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port 
 
 ### Git and Secrets
 
+(Amended in place by ADR-0032: Orrery manages no Git credentials, so Refresh, Issue, Providers and the helper no longer apply, and `GIT_*` is not reserved.)
+
 - **Refresh** of one Git Account Link is serialized; the new token is stored before anything else; only an explicit permanent error such as `invalid_grant` invalidates the link, and everything else is transient; tokens refresh ahead of expiry.
 - **Issue** validates the token first and returns the authorization URL if it fails. A host matching no Git Provider gets no answer and a zero exit; the platform helper is the only one, so git runs no other helper: in a PTY Exec it falls back to its interactive prompt, otherwise it fails authentication. The username is fixed per provider type (`oauth2` for GitLab).
 - **Providers** default to PKCE S256, which can be disabled per provider, and configure a single `base_url` from which endpoints are derived by type. Upstream revocation on unlink is best effort and never blocks the unlink.
@@ -79,7 +81,7 @@ The Gateway forwards to a Sandbox's ports for its owner or an admin: a per-port 
 
 ### Command lines
 
-The CLI a caller uses is separate from the server-side commands. `orrery` is the external CLI: it speaks only the public REST API and the Gateway, with an API Token or, inside a Sandbox, the Sandbox Token, and holds every caller-facing command, `admin` operations through REST included. The server-side binaries are `orrery-server` (run the Control Plane, migrate, bootstrap the first `admin`) and `orrery-agent` (enroll and run a Node Agent); they are installed only on platform hosts and are never needed by a caller.
+The CLI a caller uses is separate from the server-side commands. `orrery` is the external CLI: it speaks only the public REST API and the Gateway, with an API Token or, inside a Sandbox, the Sandbox Token (amended in place by ADR-0032: inside a Sandbox it uses an API Token the caller injects), and holds every caller-facing command, `admin` operations through REST included. The server-side binaries are `orrery-server` (run the Control Plane, migrate, bootstrap the first `admin`) and `orrery-agent` (enroll and run a Node Agent); they are installed only on platform hosts and are never needed by a caller.
 
 ### Web console
 
@@ -90,7 +92,7 @@ A Web console is part of the system as a separate module, implemented later. It 
 - Every failure has a terminal state and every hold is released by an event; nothing waits on a timer that the design forbids.
 - A dev server, TensorBoard or Jupyter in a Sandbox is reachable by its owner without opening a port on the Sandbox.
 - Deleting a Node or declaring it lost is the whole revocation story; a leaked registry credential needs an operator rotation.
-- Sandbox Tokens and port-forward tickets mean `api` must be reachable from Sandboxes and browsers alike.
+- Sandbox Tokens and port-forward tickets mean `api` must be reachable from Sandboxes and browsers alike. (Amended in place by ADR-0032: Sandboxes need `api` only for the CLI a caller runs there.)
 
 ## Rejected alternatives
 

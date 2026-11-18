@@ -33,7 +33,7 @@ func TestParseToken(t *testing.T) {
 		"orr_",
 		"orr_" + id.String(),
 		"orr_" + id.String() + "_",
-		"ors_" + id.String() + "_" + secret,
+		"orn_" + id.String() + "_" + secret,
 		"orr_not-a-uuid_" + secret,
 		"Bearer " + "orr_" + id.String() + "_" + secret,
 	} {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -16,10 +15,6 @@ import (
 func runMCP(c *client, args []string, stderr io.Writer) error {
 	if len(args) > 0 {
 		return fmt.Errorf("mcp takes no arguments")
-	}
-	// A Sandbox Token only works for POST /git/credential (api.md §1).
-	if strings.HasPrefix(c.Token(), "ors_") {
-		return fmt.Errorf("Sandbox Tokens are not accepted by the MCP server; use an API Token")
 	}
 	srv := mcpserver.New(c.Client, slog.New(slog.NewTextHandler(stderr, nil)))
 	return srv.Run(ctx, &sdk.StdioTransport{})

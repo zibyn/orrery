@@ -12,13 +12,11 @@ import (
 
 // Tokens are "<prefix>_<id>_<secret>". The prefix lets secret scanners spot
 // them; the id is what the server looks up, the secret is compared by hash.
-// API tokens are orr_, Node Tokens orn_, Enrollment Packets ore_. A Sandbox
-// Token is ors_, and its id is the Sandbox id (api.md §1).
+// API tokens are orr_, Node Tokens orn_, Enrollment Packets ore_.
 const (
 	apiTokenPrefix         = "orr_"
 	nodeTokenPrefix        = "orn_"
 	enrollmentPacketPrefix = "ore_"
-	sandboxTokenPrefix     = "ors_"
 )
 
 type TokenParts struct {
@@ -36,15 +34,6 @@ func ParseNodeToken(raw string) (TokenParts, bool) {
 
 func ParseEnrollmentPacket(raw string) (TokenParts, bool) {
 	return parsePrefixedToken(enrollmentPacketPrefix, raw)
-}
-
-func ParseSandboxToken(raw string) (TokenParts, bool) {
-	return parsePrefixedToken(sandboxTokenPrefix, raw)
-}
-
-// SandboxToken is the wire form of a Sandbox Token.
-func SandboxToken(id uuid.UUID, secret string) string {
-	return sandboxTokenPrefix + id.String() + "_" + secret
 }
 
 func parsePrefixedToken(prefix, raw string) (TokenParts, bool) {

@@ -27,7 +27,7 @@ Supervisor 是同一个平台二进制，有四种模式：
 
 `resolv.conf` 取宿主的上游 resolver（宿主用 systemd-resolved 时取 `/run/systemd/resolve/resolv.conf`），去掉回环地址的 nameserver，因为 Sandbox 的回环不是宿主的。这些 nameserver 能不能连通，由 Egress Rules 决定（§13），平台不额外放行。
 
-Node 的部署包同时带外部 CLI。Agent 在自身可执行文件旁边找到 `orrery`，和 Supervisor 一起放进 `/.orrery/bin`。沙箱内的 Git credential helper 和 `orrery token <provider>` 就是它；CA 的信任见 `defaults.md` 的 `access.url`。每个 Exec 的 `PATH` 末尾追加 `/.orrery/bin`，环境变量的拼装见 `node-protocol.md`。Supervisor 把 spec 里的 `env` 和 `secret_env` 原样合进命令的环境，不再改动。
+Node 的部署包同时带外部 CLI。Agent 在自身可执行文件旁边找到 `orrery`，和 Supervisor 一起放进 `/.orrery/bin`；沙箱内的 CLI 对 CA 的信任见 `defaults.md` 的 `access.url`。每个 Exec 的 `PATH` 末尾追加 `/.orrery/bin`，环境变量的拼装见 `node-protocol.md`。Supervisor 把 spec 里的 `env` 和 `secret_env` 原样合进命令的环境，不再改动。
 
 Supervisor 和命令都以镜像默认的 USER 运行，平台不另选 uid。`/.orrery/run` 在宿主上要让这个用户可写。沙箱内的进程能篡改本 Sandbox 的记录。记录不是防 Sandbox 自身进程的边界：Sandbox 本来就属于它的 owner，而记录按 Sandbox 分目录，影响不到别的 Sandbox。
 
@@ -129,7 +129,7 @@ Local 上所有 User 共用 Node 配置里的同一个非特权 uid，User 之�
 
 - **Create**：先执行 `systemctl set-property --runtime orrery-sb-<id>.slice CPUQuota= MemoryMax= TasksMax=`，再执行 `systemd-run --unit=orrery-sb-<id> --slice=orrery-sb-<id>.slice supervisor init` 起占位进程。占位进程就是这个 Runtime 实例，只要它在，slice 就不会因为空闲被回收。回读直接读宿主上这个 slice 的 cgroup 文件。
 - **Exec**：执行 `systemd-run --unit=orrery-exec-<exec_id> --slice=orrery-sb-<id>.slice --uid=<Node 配置的非特权用户> supervisor run <exec_id>`。这是一个瞬态 service，与 Agent 进程无关。Agent 拒绝以 root 运行 Local Exec。瞬态 service 成功退出后，systemd 会直接卸载这个单元，不留退出状态，所以退出状态以 `exit` 文件为准。
-- **路径**：没有 §2 的挂载，也没有自己的根文件系统。Sandbox 的工作目录是 `<data-root>/sandboxes/<id>/workspace`，cwd 是它，同时设置 `ORRERY_WORKSPACE` 为这个路径；它就是 Local Sandbox 持久化的文件系统，按 §16 以完整树提交和恢复。卷挂在 `<data-root>/sandboxes/<id>/volumes/<卷名>`，`ORRERY_VOLUMES` 指向这个目录，请求里的 `path` 不生效（§17）；`PATH` 追加和 credential helper 用 Agent 自己的 bin 目录（`node-protocol.md`）；Supervisor 的记录目录是 `<data-root>/sandboxes/<id>/run`，`<data-root>` 即 Agent 的 `--data-root`。
+- **路径**：没有 §2 的挂载，也没有自己的根文件系统。Sandbox 的工作目录是 `<data-root>/sandboxes/<id>/workspace`，cwd 是它，同时设置 `ORRERY_WORKSPACE` 为这个路径；它就是 Local Sandbox 持久化的文件系统，按 §16 以完整树提交和恢复。卷挂在 `<data-root>/sandboxes/<id>/volumes/<卷名>`，`ORRERY_VOLUMES` 指向这个目录，请求里的 `path` 不生效（§17）；`PATH` 追加的是 Agent 自己的 bin 目录（`node-protocol.md`）；Supervisor 的记录目录是 `<data-root>/sandboxes/<id>/run`，`<data-root>` 即 Agent 的 `--data-root`。
 - **Inspect**：看占位 unit 是否 active。
 - **Stop**：`systemctl stop orrery-sb-<id>.slice`，停掉 slice 里的所有单元，然后按 §16 提交工作目录。
 - **GPU**：每个 `orrery-exec-<exec_id>` 瞬态 service 带 `DevicePolicy=closed` 和 `DeviceAllow`（所分配卡的 `/dev/nvidia<N>`，以及 `/dev/nvidiactl`、`/dev/nvidia-uvm`），同时设置 `CUDA_VISIBLE_DEVICES`。注册时由能力自检验证：通过就报 `enforced`，否则报 `best_effort`。`runtime: local` 的请求接受 `best_effort`（ADR-0009）。

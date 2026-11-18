@@ -186,49 +186,6 @@ trap cleanup EXIT
 # Start from a clean volume every time; a killed previous run leaves one.
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 
-# Gitea is the e2e Git backend. It needs its administrator, its OAuth2
-# application and a user for the browser half of the link flow before the
-# Control Plane starts, because the provider file names the application's
-# secret (ADR-0013).
-export ORRERY_GITEA_URL="http://${HOST_GATEWAY}:13000"
-GITEA_ADMIN="gitea-admin"
-GITEA_ADMIN_PASSWORD="gitea-admin-password-123"
-GITEA_USER="gitea-user"
-GITEA_USER_PASSWORD="gitea-user-password-123"
-"${COMPOSE[@]}" up -d postgres gitea
-code=""
-for _ in $(seq 1 120); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:13000/api/healthz" || true)"
-  [ "$code" = "200" ] && break
-  sleep 1
-done
-if [ "$code" != "200" ]; then
-  echo "gitea did not become ready (last status: ${code:-none})" >&2
-  "${COMPOSE[@]}" logs --no-color gitea >&2 || true
-  exit 1
-fi
-"${COMPOSE[@]}" exec -T -u git gitea gitea admin user create \
-  --username "$GITEA_ADMIN" --password "$GITEA_ADMIN_PASSWORD" \
-  --email gitea-admin@example.com --admin --must-change-password=false >/dev/null
-"${COMPOSE[@]}" exec -T -u git gitea gitea admin user create \
-  --username "$GITEA_USER" --password "$GITEA_USER_PASSWORD" \
-  --email gitea-user@example.com --must-change-password=false >/dev/null
-GITEA_TOKEN="$("${COMPOSE[@]}" exec -T -u git gitea gitea admin user generate-access-token \
-  --username "$GITEA_ADMIN" --token-name e2e --scopes all --raw | tail -n1 | tr -d '\r')"
-if [ -z "$GITEA_TOKEN" ]; then
-  echo "could not create a Gitea API token" >&2
-  exit 1
-fi
-GITEA_APP="$(curl -fsS -H "Authorization: token $GITEA_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"orrery\",\"redirect_uris\":[\"${ORRERY_ACCESS_URL%/}/api/v1/external-auth/gitea/callback\"],\"confidential_client\":true,\"skip_secondary_authorization\":true}" \
-  "http://127.0.0.1:13000/api/v1/user/applications/oauth2")"
-read -r GITEA_CLIENT_ID GITEA_CLIENT_SECRET < <(printf '%s' "$GITEA_APP" |
-  python3 -c 'import json, sys; app = json.load(sys.stdin); print(app["client_id"], app["client_secret"])')
-if [ -z "$GITEA_CLIENT_ID" ] || [ -z "$GITEA_CLIENT_SECRET" ]; then
-  echo "could not create the Gitea OAuth2 application: $GITEA_APP" >&2
-  exit 1
-fi
-
 # RustFS and the platform registry are behind the object-store and image-pull
 # scenarios, and the Control Plane imports the configured platform_snapshots
 # at startup, so both must be serving first. The registry answers 401 without
@@ -321,13 +278,6 @@ builds:
   timeout: 1h
 encryption_keys:
   - {id: e2e, key: ${E2E_ENCRYPTION_KEY}}
-git_providers:
-  - id: gitea
-    type: gitea
-    client_id: ${GITEA_CLIENT_ID}
-    client_secret: ${GITEA_CLIENT_SECRET}
-    base_url: ${ORRERY_GITEA_URL}
-    scopes: [read:user, read:repository, write:repository]
 oidc:
   issuer_url: ${E2E_OIDC_ISSUER_URL}
   client_id: orrery
@@ -479,12 +429,6 @@ if [ -n "${ORRERY_E2E_CONSOLE:-}" ]; then
 fi
 
 ORRERY_E2E_API_URL="$API_URL" \
-ORRERY_E2E_ACCESS_URL="$ORRERY_ACCESS_URL" \
-ORRERY_E2E_GITEA_URL="$ORRERY_GITEA_URL" \
-ORRERY_E2E_GITEA_USER="$GITEA_USER" \
-ORRERY_E2E_GITEA_PASSWORD="$GITEA_USER_PASSWORD" \
-ORRERY_E2E_GITEA_TOKEN="$GITEA_TOKEN" \
-ORRERY_E2E_GIT_PROVIDER="gitea" \
 ORRERY_E2E_CLI="$PWD/.e2e/orrery" \
 ORRERY_E2E_AGENT="$PWD/.e2e/orrery-agent" \
 ORRERY_E2E_NODE_URL="$NODE_URL" \

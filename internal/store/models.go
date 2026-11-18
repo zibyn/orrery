@@ -95,6 +95,7 @@ type Exec struct {
 	Generation        int64
 	IdempotencyKey    *string
 	State             *string
+	SecretEnvCt       []byte
 }
 
 type ExecLogChunk struct {
@@ -133,17 +134,6 @@ type GenerationUpload struct {
 	ExpiresAt        pgtype.Timestamptz
 	CreatedAt        pgtype.Timestamptz
 	VolumeID         *uuid.UUID
-}
-
-type GitLink struct {
-	UserID         uuid.UUID
-	ProviderID     string
-	AccessTokenCt  []byte
-	RefreshTokenCt []byte
-	KeyID          string
-	ExpiresAt      pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
 }
 
 type Gpu struct {
@@ -242,7 +232,6 @@ type Sandbox struct {
 	GpuCount         int32
 	IdleStopSeconds  int32
 	LastActivityAt   pgtype.Timestamptz
-	TokenCt          []byte
 	SecretEnvCt      []byte
 	Generation       int64
 	IdempotencyKey   *string
@@ -250,7 +239,6 @@ type Sandbox struct {
 	UpdatedAt        pgtype.Timestamptz
 	DeletedAt        pgtype.Timestamptz
 	GpuModel         *string
-	TokenKeyID       *string
 	Conditions       json.RawMessage
 	Kind             string
 	Runtime          string

@@ -34,7 +34,7 @@ func testKeyring(t *testing.T) *keyring.Keyring {
 // touches the database (ADR-0017).
 func TestPutSecretRejections(t *testing.T) {
 	s := &Server{cfg: Config{EncryptionKeys: testKeyring(t)}}
-	for _, name := range []string{"GIT_TOKEN", "LD_PRELOAD", "ORRERY_SANDBOX_TOKEN", "PATH", "HOME"} {
+	for _, name := range []string{"LD_PRELOAD", "ORRERY_SANDBOX_TOKEN", "PATH", "HOME"} {
 		t.Run(name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPut, "/api/v1/secrets/"+name,
@@ -73,12 +73,12 @@ func TestSecretFeatureWithoutEncryptionKeys(t *testing.T) {
 }
 
 func TestSecretNameAndSizeLimits(t *testing.T) {
-	for _, name := range []string{"GITHUB_TOKEN", "MY_PATH", "PATHX", "git_token", "ORRERY", "LD"} {
+	for _, name := range []string{"GITHUB_TOKEN", "GIT_TOKEN", "MY_PATH", "PATHX", "git_token", "ORRERY", "LD"} {
 		if code, _ := secretUploadProblem(name, "x"); code != "" {
 			t.Errorf("secretUploadProblem(%q) = %q, want allowed", name, code)
 		}
 	}
-	for _, name := range []string{"", " padded", "GIT_", "LD_", "ORRERY_", "PATH", "HOME"} {
+	for _, name := range []string{"", " padded", "LD_", "ORRERY_", "PATH", "HOME"} {
 		if code, _ := secretUploadProblem(name, "x"); code == "" {
 			t.Errorf("secretUploadProblem(%q) allowed a reserved name", name)
 		}
@@ -110,12 +110,12 @@ func TestSecretQuota(t *testing.T) {
 // The keys of a Sandbox's secrets mapping follow the Secret name rules
 // (ADR-0017): reserved prefixes and malformed environment names are refused.
 func TestSecretEnvNameValidation(t *testing.T) {
-	for _, name := range []string{"TOKEN", "GITHUB_TOKEN", "MY_PATH", "API_KEY"} {
+	for _, name := range []string{"TOKEN", "GITHUB_TOKEN", "GIT_TOKEN", "MY_PATH", "API_KEY"} {
 		if code, _ := secretEnvNameProblem(name); code != "" {
 			t.Errorf("secretEnvNameProblem(%q) = %q, want allowed", name, code)
 		}
 	}
-	for _, name := range []string{"", " padded", "A=B", "A\x00B", "GIT_", "LD_", "ORRERY_", "PATH", "HOME"} {
+	for _, name := range []string{"", " padded", "A=B", "A\x00B", "LD_", "ORRERY_", "PATH", "HOME"} {
 		if code, _ := secretEnvNameProblem(name); code == "" {
 			t.Errorf("secretEnvNameProblem(%q) allowed a reserved or malformed name", name)
 		}

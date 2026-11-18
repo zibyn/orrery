@@ -89,30 +89,6 @@ services:
       timeout: 3s
       retries: 60
 
-  # The e2e Git backend. scripts/e2e.sh creates the administrator, the OAuth2
-  # application and the link-flow user through the Gitea CLI and API before the
-  # Control Plane starts.
-  gitea:
-    image: gitea/gitea:1.24.6
-    # The e2e Git backend; the reference deployment does not start it.
-    profiles: ["e2e"]
-    environment:
-      GITEA__database__DB_TYPE: sqlite3
-      GITEA__security__INSTALL_LOCK: "true"
-      GITEA__server__ROOT_URL: "${ORRERY_GITEA_URL:-http://127.0.0.1:13000}/"
-      GITEA__server__HTTP_PORT: "3000"
-      GITEA__service__DISABLE_REGISTRATION: "true"
-      GITEA__oauth2__ENABLED: "true"
-      # A short-lived access token and rotating refresh tokens make the
-      # git-refresh scenario prove that concurrent refresh is serialized: a
-      # second refresh with the same token would be rejected upstream.
-      GITEA__oauth2__ACCESS_TOKEN_EXPIRATION_TIME: "120"
-      GITEA__oauth2__INVALIDATE_REFRESH_TOKENS: "true"
-    volumes:
-      - gitea-data:/data
-    ports:
-      - "13000:3000"
-
   server:
     build:
       context: ..
@@ -144,6 +120,5 @@ services:
       - "18081:8081"
 
 volumes:
-  gitea-data:
   registry-source-data:
   rustfs-data:

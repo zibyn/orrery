@@ -313,6 +313,7 @@ class Orrery:
         argv: list[str],
         *,
         env: dict[str, str] | None = None,
+        secrets: dict[str, str] | None = None,
         cwd: str | None = None,
         timeout: int | None = None,
         stdin: str | None = None,
@@ -320,6 +321,7 @@ class Orrery:
         body = _clean({
             "argv": list(argv),
             "env": env,
+            "secrets": secrets,
             "cwd": cwd,
             "timeout": timeout,
             "stdin": stdin,

@@ -253,9 +253,6 @@ database: {host: postgres, user: orrery, password: secret, name: orrery}
 s3: {secret_key: s3-secret}
 encryption_keys:
   - {id: k1, key: `+key+`}
-git_providers:
-  - {id: gitea, type: gitea, client_id: cid, client_secret: inline-secret,
-     base_url: https://git.example.com, scopes: [read:user]}
 oidc: {issuer_url: https://idp.test, client_id: oidc-id, client_secret: oidc-secret, audience: api://orrery, webhook_secret: oidc-webhook}
 registry: {addr: cp.example.com:9443, username: orrery, password: registry-secret}
 platform_snapshots:
@@ -271,10 +268,6 @@ platform_snapshots:
 	}
 	if _, _, err := cfg.EncryptionKeys.Encrypt([]byte("x"), nil); err != nil {
 		t.Fatalf("Encrypt: %v", err)
-	}
-	if len(cfg.GitProviders) != 1 || cfg.GitProviders[0].ClientSecret != "inline-secret" ||
-		cfg.GitProviders[0].AuthURL != "https://git.example.com/login/oauth/authorize" {
-		t.Fatalf("GitProviders = %+v", cfg.GitProviders)
 	}
 	if cfg.OIDC.ClientSecret != "oidc-secret" || cfg.OIDC.Audience != "api://orrery" {
 		t.Fatalf("OIDC = %+v", cfg.OIDC)
@@ -318,15 +311,6 @@ egress:
 func TestLoadConfigYAMLRejectsBadLists(t *testing.T) {
 	base := "database: {host: h, user: u, password: p, name: n}\ns3: {secret_key: s}\n" + testOIDCYAML
 	for name, body := range map[string]string{
-		"duplicate provider id": `
-git_providers:
-  - {id: g, type: github, client_id: c, client_secret: s, scopes: []}
-  - {id: g, type: github, client_id: c, client_secret: s, scopes: []}
-`,
-		"provider without secret": `
-git_providers:
-  - {id: g, type: github, client_id: c, scopes: []}
-`,
 		"registry username only": `
 registry: {addr: r, username: u}
 `,
@@ -394,21 +378,5 @@ func TestLoadConfigFallsBackToEnvironment(t *testing.T) {
 	}
 	if cfg.DatabaseURL != "postgres://u:p@db.example:5432/x" {
 		t.Fatalf("DatabaseURL = %q", cfg.DatabaseURL)
-	}
-}
-
-func TestLoadConfigYAMLGitProviderScopesDefaultEmpty(t *testing.T) {
-	writeConfigYAML(t, `
-database: {host: h, user: u, password: p, name: n}
-s3: {secret_key: s}
-git_providers:
-  - {id: g, type: github, client_id: c, client_secret: s}
-`+testOIDCYAML)
-	cfg, err := LoadConfig(discardLogger())
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if len(cfg.GitProviders) != 1 || cfg.GitProviders[0].Scopes == nil || len(cfg.GitProviders[0].Scopes) != 0 {
-		t.Fatalf("GitProviders = %+v", cfg.GitProviders)
 	}
 }

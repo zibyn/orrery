@@ -43,9 +43,6 @@ type Error struct {
 	Status int
 	Code   string
 	Detail string
-	// AuthorizeURL is the extension POST /git/credential carries when the
-	// owner has no linked Git account.
-	AuthorizeURL string
 }
 
 // Error implements error. It prefers "code: detail", then whichever is set.
@@ -160,12 +157,11 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 
 func parseError(status int, data []byte) *Error {
 	var p struct {
-		Code         string `json:"code"`
-		Detail       string `json:"detail"`
-		AuthorizeURL string `json:"authorize_url"`
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
 	}
 	if json.Unmarshal(data, &p) == nil && p.Code != "" {
-		return &Error{Status: status, Code: p.Code, Detail: p.Detail, AuthorizeURL: p.AuthorizeURL}
+		return &Error{Status: status, Code: p.Code, Detail: p.Detail}
 	}
 	return &Error{Status: status, Detail: fmt.Sprintf("HTTP %d: %s", status, strings.TrimSpace(string(data)))}
 }

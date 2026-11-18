@@ -75,8 +75,7 @@ func lookupLocalUser(raw string) (localUser, error) {
 }
 
 // agentBinDir is the directory holding the Agent binary and the sibling
-// orrery CLI. Local Runtime appends it to PATH and points the Git
-// credential helper at it (node-protocol.md).
+// orrery CLI. Local Runtime appends it to PATH (node-protocol.md).
 func agentBinDir() string {
 	self, err := os.Executable()
 	if err != nil {

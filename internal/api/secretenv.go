@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,7 +18,8 @@ import (
 )
 
 // A Sandbox's `secrets` mapping is snapshotted into `sandboxes.secret_env_ct`
-// at every start; a StartExec decrypts it into `secret_env` (schema.md).
+// at every start, and an Exec's into `execs.secret_env_ct` at creation; a
+// StartExec decrypts both into `secret_env` (schema.md).
 
 // secretEnvEntry is one variable of a Sandbox's Secret snapshot. The value
 // stays the owner-bound ciphertext from the secrets table; only the Control
@@ -136,19 +138,27 @@ func referencedSecretNames(snapshot secretEnvSnapshot) []string {
 	return names
 }
 
-// decryptSecretEnv opens the start-time snapshot for one StartExec. The key
+// decryptSecretEnv opens the snapshots for one StartExec, a later one
+// overriding an earlier one's names: the Sandbox's, then the Exec's. The key
 // stays in the Control Plane; the Agent only relays the values
 // (node-protocol.md).
-func decryptSecretEnv(keys *keyring.Keyring, ownerID uuid.UUID, raw []byte) (map[string]string, error) {
-	snapshot, err := decodeSecretEnv(raw)
-	if err != nil || len(snapshot) == 0 {
-		return nil, err
+func decryptSecretEnv(keys *keyring.Keyring, ownerID uuid.UUID, raws ...[]byte) (map[string]string, error) {
+	merged := secretEnvSnapshot{}
+	for _, raw := range raws {
+		snapshot, err := decodeSecretEnv(raw)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(merged, snapshot)
+	}
+	if len(merged) == 0 {
+		return nil, nil
 	}
 	if keys == nil {
 		return nil, errors.New("secret storage is not configured")
 	}
-	env := make(map[string]string, len(snapshot))
-	for name, entry := range snapshot {
+	env := make(map[string]string, len(merged))
+	for name, entry := range merged {
 		value, err := keys.Decrypt(entry.Ciphertext, entry.KeyID, []byte(ownerID.String()))
 		if err != nil {
 			return nil, fmt.Errorf("decrypt Secret %s: %w", entry.Name, err)
@@ -158,8 +168,24 @@ func decryptSecretEnv(keys *keyring.Keyring, ownerID uuid.UUID, raw []byte) (map
 	return env, nil
 }
 
+// checkSecretEnv applies the key rules to a `secrets` mapping and requires
+// Secret storage when it is not empty, writing the problem otherwise. Sandbox
+// and Exec creation share it (api.md §4).
+func (s *Server) checkSecretEnv(w http.ResponseWriter, refs secretEnvSnapshot) bool {
+	if len(refs) == 0 {
+		return true
+	}
+	for _, env := range slices.Sorted(maps.Keys(refs)) {
+		if code, detail := secretEnvNameProblem(env); code != "" {
+			writeProblem(w, code, detail)
+			return false
+		}
+	}
+	return s.requireSecrets(w)
+}
+
 // secretEnvNameProblem applies the Secret name rules to an environment
-// variable name in a Sandbox's secrets mapping. The platform injects these
+// variable name in a Sandbox's or an Exec's secrets mapping. The platform injects these
 // variables, so the same reserved names are off limits (ticket #75,
 // ADR-0017).
 func secretEnvNameProblem(name string) (code, detail string) {
@@ -167,7 +193,7 @@ func secretEnvNameProblem(name string) (code, detail string) {
 		return "invalid_request", "secrets keys must be non-empty, trimmed, and contain no '=' or NUL"
 	}
 	if reservedSecretName(name) {
-		return "invalid_request", "secrets keys may not use a reserved name: GIT_*, LD_*, ORRERY_*, PATH and HOME are not allowed"
+		return "invalid_request", "secrets keys may not use a reserved name: LD_*, ORRERY_*, PATH and HOME are not allowed"
 	}
 	return "", ""
 }

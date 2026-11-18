@@ -19,7 +19,7 @@ const (
 	maxSecretBytes    = 24 << 10
 )
 
-var reservedSecretPrefixes = []string{"GIT_", "LD_", "ORRERY_"}
+var reservedSecretPrefixes = []string{"LD_", "ORRERY_"}
 
 // PUT /secrets/{name} creates or overwrites a write-only Secret. The value is
 // encrypted with the deployment keyring, bound to its owner, and never read
@@ -178,7 +178,7 @@ func secretUploadProblem(name, value string) (code, detail string) {
 		return "invalid_request", "name must be non-empty, trimmed, and at most 255 characters"
 	}
 	if reservedSecretName(name) {
-		return "invalid_request", "name is reserved: GIT_*, LD_*, ORRERY_*, PATH and HOME are not allowed"
+		return "invalid_request", "name is reserved: LD_*, ORRERY_*, PATH and HOME are not allowed"
 	}
 	if len(value) > maxSecretBytes {
 		return "payload_too_large", "a Secret value is at most 24 KiB"

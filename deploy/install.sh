@@ -472,11 +472,6 @@ quotas:
   default_gpu: 1
   default_sandbox: 5
 
-# Git OAuth applications (defaults.md):
-# git_providers:
-#   - {id: gitea, type: gitea, client_id: ..., client_secret: ...,
-#      base_url: https://git.example.com, scopes: [read:user]}
-
 # Polaris, the only login (ADR-0029, docs/deploy.md).
 $oidc
 

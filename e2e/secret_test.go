@@ -56,7 +56,7 @@ func TestSecrets(t *testing.T) {
 	}
 
 	// Reserved names and the 24 KiB cap are rejected (ADR-0017).
-	status, body := call(t, http.MethodPut, "/api/v1/secrets/GIT_TOKEN", admin, map[string]string{"value": "x"})
+	status, body := call(t, http.MethodPut, "/api/v1/secrets/LD_PRELOAD", admin, map[string]string{"value": "x"})
 	if status != http.StatusBadRequest {
 		t.Fatalf("reserved Secret name: %d %s, want 400", status, body)
 	}
@@ -156,7 +156,7 @@ func TestSecretInject(t *testing.T) {
 	// A reserved environment name and an unknown Secret name are both 400.
 	status, body = call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
 		"cpu": 0.5, "memory": 128 << 20, "idle_stop": 0,
-		"secrets": map[string]string{"GIT_TOKEN": secretName},
+		"secrets": map[string]string{"LD_PRELOAD": secretName},
 	})
 	if status != http.StatusBadRequest {
 		t.Fatalf("reserved secrets key: %d %s, want 400", status, body)
@@ -281,5 +281,59 @@ func TestSecretInject(t *testing.T) {
 	waitForNodeReady(t, admin, nodeName)
 	if got := readSecret(); got != "second-value" {
 		t.Fatalf("after an Agent restart the Exec saw %q, want second-value", got)
+	}
+}
+
+// TestExecSecretInject: an Exec's own secrets reach its environment, a Secret
+// updated while the Sandbox runs reaches the next Exec, and the values are
+// kept out of the stored env and stdin, the copy cleared once the Exec ends
+// (api.md §4, ADR-0032).
+func TestExecSecretInject(t *testing.T) {
+	admin := adminToken(t)
+	raiseSandboxQuota(t, admin, 10)
+	suffix := time.Now().UnixNano()
+	secretName := fmt.Sprintf("exec-inject-%d", suffix)
+	first, second := fmt.Sprintf("v1-%d", suffix), fmt.Sprintf("v2-%d", suffix)
+	t.Cleanup(func() {
+		_, _ = call(t, http.MethodDelete, "/api/v1/secrets/"+secretName, admin, nil)
+	})
+	put := func(value string) {
+		t.Helper()
+		if status, body := call(t, http.MethodPut, "/api/v1/secrets/"+secretName, admin,
+			map[string]string{"value": value}); status != http.StatusCreated && status != http.StatusOK {
+			t.Fatalf("put Secret: %d %s", status, body)
+		}
+	}
+	sandboxID := readyExecSandbox(t, admin, 256<<20)
+	printTOK := func() string {
+		t.Helper()
+		e := createExec(t, admin, sandboxID, map[string]any{
+			"argv":    []string{"printenv", "TOK"},
+			"secrets": map[string]string{"TOK": secretName},
+		})
+		stdout, stderr, _, result := followExec(t, admin, e.ID, 60*time.Second)
+		if result.Cause != "exited" || result.ExitCode == nil || *result.ExitCode != 0 {
+			t.Fatalf("printenv TOK: result = %+v, stderr %s", result, stderr)
+		}
+		return strings.TrimSpace(string(stdout))
+	}
+
+	put(first)
+	if got := printTOK(); got != first {
+		t.Fatalf("printenv TOK = %q, want %q", got, first)
+	}
+	put(second)
+	if got := printTOK(); got != second {
+		t.Fatalf("after the update, without a restart, printenv TOK = %q, want %q", got, second)
+	}
+
+	if n := psqlCount(t, fmt.Sprintf(
+		"SELECT count(*) FROM execs WHERE sandbox_id = '%s' AND (env::text LIKE '%%%s%%' OR env::text LIKE '%%%s%%' OR encode(stdin, 'escape') LIKE '%%%s%%' OR encode(stdin, 'escape') LIKE '%%%s%%')",
+		sandboxID, first, second, first, second)); n != "0" {
+		t.Fatalf("%s Exec rows carry a Secret value in env or stdin", n)
+	}
+	if n := psqlCount(t, fmt.Sprintf(
+		"SELECT count(*) FROM execs WHERE sandbox_id = '%s' AND secret_env_ct IS NOT NULL", sandboxID)); n != "0" {
+		t.Fatalf("%s finished Exec rows still hold the Secret copy", n)
 	}
 }

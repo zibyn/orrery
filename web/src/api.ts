@@ -58,17 +58,6 @@ export type ListResponse<T> = {
   next_cursor: string | null
 }
 
-export type GitProvider = {
-  id: string
-  type: string
-  host: string
-}
-
-export type GitLink = {
-  provider_id: string
-  linked_at: string
-}
-
 export type SandboxState =
   | 'pending'
   | 'provisioning'

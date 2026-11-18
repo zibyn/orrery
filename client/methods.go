@@ -118,29 +118,6 @@ func (c *Client) DeleteSecret(ctx context.Context, name string) (*Secret, error)
 	return &out, err
 }
 
-// Git.
-
-// GitCredential returns a short-lived Git credential for a host or provider.
-func (c *Client) GitCredential(ctx context.Context, req GitCredentialRequest) (*GitCredential, error) {
-	var out GitCredential
-	err := c.do(ctx, http.MethodPost, "/api/v1/git/credential", nil, req, &out, "")
-	return &out, err
-}
-
-// ListGitLinks returns the authenticated User's linked Git accounts.
-func (c *Client) ListGitLinks(ctx context.Context) (*GitLinkList, error) {
-	var out GitLinkList
-	err := c.do(ctx, http.MethodGet, "/api/v1/users/me/git-links", nil, nil, &out, "")
-	return &out, err
-}
-
-// DeleteGitLink unlinks one Git provider account.
-func (c *Client) DeleteGitLink(ctx context.Context, providerID string) (*GitLink, error) {
-	var out GitLink
-	err := c.do(ctx, http.MethodDelete, "/api/v1/users/me/git-links/"+url.PathEscape(providerID), nil, nil, &out, "")
-	return &out, err
-}
-
 // Audit.
 
 // ListAudit returns one filtered page of audit entries.

@@ -268,9 +268,6 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		writeProblem(w, "invalid_request", `workspace was removed: /workspace is part of the Sandbox's own filesystem; mount data with volumes: [{"volume": ..., "path": ...}]`)
 		return
 	}
-	if !s.requireSandboxTokens(w) {
-		return
-	}
 	runtime, runtimeCode, runtimeDetail := sandboxRuntime(req)
 	if runtimeCode != "" {
 		writeProblem(w, runtimeCode, runtimeDetail)
@@ -328,21 +325,8 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	secretMapping := secretEnvRefs(req.Secrets)
-	if len(secretMapping) > 0 {
-		envNames := make([]string, 0, len(secretMapping))
-		for env := range secretMapping {
-			envNames = append(envNames, env)
-		}
-		slices.Sort(envNames)
-		for _, env := range envNames {
-			if code, detail := secretEnvNameProblem(env); code != "" {
-				writeProblem(w, code, detail)
-				return
-			}
-		}
-		if !s.requireSecrets(w) {
-			return
-		}
+	if !s.checkSecretEnv(w, secretMapping) {
+		return
 	}
 	idleStop := s.cfg.IdleStopSeconds
 	if req.IdleStop != nil {
@@ -371,13 +355,6 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 	id, err := uuid.NewV7()
 	if err != nil {
 		s.internal(w, "generate Sandbox id", err)
-		return
-	}
-	// The Sandbox Token is minted with the row and lives until deletion
-	// (ADR-0016, schema.md).
-	tokenCt, tokenKeyID, err := s.issueSandboxToken(p.user.ID)
-	if err != nil {
-		s.internal(w, "issue Sandbox Token", err)
 		return
 	}
 	name := id.String()
@@ -457,7 +434,6 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request, p *
 				SnapshotDigest: snapshot, Cpu: *req.CPU, Memory: *req.Memory,
 				GpuCount: gpuCount, GpuModel: gpuModel,
 				IdleStopSeconds: idleStop, IdempotencyKey: key, SecretEnvCt: secretEnvCt,
-				TokenCt: tokenCt, TokenKeyID: tokenKeyID,
 				EgressMode: egressMode, EgressAllow: egressAllow,
 				LinksFrom: linksFrom, LinksPorts: linksPorts,
 			})

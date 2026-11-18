@@ -7,7 +7,7 @@
 - **Exec**：持久执行意图。输出按序落盘，Node Agent 重启后可重新接上；另有可重连的 PTY。
 - **Snapshot**：可复用的环境模板，支持按 digest 导入和 BuildKit 构建。
 - **Resource**：内容寻址的稳定产物，由 Workspace `publish` 或 CLI 上传产生。
-- **多用户与凭据**：API Token、Session、OIDC、User Quota、Secret、Git Account Link 和审计记录。
+- **多用户与凭据**：API Token、Session、OIDC、User Quota、Secret 和审计记录。
 
 完整术语以 [`GLOSSARY.md`](GLOSSARY.md) 为准；架构决策见 [`docs/adr/`](docs/adr/)。
 
@@ -28,8 +28,8 @@
 ```
 
 - **Control Plane**（`orrery-server`）：身份、调度、生命周期、配额、审计，以及 API、Gateway 和 Web 控制台。它只决策和执行状态，不直接进入 Sandbox。
-- **Node Agent**（`orrery-agent`）：在 Node 上落地 Sandbox、Exec、文件、Git、端口转发和构建；用 Enrollment Packet 注册后长期出站连接。
-- **Gateway**：文件、Git、Exec 输出、PTY 和端口隧道都走已授权的 Data Plane，不暴露 Sandbox 的网络地址。
+- **Node Agent**（`orrery-agent`）：在 Node 上落地 Sandbox、Exec、文件、端口转发和构建；用 Enrollment Packet 注册后长期出站连接。
+- **Gateway**：文件、Exec 输出、PTY 和端口隧道都走已授权的 Data Plane，不暴露 Sandbox 的网络地址。
 - 部署只有**一个公开端口**：nginx 终止 TLS，按路径分流到 registry（`/v2/`）、Node gRPC（`/orrery.node.v1.Node/`）和其余 API/控制台。
 
 ## 部署
@@ -60,7 +60,7 @@ orrery files cp <sandbox-id>:out/report.txt .
 orrery port-forward <sandbox-id> 8080:3000
 ```
 
-`orrery` 还覆盖 Snapshot 导入/构建、Resource 上传/发布、Secret、Git Account、token、用户和节点管理；`orrery` 无参数时打印全部命令。
+`orrery` 还覆盖 Snapshot 导入/构建、Resource 上传/发布、Secret、token、用户和节点管理；`orrery` 无参数时打印全部命令。
 
 ### REST API
 
@@ -75,7 +75,7 @@ curl -fsS -X POST https://cp.example.com/api/v1/sandboxes \
 
 ### MCP Tool API
 
-`orrery mcp` 通过 stdio 提供 MCP 工具（ADR-0022；工具清单与语义见 `docs/spec/api.md` §7）。凭据解析与其它子命令一致，但不接受 Sandbox Token。诊断信息写 stderr，stdout 只有协议帧。
+`orrery mcp` 通过 stdio 提供 MCP 工具（ADR-0022；工具清单与语义见 `docs/spec/api.md` §7）。凭据解析与其它子命令一致。诊断信息写 stderr，stdout 只有协议帧。
 
 Claude Code：
 

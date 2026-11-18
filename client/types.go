@@ -98,24 +98,6 @@ type AuditList struct {
 	NextCursor *string `json:"next_cursor"`
 }
 
-// GitLink is a linked Git provider account.
-type GitLink struct {
-	ProviderID string    `json:"provider_id"`
-	LinkedAt   time.Time `json:"linked_at"`
-}
-
-// GitLinkList is one page of Git links.
-type GitLinkList struct {
-	Items      []GitLink `json:"items"`
-	NextCursor *string   `json:"next_cursor"`
-}
-
-// GitCredential is a short-lived Git username and password.
-type GitCredential struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
 // EnrollmentPacket lets an agent enroll with the Control Plane.
 type EnrollmentPacket struct {
 	ID        string    `json:"id"`
@@ -396,6 +378,7 @@ type PTY struct {
 type ExecRequest struct {
 	Argv    []string          `json:"argv"`
 	Env     map[string]string `json:"env,omitempty"`
+	Secrets map[string]string `json:"secrets,omitempty"`
 	Cwd     string            `json:"cwd,omitempty"`
 	Timeout *int64            `json:"timeout,omitempty"`
 	Stdin   *string           `json:"stdin,omitempty"`
@@ -473,12 +456,6 @@ type TokenRequest struct {
 type UpdateUserRequest struct {
 	Name  *string `json:"name,omitempty"`
 	Email *string `json:"email,omitempty"`
-}
-
-// GitCredentialRequest asks for a Git credential by host or provider.
-type GitCredentialRequest struct {
-	Host     string `json:"host,omitempty"`
-	Provider string `json:"provider,omitempty"`
 }
 
 // AuditParams filters GET /audit.
