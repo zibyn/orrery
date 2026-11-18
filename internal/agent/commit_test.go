@@ -37,12 +37,30 @@ type fakeGenerationNode struct {
 	submitted   [][]string // sha256 of the submitted file entries, per submit
 	objects     map[string][]byte
 	manifests   map[string][]byte
+	puts        map[string]int // stored PUTs per object
+	putDelay    time.Duration  // how long each object PUT takes
+	failPut     string         // the object whose next PUT fails
+	inflight    int
+	maxInflight int
 }
 
 func newFakeGenerationNode(t *testing.T) *fakeGenerationNode {
-	f := &fakeGenerationNode{objects: map[string][]byte{}, manifests: map[string][]byte{}}
+	f := &fakeGenerationNode{objects: map[string][]byte{}, manifests: map[string][]byte{}, puts: map[string]int{}}
 	f.http = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		data, _ := io.ReadAll(r.Body)
+		digest, object := strings.CutPrefix(r.URL.Path, "/objects/")
+		if r.Method == http.MethodPut && object {
+			f.mu.Lock()
+			f.inflight++
+			f.maxInflight = max(f.maxInflight, f.inflight)
+			delay := f.putDelay
+			f.mu.Unlock()
+			defer func() { f.mu.Lock(); f.inflight--; f.mu.Unlock() }()
+			time.Sleep(delay)
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			return // a canceled PUT stores nothing
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if r.Method == http.MethodGet {
@@ -55,8 +73,12 @@ func newFakeGenerationNode(t *testing.T) *fakeGenerationNode {
 		}
 		if key, ok := strings.CutPrefix(r.URL.Path, "/generations/"); ok {
 			f.manifests[key] = data
+		} else if digest == f.failPut {
+			f.failPut = ""
+			http.Error(w, "injected failure", http.StatusInternalServerError)
 		} else {
-			f.objects[strings.TrimPrefix(r.URL.Path, "/objects/")] = data
+			f.objects[digest] = data
+			f.puts[digest]++
 		}
 	}))
 	t.Cleanup(f.http.Close)
