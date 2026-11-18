@@ -33,7 +33,9 @@ docs/research/volume-bench/drive.sh | tee results.txt      # 全部五组，约 
 TARGETS=volume-60s BENCH_PHASES="install_node agent_edit seqio" docs/research/volume-bench/drive.sh
 ```
 
-`search`、`seqio` 和 `parallel_io` 会清整台宿主的页缓存（`drop_caches`）。
+`search`、`seqio` 和 `parallel_io` 会清整台宿主的页缓存（`drop_caches`）。运行期间宿主上不要有别的重负载，否则 CPU 密集的阶段和 RustFS 都会变慢。
+
+`clone` 阶段克隆的是 `drive.sh` 所在的仓库（挂进容器的 `/src`）。在 git worktree 里，容器看不到 worktree 的 gitdir，所以先 `git clone` 出一份普通仓库，再运行那份里的 `drive.sh`。本地 `git clone` 会原样复制源仓库的松散对象（基线和复测时都约 4,300 个），它们决定 `clone`、`rg` 和 `git gc` 的工作量，所以复测前不要对源仓库 `git gc`。
 
 ## 中途停止
 
