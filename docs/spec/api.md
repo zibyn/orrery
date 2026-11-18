@@ -67,7 +67,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | 方法与路径 | 说明 |
 |---|---|
 | `POST /volumes` · `GET /volumes` · `GET /volumes/{id}` · `DELETE /volumes/{id}` | `{name}`，名字在调用方未删除的卷里唯一，字符规则同 Sandbox 名字；接受 `Idempotency-Key`。卷不绑 Node，没有 provisioning，创建即 `ready`。被 Sandbox 持有时删除返回 `409`；删除立即变成 `deleted`，不向 Node 下发命令，对象由 CAS 清扫回收 |
-| `GET /volumes/{id}/files?path=` · `/files/stat` · `/files/content` · `/files/archive` | 只读，参数和返回同 §5 的同名接口，路径相对卷根。由 Control Plane 读 head Generation 的 manifest，内容经预签名 GET 取，不经 Node，不要求有 Sandbox，不推迟任何 Sandbox 的 Idle Stop。卷被持有时看到的是最近一次提交；还没有 Generation 时是空目录；卷已删除时返回 `409`。`files/content` 同样支持 `Range`。没有写接口 |
+| `GET /volumes/{id}/files?path=` · `/files/stat` · `/files/content` · `/files/archive` | 只读，参数和返回同 §5 的同名接口，路径相对卷根。由 Control Plane 读 head Generation 的 manifest，内容由 Control Plane 经对象存储的内部地址读取并校验 sha256（预签名 URL 签的是给 Node 和客户端的公开地址），不经 Node，不要求有 Sandbox，不推迟任何 Sandbox 的 Idle Stop。卷被持有时看到的是最近一次提交；还没有 Generation 时是空目录；卷已删除时返回 `409`。`files/content` 同样支持 `Range`。没有写接口 |
 | `POST /volumes/{id}/publish` | `{path, resource}` → `202` 和一个 `pending` 的 ResourceVersion；Control Plane 从 head Generation 取出 `path` 下的条目写成 manifest，不搬数据，不经 Node（`node-protocol.md`）。接受 `Idempotency-Key` |
 
 卷用来放数据：它经 FUSE 挂载，写开销是本地盘的 2.5–16 倍，有改动时每 60 秒和停止时提交，Node 丢失时丢掉最近一次提交之后的写入。Git 仓库和构建应放在 Sandbox 自己的文件系统里（`runtime.md` §17），平台不拦。

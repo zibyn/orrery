@@ -398,12 +398,33 @@ func runOnce(ctx context.Context, server string, id Identity, opts RunOptions, v
 	if err != nil {
 		return false, err
 	}
-	conn, err := grpc.NewClient(server, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(server, append([]grpc.DialOption{grpc.WithTransportCredentials(creds)}, nodeTokenOptions(id.NodeToken)...)...)
 	if err != nil {
 		return false, err
 	}
 	defer conn.Close() //nolint:errcheck // stream ends first
 	return runControlStream(ctx, conn, rt, id, opts, version)
+}
+
+// nodeTokenOptions authorize every call on the Agent's connection with the
+// Node Token, whatever context it runs on: commands use the Control
+// stream's, but the block cache's presigns, the periodic Volume commit and
+// the eviction report do not.
+func nodeTokenOptions(token string) []grpc.DialOption {
+	authorize := func(ctx context.Context) context.Context {
+		if md, _ := metadata.FromOutgoingContext(ctx); len(md.Get("authorization")) > 0 {
+			return ctx
+		}
+		return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+	}
+	return []grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			return invoker(authorize(ctx), method, req, reply, cc, opts...)
+		}),
+		grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			return streamer(authorize(ctx), desc, cc, method, opts...)
+		}),
+	}
 }
 
 // runControlStream runs one Control stream on conn: Hello, the self-check, then
@@ -470,7 +491,6 @@ func runControlStream(ctx context.Context, conn *grpc.ClientConn, rt *Runtime, i
 	// self-check below only holds back new placements (#178).
 	runner := newCommandRunner(streamCtx, rt, send)
 	reportSandbox := runner.observeSandbox
-	rt.setNodeToken(id.NodeToken)
 	rt.connect(nodev1.NewNodeClient(conn), send)
 	recvErr := make(chan error, 1)
 	go func() {

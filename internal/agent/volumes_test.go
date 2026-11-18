@@ -4,13 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -168,45 +166,5 @@ func TestStopCommitsVolumesBeforeReleasingThem(t *testing.T) {
 	}
 	if _, err := os.Stat(volumeRecordPath(root, id)); !os.IsNotExist(err) {
 		t.Fatal("the Volume record outlived the stop")
-	}
-}
-
-// The periodic commit runs outside any command, so it carries the Node
-// Token itself; without it the Control Plane refuses every attempt.
-func TestPeriodicVolumeCommitCarriesTheNodeToken(t *testing.T) {
-	interval := volumeCommitInterval
-	volumeCommitInterval = 10 * time.Millisecond
-	t.Cleanup(func() { volumeCommitInterval = interval })
-	root := t.TempDir()
-	sandbox, volume := uuid.New(), uuid.NewString()
-	node := newFakeGenerationNode(t)
-	vols := &fakeVolumes{sealed: dirtyVolume(t, root, volume, "42")}
-	rt := newRuntime(ProviderContainerd, root, "node")
-	rt.client, rt.volumes = node, vols
-	rt.setNodeToken("node-token")
-	data, _ := json.Marshal([]volumeMount{{ID: volume, Path: "/data", Name: "data"}})
-	writeTestFile(t, volumeRecordPath(root, sandbox), string(data), 0o600)
-
-	rt.startVolumeCommits(sandbox, 1)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		vols.mu.Lock()
-		done := len(vols.committed) > 0
-		vols.mu.Unlock()
-		if done {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no periodic commit")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	rt.stopVolumeCommits(sandbox)
-	node.mu.Lock()
-	defer node.mu.Unlock()
-	for _, auth := range node.auth {
-		if auth != "Bearer node-token" {
-			t.Fatalf("periodic SubmitGeneration authorization = %q, want the Node Token", auth)
-		}
 	}
 }

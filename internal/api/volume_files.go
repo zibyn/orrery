@@ -2,7 +2,6 @@ package api
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zibyn/orrery/internal/castransfer"
 	"github.com/zibyn/orrery/internal/generation"
 	"github.com/zibyn/orrery/internal/manifest"
 	"github.com/zibyn/orrery/internal/objectstore"
@@ -37,11 +35,6 @@ type volumeFileEntry struct {
 type volumeFileList struct {
 	Items []volumeFileEntry `json:"items"`
 }
-
-// objectHTTP fetches CAS objects through presigned GETs. Like the Agent's
-// client it has no timeout: an object is at most one 4 MiB block, but a
-// legacy one can be 5 GiB.
-var objectHTTP = &http.Client{}
 
 // volumeTree is a Volume's head Generation as a path index. A Volume never
 // committed is an empty directory (api.md §3).
@@ -203,7 +196,7 @@ func (s *Server) handleStatVolumeFile(w http.ResponseWriter, r *http.Request, p 
 }
 
 // handleVolumeFileContent streams a file's objects from the owner's CAS
-// through presigned GETs, without a Node (api.md §3).
+// over the store's internal endpoint, without a Node (api.md §3).
 func (s *Server) handleVolumeFileContent(w http.ResponseWriter, r *http.Request, p *principal) {
 	tree, rel, ok := s.loadVolumeTree(w, r, p)
 	if !ok {
@@ -275,16 +268,12 @@ func (f *objectFile) Read(p []byte) (int, error) {
 		if i >= len(f.digests) {
 			return 0, io.ErrUnexpectedEOF
 		}
-		var buf bytes.Buffer
-		url, err := f.s.generations.PresignGetURL(f.ctx, f.owner, f.digests[i])
-		if err == nil {
-			err = castransfer.Get(f.ctx, objectHTTP, url, &buf, f.digests[i], 0)
-		}
+		buf, err := f.s.generations.GetObject(f.ctx, f.owner, f.digests[i])
 		if err != nil {
 			f.err = err
 			return 0, err
 		}
-		f.buf, f.block = buf.Bytes(), i
+		f.buf, f.block = buf, i
 	}
 	if start >= int64(len(f.buf)) {
 		return 0, io.ErrUnexpectedEOF
@@ -305,11 +294,11 @@ func (s *Server) copyObjects(ctx context.Context, w io.Writer, owner string, e g
 		digests = []string{e.SHA256}
 	}
 	for _, digest := range digests {
-		url, err := s.generations.PresignGetURL(ctx, owner, digest)
+		data, err := s.generations.GetObject(ctx, owner, digest)
 		if err != nil {
 			return err
 		}
-		if err := castransfer.Get(ctx, objectHTTP, url, w, digest, 0); err != nil {
+		if _, err := w.Write(data); err != nil {
 			return err
 		}
 	}

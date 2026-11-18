@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"sort"
 	"strings"
@@ -35,7 +33,6 @@ type fakeGenerationStore struct {
 	generations map[string][]byte
 	content     map[string][]byte // CAS bytes served by server
 	manifests   map[string][]byte // Resource manifests by owner/address
-	server      *httptest.Server
 }
 
 func newFakeGenerationStore() *fakeGenerationStore {
@@ -88,23 +85,15 @@ func (f *fakeGenerationStore) putContent(owner uuid.UUID, data []byte) string {
 	return digest
 }
 
-// PresignGetURL serves the object from an in-process HTTP server.
-func (f *fakeGenerationStore) PresignGetURL(_ context.Context, owner, digest string) (string, error) {
+// GetObject serves the object from memory.
+func (f *fakeGenerationStore) GetObject(_ context.Context, owner, digest string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.server == nil {
-		f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			f.mu.Lock()
-			data, ok := f.content[strings.TrimPrefix(r.URL.Path, "/")]
-			f.mu.Unlock()
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			_, _ = w.Write(data)
-		}))
+	data, ok := f.content[owner+"/"+digest]
+	if !ok {
+		return nil, objectstore.ErrNotFound
 	}
-	return f.server.URL + "/" + owner + "/" + digest, nil
+	return data, nil
 }
 
 func (f *fakeGenerationStore) PutManifest(_ context.Context, owner, address string, data []byte) error {

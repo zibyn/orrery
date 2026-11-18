@@ -6,6 +6,7 @@ package objectstore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -201,6 +202,21 @@ func (s *Store) PresignGenerationPutURL(ctx context.Context, ownerID, id string)
 // GetGeneration reads a Generation manifest, or ErrNotFound.
 func (s *Store) GetGeneration(ctx context.Context, ownerID, id string) ([]byte, error) {
 	return s.get(ctx, GenerationKey(ownerID, id))
+}
+
+// GetObject reads a CAS object over the internal endpoint and rejects bytes
+// whose SHA-256 is not sha256hex. It is for the Control Plane's own reads
+// (Volume files): presigned URLs name the public endpoint, which the Control
+// Plane need not reach. Objects are at most one 4 MiB block in Volumes.
+func (s *Store) GetObject(ctx context.Context, ownerID, sha256hex string) ([]byte, error) {
+	data, err := s.get(ctx, CASKey(ownerID, sha256hex))
+	if err != nil {
+		return nil, err
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != sha256hex {
+		return nil, fmt.Errorf("object %s has sha256 %x", sha256hex, sum)
+	}
+	return data, nil
 }
 
 // DeleteGeneration removes a Generation manifest; a missing one is success.

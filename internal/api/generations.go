@@ -27,7 +27,9 @@ type generationStore interface {
 	HeadSHA256(ctx context.Context, ownerID, sha256hex string) (string, error)
 	GetGeneration(ctx context.Context, ownerID, id string) ([]byte, error)
 	DeleteGeneration(ctx context.Context, ownerID, id string) error
-	PresignGetURL(ctx context.Context, ownerID, sha256hex string) (string, error)
+	// GetObject reads and verifies a CAS object over the internal endpoint;
+	// presigned URLs name the public one, for Nodes and clients.
+	GetObject(ctx context.Context, ownerID, sha256hex string) ([]byte, error)
 	PutManifest(ctx context.Context, ownerID, address string, data []byte) error
 }
 
