@@ -189,6 +189,46 @@ func holdSeal(v vol, path string) (wait, release func()) {
 	return wait, sync.OnceFunc(func() { close(done) })
 }
 
+// holdSealBut stops a seal as it hashes each frozen file but path's, until
+// release; wait returns once one is held. A hold the test does not release
+// within 5 s fails the test.
+func holdSealBut(v vol, path string) (wait, release func()) {
+	ino := v.ino(path)
+	held, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hashing = func(i uint64) {
+		if i == ino {
+			return
+		}
+		once.Do(func() { close(held) })
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second): // free whatever is stuck behind it
+			v.t.Errorf("an op waited for the seal hashing files but %s", path)
+		}
+	}
+	v.t.Cleanup(func() { hashing = func(uint64) {} })
+	wait = func() {
+		v.t.Helper()
+		select {
+		case <-held:
+		case <-time.After(5 * time.Second):
+			v.t.Fatal("no seal began hashing")
+		}
+	}
+	return wait, sync.OnceFunc(func() { close(done) })
+}
+
+// queueFrozen makes more dirty files than a seal has workers, all named
+// before path, then path itself: the last a seal hashes.
+func queueFrozen(v vol, path, data string) {
+	v.t.Helper()
+	for i := range 2 * maxSealWorkers {
+		v.create(fmt.Sprintf("q%02d", i), "queued")
+	}
+	v.create(path, data)
+}
+
 // notYet fails if c delivers within a moment.
 func notYet[T any](t *testing.T, c <-chan T, what string) {
 	t.Helper()
@@ -731,6 +771,98 @@ func TestVolumeWriteToFrozenFileWaitsForItsHash(t *testing.T) {
 	}
 	data[1<<20] = 'X'
 	if _, lines := v.seal(); !contains(lines, "large file 644  "+digestOf(data)) {
+		t.Fatal("the next seal lacks the write")
+	}
+}
+
+// A write to a frozen file no seal worker has begun hashes it first, not
+// behind the files before it, and still goes into the next commit.
+func TestVolumeWriteToFrozenFileHashesItFirst(t *testing.T) {
+	v, _ := newTestVolume(t)
+	queueFrozen(v, "zz", "old")
+	wait, release := holdSealBut(v, "zz")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	wrote := goWrite(v, "zz", 0, "new")
+	select {
+	case st := <-wrote:
+		v.check("write", st)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the write waited for the frozen files before zz")
+	}
+	select {
+	case <-sealed:
+		t.Fatal("the seal finished while its other files were held")
+	default:
+	}
+	release()
+	if want := "zz file 644  " + digest([]byte("old")); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
+	}
+	if _, lines := v.seal(); !contains(lines, "zz file 644  "+digest([]byte("new"))) {
+		t.Fatal("the next seal lacks the write")
+	}
+}
+
+// A seal worker reaching a frozen file a write is hashing waits for that
+// hash rather than hashing again: each frozen file is hashed once.
+func TestVolumeFrozenFileIsHashedOnce(t *testing.T) {
+	v, _ := newTestVolume(t)
+	queueFrozen(v, "zz", "old")
+	zz := v.ino("zz")
+	wait, release := holdSealBut(v, "zz")
+	defer release()
+	held, done := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	var hashes int
+	others := hashing
+	hashing = func(i uint64) {
+		if i != zz {
+			others(i)
+			return
+		}
+		mu.Lock()
+		hashes++
+		first := hashes == 1
+		mu.Unlock()
+		if first { // the write's: hold it until a worker has reached zz
+			close(held)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("the write's hash of zz was never released")
+			}
+		}
+	}
+	sealed := goSeal(v)
+	wait()
+	wrote := goWrite(v, "zz", 0, "new")
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write did not hash zz")
+	}
+	release() // the workers go on to zz
+	notYet(t, sealed, "the seal finished before the write's hash of zz")
+	close(done)
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	lines := treeLines(<-sealed)
+	for _, want := range []string{"q00 file 644  " + digest([]byte("queued")), "zz file 644  " + digest([]byte("old"))} {
+		if !contains(lines, want) {
+			t.Errorf("the seal lacks %q", want)
+		}
+	}
+	mu.Lock()
+	n := hashes
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("zz was hashed %d times", n)
+	}
+	if _, lines := v.seal(); !contains(lines, "zz file 644  "+digest([]byte("new"))) {
 		t.Fatal("the next seal lacks the write")
 	}
 }
