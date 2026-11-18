@@ -17,7 +17,7 @@ This is a coding sandbox: an Agent must be able to clone and push with plain `gi
 
 **Caller Secrets.** A Secret is a User-owned Control Plane resource with a name and a write-only value, stored encrypted in PostgreSQL. At Sandbox creation the caller maps environment variable names to Secret names and the values are injected then; later changes to a Secret reach only new Sandboxes. There is no file delivery and no in-place refresh. (Amended by ADR-0032: an Exec may also name Secrets, resolved when it is created.) The platform never writes a Secret into the Workspace.
 
-**Audit.** Secret create, update and delete; the Secret names a Sandbox was created with; every Git token issue, with host and Sandbox. Never a value.
+**Audit.** Secret create, update and delete; the Secret names a Sandbox was created with; every Git token issue, with host and Sandbox. Never a value. (Amended by #292: the Secret names an Exec was created with, with its Sandbox, the Sandbox's owner and the caller, as `sandbox.exec.create`. An Exec without `secrets` writes none.)
 
 ## Consequences
 
