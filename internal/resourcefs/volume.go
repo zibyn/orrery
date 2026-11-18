@@ -79,13 +79,15 @@ type vnode struct {
 	names map[string]dirent // index of Kids, rebuilt on demand
 
 	// mu orders a file's content IO (shared) with its truncate, fallocate,
-	// copy-up, seal and drop (exclusive). file is its open write-cache file,
-	// nil until first used: set and closed under mu, except that pause closes
-	// it once the FUSE session is drained and no seal runs.
+	// copy-up and drop (exclusive); a seal takes it exclusively to start, then
+	// shared to hash. file is its open write-cache file, nil until first used:
+	// set and closed under mu, except that pause closes it once the FUSE
+	// session is drained and no seal runs.
 	mu   sync.RWMutex
 	file *os.File
 	// frozen, set under the tree lock, is open from a seal's snapshot until
-	// the seal has hashed the file: its content must stay as of then.
+	// the seal has hashed the file: its content must stay as of then, so
+	// every change waits for it.
 	frozen chan struct{}
 }
 
@@ -543,34 +545,37 @@ func (f *volumeFS) snapshot() (generation.Manifest, []sealItem) {
 	return m, dirty
 }
 
-// sealFile hashes frozen file n into objects/ under its content lock,
-// points n and its manifest entry e at them and thaws n. The write-cache
-// file stays as a clean copy, so the next write copies nothing.
+// sealFile hashes frozen file n into objects/, points n and its manifest
+// entry e at them and thaws n. The write-cache file stays as a clean copy,
+// so the next write copies nothing.
 func (f *volumeFS) sealFile(ino uint64, n *vnode, e *manifest.Entry) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	defer func() {
 		f.treeMu.Lock()
 		close(n.frozen)
 		n.frozen = nil
 		f.treeMu.Unlock()
 	}()
+	// The content lock exclusively first: changes that began before the
+	// freeze end, and n's file is opened and cut to size. Every later change
+	// waits for the thaw, so the hash needs the lock only shared and reads
+	// of n go on meanwhile.
+	n.mu.Lock()
 	f.treeMu.Lock()
 	size := n.Size
 	f.treeMu.Unlock()
 	file, err := f.openLocal(ino, n)
-	if err != nil {
-		return err
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() != size {
-		if err := file.Truncate(size); err != nil {
-			return err
+	if err == nil {
+		var info os.FileInfo
+		if info, err = file.Stat(); err == nil && info.Size() != size {
+			err = file.Truncate(size)
 		}
 	}
+	n.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	objects := map[string]int64{}
 	var blocks []string
 	for i := range max(manifest.BlockCount(size), 1) {

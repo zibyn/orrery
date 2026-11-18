@@ -159,7 +159,8 @@ func goSeal(v vol) <-chan Sealed {
 }
 
 // holdSeal stops a seal as it hashes path's frozen file, until release;
-// wait returns once a seal is held there.
+// wait returns once a seal is held there. A hold the test does not release
+// within 5 s means an op waited for it, and fails the test.
 func holdSeal(v vol, path string) (wait, release func()) {
 	ino := v.ino(path)
 	held, done := make(chan struct{}), make(chan struct{})
@@ -170,7 +171,8 @@ func holdSeal(v vol, path string) (wait, release func()) {
 				close(held)
 				select {
 				case <-done:
-				case <-time.After(5 * time.Second): // were others stuck behind it, free them to fail
+				case <-time.After(5 * time.Second): // free whatever is stuck behind it
+					v.t.Errorf("an op waited for the seal hashing %s", path)
 				}
 			})
 		}
@@ -870,5 +872,30 @@ func TestVolumeHandoverDuringSealKeepsUncommittedWrites(t *testing.T) {
 		if line := fmt.Sprintf("%s file 644  %s", path, d); !contains(lines, line) {
 			t.Errorf("the successor's seal lacks %q", line)
 		}
+	}
+}
+
+// A read of a frozen file answers while the seal hashes it: only changes to
+// it wait.
+func TestVolumeReadOfFrozenFileAnswersDuringItsHash(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("large", string(data))
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	if got := v.read("large", 5<<20, 10); got != string(data[5<<20:5<<20+10]) {
+		t.Fatal("the frozen file reads other bytes")
+	}
+	select {
+	case <-sealed:
+		t.Fatal("the read waited for the hash")
+	default:
+	}
+	release()
+	if want := "large file 644  " + digestOf(data); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
 	}
 }
