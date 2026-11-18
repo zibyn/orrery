@@ -72,6 +72,12 @@ type vnode struct {
 	Cookie  uint64            `json:"cookie,omitempty"` // the last cookie given out
 
 	names map[string]dirent // index of Kids, rebuilt on demand
+
+	// mu orders a file's content IO (shared) with its truncate, fallocate,
+	// copy-up, seal and drop (exclusive); file is its open write-cache file
+	// under mu, nil until first used.
+	mu   sync.RWMutex
+	file *os.File
 }
 
 func (n *vnode) isDir() bool { return n.Type == manifest.TypeDir }
@@ -118,10 +124,11 @@ type volumeState struct {
 	Nodes   map[uint64]*vnode `json:"nodes"`
 }
 
-// volumeFS serves one Volume. One lock orders every change; reads of
-// committed content run outside it.
-// shortcut: writes and seals serialize on that lock, so a commit hashing
-// large dirty files stalls writers; split it per inode if Volumes stall.
+// volumeFS serves one Volume (runtime.md §17). The tree lock mu guards st:
+// the inode table, directory entries and every inode's metadata, and is
+// never held across content IO. A file's content IO takes only that file's
+// vnode.mu, then mu briefly to publish size and mtime; mu is never held
+// while waiting for a vnode.mu. Lock order: sealing, vnode.mu, mu.
 type volumeFS struct {
 	fuse.RawFileSystem
 	dir   string // <data-root>/volumes/<id>; the mount is dir/mnt
@@ -130,8 +137,14 @@ type volumeFS struct {
 
 	mu     sync.Mutex
 	st     volumeState
-	files  map[uint64]*os.File
-	paused bool // handed to a successor: commands answer ErrHandedOver
+	freed  map[uint64]*vnode // freed under mu; unlockTree drops their files
+	paused bool              // handed to a successor: commands answer ErrHandedOver
+	// sealing is held shared by content IO and exclusively by a seal and a
+	// pause, so they see no write half done.
+	// shortcut: a seal hashes the dirty set with the tree locked and all
+	// content IO stopped, so a commit still stalls the mount; #297 freezes
+	// only the dirty files and hashes them outside the lock.
+	sealing sync.RWMutex
 }
 
 func volumeMountDir(dir string) string { return filepath.Join(dir, "mnt") }
@@ -205,7 +218,7 @@ func newVolumeFS(volume, dir, base string, m generation.Manifest, s *store, log 
 		st.Nodes[ino].Nlink++
 		st.Nodes[ids[parentPath]].addKid(name, ino)
 	}
-	return &volumeFS{RawFileSystem: fuse.NewDefaultRawFileSystem(), dir: dir, store: s, log: log, st: st, files: map[uint64]*os.File{}}, nil
+	return &volumeFS{RawFileSystem: fuse.NewDefaultRawFileSystem(), dir: dir, store: s, log: log, st: st}, nil
 }
 
 // loadVolumeFS rebuilds a mount from the state its predecessor wrote.
@@ -218,12 +231,14 @@ func loadVolumeFS(dir string, s *store, log *slog.Logger) (*volumeFS, error) {
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, fmt.Errorf("decode Volume state: %w", err)
 	}
-	return &volumeFS{RawFileSystem: fuse.NewDefaultRawFileSystem(), dir: dir, store: s, log: log, st: st, files: map[uint64]*os.File{}}, nil
+	return &volumeFS{RawFileSystem: fuse.NewDefaultRawFileSystem(), dir: dir, store: s, log: log, st: st}, nil
 }
 
 // pause stops command access and writes the state for a successor. The
 // FUSE session must already be drained.
 func (f *volumeFS) pause() error {
+	f.sealing.Lock()
+	defer f.sealing.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	data, err := json.Marshal(f.st)
@@ -234,9 +249,11 @@ func (f *volumeFS) pause() error {
 		return err
 	}
 	f.paused = true
-	for ino, file := range f.files {
-		file.Close() //nolint:errcheck // read-write data file; content is already written
-		delete(f.files, ino)
+	for _, n := range f.st.Nodes {
+		if n.file != nil {
+			n.file.Close() //nolint:errcheck // read-write data file; content is already written
+			n.file = nil
+		}
 	}
 	return nil
 }
@@ -256,27 +273,24 @@ func (f *volumeFS) resume() {
 	f.mu.Unlock()
 }
 
-// localFile opens an inode's data file, creating it when asked.
-func (f *volumeFS) localFile(ino uint64, create bool) (*os.File, error) {
-	if file, ok := f.files[ino]; ok {
-		return file, nil
+// openLocal opens n's write-cache file, creating it; n.mu is held
+// exclusively.
+func (f *volumeFS) openLocal(ino uint64, n *vnode) (*os.File, error) {
+	if n.file == nil {
+		file, err := os.OpenFile(f.dataPath(ino), os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		n.file = file
 	}
-	flags := os.O_RDWR
-	if create {
-		flags |= os.O_CREATE
-	}
-	file, err := os.OpenFile(f.dataPath(ino), flags, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	f.files[ino] = file
-	return file, nil
+	return n.file, nil
 }
 
-func (f *volumeFS) dropLocal(ino uint64) {
-	if file, ok := f.files[ino]; ok {
-		file.Close() //nolint:errcheck // being removed
-		delete(f.files, ino)
+// dropLocal removes n's write-cache file; n.mu is held exclusively.
+func (f *volumeFS) dropLocal(ino uint64, n *vnode) {
+	if n.file != nil {
+		n.file.Close() //nolint:errcheck // being removed
+		n.file = nil
 	}
 	os.Remove(f.dataPath(ino)) //nolint:errcheck // absent for committed content
 }
@@ -338,34 +352,35 @@ func (f *volumeFS) readCommitted(entry manifest.Entry, off int64, dest []byte) (
 	return done, nil
 }
 
-// copyUp makes ino's content local, keeping its first limit bytes. Called
-// with f.mu held.
-func (f *volumeFS) copyUp(ino uint64, n *vnode, limit int64) (*os.File, error) {
-	if n.Local {
-		return f.localFile(ino, true)
-	}
-	file, err := f.localFile(ino, true)
-	if err != nil {
-		return nil, err
+// copyUp opens n's write-cache file, first copying committed content into
+// it, keeping its first limit bytes. n.mu is held exclusively, f.mu not.
+func (f *volumeFS) copyUp(ino uint64, n *vnode, limit int64) error {
+	f.mu.Lock()
+	local, entry := n.Local, contentEntry(n)
+	f.mu.Unlock()
+	file, err := f.openLocal(ino, n)
+	if err != nil || local {
+		return err
 	}
 	if err := file.Truncate(0); err != nil {
-		return nil, err
+		return err
 	}
-	keep := min(limit, n.Size)
-	entry := contentEntry(n)
+	keep := min(limit, *entry.Size)
 	buf := make([]byte, min(keep, manifest.BlockSize))
 	for off := int64(0); off < keep; {
 		chunk := buf[:min(int64(len(buf)), keep-off)]
 		if _, err := f.readCommitted(entry, off, chunk); err != nil {
-			return nil, err
+			return err
 		}
 		if _, err := file.WriteAt(chunk, off); err != nil {
-			return nil, err
+			return err
 		}
 		off += int64(len(chunk))
 	}
+	f.mu.Lock()
 	n.Local, n.SHA256, n.Blocks, n.Size = true, "", nil, keep
-	return file, nil
+	f.mu.Unlock()
+	return nil
 }
 
 // Sealed is a Volume's state for a commit (runtime.md §17).
@@ -386,6 +401,8 @@ type Sealed struct {
 // whole tree as a Generation. Only the dirty set is hashed: files whose
 // content is still committed keep their digests.
 func (f *volumeFS) seal() (Sealed, error) {
+	f.sealing.Lock()
+	defer f.sealing.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.paused {
@@ -451,12 +468,13 @@ func (f *volumeFS) seal() (Sealed, error) {
 	return out, nil
 }
 
-// sealFile hashes one local file into objects/ and points the inode at them.
+// sealFile hashes one local file into objects/ and points the inode at them,
+// with f.sealing held exclusively, which keeps all content IO out.
 func (f *volumeFS) sealFile(ino uint64, n *vnode) error {
 	if f.st.Pending == nil {
 		f.st.Pending = map[string]int64{}
 	}
-	file, err := f.localFile(ino, true)
+	file, err := f.openLocal(ino, n)
 	if err != nil {
 		return err
 	}
@@ -485,7 +503,7 @@ func (f *volumeFS) sealFile(ino uint64, n *vnode) error {
 		f.st.Pending[digest] = length
 		blocks = append(blocks, digest)
 	}
-	f.dropLocal(ino)
+	f.dropLocal(ino, n)
 	n.Local = false
 	if size > manifest.BlockSize {
 		n.Blocks, n.SHA256 = blocks, manifest.FileAddress(blocks)
@@ -561,5 +579,8 @@ func (f *volumeFS) statfs(out *fuse.StatfsOut) {
 		out.Blocks, out.Bfree, out.Bavail, out.Bsize = s.Blocks, s.Bfree, s.Bavail, uint32(s.Bsize)
 		out.Frsize = uint32(s.Bsize)
 	}
-	out.Files, out.Ffree, out.NameLen = uint64(len(f.st.Nodes)), 1<<32, 255
+	f.mu.Lock()
+	out.Files = uint64(len(f.st.Nodes))
+	f.mu.Unlock()
+	out.Ffree, out.NameLen = 1<<32, 255
 }

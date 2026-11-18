@@ -1,6 +1,8 @@
 package resourcefs
 
 import (
+	"math"
+	"os"
 	"sort"
 	"strings"
 	"syscall"
@@ -112,7 +114,7 @@ func (f *volumeFS) Lookup(_ <-chan struct{}, h *fuse.InHeader, name string, out 
 
 func (f *volumeFS) Forget(ino, nlookup uint64) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlockTree()
 	n, ok := f.st.Nodes[ino]
 	if !ok {
 		return
@@ -121,12 +123,95 @@ func (f *volumeFS) Forget(ino, nlookup uint64) {
 	f.maybeFree(ino, n)
 }
 
-// maybeFree drops an inode no name and no kernel reference keeps.
+// maybeFree drops an inode no name and no kernel reference keeps; its
+// write-cache file goes in unlockTree.
 func (f *volumeFS) maybeFree(ino uint64, n *vnode) {
 	if ino != rootID && n.Nlink == 0 && n.Lookups == 0 {
-		f.dropLocal(ino)
 		delete(f.st.Nodes, ino)
+		if f.freed == nil {
+			f.freed = map[uint64]*vnode{}
+		}
+		f.freed[ino] = n
 	}
+}
+
+// unlockTree releases the tree lock, then removes the write-cache files of
+// the inodes freed under it, each once its content IO is done.
+func (f *volumeFS) unlockTree() {
+	freed := f.freed
+	f.freed = nil
+	f.mu.Unlock()
+	for ino, n := range freed {
+		n.mu.Lock()
+		f.dropLocal(ino, n)
+		n.mu.Unlock()
+	}
+}
+
+// noCopy tells lockContent to leave committed content where it is.
+const noCopy = -1
+
+// lockContent takes a file's content lock without the tree lock held:
+// shared for IO, exclusive for a change of its extent. Local content comes
+// with n.file open; keep other than noCopy first copies committed content
+// up, keeping keep bytes. Opening or copying takes the lock exclusively,
+// even when shared was asked for.
+func (f *volumeFS) lockContent(ino uint64, exclusive bool, keep int64) (*vnode, func(), fuse.Status) {
+	f.mu.Lock()
+	n, ok := f.st.Nodes[ino]
+	f.mu.Unlock()
+	switch {
+	case !ok:
+		return nil, nil, fuse.ENOENT
+	case n.Type != manifest.TypeFile:
+		return nil, nil, fuse.EINVAL
+	}
+	f.sealing.RLock()
+	for {
+		lock, unlock := n.mu.RLock, n.mu.RUnlock
+		if exclusive {
+			lock, unlock = n.mu.Lock, n.mu.Unlock
+		}
+		lock()
+		release := func() { unlock(); f.sealing.RUnlock() }
+		f.mu.Lock()
+		alive, local := f.st.Nodes[ino] == n, n.Local
+		f.mu.Unlock()
+		switch {
+		case !alive:
+			release()
+			return nil, nil, fuse.ENOENT
+		case (local && n.file != nil) || (!local && keep == noCopy):
+			return n, release, fuse.OK
+		case exclusive:
+			if err := f.copyUp(ino, n, keep); err != nil {
+				release()
+				f.log.Error("copy a Volume file up", "error", err)
+				return nil, nil, fuse.EIO
+			}
+			return n, release, fuse.OK
+		}
+		unlock()
+		exclusive = true
+	}
+}
+
+// truncate sets a file's size, copying up only the bytes it keeps.
+func (f *volumeFS) truncate(ino uint64, size int64) fuse.Status {
+	n, unlock, st := f.lockContent(ino, true, size)
+	if !st.Ok() {
+		return st
+	}
+	defer unlock()
+	if err := n.file.Truncate(size); err != nil {
+		f.log.Error("truncate Volume file", "error", err)
+		return fuse.EIO
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n.Size, n.Mtime = size, now()
+	f.changed(n)
+	return fuse.OK
 }
 
 func (f *volumeFS) GetAttr(_ <-chan struct{}, in *fuse.GetAttrIn, out *fuse.AttrOut) fuse.Status {
@@ -142,25 +227,16 @@ func (f *volumeFS) GetAttr(_ <-chan struct{}, in *fuse.GetAttrIn, out *fuse.Attr
 }
 
 func (f *volumeFS) SetAttr(_ <-chan struct{}, in *fuse.SetAttrIn, out *fuse.AttrOut) fuse.Status {
+	if size, ok := in.GetSize(); ok {
+		if st := f.truncate(in.NodeId, int64(size)); !st.Ok() {
+			return st
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n, ok := f.st.Nodes[in.NodeId]
 	if !ok {
 		return fuse.ENOENT
-	}
-	if size, ok := in.GetSize(); ok {
-		if n.Type != manifest.TypeFile {
-			return fuse.EINVAL
-		}
-		file, err := f.copyUp(in.NodeId, n, int64(size))
-		if err == nil {
-			err = file.Truncate(int64(size))
-		}
-		if err != nil {
-			f.log.Error("truncate Volume file", "error", err)
-			return fuse.EIO
-		}
-		n.Size, n.Mtime = int64(size), now()
 	}
 	if mode, ok := in.GetMode(); ok {
 		n.Mode = mode & 0o7777
@@ -300,7 +376,7 @@ func (f *volumeFS) unlink(parent *vnode, name string, ino uint64, n *vnode) {
 
 func (f *volumeFS) remove(ino uint64, name string, dir bool) fuse.Status {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlockTree()
 	parent, st := f.dirNode(ino)
 	if !st.Ok() {
 		return st
@@ -339,7 +415,7 @@ func (f *volumeFS) Rename(_ <-chan struct{}, in *fuse.RenameIn, oldName, newName
 		return fuse.EINVAL
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlockTree()
 	from, st := f.dirNode(in.NodeId)
 	if !st.Ok() {
 		return st
@@ -480,54 +556,43 @@ func (f *volumeFS) RemoveXAttr(_ <-chan struct{}, h *fuse.InHeader, attr string)
 // survive a handover. O_TRUNC is applied here when the kernel sends it.
 func (f *volumeFS) Open(_ <-chan struct{}, in *fuse.OpenIn, _ *fuse.OpenOut) fuse.Status {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	n, ok := f.st.Nodes[in.NodeId]
-	if !ok {
+	dir := ok && n.isDir()
+	trunc := ok && in.Flags&syscall.O_TRUNC != 0 && n.Type == manifest.TypeFile && n.Size > 0
+	f.mu.Unlock()
+	switch {
+	case !ok:
 		return fuse.ENOENT
-	}
-	if n.isDir() {
+	case dir:
 		return errno(syscall.EISDIR)
-	}
-	if in.Flags&syscall.O_TRUNC != 0 && n.Type == manifest.TypeFile && n.Size > 0 {
-		file, err := f.copyUp(in.NodeId, n, 0)
-		if err == nil {
-			err = file.Truncate(0)
-		}
-		if err != nil {
-			return fuse.EIO
-		}
-		n.Size, n.Mtime = 0, now()
-		f.changed(n)
+	case trunc:
+		return f.truncate(in.NodeId, 0)
 	}
 	return fuse.OK
 }
 
 func (f *volumeFS) Read(_ <-chan struct{}, in *fuse.ReadIn, dest []byte) (fuse.ReadResult, fuse.Status) {
-	f.mu.Lock()
-	n, ok := f.st.Nodes[in.NodeId]
-	if !ok || n.Type != manifest.TypeFile {
-		f.mu.Unlock()
-		return nil, fuse.EINVAL
+	n, unlock, st := f.lockContent(in.NodeId, false, noCopy)
+	if !st.Ok() {
+		return nil, st
 	}
+	f.mu.Lock()
+	local, size, entry := n.Local, n.Size, contentEntry(n)
+	f.mu.Unlock()
 	off := int64(in.Offset)
-	end := min(off+int64(in.Size), n.Size)
+	end := min(off+int64(in.Size), size)
 	if off >= end {
-		f.mu.Unlock()
+		unlock()
 		return fuse.ReadResultData(nil), fuse.OK
 	}
 	dest = dest[:end-off]
-	if n.Local {
-		defer f.mu.Unlock()
-		file, err := f.localFile(in.NodeId, true)
-		if err != nil {
-			return nil, fuse.EIO
-		}
-		got, _ := file.ReadAt(dest, off)
+	if local {
+		defer unlock()
+		got, _ := n.file.ReadAt(dest, off)
 		clear(dest[got:]) // a hole past the data file's end
 		return fuse.ReadResultData(dest), fuse.OK
 	}
-	entry := contentEntry(n)
-	f.mu.Unlock()
+	unlock() // committed objects never change
 	got, err := f.readCommitted(entry, off, dest)
 	if err != nil {
 		f.log.Error("read Volume block", "error", err)
@@ -537,21 +602,17 @@ func (f *volumeFS) Read(_ <-chan struct{}, in *fuse.ReadIn, dest []byte) (fuse.R
 }
 
 func (f *volumeFS) Write(_ <-chan struct{}, in *fuse.WriteIn, data []byte) (uint32, fuse.Status) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n, ok := f.st.Nodes[in.NodeId]
-	if !ok || n.Type != manifest.TypeFile {
-		return 0, fuse.EINVAL
+	n, unlock, st := f.lockContent(in.NodeId, false, math.MaxInt64)
+	if !st.Ok() {
+		return 0, st
 	}
-	file, err := f.copyUp(in.NodeId, n, n.Size)
-	if err != nil {
-		f.log.Error("copy a Volume file up", "error", err)
-		return 0, fuse.EIO
-	}
-	written, err := file.WriteAt(data, int64(in.Offset))
+	defer unlock()
+	written, err := n.file.WriteAt(data, int64(in.Offset))
 	if err != nil {
 		return uint32(written), fuse.ToStatus(err)
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	n.Size = max(n.Size, int64(in.Offset)+int64(written))
 	n.Mtime = now()
 	f.changed(n)
@@ -562,35 +623,45 @@ func (f *volumeFS) Fallocate(_ <-chan struct{}, in *fuse.FallocateIn) fuse.Statu
 	if in.Mode != 0 {
 		return errno(syscall.EOPNOTSUPP)
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n, ok := f.st.Nodes[in.NodeId]
-	if !ok || n.Type != manifest.TypeFile {
-		return fuse.EINVAL
+	n, unlock, st := f.lockContent(in.NodeId, true, noCopy)
+	if !st.Ok() {
+		return st
 	}
+	defer unlock()
+	f.mu.Lock()
+	size := n.Size
+	f.mu.Unlock()
 	end := int64(in.Offset + in.Length)
-	if end <= n.Size {
+	if end <= size {
 		return fuse.OK
 	}
-	file, err := f.copyUp(in.NodeId, n, n.Size)
+	err := f.copyUp(in.NodeId, n, size)
 	if err == nil {
-		err = file.Truncate(end)
+		err = n.file.Truncate(end)
 	}
 	if err != nil {
 		return fuse.EIO
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	n.Size = end
 	f.changed(n)
 	return fuse.OK
 }
 
+// syncFile is fsync(2); a test makes one slow.
+var syncFile = (*os.File).Sync
+
 // Fsync makes the local data durable on the Node; it does not wait for a
 // commit (runtime.md §17).
 func (f *volumeFS) Fsync(_ <-chan struct{}, in *fuse.FsyncIn) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if file, ok := f.files[in.NodeId]; ok {
-		if err := file.Sync(); err != nil {
+	n, unlock, st := f.lockContent(in.NodeId, false, noCopy)
+	if !st.Ok() {
+		return st
+	}
+	defer unlock()
+	if n.file != nil {
+		if err := syncFile(n.file); err != nil {
 			return fuse.EIO
 		}
 	}
@@ -629,8 +700,6 @@ func (f *volumeFS) ReadDir(_ <-chan struct{}, in *fuse.ReadIn, out *fuse.DirEntr
 }
 
 func (f *volumeFS) StatFs(_ <-chan struct{}, _ *fuse.InHeader, out *fuse.StatfsOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.statfs(out)
 	return fuse.OK
 }
