@@ -25,7 +25,7 @@ const maxPresignObjects = 1000
 // identity).
 func (n *nodeService) Presign(ctx context.Context, req *nodev1.PresignRequest) (*nodev1.PresignResponse, error) {
 	// Bounded so the reply stays under gRPC's default 4 MiB (defaults.md).
-	if len(req.GetSha256())+len(req.GetManifests()) > maxPresignObjects {
+	if len(req.GetSha256())+len(req.GetManifests())+len(req.GetGenerations()) > maxPresignObjects {
 		return nil, status.Errorf(codes.InvalidArgument, "at most %d objects per Presign", maxPresignObjects)
 	}
 	node, err := n.s.authenticateNode(ctx)
@@ -36,8 +36,8 @@ func (n *nodeService) Presign(ctx context.Context, req *nodev1.PresignRequest) (
 	if method != "GET" && method != "PUT" {
 		return nil, status.Error(codes.InvalidArgument, `method must be "GET" or "PUT"`)
 	}
-	if (len(req.GetSha256()) == 0) == (len(req.GetManifests()) == 0) {
-		return nil, status.Error(codes.InvalidArgument, "exactly one of sha256 or manifests is required")
+	if lists := nonEmpty(req.GetSha256()) + nonEmpty(req.GetManifests()) + nonEmpty(req.GetGenerations()); lists != 1 {
+		return nil, status.Error(codes.InvalidArgument, "exactly one of sha256, manifests or generations is required")
 	}
 	if method == "PUT" && len(req.GetManifests()) > 0 {
 		return nil, status.Error(codes.InvalidArgument, "manifests can only be signed for GET")
@@ -79,7 +79,20 @@ func (n *nodeService) Presign(ctx context.Context, req *nodev1.PresignRequest) (
 		manifestOwners = append(manifestOwners, owner)
 	}
 
-	resp := &nodev1.PresignResponse{Urls: make([]string, 0, len(req.GetSha256())+len(req.GetManifests()))}
+	generationOwners := make([]uuid.UUID, 0, len(req.GetGenerations()))
+	for _, id := range req.GetGenerations() {
+		owner, ok, err := n.s.authorizeGeneration(ctx, node, id, method)
+		if err != nil {
+			n.s.log.Error("authorize presign Generation", "node_id", node.ID, "error", err)
+			return nil, status.Error(codes.Internal, "authorize Generation")
+		}
+		if !ok {
+			return nil, status.Error(codes.InvalidArgument, "Generation is not authorized for this Node")
+		}
+		generationOwners = append(generationOwners, owner)
+	}
+
+	resp := &nodev1.PresignResponse{Urls: make([]string, 0, len(req.GetSha256())+len(req.GetManifests())+len(req.GetGenerations()))}
 	for i, digest := range req.GetSha256() {
 		var url string
 		if method == "PUT" {
@@ -101,7 +114,50 @@ func (n *nodeService) Presign(ctx context.Context, req *nodev1.PresignRequest) (
 		}
 		resp.Urls = append(resp.Urls, url)
 	}
+	for i, id := range req.GetGenerations() {
+		var url string
+		if method == "PUT" {
+			url, err = n.s.objects.PresignGenerationPutURL(ctx, generationOwners[i].String(), id)
+		} else {
+			url, err = n.s.objects.PresignGenerationGetURL(ctx, generationOwners[i].String(), id)
+		}
+		if err != nil {
+			n.s.log.Error("presign Generation", "node_id", node.ID, "error", err)
+			return nil, status.Error(codes.Internal, "presign Generation")
+		}
+		resp.Urls = append(resp.Urls, url)
+	}
 	return resp, nil
+}
+
+func nonEmpty(list []string) int {
+	if len(list) == 0 {
+		return 0
+	}
+	return 1
+}
+
+// authorizeGeneration reports whether a Generation manifest may be signed:
+// GET for the head of a Sandbox on this Node, PUT for an open upload of one
+// (node-protocol.md "Presign").
+func (s *Server) authorizeGeneration(ctx context.Context, node store.Node, rawID, method string) (uuid.UUID, bool, error) {
+	id, err := uuid.Parse(rawID)
+	if err != nil {
+		return uuid.Nil, false, nil
+	}
+	var owner uuid.UUID
+	if method == "PUT" {
+		owner, err = s.q.FindGenerationUploadOwner(ctx, store.FindGenerationUploadOwnerParams{NodeID: node.ID, ID: id})
+	} else {
+		owner, err = s.q.FindNodeHeadGenerationOwner(ctx, store.FindNodeHeadGenerationOwnerParams{NodeID: &node.ID, HeadGenerationID: &id})
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return owner, true, nil
 }
 
 // The authorization queries below are the seam between the Node and the
@@ -127,7 +183,13 @@ func (s *Server) authorizeSandboxObject(ctx context.Context, node store.Node, sh
 		return uuid.Nil, false, err
 	}
 	if len(refs) == 0 {
-		return uuid.Nil, false, nil
+		owner, err := s.q.FindNodeHeadGenerationObjectOwner(ctx, store.FindNodeHeadGenerationObjectOwnerParams{
+			NodeID: &node.ID, Sha256: sha256,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, nil
+		}
+		return owner, err == nil, err
 	}
 	// The same bytes may legitimately belong to several owners on one Node.
 	// Any existing owner-scoped copy serves the content; only when none
@@ -183,7 +245,8 @@ func (s *Server) markObjectsMissing(ctx context.Context, sha256 string, refs []s
 }
 
 // authorizePublishObject reports whether sha256 is one of the objects of a
-// pending Workspace publish assigned to this Node and is still missing from
+// pending Sandbox publish or open Generation upload assigned to this Node
+// (node-protocol.md "Generation 提交") and is still missing from
 // the store (node-protocol.md "Presign"). It returns the Resource owner whose
 // CAS key the URL addresses (ADR-0021: keys are owner-scoped).
 func (s *Server) authorizePublishObject(ctx context.Context, node store.Node, sha256 string) (uuid.UUID, bool, error) {
@@ -194,6 +257,11 @@ func (s *Server) authorizePublishObject(ctx context.Context, node store.Node, sh
 	owner, err := s.q.FindPublishObjectOwner(ctx, store.FindPublishObjectOwnerParams{
 		NodeID: &nodeID, Sha256: sha256,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		owner, err = s.q.FindGenerationUploadObjectOwner(ctx, store.FindGenerationUploadObjectOwnerParams{
+			NodeID: nodeID, Sha256: sha256,
+		})
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, false, nil
 	}

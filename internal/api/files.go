@@ -10,9 +10,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// fileHandler reverse-proxies one Workspace file endpoint to the Sandbox's Node
-// over an agent_http Tunnel (api.md §5).
-func (s *Server) fileHandler(suffix string, write bool) handlerFunc {
+// fileHandler reverse-proxies one Sandbox file endpoint to the Sandbox's Node
+// over an agent_http Tunnel (api.md §5). The Agent resolves the path in the
+// Sandbox's own filesystem and refuses Volume and Resource mounts.
+func (s *Server) fileHandler(suffix string) handlerFunc {
 	return func(w http.ResponseWriter, r *http.Request, p *principal) {
 		id, err := uuid.Parse(r.PathValue("id"))
 		if err != nil {
@@ -26,17 +27,6 @@ func (s *Server) fileHandler(suffix string, write bool) handlerFunc {
 		if SandboxState(sb.State) != SandboxReady {
 			writeProblem(w, "conflict", "the Sandbox is not ready")
 			return
-		}
-		if write {
-			// Only a Sandbox mounting its Workspace rw may write (ADR-0018).
-			if sb.WorkspaceID == nil {
-				writeProblem(w, "conflict", "the Sandbox has no Workspace")
-				return
-			}
-			if sb.WorkspaceMode != "rw" {
-				writeProblem(w, "conflict", "the Workspace is mounted read-only")
-				return
-			}
 		}
 		if sb.NodeID == nil {
 			writeProblem(w, "unavailable", "the Sandbox's Node is not connected")

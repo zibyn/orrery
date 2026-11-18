@@ -14,7 +14,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from orrery import Egress, Orrery, OrreryError  # noqa: E402
+from orrery import Egress, Orrery, OrreryError, VolumeMount  # noqa: E402
 
 
 def client(handler) -> Orrery:
@@ -60,6 +60,21 @@ class SandboxTest(unittest.TestCase):
             cpu=1, memory=1 << 30, egress={"mode": "allowlist", "allow": ["10.0.0.5/32:443"]})
         self.assertEqual(sent[0]["egress"], {"mode": "allowlist", "allow": ["10.0.0.5/32:443"]})
         self.assertEqual(sandbox.egress, Egress(mode="allowlist", allow=["10.0.0.5/32:443"]))
+
+    def test_volumes_are_sent_and_decoded(self) -> None:
+        sent = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(json.loads(request.content))
+            return httpx.Response(201, json={
+                "id": "sb-1", "state": "pending",
+                "volumes": [{"volume": "vol-1", "path": "/data"}],
+            })
+
+        sandbox = client(handler).create_sandbox(
+            cpu=1, memory=1 << 30, volumes=[{"volume": "datasets", "path": "/data"}])
+        self.assertEqual(sent[0]["volumes"], [{"volume": "datasets", "path": "/data"}])
+        self.assertEqual(sandbox.volumes, [VolumeMount(volume="vol-1", path="/data")])
 
     def test_egress_defaults_to_open(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -136,15 +151,15 @@ class FilesTest(unittest.TestCase):
                 return httpx.Response(200, content=b"tar-bytes")
             if request.method == "PUT":
                 return httpx.Response(204)
-            return httpx.Response(206, content=b"workspace")
+            return httpx.Response(206, content=b"sandboxes")
 
         c = client(handler)
-        c.write_file("sb", "src/hello.txt", b"hello workspace\n")
-        self.assertEqual(c.read_file("sb", "src/hello.txt", offset=6, limit=9), b"workspace")
+        c.write_file("sb", "src/hello.txt", b"hello sandboxes\n")
+        self.assertEqual(c.read_file("sb", "src/hello.txt", offset=6, limit=9), b"sandboxes")
         self.assertEqual(c.download_archive("sb", "tree"), b"tar-bytes")
         c.upload_archive("sb", "unpacked", b"tar-bytes")
 
-        self.assertEqual(seen[("PUT", "/api/v1/sandboxes/sb/files/content")][2], b"hello workspace\n")
+        self.assertEqual(seen[("PUT", "/api/v1/sandboxes/sb/files/content")][2], b"hello sandboxes\n")
         self.assertEqual(seen[("GET", "/api/v1/sandboxes/sb/files/content")][1], "bytes=6-14")
         archive_get = seen[("GET", "/api/v1/sandboxes/sb/files/archive")]
         self.assertEqual(archive_get[:2], ("tree", None))

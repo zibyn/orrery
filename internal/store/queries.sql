@@ -211,10 +211,6 @@ WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 UPDATE sandboxes SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
 
--- name: PurgeWorkspaceIdempotencyKeys :exec
-UPDATE workspaces SET idempotency_key = NULL
-WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
-
 -- name: PurgeSnapshotIdempotencyKeys :exec
 UPDATE snapshots SET idempotency_key = NULL
 WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
@@ -359,7 +355,7 @@ WHERE sqlc.arg(source_id)::uuid = ANY (t.links_from) AND t.deleted_at IS NULL AN
   AND t.state NOT IN ('pending', 'failed', 'deleted');
 
 -- CreateBuildSandbox is the internal row that carries a Snapshot build's
--- Allocation and Exec (schema.md, ADR-0021). It has no Workspace and no
+-- Allocation and Exec (schema.md, ADR-0021). It has no Volume and no
 -- Runtime; secret_env_ct holds the build's Secret snapshot.
 -- name: CreateBuildSandbox :one
 INSERT INTO sandboxes (
@@ -439,13 +435,9 @@ SELECT * FROM sandboxes
 WHERE kind = 'user' AND state = 'ready' AND desired_state = 'running' AND idle_stop_seconds > 0
 ORDER BY id;
 
--- DeleteSandbox records a stopped or failed Sandbox read-only: it holds no
--- write, and deleting must not take it back. The states are the complement of
--- the sandboxes_workspace_rw predicate (#220).
 -- name: DeleteSandbox :one
 UPDATE sandboxes
 SET desired_state = 'deleted', state = 'deleting', deleted_at = now(),
-    workspace_mode = CASE WHEN state IN ('stopped', 'failed') THEN 'ro' ELSE workspace_mode END,
     generation = generation + 1, updated_at = now()
 WHERE id = $1 AND state <> 'deleted'
 RETURNING *;
@@ -457,7 +449,7 @@ RETURNING *;
 SELECT * FROM sandboxes
 WHERE kind = 'user'
   AND (state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
-       -- A failed Sandbox can still hold a Runtime (workspace_lost); the stop
+       -- A failed Sandbox can still hold a Runtime; the stop
        -- command runs until the Node observes it gone and the compute is
        -- released (ADR-0017).
        OR (state = 'failed'
@@ -467,7 +459,20 @@ ORDER BY id;
 -- name: SetSandboxNode :execrows
 UPDATE sandboxes
 SET node_id = $2, updated_at = now()
-WHERE id = $1 AND node_id IS NULL AND state = 'pending' AND desired_state = 'running';
+WHERE id = $1 AND state = 'pending' AND desired_state = 'running';
+
+-- SandboxPlaced: an admitted Sandbox holds an Allocation until its Runtime is
+-- gone; node_id alone is only where it last ran (ADR-0031).
+-- name: SandboxPlaced :one
+SELECT EXISTS (SELECT 1 FROM allocations WHERE sandbox_id = $1);
+
+-- ForgetSandboxNode drops the placement preference of a Sandbox whose Node
+-- evicted its cached diff (runtime.md §16). A Sandbox placed since keeps its
+-- Node: the report is about a disk its Create no longer uses.
+-- name: ForgetSandboxNode :execrows
+UPDATE sandboxes SET node_id = NULL, updated_at = now()
+WHERE sandboxes.id = $1 AND sandboxes.node_id = $2
+  AND NOT EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = $1);
 
 -- name: SetSandboxProvisioning :execrows
 UPDATE sandboxes
@@ -512,9 +517,16 @@ UPDATE sandboxes
 SET state = 'failed', cause = $3, conditions = NULL, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND state <> 'deleted';
 
+-- SetSandboxConditions writes the Agent-reported condition set under the
+-- generation fence (commit_stalled, runtime.md §16).
+-- name: SetSandboxConditions :execrows
+UPDATE sandboxes
+SET conditions = $3, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state <> 'deleted';
+
 -- name: MarkSandboxRuntimeLost :execrows
 UPDATE sandboxes
-SET state = 'stopped', cause = $3, desired_state = 'stopped', address = NULL, updated_at = now()
+SET state = 'stopped', cause = $3, conditions = NULL, desired_state = 'stopped', address = NULL, updated_at = now()
 WHERE id = $1 AND generation = $2 AND desired_state = 'running'
   AND state IN ('pending', 'provisioning', 'ready');
 
@@ -596,74 +608,6 @@ WHERE id IN (
     WHERE ended_at IS NOT NULL
     LIMIT 10000
 );
-
--- Workspaces
-
--- name: CreateWorkspace :one
-INSERT INTO workspaces (id, owner_id, kind, sandbox_id, state, storage_handle, generation, idempotency_key)
-VALUES ($1, $2, $3, $4, 'provisioning', $5, 1, $6)
-RETURNING *;
-
--- name: GetWorkspace :one
-SELECT * FROM workspaces WHERE id = $1;
-
--- name: GetWorkspaceByIdempotencyKey :one
-SELECT * FROM workspaces
-WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
-
--- GetSandboxWorkspace is the Sandbox's Workspace through the durable
--- association.
--- name: GetSandboxWorkspace :one
-SELECT w.* FROM workspaces w
-JOIN sandboxes s ON s.workspace_id = w.id
-WHERE s.id = $1 AND w.state <> 'deleted';
-
--- name: ListWorkspaces :many
-SELECT * FROM workspaces
-WHERE owner_id = sqlc.arg('owner_id')
-  AND state <> 'deleted'
-  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
-ORDER BY id
-LIMIT sqlc.arg('limit');
-
--- name: ListProvisioningWorkspaces :many
-SELECT * FROM workspaces WHERE state = 'provisioning' ORDER BY id;
-
--- name: SetWorkspaceConditions :exec
-UPDATE workspaces SET conditions = $2, updated_at = now() WHERE id = $1;
-
--- name: MarkWorkspaceFailed :execrows
-UPDATE workspaces
-SET state = 'failed', cause = $3, updated_at = now()
-WHERE id = $1 AND generation = $2 AND state = 'provisioning';
-
--- name: ListDeletingWorkspaces :many
-SELECT * FROM workspaces WHERE state = 'deleting' ORDER BY id;
-
--- name: SetWorkspaceNode :execrows
-UPDATE workspaces
-SET node_id = $2, state = 'provisioning', generation = generation + 1, updated_at = now()
-WHERE id = $1 AND node_id IS NULL;
-
--- name: MarkWorkspaceReady :execrows
-UPDATE workspaces
-SET state = 'ready', updated_at = now()
-WHERE id = $1 AND generation = $2 AND state = 'provisioning';
-
--- name: SetWorkspaceDeleting :execrows
-UPDATE workspaces
-SET state = 'deleting', generation = generation + 1, updated_at = now()
-WHERE id = $1 AND state <> 'deleted';
-
--- name: MarkWorkspaceDeleted :execrows
-UPDATE workspaces
-SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE id = $1 AND generation = $2;
-
--- name: SetSandboxWorkspace :exec
-UPDATE sandboxes
-SET workspace_id = $2, workspace_mode = $3, updated_at = now()
-WHERE id = $1;
 
 -- Allocations
 
@@ -899,22 +843,27 @@ INSERT INTO resource_versions (
 ) VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)
 RETURNING *;
 
--- CreatePendingResourceVersion is the Workspace publish path: the version
--- starts pending and the Agent fills in the manifest (node-protocol.md
--- "Workspace publish").
+-- CreatePendingResourceVersion is the Sandbox and Volume publish
+-- path: the version starts pending, and the Agent (or, for a Volume, the
+-- Control Plane) fills in the manifest (node-protocol.md "Sandbox publish").
+-- Exactly one of the publish_*_id columns is set.
 -- name: CreatePendingResourceVersion :one
 INSERT INTO resource_versions (
-    id, resource_id, provenance, state, publish_workspace_id,
-    publish_idempotency_key
-) VALUES ($1, $2, $3, 'pending', $4, $5)
+    id, resource_id, provenance, state,
+    publish_sandbox_id, publish_volume_id, publish_idempotency_key
+) VALUES ($1, $2, $3, 'pending', $4, $5, $6)
 RETURNING *;
 
 -- name: GetResourceVersion :one
 SELECT * FROM resource_versions WHERE id = $1;
 
--- name: GetResourceVersionByPublishIdempotencyKey :one
+-- name: GetResourceVersionBySandboxPublishIdempotencyKey :one
 SELECT * FROM resource_versions
-WHERE publish_workspace_id = $1 AND publish_idempotency_key = $2;
+WHERE publish_sandbox_id = $1 AND publish_idempotency_key = $2;
+
+-- name: GetResourceVersionByVolumePublishIdempotencyKey :one
+SELECT * FROM resource_versions
+WHERE publish_volume_id = $1 AND publish_idempotency_key = $2;
 
 -- SetResourceVersionManifest records what SubmitManifest normalized. Only a
 -- pending version can accept a manifest: a terminal one must not be revived.
@@ -940,25 +889,34 @@ UPDATE resource_versions
 SET state = 'failed', cause = $2
 WHERE id = $1 AND state = 'pending';
 
--- ListPendingWorkspacePublishes is the Reconciler's desired-state query. The
--- path lives in provenance (schema.md).
--- name: ListPendingWorkspacePublishes :many
-SELECT rv.id, rv.resource_id, rv.provenance, rv.publish_workspace_id, w.node_id
+-- ListPendingSandboxPublishes is the Reconciler's desired-state query for
+-- Sandbox publishes, sent to the Node the Sandbox runs on.
+-- name: ListPendingSandboxPublishes :many
+SELECT rv.id, rv.provenance, rv.publish_sandbox_id, s.node_id
 FROM resource_versions rv
-JOIN workspaces w ON w.id = rv.publish_workspace_id
-WHERE rv.state = 'pending' AND rv.publish_workspace_id IS NOT NULL
+JOIN sandboxes s ON s.id = rv.publish_sandbox_id
+WHERE rv.state = 'pending' AND rv.publish_sandbox_id IS NOT NULL
 ORDER BY rv.id;
 
--- GetPendingWorkspacePublish authorizes SubmitManifest and CommandResult: the
--- version must still be pending and its Workspace bound to the calling Node.
--- name: GetPendingWorkspacePublish :one
-SELECT rv.*, w.node_id, r.owner_id
+-- ListPendingVolumePublishes is the Control Plane's own publish work: no Node
+-- is involved.
+-- name: ListPendingVolumePublishes :many
+SELECT rv.*, r.owner_id
 FROM resource_versions rv
-JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN resources r ON r.id = rv.resource_id
+WHERE rv.state = 'pending' AND rv.publish_volume_id IS NOT NULL
+ORDER BY rv.id
+LIMIT $1;
+
+-- GetPendingSandboxPublish authorizes SubmitManifest and CommandResult: the
+-- version must still be pending and its Sandbox on the calling Node.
+-- name: GetPendingSandboxPublish :one
+SELECT rv.*, s.node_id, r.owner_id
+FROM resource_versions rv
+JOIN sandboxes s ON s.id = rv.publish_sandbox_id
 JOIN resources r ON r.id = rv.resource_id
 WHERE rv.id = $1
-  AND rv.state = 'pending'
-  AND rv.publish_workspace_id IS NOT NULL;
+  AND rv.state = 'pending';
 
 -- FindPublishObjectOwner answers the Presign PUT question: is sha256 one of
 -- the objects of a pending publish assigned to this Node, and which owner's
@@ -968,10 +926,9 @@ SELECT r.owner_id
 FROM resource_version_objects rvo
 JOIN resource_versions rv ON rv.id = rvo.version_id
 JOIN resources r ON r.id = rv.resource_id
-JOIN workspaces w ON w.id = rv.publish_workspace_id
+JOIN sandboxes s ON s.id = rv.publish_sandbox_id
 WHERE rv.state = 'pending'
-  AND rv.publish_workspace_id IS NOT NULL
-  AND w.node_id = $1
+  AND s.node_id = $1
   AND rvo.sha256 = $2
 LIMIT 1;
 
@@ -1250,8 +1207,8 @@ DELETE FROM resource_versions WHERE id = $1;
 DELETE FROM uploads WHERE expires_at <= now();
 
 -- ListSweepableCASObjects finds objects past the grace window that no version
--- of the same owner references and no unexpired upload will still write. The
--- owner join is what makes the sweep owner-scoped (ADR-0021).
+-- or Generation of the same owner references and no unexpired upload will
+-- still write. The owner join is what makes the sweep owner-scoped (ADR-0021).
 -- name: ListSweepableCASObjects :many
 SELECT c.owner_id, c.sha256, c.created_at
 FROM cas_objects c
@@ -1262,6 +1219,12 @@ WHERE c.created_at < sqlc.arg('cutoff')
     JOIN resource_versions rv ON rv.id = rvo.version_id
     JOIN resources r ON r.id = rv.resource_id
     WHERE r.owner_id = c.owner_id AND rvo.sha256 = c.sha256
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM generation_objects go
+    JOIN generations g ON g.id = go.generation_id
+    WHERE g.owner_id = c.owner_id AND go.sha256 = c.sha256
   )
   AND NOT EXISTS (
     SELECT 1
@@ -1398,18 +1361,10 @@ WHERE id = $1 AND deleted_at IS NULL AND lost_at IS NULL RETURNING *;
 UPDATE nodes SET deleted_at = now(), token_hash = ''
 WHERE id = $1 AND deleted_at IS NULL;
 
--- Deletion requires no non-terminal Workspace (deleted, failed and lost are
--- terminal) and no non-terminal Sandbox, build rows included (api.md §3). A
--- build row at stopped is finished and has no Runtime, so it is terminal; a
--- stopped user Sandbox still blocks.
--- name: CountNodeNonTerminalWorkspaces :one
-SELECT count(*)::bigint FROM workspaces
-WHERE node_id = $1 AND state NOT IN ('deleted', 'failed', 'lost');
-
+-- A Sandbox running, stopping or bound there holds an Allocation on the Node;
+-- a stopped one only prefers it and does not block (api.md §3, ADR-0031).
 -- name: CountNodeNonTerminalSandboxes :one
-SELECT count(*)::bigint FROM sandboxes
-WHERE node_id = $1 AND state NOT IN ('deleted', 'failed')
-  AND NOT (kind = 'build' AND state = 'stopped');
+SELECT count(*)::bigint FROM allocations WHERE node_id = $1;
 
 -- Lost cascades (#95)
 
@@ -1420,25 +1375,30 @@ UPDATE nodes
 SET token_hash = '', paused = true, lost_at = now()
 WHERE id = $1;
 
--- Every non-deleted Sandbox on the Node, including stopped and bound pending
--- ones and build rows, becomes failed/node_lost (api.md §3).
--- name: FailSandboxesOnNodeLost :execrows
-UPDATE sandboxes
-SET state = 'failed', cause = 'node_lost', desired_state = 'stopped',
-    conditions = NULL, address = NULL, updated_at = now()
-WHERE node_id = $1 AND state <> 'deleted';
+-- A Sandbox runs on, or is bound to, the Node that holds its Allocation. On a
+-- lost Node those stop with node_lost and changes_lost and start again
+-- elsewhere from their head Generation; a deleting one is deleted; build rows
+-- fail. Stopped and failed Sandboxes keep their state: their data is the head
+-- (api.md §3, ADR-0031). Runs before the Allocations are released.
+-- name: StopSandboxesOnNodeLost :execrows
+UPDATE sandboxes s
+SET state = CASE WHEN s.state = 'deleting' THEN 'deleted'
+                 WHEN s.kind = 'build' THEN 'failed' ELSE 'stopped' END,
+    cause = CASE WHEN s.state = 'deleting' THEN s.cause ELSE 'node_lost' END,
+    desired_state = CASE WHEN s.state = 'deleting' THEN s.desired_state ELSE 'stopped' END,
+    conditions = CASE WHEN s.state = 'deleting' OR s.kind = 'build' THEN NULL
+                      ELSE '{"changes_lost": true}'::jsonb END,
+    address = NULL, updated_at = now()
+WHERE s.state IN ('pending', 'provisioning', 'ready', 'stopping', 'deleting')
+  AND (EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = s.id AND a.node_id = $1)
+       OR (s.state = 'deleting' AND s.node_id = $1));
 
 -- name: DeleteGPUAllocationsOnNodeLost :execrows
 DELETE FROM gpu_allocations
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-);
+WHERE gpu_uuid IN (SELECT uuid FROM gpus WHERE node_id = $1);
 
 -- name: DeleteAllocationsOnNodeLost :execrows
-DELETE FROM allocations
-WHERE sandbox_id IN (
-    SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
-);
+DELETE FROM allocations WHERE node_id = $1;
 
 -- name: FinishExecsOnNodeLost :execrows
 UPDATE execs
@@ -1447,18 +1407,6 @@ WHERE finished_at IS NULL
   AND sandbox_id IN (
       SELECT s.id FROM sandboxes s WHERE s.node_id = $1 AND s.state <> 'deleted'
   );
-
--- A Workspace being deleted on a lost Node reaches deleted without a command;
--- every other non-terminal one becomes lost (ADR-0014).
--- name: MarkDeletingWorkspacesDeletedOnNodeLost :execrows
-UPDATE workspaces
-SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE node_id = $1 AND state = 'deleting';
-
--- name: MarkWorkspacesLostOnNodeLost :execrows
-UPDATE workspaces
-SET state = 'lost', updated_at = now()
-WHERE node_id = $1 AND state IN ('provisioning', 'ready');
 
 -- name: FailBuildsOnNodeLost :execrows
 UPDATE snapshot_versions
@@ -1470,34 +1418,249 @@ WHERE state = 'building'
 UPDATE resource_versions
 SET state = 'failed', cause = 'node_lost'
 WHERE state = 'pending'
-  AND publish_workspace_id IN (SELECT id FROM workspaces WHERE node_id = $1);
+  AND publish_sandbox_id IN (SELECT sb.id FROM sandboxes sb WHERE sb.node_id = $1);
 
--- A Workspace declared lost on a live Node: its attached Sandboxes become
--- failed/workspace_lost and their Execs end runtime_lost (ADR-0017). A row
--- already deleting keeps its own teardown.
--- name: MarkWorkspaceLost :execrows
-UPDATE workspaces
-SET state = 'lost', updated_at = now()
-WHERE id = $1 AND state IN ('provisioning', 'ready');
+-- Generations (ADR-0031, node-protocol.md "Generation 提交").
 
--- name: FailSandboxesOnWorkspaceLost :execrows
-UPDATE sandboxes
-SET state = 'failed', cause = 'workspace_lost', desired_state = 'stopped',
-    conditions = NULL, updated_at = now()
-WHERE workspace_id = $1 AND state NOT IN ('deleted', 'deleting');
+-- LockGenerationSandbox reads the committing Sandbox under a row lock, so
+-- the fence and head checks and the head move are one step.
+-- name: LockGenerationSandbox :one
+SELECT * FROM sandboxes WHERE id = $1 FOR UPDATE;
 
--- name: FinishExecsOnWorkspaceLost :execrows
-UPDATE execs
-SET finished_at = now(), cause = 'runtime_lost', secret_env_ct = NULL
-WHERE finished_at IS NULL
-  AND sandbox_id IN (
-      SELECT id FROM sandboxes
-      WHERE workspace_id = $1 AND state = 'failed' AND cause = 'workspace_lost'
-  );
+-- name: CreateGenerationUpload :exec
+INSERT INTO generation_uploads (id, owner_id, sandbox_id, node_id, generation, base_generation_id, missing, expires_at, volume_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
--- Abandoning a Workspace stuck in deleting reaches deleted with no Node
--- command (api.md §3).
--- name: MarkWorkspaceAbandoned :execrows
-UPDATE workspaces
+-- name: GetGenerationUpload :one
+SELECT * FROM generation_uploads WHERE id = $1 AND expires_at > now();
+
+-- ConsumeGenerationUpload ends an upload in its commit. It must still be
+-- unexpired: the purge removes an expired upload's manifest.
+-- name: ConsumeGenerationUpload :execrows
+DELETE FROM generation_uploads WHERE id = $1 AND expires_at > now();
+
+-- The hour past expiry keeps the purge clear of a commit that read the
+-- manifest just before the upload expired.
+-- name: ListExpiredGenerationUploads :many
+SELECT * FROM generation_uploads WHERE expires_at <= now() - interval '1 hour'
+ORDER BY expires_at LIMIT $1;
+
+-- name: DeleteGenerationUpload :exec
+DELETE FROM generation_uploads WHERE id = $1;
+
+-- seq is monotonic per Sandbox: the head is never purged, so the maximum
+-- survives retention.
+-- name: NextGenerationSeq :one
+SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE sandbox_id = $1;
+
+-- name: NextVolumeGenerationSeq :one
+SELECT (COALESCE(MAX(seq), 0) + 1)::bigint FROM generations WHERE volume_id = $1;
+
+-- name: InsertGeneration :exec
+INSERT INTO generations (id, owner_id, sandbox_id, seq, kind, manifest_key, size, volume_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: InsertGenerationObject :exec
+INSERT INTO generation_objects (generation_id, sha256) VALUES ($1, $2)
+ON CONFLICT DO NOTHING;
+
+-- name: GetGeneration :one
+SELECT * FROM generations WHERE id = $1;
+
+-- name: SetSandboxHeadGeneration :execrows
+UPDATE sandboxes SET head_generation_id = sqlc.arg('head')::uuid, updated_at = now()
+WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM sqlc.narg('base')::uuid;
+
+-- name: SetVolumeHeadGeneration :execrows
+UPDATE volumes SET head_generation_id = sqlc.arg('head')::uuid, updated_at = now()
+WHERE id = $1 AND head_generation_id IS NOT DISTINCT FROM sqlc.narg('base')::uuid;
+
+-- LockGenerationVolume reads the committing Volume under a row lock, after
+-- its holder Sandbox's.
+-- name: LockGenerationVolume :one
+SELECT * FROM volumes WHERE id = $1 FOR UPDATE;
+
+-- ListGarbageGenerations finds Generations that are no live Sandbox's or
+-- Volume's head and that no pending Volume publish reads. Heads only move
+-- forward, so such a row never becomes a head again.
+-- name: ListGarbageGenerations :many
+SELECT g.* FROM generations g
+WHERE NOT EXISTS (
+    SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id AND s.deleted_at IS NULL
+)
+  AND NOT EXISTS (
+    SELECT 1 FROM volumes v WHERE v.head_generation_id = g.id AND v.state <> 'deleted'
+)
+  AND NOT EXISTS (
+    SELECT 1 FROM resource_versions rv
+    WHERE rv.state = 'pending' AND rv.publish_volume_id IS NOT NULL
+      AND rv.provenance -> 'volume' ->> 'generation_id' = g.id::text
+)
+ORDER BY g.created_at
+LIMIT $1;
+
+-- A deleted Volume's head goes with it (ADR-0031).
+-- name: ClearDeletedVolumeHead :exec
+UPDATE volumes SET head_generation_id = NULL
+WHERE head_generation_id = $1 AND state = 'deleted';
+
+-- A deleted Sandbox's head goes with it (ADR-0031).
+-- name: ClearDeletedSandboxHead :exec
+UPDATE sandboxes SET head_generation_id = NULL
+WHERE head_generation_id = $1 AND deleted_at IS NOT NULL;
+
+-- name: DeleteGarbageGeneration :exec
+DELETE FROM generations g
+WHERE g.id = $1
+  AND NOT EXISTS (SELECT 1 FROM sandboxes s WHERE s.head_generation_id = g.id)
+  AND NOT EXISTS (SELECT 1 FROM volumes v WHERE v.head_generation_id = g.id);
+
+-- Presign authorization (node-protocol.md "Presign"). An open upload signs
+-- PUTs only while its Sandbox is on this Node under the same fence.
+
+-- name: FindGenerationUploadObjectOwner :one
+SELECT u.owner_id FROM generation_uploads u
+JOIN sandboxes s ON s.id = u.sandbox_id
+WHERE u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
+  AND u.expires_at > now() AND sqlc.arg('sha256')::text = ANY (u.missing)
+LIMIT 1;
+
+-- name: FindGenerationUploadOwner :one
+SELECT u.owner_id FROM generation_uploads u
+JOIN sandboxes s ON s.id = u.sandbox_id
+WHERE u.id = $2 AND u.node_id = $1 AND s.node_id = $1 AND s.generation = u.generation
+  AND u.expires_at > now();
+
+-- A Volume's head counts for the Node of the Sandbox holding it.
+-- name: FindNodeHeadGenerationOwner :one
+SELECT s.owner_id FROM sandboxes s
+WHERE s.node_id = sqlc.arg('node_id') AND s.state <> 'deleted' AND s.head_generation_id = sqlc.arg('head_generation_id')
+UNION ALL
+SELECT v.owner_id FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id AND sv.held
+JOIN sandboxes s ON s.id = sv.sandbox_id
+WHERE s.node_id = sqlc.arg('node_id') AND v.head_generation_id = sqlc.arg('head_generation_id')
+LIMIT 1;
+
+-- name: FindNodeHeadGenerationObjectOwner :one
+SELECT s.owner_id FROM sandboxes s
+JOIN generation_objects go ON go.generation_id = s.head_generation_id
+WHERE s.node_id = sqlc.arg('node_id') AND s.state <> 'deleted' AND go.sha256 = sqlc.arg('sha256')
+UNION ALL
+SELECT v.owner_id FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id AND sv.held
+JOIN sandboxes s ON s.id = sv.sandbox_id
+JOIN generation_objects go ON go.generation_id = v.head_generation_id
+WHERE s.node_id = sqlc.arg('node_id') AND go.sha256 = sqlc.arg('sha256')
+LIMIT 1;
+
+-- Volumes (ADR-0031, api.md §3 "Volume").
+
+-- name: CreateVolume :one
+INSERT INTO volumes (id, owner_id, name, idempotency_key)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: GetVolume :one
+SELECT * FROM volumes WHERE id = $1;
+
+-- name: GetVolumeByIdempotencyKey :one
+SELECT * FROM volumes
+WHERE owner_id = $1 AND idempotency_key = $2 AND state <> 'deleted';
+
+-- name: ListVolumes :many
+SELECT * FROM volumes
+WHERE owner_id = sqlc.arg('owner_id')
+  AND state <> 'deleted'
+  AND (sqlc.narg('after')::uuid IS NULL OR id > sqlc.narg('after'))
+ORDER BY id
+LIMIT sqlc.arg('limit');
+
+-- VolumePendingMigration: the Volume's Workspace directory is still on a
+-- Node, waiting for the next start there (legacy_dirs).
+-- name: VolumePendingMigration :one
+SELECT EXISTS (SELECT 1 FROM legacy_dirs WHERE volume_id = $1);
+
+-- GetVolumeHolder is the Sandbox holding the Volume, if any.
+-- name: GetVolumeHolder :one
+SELECT sandbox_id FROM sandbox_volumes WHERE volume_id = $1 AND held;
+
+-- LockVolume serializes a delete against a create or start that takes the
+-- Volume (which lock it FOR SHARE).
+-- name: LockVolume :one
+SELECT * FROM volumes WHERE id = $1 FOR UPDATE;
+
+-- name: LockLiveVolumeShare :one
+SELECT * FROM volumes WHERE id = $1 AND state <> 'deleted' FOR SHARE;
+
+-- name: GetLiveVolumeByNameShare :one
+SELECT * FROM volumes WHERE owner_id = $1 AND name = $2 AND state <> 'deleted' FOR SHARE;
+
+-- MarkVolumeDeleted runs after LockVolume, so the hold check sees every
+-- committed create and start.
+-- name: MarkVolumeDeleted :execrows
+UPDATE volumes v
 SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE id = $1 AND state = 'deleting';
+WHERE v.id = $1 AND v.state = 'ready'
+  AND NOT EXISTS (SELECT 1 FROM sandbox_volumes sv WHERE sv.volume_id = v.id AND sv.held);
+
+-- name: PurgeVolumeIdempotencyKeys :exec
+UPDATE volumes SET idempotency_key = NULL
+WHERE idempotency_key IS NOT NULL AND created_at < now() - interval '24 hours';
+
+-- name: CreateSandboxVolume :exec
+INSERT INTO sandbox_volumes (sandbox_id, volume_id, path, held)
+VALUES ($1, $2, $3, true);
+
+-- name: ListSandboxVolumes :many
+SELECT * FROM sandbox_volumes WHERE sandbox_id = $1 ORDER BY path;
+
+-- ListSandboxVolumeMounts is CreateSandbox's volumes (node-protocol.md).
+-- name: ListSandboxVolumeMounts :many
+SELECT sv.volume_id, sv.path, v.name, v.head_generation_id
+FROM sandbox_volumes sv JOIN volumes v ON v.id = sv.volume_id
+WHERE sv.sandbox_id = $1 ORDER BY sv.path;
+
+-- LockSandboxVolumes takes the Sandbox's Volumes FOR SHARE on start, so a
+-- concurrent delete waits; a deleted one refuses the start.
+-- name: LockSandboxVolumes :many
+SELECT v.* FROM volumes v
+JOIN sandbox_volumes sv ON sv.volume_id = v.id
+WHERE sv.sandbox_id = $1
+ORDER BY v.id
+FOR SHARE OF v;
+
+
+
+
+-- Legacy directories (#279, migration 000035): Node-local directories from
+-- before ADR-0031 that their Node merges at the Sandbox's next Create there.
+
+-- ListLegacyDirNodes is where a Sandbox must start while its own directory or
+-- one of its Volumes' is still on a Node.
+-- name: ListLegacyDirNodes :many
+SELECT DISTINCT node_id FROM legacy_dirs
+WHERE sandbox_id = sqlc.arg('sandbox_id')::uuid
+   OR volume_id IN (SELECT sv.volume_id FROM sandbox_volumes sv WHERE sv.sandbox_id = sqlc.arg('sandbox_id')::uuid);
+
+-- StartLegacyDirs marks the directories a just-admitted Sandbox's Create
+-- merges.
+-- name: StartLegacyDirs :exec
+UPDATE legacy_dirs SET started = true
+WHERE sandbox_id = sqlc.arg('sandbox_id')::uuid
+   OR volume_id IN (SELECT sv.volume_id FROM sandbox_volumes sv WHERE sv.sandbox_id = sqlc.arg('sandbox_id')::uuid);
+
+-- FinishLegacyDirs drops them once the Sandbox committed after that Create:
+-- its stop commits the Volumes first, then its own filesystem.
+-- name: FinishLegacyDirs :exec
+DELETE FROM legacy_dirs
+WHERE started
+  AND (sandbox_id = sqlc.arg('sandbox_id')::uuid
+       OR volume_id IN (SELECT sv.volume_id FROM sandbox_volumes sv WHERE sv.sandbox_id = sqlc.arg('sandbox_id')::uuid));
+
+-- A directory on a lost or deleted Node is lost.
+-- name: DeleteNodeLegacyDirs :execrows
+DELETE FROM legacy_dirs WHERE node_id = $1;
+
+-- name: DeleteVolumeLegacyDir :exec
+DELETE FROM legacy_dirs WHERE volume_id = $1;

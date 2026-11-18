@@ -124,3 +124,18 @@ func pattern(n int, seed byte) []byte {
 }
 
 func testLog() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// PresignGenerations serves Generation manifests stored with putGeneration.
+func (o *objectServer) PresignGenerations(_ context.Context, ids []string) ([]string, error) {
+	urls := []string{}
+	for _, id := range ids {
+		urls = append(urls, o.URL+"/o/"+id)
+	}
+	return urls, nil
+}
+
+func (o *objectServer) putGeneration(id string, data []byte) {
+	o.mu.Lock()
+	o.objects[id] = data
+	o.mu.Unlock()
+}

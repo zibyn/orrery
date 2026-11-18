@@ -26,6 +26,11 @@ func Put(ctx context.Context, client *http.Client, url string, body io.Reader, s
 	if err != nil || len(raw) != sha256.Size {
 		return fmt.Errorf("invalid sha256 %q", digest)
 	}
+	if size == 0 {
+		// A non-nil body of length 0 reads as unknown length and goes chunked,
+		// which S3 refuses (MissingContentLength).
+		body = http.NoBody
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return err

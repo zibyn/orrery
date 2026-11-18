@@ -32,15 +32,11 @@ type sandboxView struct {
 	QueuePosition *int64   `json:"queue_position"`
 	BlockedBy     *string  `json:"blocked_reason"`
 	Conditions    []string `json:"conditions"`
-	Workspace     *struct {
-		ID   string `json:"id"`
-		Mode string `json:"mode"`
-	} `json:"workspace"`
 }
 
 // TestSandboxLifecycle is the "sandbox-lifecycle" acceptance scenario (#50):
 // create → ready → stop → start → delete on a real containerd Node, with the
-// container limits matching the request and the implicit Workspace reclaimed.
+// container limits matching the request and the Sandbox's directory reclaimed.
 func TestSandboxLifecycle(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
@@ -152,7 +148,7 @@ func TestSandboxLifecycle(t *testing.T) {
 		t.Fatal("the container still runs after stop")
 	}
 
-	// start → pending → ready again, without losing the Workspace.
+	// start → pending → ready again.
 	status, data = call(t, http.MethodPost, "/api/v1/sandboxes/"+created.ID+"/start", admin, nil)
 	if status != http.StatusAccepted {
 		t.Fatalf("start: %d %s", status, data)
@@ -173,16 +169,14 @@ func TestSandboxLifecycle(t *testing.T) {
 	}
 	assertLimit(t, created.ID, "cpu.max", "50000 100000")
 
-	// delete → deleted; the implicit Workspace and its directory go with it.
+	// delete → deleted; the Sandbox's directory goes with it.
 	status, data = call(t, http.MethodDelete, "/api/v1/sandboxes/"+created.ID, admin, nil)
 	if status != http.StatusAccepted {
 		t.Fatalf("delete: %d %s", status, data)
 	}
-	workspaceID := waitForSandboxDeleted(t, created.ID, 60*time.Second)
-	if workspaceID != "" {
-		if pathExists(filepath.Join(dataRoot, "workspaces", workspaceID)) {
-			t.Fatal("Workspace directory still exists")
-		}
+	waitForSandboxDeleted(t, created.ID, 60*time.Second)
+	if pathExists(filepath.Join(dataRoot, "sandboxes", created.ID)) {
+		t.Fatal("Sandbox directory still exists")
 	}
 }
 
@@ -366,27 +360,22 @@ func waitForNodeReady(t *testing.T, admin, name string) {
 	}
 }
 
-// waitForSandboxDeleted polls until the Sandbox and its Workspace are deleted,
-// then returns the Workspace id for the on-disk check.
-func waitForSandboxDeleted(t *testing.T, id string, timeout time.Duration) string {
+// waitForSandboxDeleted polls until the Sandbox is deleted and has no
+// Allocation left.
+func waitForSandboxDeleted(t *testing.T, id string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		sandboxDeleted := psqlCount(t, fmt.Sprintf(
-			"SELECT count(*) FROM sandboxes WHERE id = '%s' AND state = 'deleted'", id)) == "1"
-		workspaceDeleted := psqlCount(t, fmt.Sprintf(
-			"SELECT count(*) FROM workspaces WHERE sandbox_id = '%s' AND state = 'deleted'", id)) == "1"
-		if sandboxDeleted && workspaceDeleted {
+		if psqlCount(t, fmt.Sprintf(
+			"SELECT count(*) FROM sandboxes WHERE id = '%s' AND state = 'deleted'", id)) == "1" {
 			if n := psqlCount(t, fmt.Sprintf(
 				"SELECT count(*) FROM allocations WHERE sandbox_id = '%s'", id)); n != "0" {
 				t.Fatalf("Allocation rows left after delete: %s", n)
 			}
-			return psqlCount(t, fmt.Sprintf(
-				"SELECT id FROM workspaces WHERE sandbox_id = '%s'", id))
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("Sandbox %s was not fully deleted (sandbox_deleted=%v workspace_deleted=%v)",
-				id, sandboxDeleted, workspaceDeleted)
+			t.Fatalf("Sandbox %s was not deleted", id)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

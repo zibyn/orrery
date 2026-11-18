@@ -26,37 +26,45 @@ const presignBatch = 500
 // transfer client it has no timeout: a legacy object can be 5 GiB.
 var publishHTTP = &http.Client{}
 
-// publishWorkspace walks this Node's copy of a Workspace and publishes it
-// (node-protocol.md "Workspace publish"). No Sandbox is involved: the Agent
-// reads the host directory. The command is redelivered after a reconnect, so
-// every step is repeatable.
-func (r *Runtime) publishWorkspace(ctx context.Context, cmd *nodev1.PublishWorkspace) error {
-	workspaceID, err := uuid.Parse(cmd.GetWorkspaceId())
+// publishSandbox publishes a path of a running Sandbox's own filesystem
+// (node-protocol.md "Sandbox publish"). The path is resolved like the file API (api.md §5).
+// The command is redelivered after a reconnect, so every step is repeatable.
+func (r *Runtime) publishSandbox(ctx context.Context, sandboxID uuid.UUID, cmd *nodev1.PublishSandbox) error {
+	sfs, err := r.driver.filesystem(ctx, sandboxID)
 	if err != nil {
-		return fmt.Errorf("invalid workspace id: %w", err)
+		return err
 	}
-	root, err := os.OpenRoot(workspacePath(r.dataRoot, workspaceID))
+	publishPath, err := sfs.resolve(cmd.GetPath())
+	if err != nil {
+		return err
+	}
+	return r.publishDir(ctx, sfs.dir, cmd.GetVersionId(), publishPath)
+}
+
+// publishDir walks publishPath under dir and publishes it as versionID.
+func (r *Runtime) publishDir(ctx context.Context, dir, versionID, publishPath string) error {
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
 	defer root.Close() //nolint:errcheck // read-only handle
 
-	m, files, err := walkWorkspaceManifest(root, cmd.GetPath())
+	m, files, err := walkManifest(root, publishPath)
 	if err != nil {
 		return err
 	}
-	missing, err := r.submitManifest(ctx, cmd.GetVersionId(), m)
+	missing, err := r.submitManifest(ctx, versionID, m)
 	if err != nil {
 		return err
 	}
 	return r.uploadPublishObjects(ctx, root, missing, files)
 }
 
-// walkWorkspaceManifest builds the manifest rooted at publishPath inside the
-// Workspace. Symlinks are recorded and never followed, empty directories and
+// walkManifest builds the manifest rooted at publishPath inside root.
+// Symlinks are recorded and never followed, empty directories and
 // the executable bit survive, and devices/FIFOs/sockets are rejected
 // (ADR-0012).
-func walkWorkspaceManifest(root *os.Root, publishPath string) (manifest.Manifest, map[string]manifest.Source, error) {
+func walkManifest(root *os.Root, publishPath string) (manifest.Manifest, map[string]manifest.Source, error) {
 	base, err := localPath(publishPath)
 	if err != nil {
 		return manifest.Manifest{}, nil, err

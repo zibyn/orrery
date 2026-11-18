@@ -34,18 +34,6 @@ const (
 	SandboxDesiredDeleted SandboxDesiredState = "deleted"
 )
 
-// WorkspaceState is the lifecycle condition of a Workspace (GLOSSARY.md).
-type WorkspaceState string
-
-const (
-	WorkspaceProvisioning WorkspaceState = "provisioning"
-	WorkspaceReady        WorkspaceState = "ready"
-	WorkspaceDeleting     WorkspaceState = "deleting"
-	WorkspaceDeleted      WorkspaceState = "deleted"
-	WorkspaceFailed       WorkspaceState = "failed"
-	WorkspaceLost         WorkspaceState = "lost"
-)
-
 // SnapshotVersionState is the lifecycle of an import or build (api.md §3).
 type SnapshotVersionState string
 
@@ -62,10 +50,6 @@ var (
 		string(SandboxPending), string(SandboxProvisioning), string(SandboxReady),
 		string(SandboxStopping), string(SandboxStopped), string(SandboxDeleting),
 		string(SandboxDeleted), string(SandboxFailed),
-	}
-	workspaceStateNames = []string{
-		string(WorkspaceProvisioning), string(WorkspaceReady), string(WorkspaceDeleting),
-		string(WorkspaceDeleted), string(WorkspaceFailed), string(WorkspaceLost),
 	}
 	snapshotVersionStateNames = []string{
 		string(SnapshotVersionBuilding), string(SnapshotVersionReady),

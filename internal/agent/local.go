@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/generation"
 	"github.com/zibyn/orrery/internal/nodeproto"
 	"github.com/zibyn/orrery/internal/supervisor"
 )
@@ -247,7 +248,7 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 		Entries: []nodeproto.CapabilityEntry{
 			{Name: nodeproto.CapProcessMountNamespace, Value: nodeproto.ValueUnsupported},
 			{Name: nodeproto.CapCPUMemoryPIDLimits, Value: value(limitsEnforced)},
-			{Name: nodeproto.CapWorkspaceRWMount, Value: value(result.WorkspaceWritable)},
+			{Name: nodeproto.CapWorkdirWritable, Value: value(result.WorkdirWritable)},
 			{Name: nodeproto.CapExecSupervisor, Value: nodeproto.ValueEnforced},
 			{Name: nodeproto.CapGPUDeviceVisibility, Value: gpu},
 			{Name: nodeproto.CapGPUMemoryLimit, Value: nodeproto.ValueUnsupported},
@@ -261,29 +262,29 @@ func localCapabilities(result supervisor.Result, limitsEnforced, hasGPUs, device
 }
 
 // localExecEnv adds the Local-only variables to the common Exec environment:
-// the host Workspace path, the Resource symlink directory and the cards CUDA
-// may see (node-protocol.md, runtime.md §10). A GPU-less Exec still names
-// the variable as empty.
-func localExecEnv(caller map[string]string, basePath, binDir, workspace, resources string, gpus []string) map[string]string {
+// the Sandbox's working directory, the Resource symlink directory and the
+// cards CUDA may see (node-protocol.md, runtime.md §10). A GPU-less Exec
+// still names the variable as empty.
+func localExecEnv(caller map[string]string, basePath, binDir, workdir, resources string, gpus []string) map[string]string {
 	env := execEnv(caller, basePath, binDir)
-	env["ORRERY_WORKSPACE"] = workspace
+	env["ORRERY_WORKSPACE"] = workdir
 	env["ORRERY_RESOURCES"] = resources
 	env["CUDA_VISIBLE_DEVICES"] = strings.Join(gpus, ",")
 	return env
 }
 
-// localCwd turns the Exec's Workspace-relative cwd into the host path the
-// Supervisor needs (api.md §4). It never rewrites an escaping path: the API
-// rejects those first, and os.Root keeps the Agent safe on its own, including
-// symlinks that point out of the Workspace.
-func localCwd(workspace, cwd string) (string, error) {
+// localCwd turns the Exec's working-directory-relative cwd into the host path
+// the Supervisor needs (api.md §4). It never rewrites an escaping path: the
+// API rejects those first, and os.Root keeps the Agent safe on its own,
+// including symlinks that point out of the working directory.
+func localCwd(workdir, cwd string) (string, error) {
 	if cwd == "" {
-		return workspace, nil
+		return workdir, nil
 	}
 	if !filepath.IsLocal(cwd) {
 		return "", errBadPath
 	}
-	root, err := os.OpenRoot(workspace)
+	root, err := os.OpenRoot(workdir)
 	if err != nil {
 		return "", err
 	}
@@ -293,7 +294,7 @@ func localCwd(workspace, cwd string) (string, error) {
 		return "", err
 	}
 	_ = target.Close()
-	return filepath.Join(workspace, filepath.Clean(cwd)), nil
+	return filepath.Join(workdir, filepath.Clean(cwd)), nil
 }
 
 // localDriver is the systemd-backed Provider (runtime.md §10). It shares every
@@ -306,7 +307,7 @@ type localDriver struct {
 }
 
 // newLocalRuntime builds the Local Provider. The shared host-path plumbing is
-// the same Runtime; only the driver differs, and owner maps the Workspace and
+// the same Runtime; only the driver differs, and owner maps the working directory and
 // record directories to the unprivileged user.
 func newLocalRuntime(dataRoot, nodeID string, as localUser, binDir string) *Runtime {
 	rt := newRuntime(ProviderLocal, dataRoot, nodeID)
@@ -382,8 +383,8 @@ func localUnitState(ctx context.Context, unit string) (active, known bool, out s
 	}
 }
 
-func (d *localDriver) prepareDirs(workspace, runDir string) error {
-	for _, dir := range []string{workspace, runDir} {
+func (d *localDriver) prepareDirs(dirs ...string) error {
+	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o777); err != nil {
 			return err
 		}
@@ -433,21 +434,8 @@ func (d *localDriver) createSandbox(ctx context.Context, cmd *createSandboxSpec)
 	if err != nil {
 		return "runtime_create_failed", err
 	}
-	workspaceID, err := uuid.Parse(cmd.workspaceID)
-	if err != nil {
-		return "runtime_create_failed", err
-	}
-	workspace := workspacePath(d.r.dataRoot, workspaceID)
 	runDir := sandboxRunPath(d.r.dataRoot, id)
-	if err := d.prepareDirs(workspace, runDir); err != nil {
-		return "runtime_create_failed", err
-	}
-	mode := cmd.workspaceMode
-	if mode != "rw" && mode != "ro" {
-		mode = "rw"
-	}
-	// The file API reads this record; there is no mount table on Local.
-	if err := d.r.writeWorkspaceRefFile(id, workspaceRef{ID: workspaceID.String(), Mode: mode}); err != nil {
+	if err := d.prepareDirs(runDir); err != nil {
 		return "runtime_create_failed", err
 	}
 	// StartExec has no GPU list, so the allocation is remembered per Sandbox.
@@ -463,6 +451,40 @@ func (d *localDriver) createSandbox(ctx context.Context, cmd *createSandboxSpec)
 		}
 		d.r.track(id, cmd.generation)
 		return "", nil
+	}
+	// Before the working directory is touched: the old record shares its
+	// path (legacy.go).
+	if err := d.r.seedLegacyVolumes(ctx, cmd.volumes); err != nil {
+		return "runtime_create_failed", err
+	}
+	legacy, err := takeLegacySandboxDir(d.r.dataRoot, id, cmd.volumes)
+	if err != nil {
+		return "runtime_create_failed", err
+	}
+	// The working directory is the Sandbox's filesystem: kept when it is the
+	// head, otherwise restored from it (runtime.md §10, §16).
+	workdir := localWorkdir(d.r.dataRoot, id)
+	if !d.r.cachedDiffMatches(id, cmd.restore) {
+		if err := os.RemoveAll(workdir); err != nil {
+			return "runtime_create_failed", err
+		}
+		if err := d.r.forgetCachedDiff(id); err != nil {
+			return "runtime_create_failed", err
+		}
+		if cmd.restore != "" {
+			if err := d.r.restoreFilesystem(ctx, id, cmd.restore, workdir); err != nil {
+				return "runtime_create_failed", err
+			}
+		}
+	}
+	// The restored root belongs to the Agent; the Local user writes there.
+	if err := d.prepareDirs(workdir); err != nil {
+		return "runtime_create_failed", err
+	}
+	if legacy != "" {
+		if err := mergeLegacyDir(ctx, legacy, workdir); err != nil {
+			return "runtime_create_failed", err
+		}
 	}
 	if _, err := runLocalCommand(ctx, "systemctl",
 		append([]string{"set-property", "--runtime", localSliceName(id)}, localLimitProperties(cmd.cpu, cmd.memory)...)...); err != nil {
@@ -513,6 +535,28 @@ func (d *localDriver) stopSandbox(ctx context.Context, sandboxID uuid.UUID) erro
 	return nil
 }
 
+// localWorkdir is a Local Sandbox's own working directory, committed whole
+// (runtime.md §10, §16).
+func localWorkdir(dataRoot string, id uuid.UUID) string {
+	return filepath.Join(sandboxPath(dataRoot, id), "workspace")
+}
+
+// commitTarget is the working directory as a tree. A Sandbox started before
+// ADR-0031 ran in its old directory and has none yet.
+func (d *localDriver) commitTarget(_ context.Context, sandboxID uuid.UUID) (commitTarget, bool, error) {
+	dir := localWorkdir(d.r.dataRoot, sandboxID)
+	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+		return commitTarget{}, false, nil
+	}
+	return commitTarget{root: dir, kind: generation.KindTree}, true, nil
+}
+
+// dropSandboxDisk removes the working directory, the cached diff of a Local
+// Sandbox.
+func (d *localDriver) dropSandboxDisk(_ context.Context, sandboxID uuid.UUID) error {
+	return os.RemoveAll(localWorkdir(d.r.dataRoot, sandboxID))
+}
+
 func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) error {
 	sandboxID, err := uuid.Parse(cmd.SandboxId)
 	if err != nil {
@@ -525,15 +569,7 @@ func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) erro
 	if d.user.uid == 0 {
 		return errors.New("refusing to run a Local Exec as root")
 	}
-	ref, ok := readWorkspaceRef(sandboxPath(d.r.dataRoot, sandboxID))
-	if !ok {
-		return errors.New("the Sandbox has no Workspace record")
-	}
-	workspaceID, err := uuid.Parse(ref.ID)
-	if err != nil {
-		return errors.New("the Sandbox Workspace record is invalid")
-	}
-	workspace := workspacePath(d.r.dataRoot, workspaceID)
+	workdir := d.workdir(sandboxID)
 	runRoot := sandboxRunPath(d.r.dataRoot, sandboxID)
 	dir := filepath.Join(runRoot, execID.String())
 
@@ -543,7 +579,7 @@ func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) erro
 		go d.r.streamExec(ctx, sandboxID, execID, dir)
 		return nil
 	}
-	if err := d.prepareDirs(workspace, runRoot); err != nil {
+	if err := d.prepareDirs(workdir, runRoot); err != nil {
 		return err
 	}
 	// Execs run inside the Sandbox's slice. If the placeholder is gone the
@@ -571,13 +607,31 @@ func (d *localDriver) startExec(ctx context.Context, cmd *nodev1.StartExec) erro
 			return err
 		}
 	}
-	cwd, err := localCwd(workspace, cmd.Cwd)
+	cwd, err := localCwd(workdir, cmd.Cwd)
 	if err != nil {
 		return err
 	}
-	return d.r.deliverExecSpec(ctx, sandboxID, execID, dir, cmd,
-		localExecEnv(cmd.Env, os.Getenv("PATH"), d.binDir, workspace, sandboxResourcesPath(d.r.dataRoot, sandboxID), gpus),
-		cwd)
+	env := localExecEnv(cmd.Env, os.Getenv("PATH"), d.binDir, workdir, sandboxResourcesPath(d.r.dataRoot, sandboxID), gpus)
+	env["ORRERY_VOLUMES"] = sandboxVolumesPath(d.r.dataRoot, sandboxID)
+	return d.r.deliverExecSpec(ctx, sandboxID, execID, dir, cmd, env, cwd)
+}
+
+// workdir is where the Sandbox's Execs run: its working directory, or the
+// old directory of one still running since before ADR-0031 (legacy.go).
+func (d *localDriver) workdir(id uuid.UUID) string {
+	if dir := legacyRunningDir(d.r.dataRoot, id); dir != "" {
+		return dir
+	}
+	return localWorkdir(d.r.dataRoot, id)
+}
+
+// filesystem is the working directory: every path is relative to it, an
+// absolute one included (api.md §5). Volumes and Resources live outside it.
+func (d *localDriver) filesystem(ctx context.Context, id uuid.UUID) (sandboxFS, error) {
+	if active, _, _ := localUnitState(ctx, localPlaceholderService(id)); !active {
+		return sandboxFS{}, errNotRunning
+	}
+	return sandboxFS{dir: d.workdir(id), base: "."}, nil
 }
 
 func (d *localDriver) probe(ctx context.Context) (nodeproto.CapabilityReport, error) {
@@ -592,7 +646,7 @@ func (d *localDriver) probe(ctx context.Context) (nodeproto.CapabilityReport, er
 }
 
 // selfCheck runs a bounded, unprivileged probe service and reads its own
-// cgroup and Workspace back (runtime.md §10). A host with cards also probes
+// cgroup and working directory back (runtime.md §10). A host with cards also probes
 // DevicePolicy=closed; a rejected policy degrades only GPU visibility.
 func (d *localDriver) selfCheck(ctx context.Context) (supervisor.Result, bool, bool, bool, error) {
 	dir, err := os.MkdirTemp("", "orrery-local-probe-*")
@@ -601,15 +655,15 @@ func (d *localDriver) selfCheck(ctx context.Context) (supervisor.Result, bool, b
 	}
 	defer os.RemoveAll(dir) //nolint:errcheck // best effort
 	// MkdirTemp is 0700 root; the Local user must traverse it to reach the
-	// probe Workspace.
+	// probe working directory.
 	if err := os.Chmod(dir, 0o755); err != nil {
 		return supervisor.Result{}, false, false, false, err
 	}
-	workspace := filepath.Join(dir, "workspace")
-	if err := os.Mkdir(workspace, 0o777); err != nil {
+	workdir := filepath.Join(dir, "work")
+	if err := os.Mkdir(workdir, 0o777); err != nil {
 		return supervisor.Result{}, false, false, false, err
 	}
-	if err := os.Chown(workspace, d.user.uid, d.user.gid); err != nil {
+	if err := os.Chown(workdir, d.user.uid, d.user.gid); err != nil {
 		return supervisor.Result{}, false, false, false, err
 	}
 
@@ -634,7 +688,7 @@ func (d *localDriver) selfCheck(ctx context.Context) (supervisor.Result, bool, b
 		if withDevices {
 			extra = deviceProps
 		}
-		result, err = d.runProbe(ctx, workspace, extra)
+		result, err = d.runProbe(ctx, workdir, extra)
 		if err == nil {
 			devicePolicy = withDevices
 			break
@@ -650,7 +704,7 @@ func (d *localDriver) selfCheck(ctx context.Context) (supervisor.Result, bool, b
 	return result, limitsEnforced, hasGPUs, devicePolicy, nil
 }
 
-func (d *localDriver) runProbe(ctx context.Context, workspace string, extra []string) (supervisor.Result, error) {
+func (d *localDriver) runProbe(ctx context.Context, workdir string, extra []string) (supervisor.Result, error) {
 	args := []string{
 		"--quiet", "--pipe", "--wait", "--collect",
 		"--unit=orrery-probe-" + uuid.NewString(),
@@ -661,7 +715,7 @@ func (d *localDriver) runProbe(ctx context.Context, workspace string, extra []st
 		"--property=" + localProbeUnitPids,
 	}
 	args = append(args, extra...)
-	args = append(args, d.supervisor, "probe", workspace)
+	args = append(args, d.supervisor, "probe", workdir)
 
 	ctx, cancel := context.WithTimeout(ctx, localCommandTimeout)
 	defer cancel()

@@ -25,7 +25,7 @@ with Orrery("http://127.0.0.1:8080", token) as client:
     finished = client.wait_exec(exec_.id)
     print(finished.result.cause, finished.result.exit_code)  # exited 7
 
-    client.write_file(sandbox.id, "src/hello.txt", b"hello workspace\n")
+    client.write_file(sandbox.id, "src/hello.txt", b"hello sandboxes\n")
     data = client.read_file(sandbox.id, "src/hello.txt", offset=6, limit=9)  # workspa
     entries = client.list_files(sandbox.id, "src")
     client.move_file(sandbox.id, "src/hello.txt", "src/moved.txt")
@@ -57,7 +57,7 @@ except OrreryError as err:
 - 文件（§5 全部）：list、stat、读（Range）、写、mkdir、move、delete、tar 下载与上传
 - Secret：put、list、delete
 
-不覆盖 Resource 上传、Workspace publish、端口转发和 PTY。
+不覆盖 Resource 上传、publish、端口转发和 PTY。
 
 ## 开发
 

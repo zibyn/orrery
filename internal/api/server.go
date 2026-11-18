@@ -25,6 +25,7 @@ type Server struct {
 	q            *store.Queries
 	log          *slog.Logger
 	objects      *objectstore.Store // nil when object storage is unconfigured
+	generations  generationStore    // s.objects, or a test fake; nil without object storage
 	crossOrigin  http.CrossOriginProtection
 	reconcile    *reconciler
 	mesh         *meshMatrix
@@ -62,6 +63,7 @@ func New(cfg Config, pool *pgxpool.Pool, log *slog.Logger) *Server {
 			log.Error("build object store client", "error", err)
 		} else {
 			s.objects = objects
+			s.generations = objects
 		}
 	}
 	s.reconcile = newReconciler(s)

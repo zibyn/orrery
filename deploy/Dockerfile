@@ -14,6 +14,7 @@ ARG TARGETOS TARGETARCH
 ARG VERSION=""
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party/go-fuse ./third_party/go-fuse
 RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist

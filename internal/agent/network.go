@@ -279,7 +279,8 @@ func sweepOrphanNetworks(dataRoot string) {
 // Agent's, one from before an upgrade, or another Agent's on the same bridge.
 // shortcut: two Agents allocating at the same instant can still race; add a
 // host-wide lock if Nodes ever share a host outside e2e.
-func liveAddresses() map[netip.Addr]bool {
+// A variable so unit tests do not read the host's /run/netns.
+var liveAddresses = func() map[netip.Addr]bool {
 	live := map[netip.Addr]bool{}
 	entries, _ := os.ReadDir(filepath.Dir(netnsPath(uuid.Nil)))
 	for _, entry := range entries {

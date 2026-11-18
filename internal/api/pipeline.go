@@ -45,12 +45,13 @@ type constraintProblem struct {
 // to their problem response. Paths that need the raw error (OIDC binding, the
 // platform Snapshot importer) keep using uniqueViolation directly.
 var constraintProblems = map[string]constraintProblem{
-	"users_name_key":         {"conflict", "a User with that name already exists"},
-	"users_email_unique":     {"conflict", "a User with that email already exists"},
-	"sandboxes_owner_name":   {"conflict", "a Sandbox with that name already exists"},
-	"sandboxes_workspace_rw": {"conflict", "the Workspace is already mounted read-write"},
-	"snapshots_owner_name":   {"conflict", "a Snapshot with that name already exists"},
-	"resources_owner_name":   {"conflict", "a Resource with that name already exists"},
+	"users_name_key":       {"conflict", "a User with that name already exists"},
+	"users_email_unique":   {"conflict", "a User with that email already exists"},
+	"sandboxes_owner_name": {"conflict", "a Sandbox with that name already exists"},
+	"sandbox_volumes_held": {"conflict", "another Sandbox holds the Volume"},
+	"volumes_owner_name":   {"conflict", "a Volume with that name already exists"},
+	"snapshots_owner_name": {"conflict", "a Snapshot with that name already exists"},
+	"resources_owner_name": {"conflict", "a Resource with that name already exists"},
 }
 
 // writeConstraintProblem writes the problem for a known unique-constraint
