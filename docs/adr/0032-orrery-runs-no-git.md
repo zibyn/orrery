@@ -38,7 +38,7 @@ A caller rotates a credential with `PUT /secrets/{name}`, and the next Exec gets
 - Clients of the removed routes and commands break at upgrade, with no alias period. Existing Git Account Links are dropped, and Users authorize again in their caller.
 - Orrery's audit no longer records Git token use. The caller that holds the token records its own.
 - A token still enters the Sandbox. A process that can read the Exec's environment sees it while the Exec runs, and the provider's scoping bounds what it reaches, as under ADR-0013.
-- ADR-0010, ADR-0014, ADR-0020, ADR-0024, ADR-0026 and ADR-0029 still mention Git Providers, Git Account Links, Git tokens or the Sandbox Token. Those passages describe what this ADR removes.
+- ADR-0010, ADR-0014, ADR-0020, ADR-0024, ADR-0025, ADR-0026 and ADR-0029 still mention Git Providers, Git Account Links, Git tokens or the Sandbox Token and its `ors_` prefix. Those passages describe what this ADR removes.
 - The research behind ADR-0013 (`docs/research/git-short-lived-credentials.md`, `sandbox-git-integration.md` and `recheck-git-secrets-vs-coder-daytona.md`) is deleted. Citations of it refer to Git history before this ADR.
 
 ## Rejected alternatives
