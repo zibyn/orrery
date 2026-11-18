@@ -185,3 +185,191 @@ func TestVolumeHandoverDuringWrites(t *testing.T) {
 	}
 	t.Logf("%d files written across 2 handovers", n)
 }
+
+// Readers and writers on different files run on through back-to-back
+// commits (runtime.md §17): each read returns what was written, a ref
+// renamed over seals whole, and the last seal holds exactly what was written.
+func TestVolumeConcurrentIOAcrossCommits(t *testing.T) {
+	h := newHarness(t)
+	h.start(false)
+	h.waitServing()
+	h.mountVolume()
+	dir := h.volumeDir()
+	ctx := context.Background()
+	const writers, rounds, chunk = 4, 200, 64 << 10
+	// expected is writer w's file once its first n rounds are written.
+	expected := func(w, n int) []byte {
+		var b []byte
+		for r := range n {
+			b = append(b, pattern(chunk, byte(w*rounds+r))...)
+		}
+		return b
+	}
+	refs := map[string]bool{}
+	for r := range rounds {
+		refs[digest(fmt.Appendf(nil, "ref %d\n", r))] = true
+	}
+
+	var work, background sync.WaitGroup
+	for w := range writers {
+		work.Go(func() {
+			f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("w%d", w)), os.O_CREATE|os.O_RDWR, 0o644)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer f.Close()
+			for r := range rounds {
+				data, off := pattern(chunk, byte(w*rounds+r)), int64(r*chunk)
+				if _, err := f.WriteAt(data, off); err != nil {
+					t.Errorf("w%d round %d: %v", w, r, err)
+					return
+				}
+				got := make([]byte, chunk)
+				if _, err := f.ReadAt(got, off); err != nil || !bytes.Equal(got, data) {
+					t.Errorf("w%d round %d reads other bytes (%v)", w, r, err)
+					return
+				}
+				if info, err := f.Stat(); err != nil || info.Size() != off+chunk {
+					t.Errorf("w%d round %d: size %v, want %d", w, r, info, off+chunk)
+					return
+				}
+				if r%16 == 0 {
+					if err := f.Sync(); err != nil {
+						t.Errorf("fsync w%d: %v", w, err)
+						return
+					}
+				}
+			}
+		})
+	}
+	// Git's pattern: write a lock file, rename it over the ref. notes is
+	// written rarely, so commits drop its clean copy and the next append
+	// copies it up from the block cache.
+	var notes []byte
+	work.Go(func() {
+		lock, ref := filepath.Join(dir, "ref.lock"), filepath.Join(dir, "ref")
+		for r := range rounds {
+			want := fmt.Appendf(nil, "ref %d\n", r)
+			if err := os.WriteFile(lock, want, 0o644); err != nil {
+				t.Error(err)
+				return
+			}
+			if err := os.Rename(lock, ref); err != nil {
+				t.Error(err)
+				return
+			}
+			if got, err := os.ReadFile(ref); err != nil || !bytes.Equal(got, want) {
+				t.Errorf("ref reads %q after rename, want %q (%v)", got, want, err)
+				return
+			}
+			if r%50 == 0 {
+				notes = fmt.Appendf(notes, "note %d\n", r)
+				f, err := os.OpenFile(filepath.Join(dir, "notes"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+				if err == nil {
+					_, err = fmt.Fprintf(f, "note %d\n", r)
+					f.Close()
+				}
+				if err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}
+	})
+	stop := make(chan struct{})
+	// Readers of the other files: whatever has been written so far reads as
+	// its writer's bytes, and the head's file reads as committed.
+	for range 2 {
+		background.Go(func() {
+			full := make([][]byte, writers)
+			for w := range full {
+				full[w] = expected(w, rounds)
+			}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if got, err := os.ReadFile(filepath.Join(dir, "seed")); err != nil || string(got) != "seed" {
+					t.Errorf("seed reads %q (%v)", got, err)
+					return
+				}
+				for w := range writers {
+					got, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("w%d", w)))
+					if err != nil && !os.IsNotExist(err) {
+						t.Error(err)
+						return
+					}
+					if len(got) > len(full[w]) || !bytes.Equal(got, full[w][:len(got)]) {
+						t.Errorf("w%d reads %d bytes not all its writer's", w, len(got))
+						return
+					}
+				}
+			}
+		})
+	}
+	// The Agent's commit loop, back to back; every sealed ref is one whole
+	// version of it.
+	commits := 0
+	background.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			s, err := h.client().SealVolume(ctx, testVolume)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if !s.Dirty {
+				continue
+			}
+			for _, e := range s.Manifest.Entries {
+				if e.Path == "ref" && !refs[e.SHA256] {
+					t.Errorf("a seal holds a ref no rename wrote: %s", e.SHA256)
+				}
+			}
+			commits++
+			if err := h.client().VolumeCommitted(ctx, testVolume, fmt.Sprintf("gen-%d", commits), s.Seq); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	})
+	work.Wait()
+	close(stop)
+	background.Wait()
+	if t.Failed() {
+		return
+	}
+
+	want := map[string][]byte{"seed": []byte("seed"), "ref": fmt.Appendf(nil, "ref %d\n", rounds-1), "notes": notes}
+	for w := range writers {
+		want[fmt.Sprintf("w%d", w)] = expected(w, rounds)
+	}
+	s, err := h.client().SealVolume(ctx, testVolume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]generation.Entry{}
+	for _, e := range s.Manifest.Entries {
+		got[e.Path] = e
+	}
+	for path, content := range want {
+		if data, err := os.ReadFile(filepath.Join(dir, path)); err != nil || !bytes.Equal(data, content) {
+			t.Errorf("%s reads %d bytes, want %d (%v)", path, len(data), len(content), err)
+		}
+		address := digest(content)
+		if int64(len(content)) > manifest.BlockSize {
+			address = digestOf(content)
+		}
+		if got[path].SHA256 != address {
+			t.Errorf("the last seal has %s as %s, want %s", path, got[path].SHA256, address)
+		}
+	}
+	t.Logf("%d commits during the run", commits)
+}

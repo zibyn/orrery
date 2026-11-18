@@ -1,8 +1,9 @@
 package resourcefs
 
-// Copy to internal/resourcefs/ to run; see README.md. The Volume reads and
-// commits against a real S3 store (RustFS) the way the Agent does:
-// seal → upload each pending object through a presigned PUT, one at a time →
+// The Volume target of docs/research/volume-bench (see its README); skipped
+// unless ORRERY_BENCH_SCRIPT is set. The Volume reads and commits against a
+// real S3 store (RustFS) the way the Agent does: seal → upload the pending
+// objects through presigned PUTs, castransfer.MaxUploads in flight →
 // PUT the Generation manifest → VolumeCommitted.
 
 import (
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/zibyn/orrery/internal/castransfer"
 	"github.com/zibyn/orrery/internal/generation"
@@ -165,13 +168,21 @@ func TestVolumeLocalBench(t *testing.T) {
 		if !s.Dirty || s.Manifest == nil {
 			return nil
 		}
-		var bytesUp int64
+		var bytesUp atomic.Int64
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(castransfer.MaxUploads)
 		for _, d := range s.Pending {
-			n, err := p.putObject(ctx, filepath.Join(objects, d), d)
-			if err != nil {
-				return fmt.Errorf("upload %s: %w", d, err)
-			}
-			bytesUp += n
+			g.Go(func() error {
+				n, err := p.putObject(gctx, filepath.Join(objects, d), d)
+				if err != nil {
+					return fmt.Errorf("upload %s: %w", d, err)
+				}
+				bytesUp.Add(n)
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return err
 		}
 		encoded, err := generation.Encode(*s.Manifest)
 		if err != nil {
@@ -185,7 +196,7 @@ func TestVolumeLocalBench(t *testing.T) {
 			return fmt.Errorf("committed: %w", err)
 		}
 		fmt.Printf("COMMIT seal=%v objects=%d MiB=%d total=%v\n", sealed.Round(time.Millisecond),
-			len(s.Pending), bytesUp>>20, time.Since(start).Round(time.Millisecond))
+			len(s.Pending), bytesUp.Load()>>20, time.Since(start).Round(time.Millisecond))
 		return nil
 	}
 

@@ -1,14 +1,19 @@
 package resourcefs
 
 import (
+	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fuse"
 
@@ -122,8 +127,12 @@ func (v vol) seal() (Sealed, []string) {
 	if err != nil {
 		v.t.Fatal(err)
 	}
+	return s, treeLines(s)
+}
+
+func treeLines(s Sealed) []string {
 	if s.Manifest == nil {
-		return s, nil
+		return nil
 	}
 	var lines []string
 	for _, e := range s.Manifest.Entries {
@@ -133,7 +142,61 @@ func (v vol) seal() (Sealed, []string) {
 		}
 		lines = append(lines, line)
 	}
-	return s, lines
+	return lines
+}
+
+// goSeal seals in the background.
+func goSeal(v vol) <-chan Sealed {
+	sealed := make(chan Sealed, 1)
+	go func() {
+		s, err := v.f.seal()
+		if err != nil {
+			v.t.Error(err)
+		}
+		sealed <- s
+	}()
+	return sealed
+}
+
+// holdSeal stops a seal as it hashes path's frozen file, until release;
+// wait returns once a seal is held there. A hold the test does not release
+// within 5 s means an op waited for it, and fails the test.
+func holdSeal(v vol, path string) (wait, release func()) {
+	ino := v.ino(path)
+	held, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hashing = func(i uint64) {
+		if i == ino {
+			once.Do(func() {
+				close(held)
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second): // free whatever is stuck behind it
+					v.t.Errorf("an op waited for the seal hashing %s", path)
+				}
+			})
+		}
+	}
+	v.t.Cleanup(func() { hashing = func(uint64) {} })
+	wait = func() {
+		v.t.Helper()
+		select {
+		case <-held:
+		case <-time.After(5 * time.Second):
+			v.t.Fatalf("no seal reached %s", path)
+		}
+	}
+	return wait, sync.OnceFunc(func() { close(done) })
+}
+
+// notYet fails if c delivers within a moment.
+func notYet[T any](t *testing.T, c <-chan T, what string) {
+	t.Helper()
+	select {
+	case <-c:
+		t.Fatal(what)
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func newTestVolume(t *testing.T) (vol, *objectServer) {
@@ -313,6 +376,180 @@ func TestVolumeTruncateAndUnlinkedOpenFile(t *testing.T) {
 	}
 }
 
+// A slow fsync holds up only its own file (runtime.md §17): open, read,
+// write and stat of another file answer while it runs.
+func TestVolumeFsyncBlocksOnlyItsFile(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("checkpoint", "weights")
+	v.create("notes", "draft")
+	slow, notes := v.ino("checkpoint"), v.ino("notes")
+	entered, release := make(chan struct{}), make(chan struct{})
+	syncFile = func(file *os.File) error {
+		if file.Name() == v.f.dataPath(slow) {
+			close(entered)
+			select {
+			case <-release:
+			case <-time.After(5 * time.Second): // were notes stuck behind it, free them to fail below
+			}
+		}
+		return file.Sync()
+	}
+	t.Cleanup(func() { syncFile = (*os.File).Sync })
+	synced := make(chan fuse.Status, 1)
+	go func() { synced <- v.f.Fsync(nil, &fuse.FsyncIn{InHeader: hdr(slow)}) }()
+	<-entered
+
+	v.check("open", v.f.Open(nil, &fuse.OpenIn{InHeader: hdr(notes)}, &fuse.OpenOut{}))
+	v.write("notes", 5, " two")
+	if got := v.read("notes", 0, 100); got != "draft two" {
+		t.Fatalf("notes read %q", got)
+	}
+	var attr fuse.AttrOut
+	v.check("stat", v.f.GetAttr(nil, &fuse.GetAttrIn{InHeader: hdr(notes)}, &attr))
+	if attr.Size != 9 {
+		t.Fatalf("notes is %d bytes, want 9", attr.Size)
+	}
+	select {
+	case <-synced:
+		t.Fatal("notes waited for the fsync of checkpoint")
+	default:
+	}
+	close(release)
+	if st := <-synced; st != fuse.OK {
+		t.Fatalf("fsync = %v", st)
+	}
+}
+
+// Concurrent IO keeps POSIX results: files written side by side read back
+// their own bytes, and writes racing truncates of one file leave a state some
+// serial order of them would. Seals run meanwhile.
+func TestVolumeConcurrentIO(t *testing.T) {
+	v, _ := newTestVolume(t)
+	const files, rounds, chunk, writers = 8, 100, 1000, 4
+	inos := make([]uint64, files)
+	for i := range inos {
+		v.create(fmt.Sprintf("f%d", i), "")
+		inos[i] = v.ino(fmt.Sprintf("f%d", i))
+	}
+	shared, big := v.ino("docs/a.txt"), v.ino("big") // committed, so the first change copies shared up
+	write := func(ino uint64, off int, data []byte) {
+		if n, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(ino), Offset: uint64(off)}, data); st != fuse.OK || int(n) != len(data) {
+			t.Errorf("write %d at %d: %d, %v", ino, off, n, st)
+		}
+	}
+	read := func(ino uint64, off, size int) []byte {
+		res, st := v.f.Read(nil, &fuse.ReadIn{InHeader: hdr(ino), Offset: uint64(off), Size: uint32(size)}, make([]byte, size))
+		if st != fuse.OK {
+			t.Errorf("read %d at %d: %v", ino, off, st)
+			return nil
+		}
+		data, _ := res.Bytes(nil)
+		return data
+	}
+	stop, sealed := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(sealed)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := v.f.seal(); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for i, ino := range inos {
+		wg.Go(func() {
+			for r := range rounds {
+				data := pattern(chunk, byte(i*rounds+r))
+				write(ino, r*chunk, data)
+				if !bytes.Equal(read(ino, r*chunk, chunk), data) {
+					t.Errorf("f%d round %d reads other bytes", i, r)
+				}
+				if st := v.f.Fsync(nil, &fuse.FsyncIn{InHeader: hdr(ino)}); st != fuse.OK {
+					t.Errorf("fsync f%d: %v", i, st)
+				}
+			}
+		})
+	}
+	// Each writer owns a region of shared; cuts land meanwhile.
+	cuts := []uint64{0, 1500, 2500, writers*chunk - 1}
+	for w := range writers {
+		wg.Go(func() {
+			for range rounds {
+				write(shared, w*chunk, bytes.Repeat([]byte{byte('a' + w)}, chunk))
+			}
+		})
+	}
+	wg.Go(func() {
+		for r := range rounds {
+			var attr fuse.AttrOut
+			in := &fuse.SetAttrIn{SetAttrInCommon: fuse.SetAttrInCommon{InHeader: hdr(shared), Valid: fuse.FATTR_SIZE, Size: cuts[r%len(cuts)]}}
+			if st := v.f.SetAttr(nil, in, &attr); st != fuse.OK {
+				t.Errorf("truncate: %v", st)
+			}
+		}
+	})
+	committed := pattern(9<<20, 3)
+	wg.Go(func() {
+		for r := range rounds {
+			if off := r * 90_000; !bytes.Equal(read(big, off, 100), committed[off:off+100]) {
+				t.Errorf("big at %d reads other bytes", off)
+			}
+		}
+	})
+	wg.Wait()
+	close(stop)
+	<-sealed
+
+	_, lines := v.seal()
+	for i := range inos {
+		var want []byte
+		for r := range rounds {
+			want = append(want, pattern(chunk, byte(i*rounds+r))...)
+		}
+		if line := fmt.Sprintf("f%d file 644  %s", i, digest(want)); !contains(lines, line) {
+			t.Errorf("f%d was not sealed with what was written to it", i)
+		}
+	}
+	var attr fuse.AttrOut
+	v.check("stat", v.f.GetAttr(nil, &fuse.GetAttrIn{InHeader: hdr(shared)}, &attr))
+	got := read(shared, 0, writers*chunk)
+	if uint64(len(got)) != attr.Size || (attr.Size%chunk != 0 && !slices.Contains(cuts, attr.Size)) {
+		t.Fatalf("shared is %d bytes and reads %d: no serial order ends so", attr.Size, len(got))
+	}
+	// Serially, a region holds its writer's bytes then zeros where a cut
+	// took them, and the region a write extended the file to is whole.
+	for w := 0; w*chunk < len(got); w++ {
+		region := got[w*chunk : min((w+1)*chunk, len(got))]
+		rest := bytes.TrimLeft(region, string(rune('a'+w)))
+		if len(bytes.TrimLeft(rest, "\x00")) != 0 || ((w+1)*chunk == len(got) && len(rest) != 0) {
+			t.Fatalf("region %d of shared is %q", w, region)
+		}
+	}
+}
+
+// A write whose copy-up fails leaves the file reading its committed bytes.
+func TestVolumeFailedCopyUpKeepsCommittedContent(t *testing.T) {
+	v, o := newTestVolume(t)
+	o.mu.Lock()
+	o.corrupt = true
+	o.mu.Unlock()
+	if _, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(v.ino("docs/a.txt"))}, []byte("x")); st != fuse.EIO {
+		t.Fatalf("write over a failed copy-up = %v, want EIO", st)
+	}
+	o.mu.Lock()
+	o.corrupt = false
+	o.mu.Unlock()
+	if got := v.read("docs/a.txt", 0, 10); got != "alpha" {
+		t.Fatalf("after a failed copy-up the file reads %q", got)
+	}
+}
+
 func TestVolumeRefusals(t *testing.T) {
 	v, _ := newTestVolume(t)
 	v.create("f", "x")
@@ -370,5 +607,415 @@ func TestVolumeHandoverKeepsUncommittedState(t *testing.T) {
 	s, _ := w.seal()
 	if !s.Dirty || s.Upload != "upload-1" || s.UploadSeq != 7 {
 		t.Fatalf("successor seal = %+v", s)
+	}
+}
+
+// A seal hashing a large dirty file holds up no other file (runtime.md §17):
+// open, read, write and create of others answer meanwhile.
+func TestVolumeSealHoldsUpNoOtherFile(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("large", string(pattern(6<<20, 9)))
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	v.check("open", v.f.Open(nil, &fuse.OpenIn{InHeader: hdr(v.ino("docs/a.txt"))}, &fuse.OpenOut{}))
+	v.write("docs/a.txt", 5, "+more")
+	if got := v.read("docs/a.txt", 0, 100); got != "alpha+more" {
+		t.Fatalf("docs/a.txt reads %q", got)
+	}
+	if got := v.read("big", 5<<20, 10); got != string(pattern(9<<20, 3)[5<<20:5<<20+10]) {
+		t.Fatal("a committed file reads other bytes")
+	}
+	v.create("late", "new")
+	if got := v.read("late", 0, 10); got != "new" {
+		t.Fatalf("late reads %q", got)
+	}
+	select {
+	case <-sealed:
+		t.Fatal("other files waited for the seal of large")
+	default:
+	}
+	release()
+	if s := <-sealed; !s.Dirty {
+		t.Fatal("the seal found nothing dirty")
+	}
+}
+
+// A seal is one point in time (runtime.md §17): what changes after it
+// begins is absent or old in its manifest, and in the next one.
+func TestVolumeSealIsAPointInTime(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("large", string(data))
+	v.create("clean", "one")
+	v.seal() // clean is a clean copy now
+	v.write("large", 0, string(data[:1]))
+	ino := v.ino("large")
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	v.write("docs/a.txt", 5, "+more")
+	v.write("clean", 3, " two")
+	v.create("late", "new")
+	v.check("rename", v.rename("keep", "moved"))
+	v.unlink("large")
+	forgot := make(chan struct{})
+	go func() { v.f.Forget(ino, math.MaxUint64); close(forgot) }() // its last reference
+	select {
+	case <-forgot:
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	lines := treeLines(<-sealed)
+	<-forgot
+	for _, want := range []string{
+		"clean file 644  " + digest([]byte("one")),
+		"docs/a.txt file 644  " + digest([]byte("alpha")),
+		"keep file 644  " + digest([]byte("k")),
+		"large file 644  " + digestOf(data),
+	} {
+		if !contains(lines, want) {
+			t.Errorf("the seal lacks %q", want)
+		}
+	}
+	for _, path := range []string{"late", "moved"} {
+		if slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, path+" ") }) {
+			t.Errorf("the seal has %s, made after it began", path)
+		}
+	}
+
+	_, lines = v.seal()
+	for _, want := range []string{
+		"clean file 644  " + digest([]byte("one two")),
+		"docs/a.txt file 644  " + digest([]byte("alpha+more")),
+		"late file 644  " + digest([]byte("new")),
+		"moved hardlink 0 keep2",
+	} {
+		if !contains(lines, want) {
+			t.Errorf("the next seal lacks %q", want)
+		}
+	}
+	if slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "large ") }) {
+		t.Error("the next seal still has large")
+	}
+}
+
+// A write to a frozen file waits until the seal has hashed that file, and
+// goes into the next commit.
+func TestVolumeWriteToFrozenFileWaitsForItsHash(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("large", string(data))
+	ino := v.ino("large")
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	wrote := make(chan fuse.Status, 1)
+	go func() {
+		_, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(ino), Offset: 1 << 20}, []byte("X"))
+		wrote <- st
+	}()
+	notYet(t, wrote, "a write to a frozen file landed before its hash")
+	release()
+	if want := "large file 644  " + digestOf(data); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
+	}
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	data[1<<20] = 'X'
+	if _, lines := v.seal(); !contains(lines, "large file 644  "+digestOf(data)) {
+		t.Fatal("the next seal lacks the write")
+	}
+}
+
+// After a commit, an append copies nothing: the write-cache file stays, its
+// bytes untouched, and the next seal hashes the whole file.
+func TestVolumeAppendAfterCommitCopiesNothing(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("log", "one ")
+	path := v.f.dataPath(v.ino("log"))
+	s, _ := v.seal()
+	if err := v.f.committed("gen-2", s.Seq); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal("the commit dropped the write-cache file")
+	}
+	v.write("log", 4, "two")
+	after, err := os.Stat(path)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("the append replaced the write-cache file")
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != "one two" {
+		t.Fatalf("the write-cache file holds %q", raw)
+	}
+	if got := v.read("log", 0, 100); got != "one two" {
+		t.Fatalf("log reads %q", got)
+	}
+	if _, lines := v.seal(); !contains(lines, "log file 644  "+digest([]byte("one two"))) {
+		t.Fatalf("the next seal lacks the append: %v", lines)
+	}
+}
+
+// A clean copy unwritten for a commit period is dropped; the file then
+// reads the same bytes from the block cache.
+func TestVolumeUnwrittenCleanCopyIsDropped(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(5<<20, 7)
+	v.create("ckpt", string(data))
+	path := v.f.dataPath(v.ino("ckpt"))
+	s, _ := v.seal()
+	if err := v.f.committed("gen-2", s.Seq); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("the commit dropped the write-cache file")
+	}
+	if s, _ := v.seal(); s.Dirty { // the next periodic commit: nothing changed
+		t.Fatal("an unchanged Volume is dirty")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("a clean copy unwritten for a commit stayed")
+	}
+	if got := v.read("ckpt", 0, len(data)); got != string(data) {
+		t.Fatal("after the drop ckpt reads other bytes")
+	}
+}
+
+// An unlinked file still open keeps its clean copy across commits: no
+// Generation holds its objects any more, so once the block cache evicts
+// them the copy is all there is.
+func TestVolumeUnlinkedOpenFileKeepsItsCleanCopy(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("scratch", "temp data")
+	ino := v.ino("scratch") // the kernel's reference, as an open file holds
+	s, _ := v.seal()
+	if err := v.f.committed("gen-2", s.Seq); err != nil {
+		t.Fatal(err)
+	}
+	v.unlink("scratch")
+	if s, _ := v.seal(); !s.Dirty { // a commit period with scratch unwritten
+		t.Fatal("the unlink left the Volume clean")
+	}
+	os.Remove(v.f.store.path(digest([]byte("temp data")))) //nolint:errcheck // evicted, if it was there
+	res, st := v.f.Read(nil, &fuse.ReadIn{InHeader: hdr(ino), Size: 20}, make([]byte, 20))
+	v.check("read unlinked", st)
+	if got, _ := res.Bytes(nil); string(got) != "temp data" {
+		t.Fatalf("the unlinked open file reads %q", got)
+	}
+}
+
+// Moving a commit's objects into the block cache holds up no other op.
+func TestVolumeCommittedMovesObjectsOffTheTreeLock(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("a", "1")
+	s, _ := v.seal()
+	entered, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	moveObject = func(from, to string) error {
+		once.Do(func() {
+			close(entered)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second): // were others stuck behind it, free them to fail
+			}
+		})
+		return os.Rename(from, to)
+	}
+	t.Cleanup(func() { moveObject = os.Rename })
+	committed := make(chan error, 1)
+	go func() { committed <- v.f.committed("gen-2", s.Seq) }()
+	<-entered
+
+	v.create("b", "2")
+	if got := v.read("a", 0, 10); got != "1" {
+		t.Fatalf("a reads %q", got)
+	}
+	select {
+	case <-committed:
+		t.Fatal("other ops waited for the objects to move")
+	default:
+	}
+	close(done)
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(v.f.store.path(digest([]byte("1")))); err != nil {
+		t.Fatal("the sealed object did not move into the block cache")
+	}
+}
+
+// A handover during a seal waits for it, then hands every uncommitted write
+// over: those the seal hashed, and those made while it ran.
+func TestVolumeHandoverDuringSealKeepsUncommittedWrites(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("draft", "unsaved")
+	v.create("large", string(data))
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+	v.write("docs/a.txt", 5, "+more")
+	v.create("late", "new")
+	paused := make(chan error, 1)
+	go func() { paused <- v.f.pause() }()
+	notYet(t, paused, "the handover did not wait for the seal")
+	release()
+	<-sealed
+	if err := <-paused; err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := loadVolumeFS(v.f.dir, v.f.store, testLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := vol{t: t, f: next}
+	want := map[string]string{"draft": "unsaved", "large": string(data), "docs/a.txt": "alpha+more", "late": "new"}
+	for path, content := range want {
+		if got := w.read(path, 0, len(content)+1); got != content {
+			t.Errorf("%s reads %d bytes after the handover, want %d", path, len(got), len(content))
+		}
+	}
+	_, lines := w.seal()
+	for path, content := range want {
+		d := digest([]byte(content))
+		if path == "large" {
+			d = digestOf(data)
+		}
+		if line := fmt.Sprintf("%s file 644  %s", path, d); !contains(lines, line) {
+			t.Errorf("the successor's seal lacks %q", line)
+		}
+	}
+}
+
+// A read of a frozen file answers while the seal hashes it: only changes to
+// it wait.
+func TestVolumeReadOfFrozenFileAnswersDuringItsHash(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("large", string(data))
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	if got := v.read("large", 5<<20, 10); got != string(data[5<<20:5<<20+10]) {
+		t.Fatal("the frozen file reads other bytes")
+	}
+	select {
+	case <-sealed:
+		t.Fatal("the read waited for the hash")
+	default:
+	}
+	release()
+	if want := "large file 644  " + digestOf(data); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
+	}
+}
+
+// holdWrite stops writes to path inside pwrite, once their first landed
+// bytes are in the write-cache file, until release; wait returns once one
+// is held there.
+func holdWrite(v vol, path string, landed int) (wait, release func()) {
+	name := v.f.dataPath(v.ino(path))
+	held, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	writeAt = func(file *os.File, b []byte, off int64) (int, error) {
+		if file.Name() != name {
+			return file.WriteAt(b, off)
+		}
+		n, err := file.WriteAt(b[:landed], off)
+		if err != nil {
+			return n, err
+		}
+		once.Do(func() {
+			close(held)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second): // free whatever is stuck behind it
+				v.t.Errorf("an op waited for the write to %s", path)
+			}
+		})
+		m, err := file.WriteAt(b[landed:], off+int64(landed))
+		return n + m, err
+	}
+	v.t.Cleanup(func() { writeAt = (*os.File).WriteAt })
+	wait = func() {
+		v.t.Helper()
+		select {
+		case <-held:
+		case <-time.After(5 * time.Second):
+			v.t.Fatalf("no write reached %s", path)
+		}
+	}
+	return wait, sync.OnceFunc(func() { close(done) })
+}
+
+// goWrite writes in the background.
+func goWrite(v vol, path string, off int, data string) <-chan fuse.Status {
+	ino := v.ino(path)
+	wrote := make(chan fuse.Status, 1)
+	go func() {
+		_, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(ino), Offset: uint64(off)}, []byte(data))
+		wrote <- st
+	}()
+	return wrote
+}
+
+// A seal that begins once a write's bytes are readable has them, though
+// the write has not returned: here, to a clean copy.
+func TestVolumeSealHasWhatWasReadable(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("clean", "one")
+	v.seal()               // clean is a clean copy
+	v.create("a", "dirty") // hashed first: where the seal is held
+	wait, release := holdWrite(v, "clean", 3)
+	defer release()
+	wrote := goWrite(v, "clean", 0, "two")
+	wait()
+	if got := v.read("clean", 0, 10); got != "two" {
+		t.Fatalf("clean reads %q while its write runs", got)
+	}
+	waitSeal, releaseSeal := holdSeal(v, "a")
+	defer releaseSeal()
+	sealed := goSeal(v)
+	waitSeal() // the seal has its point in time
+	release()
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	releaseSeal()
+	if want := "clean file 644  " + digest([]byte("two")); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q, read before it began", want)
+	}
+}
+
+// A seal waits for a write already in flight to a file it freezes, so it
+// never hashes half a write.
+func TestVolumeSealWaitsForAWriteInFlight(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("log", "......")
+	wait, release := holdWrite(v, "log", 1)
+	defer release()
+	wrote := goWrite(v, "log", 0, "ab")
+	wait()
+	sealed := goSeal(v)
+	notYet(t, sealed, "the seal hashed a write in flight")
+	release()
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	if want := "log file 644  " + digest([]byte("ab....")); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
 	}
 }

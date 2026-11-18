@@ -1,0 +1,128 @@
+# Diagnostic runs for docs/research/volume-vs-juicefs-bench.md §4 (2026-11-18/19, same machine).
+
+## RustFS PUT rate alone: 2000 x 16 KiB objects per level through presigned PUTs; rustfs_cores = RustFS CPU time / wall
+PUTRATE size=16384 conc=1 objs=2000 obj_per_s=56 rustfs_cores=0.1
+PUTRATE size=16384 conc=20 objs=2000 obj_per_s=425 rustfs_cores=0.7
+PUTRATE size=16384 conc=64 objs=2000 obj_per_s=231 rustfs_cores=0.4
+
+## MaxIdleConnsPerHost 2 (http.DefaultTransport, as the Agent's publishHTTP) vs 20
+## TARGETS=volume-10s BENCH_PHASES="clone install_node venv"; another job was loading the machine
+# idle conns per host = 2
+COMMIT seal=2.042s objects=23127 MiB=394 total=2m22.408s
+# idle conns per host = 20
+COMMIT seal=2.544s objects=26362 MiB=471 total=2m32.515s
+
+## No commits: TARGETS=volume-0s (ORRERY_BENCH_COMMIT=0)
+##### volume-0s 23:50:57
+RESULT clone clone_s=0.92 probe_p50_ms=0.13 probe_p99_ms=0.5 probe_max_ms=0 wall_s=0.9
+RESULT install_node files=22622 extract_s=5.38 probe_p50_ms=0.14 probe_p99_ms=0.4 probe_max_ms=1 wall_s=5.4
+RESULT venv venv_with_pip_s=1.82 probe_p50_ms=0.10 probe_p99_ms=0.4 probe_max_ms=0 wall_s=1.8
+RESULT search rg_all_cold_s=0.54 rg_all_warm_s=0.32 rg_src_warm_s=0.01 files=29856 walk_cold_s=0.19 probe_p50_ms=0.22 probe_p99_ms=0.5 probe_max_ms=7 wall_s=3.1
+RESULT go_build build_cold_s=13.11 build_incr_s=1.5 test_s=0.87 probe_p50_ms=0.31 probe_p99_ms=9.4 probe_max_ms=16 wall_s=15.5
+RESULT web_build tsc_s=3.17 vite_build_s=4.65 probe_p50_ms=0.18 probe_p99_ms=0.6 probe_max_ms=2 wall_s=7.8
+RESULT agent_edit edit_p50_ms=9 edit_p99_ms=103 edit_total_s=2.7 commit_s=0.32 probe_p50_ms=0.13 probe_p99_ms=0.5 probe_max_ms=1 wall_s=3.0
+RESULT git_ops status_warm_s=0.01 checkout_old_s=0.14 checkout_back_s=0.47 log_p_s=1.29 gc_s=1.9 probe_p50_ms=0.14 probe_p99_ms=0.3 probe_max_ms=0 wall_s=3.9
+RESULT smallfiles create_per_s=9495 stat_per_s=63173 read_per_s=18261 rm_s=0.54 probe_p50_ms=0.13 probe_p99_ms=0.4 probe_max_ms=1 wall_s=4.1
+RESULT sqlite_tx delete_tx_per_s=82 wal_tx_per_s=252 probe_p50_ms=0.13 probe_p99_ms=0.4 probe_max_ms=1 wall_s=16.1
+RESULT seqio write_MiB_s=943 read_MiB_s=1375 probe_p50_ms=0.17 probe_p99_ms=0.5 probe_max_ms=4 wall_s=8.4
+RESULT parallel_io jobs=8 write_MiB_s=343 read_MiB_s=4437 probe_p50_ms=0.12 probe_p99_ms=0.5 probe_max_ms=30 wall_s=13.7
+RESULT append round_s=1.4/1.5/1.4/1.3/1.3/1.9 probe_p50_ms=0.11 probe_p99_ms=0.4 probe_max_ms=1 wall_s=32.9
+RESULT cleanup rm_repo_s=1.03 probe_p50_ms=0.15 probe_p99_ms=0.3 probe_max_ms=0 wall_s=1.0
+--- PASS: TestVolumeLocalBench (118.34s)
+PASS
+##### done 23:52:56
+
+## Whole suite, a commit every 10s: seal-only variant, then one upload in flight
+## seal every 10s, no uploads (objects never leave the Node)
+##### volume-10s 00:08:14
+RESULT clone clone_s=0.9 probe_p50_ms=0.10 probe_p99_ms=0.3 probe_max_ms=0 wall_s=0.9
+RESULT install_node files=22622 extract_s=4.78 probe_p50_ms=0.10 probe_p99_ms=0.3 probe_max_ms=1 wall_s=4.8
+RESULT venv venv_with_pip_s=1.98 probe_p50_ms=0.10 probe_p99_ms=0.3 probe_max_ms=0 wall_s=2.0
+RESULT search rg_all_cold_s=0.62 rg_all_warm_s=0.39 rg_src_warm_s=0.01 files=29856 walk_cold_s=0.25 probe_p50_ms=0.20 probe_p99_ms=1.7 probe_max_ms=33 wall_s=3.2
+COMMIT seal=1.284s objects=27361 MiB=0 total=1.776s
+COMMIT seal=548ms objects=5036 MiB=0 total=749ms
+RESULT go_build build_cold_s=13.13 build_incr_s=1.43 test_s=0.82 probe_p50_ms=0.30 probe_p99_ms=7.2 probe_max_ms=370 wall_s=15.4
+COMMIT seal=234ms objects=370 MiB=0 total=364ms
+RESULT web_build tsc_s=3.08 vite_build_s=4.68 probe_p50_ms=0.19 probe_p99_ms=0.5 probe_max_ms=81 wall_s=7.8
+RESULT agent_edit edit_p50_ms=9 edit_p99_ms=102 edit_total_s=2.8 commit_s=0.36 probe_p50_ms=0.14 probe_p99_ms=0.4 probe_max_ms=0 wall_s=3.2
+RESULT git_ops status_warm_s=0.01 checkout_old_s=0.19 checkout_back_s=0.46 log_p_s=1.4 gc_s=2.23 probe_p50_ms=0.12 probe_p99_ms=0.4 probe_max_ms=1 wall_s=4.4
+COMMIT seal=817ms objects=1370 MiB=0 total=1.031s
+RESULT smallfiles create_per_s=9624 stat_per_s=63404 read_per_s=18036 rm_s=0.57 probe_p50_ms=0.14 probe_p99_ms=0.4 probe_max_ms=24 wall_s=4.1
+COMMIT seal=242ms objects=3 MiB=0 total=1.076s
+COMMIT seal=177ms objects=4 MiB=0 total=295ms
+RESULT sqlite_tx delete_tx_per_s=53 wal_tx_per_s=249 probe_p50_ms=0.12 probe_p99_ms=0.4 probe_max_ms=29 wall_s=22.8
+COMMIT seal=6.728s objects=2 MiB=0 total=6.859s
+RESULT seqio write_MiB_s=998 read_MiB_s=454 probe_p50_ms=0.18 probe_p99_ms=0.6 probe_max_ms=19 wall_s=14.3
+RESULT parallel_io jobs=8 write_MiB_s=1314 read_MiB_s=4123 probe_p50_ms=0.22 probe_p99_ms=0.5 probe_max_ms=9 wall_s=4.9
+COMMIT seal=9.626s objects=2 MiB=0 total=9.781s
+COMMIT seal=3.105s objects=2 MiB=0 total=3.231s
+COMMIT seal=4.087s objects=2 MiB=0 total=4.213s
+RESULT append round_s=1.3/10.0/1.5/3.7/1.3/4.8 probe_p50_ms=0.13 probe_p99_ms=0.4 probe_max_ms=116 wall_s=46.7
+RESULT cleanup rm_repo_s=1.03 probe_p50_ms=0.18 probe_p99_ms=0.4 probe_max_ms=0 wall_s=1.0
+--- PASS: TestVolumeLocalBench (135.98s)
+PASS
+##### done 00:10:31
+## commit every 10s, 1 upload in flight
+##### volume-10s 00:10:31
+RESULT clone clone_s=0.78 probe_p50_ms=0.10 probe_p99_ms=0.5 probe_max_ms=1 wall_s=0.8
+RESULT install_node files=22622 extract_s=4.67 probe_p50_ms=0.11 probe_p99_ms=0.3 probe_max_ms=1 wall_s=4.7
+RESULT venv venv_with_pip_s=1.82 probe_p50_ms=0.10 probe_p99_ms=0.3 probe_max_ms=0 wall_s=1.8
+RESULT search rg_all_cold_s=0.57 rg_all_warm_s=0.31 rg_src_warm_s=0.01 files=29856 walk_cold_s=0.17 probe_p50_ms=0.19 probe_p99_ms=1.4 probe_max_ms=4 wall_s=2.5
+RESULT go_build build_cold_s=14.62 build_incr_s=1.54 test_s=1.38 probe_p50_ms=0.28 probe_p99_ms=8.3 probe_max_ms=105 wall_s=17.6
+RESULT web_build tsc_s=3.01 vite_build_s=4.61 probe_p50_ms=0.26 probe_p99_ms=0.6 probe_max_ms=1 wall_s=7.6
+RESULT agent_edit edit_p50_ms=9 edit_p99_ms=92 edit_total_s=2.9 commit_s=0.4 probe_p50_ms=0.15 probe_p99_ms=0.4 probe_max_ms=1 wall_s=3.3
+RESULT git_ops status_warm_s=0.02 checkout_old_s=0.15 checkout_back_s=0.54 log_p_s=1.17 gc_s=2.18 probe_p50_ms=0.17 probe_p99_ms=0.5 probe_max_ms=1 wall_s=4.1
+RESULT smallfiles create_per_s=8896 stat_per_s=71157 read_per_s=15778 rm_s=0.68 probe_p50_ms=0.15 probe_p99_ms=0.4 probe_max_ms=2 wall_s=4.5
+RESULT sqlite_tx delete_tx_per_s=30 wal_tx_per_s=155 probe_p50_ms=0.13 probe_p99_ms=0.5 probe_max_ms=2 wall_s=40.1
+RESULT seqio write_MiB_s=916 read_MiB_s=207 probe_p50_ms=0.14 probe_p99_ms=2.1 probe_max_ms=10 wall_s=25.5
+RESULT parallel_io jobs=8 write_MiB_s=998 read_MiB_s=1751 probe_p50_ms=0.22 probe_p99_ms=8.9 probe_max_ms=89 wall_s=7.3
+RESULT append round_s=1.4/6.2/1.5/1.7/1.5/7.4 probe_p50_ms=0.15 probe_p99_ms=4.0 probe_max_ms=104 wall_s=43.7
+RESULT cleanup rm_repo_s=1.32 probe_p50_ms=0.15 probe_p99_ms=1.7 probe_max_ms=2 wall_s=1.3
+COMMIT seal=1.446s objects=27476 MiB=484 total=8m58.604s
+--- PASS: TestVolumeLocalBench (549.33s)
+PASS
+##### done 00:19:44
+
+## Append only, a seal every 10s, before (4eecdeb) and after: TARGETS=volume-10s BENCH_PHASES=append
+## before binary (4eecdeb harness, sequential uploads)
+##### volume-10s 23:53:26
+COMMIT seal=1.812s objects=2 MiB=4 total=2.346s
+COMMIT seal=14.556s objects=2 MiB=4 total=14.644s
+RESULT append round_s=1.2/1.1/3.7/13.8/4.8/1.2 probe_p50_ms=0.12 probe_p99_ms=1.0 probe_max_ms=18148 wall_s=60.3
+COMMIT seal=13.213s objects=2 MiB=4 total=13.286s
+--- PASS: TestVolumeLocalBench (60.38s)
+PASS
+##### done 23:54:26
+## after binary
+##### volume-10s 23:54:26
+COMMIT seal=1.723s objects=2 MiB=4 total=1.816s
+COMMIT seal=3.067s objects=2 MiB=4 total=3.148s
+COMMIT seal=16.357s objects=2 MiB=4 total=16.433s
+RESULT append round_s=1.1/1.4/2.3/1.3/16.9/9.6 probe_p50_ms=0.14 probe_p99_ms=0.6 probe_max_ms=204 wall_s=56.8
+--- PASS: TestVolumeLocalBench (56.90s)
+PASS
+##### done 23:55:24
+
+## Upload concurrency: TARGETS=volume-10s BENCH_PHASES="clone install_node sqlite_tx seqio append"
+## after binary, castransfer.MaxUploads (20) in flight
+##### volume-10s 23:59:07
+RESULT clone clone_s=0.89 probe_p50_ms=0.09 probe_p99_ms=0.2 probe_max_ms=0 wall_s=0.9
+RESULT install_node files=22622 extract_s=4.31 probe_p50_ms=0.11 probe_p99_ms=0.3 probe_max_ms=0 wall_s=4.3
+RESULT sqlite_tx delete_tx_per_s=30 wal_tx_per_s=128 probe_p50_ms=0.13 probe_p99_ms=0.5 probe_max_ms=44 wall_s=40.4
+RESULT seqio write_MiB_s=756 read_MiB_s=95 probe_p50_ms=0.16 probe_p99_ms=1.4 probe_max_ms=8 wall_s=49.6
+RESULT append round_s=5.1/1.4/1.4/1.4/1.4/8.0 probe_p50_ms=0.17 probe_p99_ms=5.8 probe_max_ms=332 wall_s=42.8
+COMMIT seal=1.334s objects=26370 MiB=471 total=2m9.778s
+--- PASS: TestVolumeLocalBench (140.21s)
+PASS
+##### done 00:01:28
+## after binary with 1 upload in flight
+##### volume-10s 00:01:28
+RESULT clone clone_s=0.93 probe_p50_ms=0.11 probe_p99_ms=0.6 probe_max_ms=1 wall_s=0.9
+RESULT install_node files=22622 extract_s=4.74 probe_p50_ms=0.12 probe_p99_ms=0.3 probe_max_ms=1 wall_s=4.7
+RESULT sqlite_tx delete_tx_per_s=41 wal_tx_per_s=126 probe_p50_ms=0.12 probe_p99_ms=0.4 probe_max_ms=26 wall_s=31.9
+RESULT seqio write_MiB_s=319 read_MiB_s=129 probe_p50_ms=0.14 probe_p99_ms=3.0 probe_max_ms=115 wall_s=45.8
+RESULT append round_s=1.3/1.3/1.4/1.4/8.2/1.2 probe_p50_ms=0.12 probe_p99_ms=3.1 probe_max_ms=431 wall_s=38.9
+COMMIT seal=1.249s objects=26369 MiB=471 total=5m57.312s
+--- PASS: TestVolumeLocalBench (367.82s)
+PASS
+##### done 00:07:36

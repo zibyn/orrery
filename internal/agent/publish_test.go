@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
+	"github.com/zibyn/orrery/internal/castransfer"
 	"github.com/zibyn/orrery/internal/manifest"
 )
 
@@ -128,5 +132,58 @@ func TestWalkManifestSplitsLargeFiles(t *testing.T) {
 	}
 	if last := files[entry.Blocks[1]]; last.Offset != 4<<20 || last.Size != 1<<20 {
 		t.Fatalf("last block source = %+v", last)
+	}
+}
+
+// uploadTestObjects is n small files under a root, as the objects a
+// publish or commit uploads.
+func uploadTestObjects(t *testing.T, n int) (*os.Root, []string, map[string]manifest.Source) {
+	t.Helper()
+	dir := t.TempDir()
+	var digests []string
+	files := map[string]manifest.Source{}
+	for i := range n {
+		content := fmt.Sprintf("object %d", i)
+		writeTestFile(t, filepath.Join(dir, fmt.Sprint(i)), content, 0o644)
+		digests = append(digests, digestOf(content))
+		files[digestOf(content)] = manifest.Source{Path: fmt.Sprint(i), Size: int64(len(content))}
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { root.Close() })
+	return root, digests, files
+}
+
+// An upload whose context ends before its PUTs start fails, as nothing
+// reached the store.
+func TestUploadObjectsFailsWhenCanceled(t *testing.T) {
+	node := newFakeGenerationNode(t)
+	rt := newRuntime(ProviderContainerd, t.TempDir(), "node")
+	rt.client = node
+	root, missing, files := uploadTestObjects(t, 3)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := rt.uploadPublishObjects(ctx, root, missing, files); err == nil {
+		t.Fatal("a canceled upload succeeded")
+	}
+}
+
+// The Control Plane asking for an object the tree lacks fails the upload
+// before any PUT starts, though it comes after more than fit in flight.
+func TestUploadObjectsRefusesAnUnknownObject(t *testing.T) {
+	node := newFakeGenerationNode(t)
+	rt := newRuntime(ProviderContainerd, t.TempDir(), "node")
+	rt.client = node
+	root, missing, files := uploadTestObjects(t, castransfer.MaxUploads+5)
+	err := rt.uploadPublishObjects(context.Background(), root, append(missing, digestOf("elsewhere")), files)
+	if err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Fatalf("upload = %v, want the unknown object refused", err)
+	}
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	if len(node.objects) != 0 {
+		t.Fatalf("%d objects uploaded before the refusal", len(node.objects))
 	}
 }
