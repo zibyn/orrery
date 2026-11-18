@@ -29,13 +29,22 @@ var ErrHandedOver = errors.New("resourcefs handed over to a new process; retry")
 
 // request is one control command, one JSON line per connection.
 type request struct {
-	Op      string `json:"op"` // mount, unmount, status, selftest, takeover
+	// mount, unmount, status, selftest, takeover; mount-volume,
+	// unmount-volume, seal-volume, upload-volume, committed-volume
+	Op      string `json:"op"`
 	Address string `json:"address,omitempty"`
+	Volume  string `json:"volume,omitempty"`
+	// Generation is the head to mount, or the one just committed.
+	Generation string `json:"generation,omitempty"`
+	Upload     string `json:"upload,omitempty"`
+	Seq        uint64 `json:"seq,omitempty"`
 }
 
 type response struct {
-	Error  string   `json:"error,omitempty"`
-	Mounts []string `json:"mounts,omitempty"`
+	Error   string   `json:"error,omitempty"`
+	Mounts  []string `json:"mounts,omitempty"`
+	Volumes []string `json:"volumes,omitempty"`
+	Sealed  *Sealed  `json:"sealed,omitempty"`
 }
 
 // Client is the Agent's handle on the daemon.
@@ -67,18 +76,66 @@ func (c Client) SelfTest(ctx context.Context) error {
 	return err
 }
 
+// MountVolume mounts a Volume writable at <data-root>/volumes/<id>/mnt from
+// its head Generation (empty when none); mounting one already mounted
+// succeeds and keeps its uncommitted state.
+func (c Client) MountVolume(ctx context.Context, volume, head string) error {
+	_, err := c.do(ctx, request{Op: "mount-volume", Volume: volume, Generation: head})
+	return err
+}
+
+// UnmountVolume detaches a Volume and drops its local state.
+func (c Client) UnmountVolume(ctx context.Context, volume string) error {
+	_, err := c.do(ctx, request{Op: "unmount-volume", Volume: volume})
+	return err
+}
+
+// Volumes lists the mounted Volume ids.
+func (c Client) Volumes(ctx context.Context) ([]string, error) {
+	resp, err := c.do(ctx, request{Op: "status"})
+	return resp.Volumes, err
+}
+
+// SealVolume returns what a commit of the Volume needs (runtime.md §17).
+func (c Client) SealVolume(ctx context.Context, volume string) (Sealed, error) {
+	resp, err := c.do(ctx, request{Op: "seal-volume", Volume: volume})
+	if err != nil || resp.Sealed == nil {
+		return Sealed{}, err
+	}
+	return *resp.Sealed, nil
+}
+
+// SetVolumeUpload records a CommitGeneration about to be sent for the seal
+// at seq, so a lost reply is retried rather than rebuilt.
+func (c Client) SetVolumeUpload(ctx context.Context, volume, upload string, seq uint64) error {
+	_, err := c.do(ctx, request{Op: "upload-volume", Volume: volume, Upload: upload, Seq: seq})
+	return err
+}
+
+// VolumeCommitted makes generation the Volume's base for the seal at seq;
+// an empty generation only forgets a refused upload.
+func (c Client) VolumeCommitted(ctx context.Context, volume, generation string, seq uint64) error {
+	_, err := c.do(ctx, request{Op: "committed-volume", Volume: volume, Generation: generation, Seq: seq})
+	return err
+}
+
 func (c Client) call(ctx context.Context, req request) ([]string, error) {
+	resp, err := c.do(ctx, req)
+	return resp.Mounts, err
+}
+
+func (c Client) do(ctx context.Context, req request) (response, error) {
 	var resp response
 	if err := roundTrip(ctx, c.Socket, req, &resp); err != nil {
-		return nil, err
+		return resp, err
 	}
 	if resp.Error == ErrHandedOver.Error() {
-		return nil, ErrHandedOver
+		return resp, ErrHandedOver
 	}
 	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
+		return resp, errors.New(resp.Error)
 	}
-	return resp.Mounts, nil
+	return resp, nil
 }
 
 func roundTrip(ctx context.Context, socket string, req, resp any) error {
@@ -104,8 +161,9 @@ func roundTrip(ctx context.Context, socket string, req, resp any) error {
 }
 
 type presignRequest struct {
-	SHA256    []string `json:"sha256,omitempty"`
-	Manifests []string `json:"manifests,omitempty"`
+	SHA256      []string `json:"sha256,omitempty"`
+	Manifests   []string `json:"manifests,omitempty"`
+	Generations []string `json:"generations,omitempty"`
 }
 
 type presignResponse struct {
@@ -127,6 +185,24 @@ func (p SocketPresigner) Presign(ctx context.Context, objects, manifests []strin
 		return nil, errors.New(resp.Error)
 	}
 	return resp.URLs, nil
+}
+
+// PresignGenerations signs GETs of Generation manifests (a Volume's head).
+func (p SocketPresigner) PresignGenerations(ctx context.Context, ids []string) ([]string, error) {
+	var resp presignResponse
+	if err := roundTrip(ctx, p.Socket, presignRequest{Generations: ids}, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+	return resp.URLs, nil
+}
+
+// GenerationPresigner signs Generation manifest GETs; a Presigner that is
+// one can serve Volume mounts.
+type GenerationPresigner interface {
+	PresignGenerations(ctx context.Context, ids []string) ([]string, error)
 }
 
 // ServePresign answers the daemon's presign requests with p until ctx ends.
@@ -153,8 +229,15 @@ func ServePresign(ctx context.Context, l net.Listener, p Presigner, log *slog.Lo
 			switch {
 			case err != nil:
 				resp.Error = err.Error()
-			case len(req.SHA256)+len(req.Manifests) > presignBatch:
+			case len(req.SHA256)+len(req.Manifests)+len(req.Generations) > presignBatch:
 				resp.Error = fmt.Sprintf("at most %d objects per presign", presignBatch)
+			case len(req.Generations) > 0:
+				gp, ok := p.(GenerationPresigner)
+				if !ok {
+					resp.Error = "this presigner signs no Generations"
+				} else if resp.URLs, err = gp.PresignGenerations(ctx, req.Generations); err != nil {
+					resp.Error = err.Error()
+				}
 			default:
 				if resp.URLs, err = p.Presign(ctx, req.SHA256, req.Manifests); err != nil {
 					resp.Error = err.Error()

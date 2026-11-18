@@ -324,11 +324,11 @@ function ProvenanceCell({ provenance }: { provenance: Record<string, unknown> })
     <span className="inline-flex items-center gap-1">
       <Link2 className="size-3" />
       <Link
-        to="/workspaces/$id"
-        params={{ id: source.workspaceId }}
+        to={source.source === 'sandbox' ? '/sandboxes/$id' : '/volumes/$id'}
+        params={{ id: source.id }}
         className="font-mono hover:underline"
       >
-        {source.workspaceId.slice(0, 8)}
+        {source.id.slice(0, 8)}
       </Link>
       <span className="font-mono">/{source.path}</span>
     </span>

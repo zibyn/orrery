@@ -34,8 +34,8 @@ import { useLocale } from '@/lib/i18n'
 import {
   causeLabel,
   idleStopLabel,
+  conditionLabel,
   runtimeLabel,
-  workspaceModeLabel,
 } from '@/lib/labels'
 import { sandboxPollInterval } from '@/lib/sandbox'
 import { snapshotForRef } from '@/lib/snapshots'
@@ -223,7 +223,7 @@ function SandboxDetailPage() {
               )}
               {current.conditions.length > 0 && (
                 <Detail label={m.sandbox_conditions()}>
-                  {current.conditions.join(', ')}
+                  {current.conditions.map(conditionLabel).join('; ')}
                 </Detail>
               )}
               <Detail label="CPU">{current.cpu}</Detail>
@@ -236,16 +236,21 @@ function SandboxDetailPage() {
                   : '—'}
               </Detail>
               <Detail label={m.sandbox_idle_stop()}>{idleStopLabel(current.idle_stop)}</Detail>
-              <Detail label={m.label_workspace()}>
-                {current.workspace ? (
-                  <Link
-                    to="/workspaces/$id"
-                    params={{ id: current.workspace.id }}
-                    className="hover:underline"
-                  >
-                    <span className="font-mono text-xs">{current.workspace.id.slice(0, 8)}</span>{' '}
-                    ({workspaceModeLabel(current.workspace.mode)})
-                  </Link>
+              <Detail label={m.label_volumes()}>
+                {current.volumes?.length ? (
+                  <div className="flex flex-col gap-0.5" data-testid="sandbox-volumes">
+                    {current.volumes.map((mount) => (
+                      <Link
+                        key={mount.path}
+                        to="/volumes/$id"
+                        params={{ id: mount.volume }}
+                        className="hover:underline"
+                      >
+                        <span className="font-mono text-xs">{mount.path}</span> ←{' '}
+                        <span className="font-mono text-xs">{mount.volume.slice(0, 8)}</span>
+                      </Link>
+                    ))}
+                  </div>
                 ) : (
                   '—'
                 )}
@@ -271,7 +276,7 @@ function SandboxDetailPage() {
 
       {current?.state === 'ready' && (
         <div className="grid gap-4 lg:grid-cols-2">
-          <SandboxFiles sandboxId={id} workspaceId={current.workspace?.id} />
+          <SandboxFiles source={`/sandboxes/${id}`} />
           <SandboxPorts sandboxId={id} />
         </div>
       )}

@@ -15,20 +15,20 @@ import (
 
 func TestCapabilitiesFollowTheProbe(t *testing.T) {
 	caps := capabilities(supervisor.Result{
-		CPUMax:            "50000 100000",
-		MemoryMax:         "67108864",
-		PidsMax:           "64",
-		PIDNamespace:      "pid:[different]",
-		MountNamespace:    "mnt:[different]",
-		NvidiaDevices:     []string{"/dev/nvidia0", "/dev/nvidiactl"},
-		WorkspaceWritable: true,
+		CPUMax:          "50000 100000",
+		MemoryMax:       "67108864",
+		PidsMax:         "64",
+		PIDNamespace:    "pid:[different]",
+		MountNamespace:  "mnt:[different]",
+		NvidiaDevices:   []string{"/dev/nvidia0", "/dev/nvidiactl"},
+		WorkdirWritable: true,
 	}, probeChecks{limits: true, gpuVisible: true, egress: true, links: true, runsc: true})
 	values := map[string]string{}
 	for _, entry := range caps.Entries {
 		values[entry.Name] = entry.Value
 	}
 	for _, name := range []string{
-		"process_mount_namespace", "cpu_memory_pid_limits", "workspace_rw_mount",
+		"process_mount_namespace", "cpu_memory_pid_limits", "workdir_writable",
 		"exec_supervisor", "gpu_device_visibility",
 		"kernel_isolation", "egress_policy", "sandbox_links",
 	} {
@@ -42,7 +42,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 
 	// A daemon that refused the limits must not claim them, and a probe that
 	// could not see the requested cards must not claim GPU visibility.
-	weak := capabilities(supervisor.Result{WorkspaceWritable: false}, probeChecks{})
+	weak := capabilities(supervisor.Result{WorkdirWritable: false}, probeChecks{})
 	for _, entry := range weak.Entries {
 		if entry.Name == "exec_supervisor" {
 			continue // the probe ran, so the Supervisor works
@@ -54,7 +54,7 @@ func TestCapabilitiesFollowTheProbe(t *testing.T) {
 }
 
 func TestSnapshotBuildCapabilityIsIndependent(t *testing.T) {
-	report := capabilities(supervisor.Result{WorkspaceWritable: false}, probeChecks{})
+	report := capabilities(supervisor.Result{WorkdirWritable: false}, probeChecks{})
 	enforced := withSnapshotBuild(report, true)
 	values := map[string]string{}
 	for _, entry := range enforced.Entries {

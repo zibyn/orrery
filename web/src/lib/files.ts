@@ -1,5 +1,5 @@
-// Workspace file paths are relative to the Workspace root; '' and '.' both
-// mean the root (api.md §5, docs/spec/api.md §8).
+// File paths are relative to the browsed root (a Sandbox's /workspace or a
+// Volume's root); '' and '.' both mean that root (docs/spec/api.md §3, §5).
 
 export type DownloadKind = 'file' | 'dir'
 
@@ -38,22 +38,23 @@ function encoded(name: string): string {
   return encodeURIComponent(name)
 }
 
-// These paths are API-relative because api() adds the /api/v1 prefix.
-export function filesPath(sandboxId: string, path: string): string {
-  return `/sandboxes/${encoded(sandboxId)}/files?path=${encoded(normalizePath(path))}`
+// `source` is the API path owning the files: `/sandboxes/{id}` or
+// `/volumes/{id}`. These paths are API-relative because api() adds /api/v1.
+export function filesPath(source: string, path: string): string {
+  return `${source}/files?path=${encoded(normalizePath(path))}`
 }
 
-export function fileContentPath(sandboxId: string, path: string): string {
-  return `/sandboxes/${encoded(sandboxId)}/files/content?path=${encoded(normalizePath(path))}`
+export function fileContentPath(source: string, path: string): string {
+  return `${source}/files/content?path=${encoded(normalizePath(path))}`
 }
 
-export function archivePath(sandboxId: string, path: string): string {
-  return `/sandboxes/${encoded(sandboxId)}/files/archive?path=${encoded(normalizePath(path))}`
+export function archivePath(source: string, path: string): string {
+  return `${source}/files/archive?path=${encoded(normalizePath(path))}`
 }
 
 // Downloads bypass api(): a same-origin <a href> lets the browser attach the
 // Session cookie and stream the body (api.md §5).
-export function downloadHref(kind: DownloadKind, sandboxId: string, path: string): string {
-  const target = kind === 'dir' ? archivePath(sandboxId, path) : fileContentPath(sandboxId, path)
+export function downloadHref(kind: DownloadKind, source: string, path: string): string {
+  const target = kind === 'dir' ? archivePath(source, path) : fileContentPath(source, path)
   return `${API_PREFIX}${target}`
 }

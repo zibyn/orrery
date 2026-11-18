@@ -3,6 +3,7 @@ package agent
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,25 +17,40 @@ import (
 	"github.com/google/uuid"
 )
 
-func newFilesEnv(t *testing.T, mode string) (*httptest.Server, uuid.UUID, string) {
+// filesDriver serves one Sandbox's filesystem the way the containerd driver
+// does: a root with /workspace in it and refused mount points.
+type filesDriver struct {
+	runtimeDriver
+	sfs sandboxFS
+}
+
+func (d filesDriver) filesystem(context.Context, uuid.UUID) (sandboxFS, error) {
+	if d.sfs.dir == "" {
+		return sandboxFS{}, errNotRunning
+	}
+	return d.sfs, nil
+}
+
+// newFilesEnv returns the server, the Sandbox and the host path of its
+// /workspace inside a root that also has /etc and a Volume mounted at
+// /data.
+func newFilesEnv(t *testing.T) (*httptest.Server, uuid.UUID, string) {
 	t.Helper()
 	root := t.TempDir()
-	ws := uuid.New()
-	wsDir := workspacePath(root, ws)
-	if err := os.MkdirAll(wsDir, 0o777); err != nil {
+	for _, dir := range []string{"workspace", "etc", "data", "resources/r"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc", "os-release"), []byte("ID=test"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sid := uuid.New()
-	if err := os.MkdirAll(sandboxPath(root, sid), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	r := &Runtime{dataRoot: root}
-	if err := r.writeWorkspaceRefFile(sid, workspaceRef{ID: ws.String(), Mode: mode}); err != nil {
-		t.Fatal(err)
-	}
+	r := &Runtime{dataRoot: t.TempDir(), driver: filesDriver{sfs: sandboxFS{
+		dir: root, base: "workspace", refused: []string{".orrery", "resources", "data"},
+	}}}
 	srv := httptest.NewServer(r.tunnelMux())
 	t.Cleanup(srv.Close)
-	return srv, sid, wsDir
+	return srv, uuid.New(), filepath.Join(root, "workspace")
 }
 
 func fileURL(base string, sid uuid.UUID, suffix, path string) string {
@@ -66,7 +82,7 @@ func doReq(t *testing.T, method, u string, body []byte, header map[string]string
 }
 
 func TestFileContentRoundTripAndRange(t *testing.T) {
-	srv, sid, _ := newFilesEnv(t, "rw")
+	srv, sid, _ := newFilesEnv(t)
 	u := fileURL(srv.URL, sid, "content", "dir/hello.txt")
 
 	if resp := doReq(t, http.MethodPut, u, []byte("hello world"), nil); resp.StatusCode != http.StatusNoContent {
@@ -102,7 +118,7 @@ func TestFileContentRoundTripAndRange(t *testing.T) {
 }
 
 func TestFileMkdirMoveDelete(t *testing.T) {
-	srv, sid, _ := newFilesEnv(t, "rw")
+	srv, sid, _ := newFilesEnv(t)
 	base := srv.URL
 
 	mkdir, _ := json.Marshal(pathRequest{Path: "a/b"})
@@ -139,11 +155,11 @@ func TestFileMkdirMoveDelete(t *testing.T) {
 	}
 }
 
-func TestFilePathsStayInsideWorkspace(t *testing.T) {
-	srv, sid, wsDir := newFilesEnv(t, "rw")
+func TestFilePathsStayInsideTheSandbox(t *testing.T) {
+	srv, sid, wsDir := newFilesEnv(t)
 	base := srv.URL
 
-	for _, p := range []string{"../escape", "/etc/passwd", "a/../../escape"} {
+	for _, p := range []string{"../escape", "/../escape", "a/../../escape"} {
 		u := fileURL(base, sid, "content", p)
 		if resp := doReq(t, http.MethodPut, u, []byte("x"), nil); resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("PUT %q = %d, want 400", p, resp.StatusCode)
@@ -161,7 +177,7 @@ func TestFilePathsStayInsideWorkspace(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("escaping symlink = %d, want 400", resp.StatusCode)
 	}
-	// An absolute symlink target cannot be resolved inside the Workspace either.
+	// An absolute symlink target cannot be resolved inside the root either.
 	if err := os.Symlink("/etc", filepath.Join(wsDir, "abs")); err != nil {
 		t.Fatal(err)
 	}
@@ -170,18 +186,42 @@ func TestFilePathsStayInsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestFileWriteOnReadOnlyWorkspace(t *testing.T) {
-	srv, sid, _ := newFilesEnv(t, "ro")
-	if resp := doReq(t, http.MethodPut, fileURL(srv.URL, sid, "content", "x"), []byte("x"), nil); resp.StatusCode != http.StatusConflict {
-		t.Fatalf("PUT on ro = %d, want 409", resp.StatusCode)
+// api.md §5: a relative path is under /workspace, an absolute one is in the
+// root filesystem, and Volume and Resource mounts are refused.
+func TestFilePathsAddressTheSandboxFilesystem(t *testing.T) {
+	srv, sid, _ := newFilesEnv(t)
+	resp := doReq(t, http.MethodGet, fileURL(srv.URL, sid, "content", "/etc/os-release"), nil, nil)
+	if got, _ := io.ReadAll(resp.Body); resp.StatusCode != http.StatusOK || string(got) != "ID=test" {
+		t.Fatalf("absolute read = %d %q", resp.StatusCode, got)
 	}
-	if resp := doReq(t, http.MethodGet, fileURL(srv.URL, sid, "", ""), nil, nil); resp.StatusCode != http.StatusOK {
-		t.Fatalf("list on ro = %d, want 200", resp.StatusCode)
+	if resp := doReq(t, http.MethodPut, fileURL(srv.URL, sid, "content", "a.txt"), []byte("x"), nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT = %d", resp.StatusCode)
+	}
+	resp = doReq(t, http.MethodGet, fileURL(srv.URL, sid, "content", "/workspace/a.txt"), nil, nil)
+	if got, _ := io.ReadAll(resp.Body); resp.StatusCode != http.StatusOK || string(got) != "x" {
+		t.Fatalf("relative write, absolute read = %d %q", resp.StatusCode, got)
+	}
+	for raw, want := range map[string]string{"": "a.txt", "/workspace": "/workspace/a.txt"} {
+		var list fileList
+		resp := doReq(t, http.MethodGet, fileURL(srv.URL, sid, "", raw), nil, nil)
+		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil || len(list.Items) != 1 || list.Items[0].Path != want {
+			t.Fatalf("list %q = %+v, %v; want %s", raw, list.Items, err, want)
+		}
+	}
+	for _, p := range []string{"/data", "/data/x", "/resources/r/f", "/.orrery/run", "../data/x"} {
+		if resp := doReq(t, http.MethodGet, fileURL(srv.URL, sid, "stat", p), nil, nil); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("stat %q = %d, want 400", p, resp.StatusCode)
+		}
+	}
+	for _, p := range []string{"/", "/workspace", ""} {
+		if resp := doReq(t, http.MethodDelete, fileURL(srv.URL, sid, "", p), nil, nil); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("delete %q = %d, want 400", p, resp.StatusCode)
+		}
 	}
 }
 
 func TestArchiveRoundTrip(t *testing.T) {
-	srv, sid, _ := newFilesEnv(t, "rw")
+	srv, sid, _ := newFilesEnv(t)
 	base := srv.URL
 	if resp := doReq(t, http.MethodPut, fileURL(base, sid, "content", "src/a.txt"), []byte("alpha"), nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT = %d", resp.StatusCode)
@@ -199,7 +239,7 @@ func TestArchiveRoundTrip(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("archive PUT = %d %s", resp.StatusCode, body)
 	}
-	// Archive entries keep their Workspace-relative paths, so unpacking into
+	// Archive entries keep their /workspace-relative paths, so unpacking into
 	// dst restores src/ beneath it.
 	for name, want := range map[string]string{"dst/src/a.txt": "alpha", "dst/src/sub/b.txt": "beta"} {
 		resp := doReq(t, http.MethodGet, fileURL(base, sid, "content", name), nil, nil)
@@ -211,7 +251,7 @@ func TestArchiveRoundTrip(t *testing.T) {
 }
 
 func TestArchiveRejectsEscapingEntries(t *testing.T) {
-	srv, sid, _ := newFilesEnv(t, "rw")
+	srv, sid, _ := newFilesEnv(t)
 	cases := map[string]*tar.Header{
 		"traversal name": {Name: "../escape.txt", Typeflag: tar.TypeReg, Mode: 0o644},
 		// The write direction never creates links (research §9).
@@ -237,14 +277,14 @@ func TestArchiveRejectsEscapingEntries(t *testing.T) {
 	}
 }
 
-func TestFileListMissingWorkspaceRef(t *testing.T) {
+func TestFileListSandboxNotRunning(t *testing.T) {
 	root := t.TempDir()
-	r := &Runtime{dataRoot: root}
+	r := &Runtime{dataRoot: root, driver: filesDriver{}}
 	srv := httptest.NewServer(r.tunnelMux())
 	defer srv.Close()
 	resp := doReq(t, http.MethodGet, fileURL(srv.URL, uuid.New(), "", ""), nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("missing ref = %d, want 404", resp.StatusCode)
+		t.Fatalf("not running = %d, want 404", resp.StatusCode)
 	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "problem+json") {
 		t.Fatalf("content type = %q", resp.Header.Get("Content-Type"))

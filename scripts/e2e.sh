@@ -155,9 +155,12 @@ E2E_OIDC_WEBHOOK_SECRET="orrery-e2e-webhook-secret"
 # the platform registry at startup. The source is the local unauthenticated
 # registry-source service, so the run never depends on Docker Hub availability
 # or anonymous rate limits; the image is pushed there below, before the server
-# starts.
-if ! docker image inspect alpine:3.22 >/dev/null 2>&1; then
-  docker pull alpine:3.22 >/dev/null
+# starts. ORRERY_E2E_BASE_IMAGE swaps in a local image for it, e.g. an
+# alpine:3.22 with git already installed on a host whose Sandboxes cannot
+# reach the Alpine mirror (`apk add git` then has nothing to fetch).
+BASE_IMAGE="${ORRERY_E2E_BASE_IMAGE:-alpine:3.22}"
+if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
+  docker pull "$BASE_IMAGE" >/dev/null
 fi
 export ORRERY_DEFAULT_SNAPSHOT="${ORRERY_DEFAULT_SNAPSHOT:-alpine-3.22}"
 
@@ -206,7 +209,7 @@ fi
 # registry client treats RFC1918 addresses as plain HTTP, while a bare service
 # name would be tried over HTTPS. Docker Hub is never contacted.
 SOURCE_REGISTRY="127.0.0.1:15001"
-docker tag alpine:3.22 "${SOURCE_REGISTRY}/alpine:3.22"
+docker tag "$BASE_IMAGE" "${SOURCE_REGISTRY}/alpine:3.22"
 docker push "${SOURCE_REGISTRY}/alpine:3.22" >/dev/null
 SOURCE_HOST="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
   "${COMPOSE_PROJECT}-registry-source-1" 2>/dev/null || true)"

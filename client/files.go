@@ -9,14 +9,14 @@ import (
 	"net/url"
 )
 
-// ReadFile streams a Workspace file. byteRange, when non-empty, is sent as
+// ReadFile streams a Sandbox file. byteRange, when non-empty, is sent as
 // the Range header (api.md §5).
 func (c *Client) ReadFile(ctx context.Context, sandboxID, path string, dst io.Writer, byteRange string) error {
 	_, err := c.stream(ctx, http.MethodGet, c.fileURL(sandboxID, "/content", path), nil, nil, byteRange, dst)
 	return err
 }
 
-// ReadFileRange reads part of a Workspace file and returns the bytes with the
+// ReadFileRange reads part of a Sandbox file and returns the bytes with the
 // response's Content-Type. byteRange, when non-empty, is sent as the Range
 // header (api.md §5).
 func (c *Client) ReadFileRange(ctx context.Context, sandboxID, path, byteRange string) ([]byte, string, error) {
@@ -28,7 +28,7 @@ func (c *Client) ReadFileRange(ctx context.Context, sandboxID, path, byteRange s
 	return buf.Bytes(), contentType, nil
 }
 
-// WriteFile uploads a Workspace file in one request.
+// WriteFile uploads a Sandbox file in one request.
 func (c *Client) WriteFile(ctx context.Context, sandboxID, path string, src io.Reader, size int64) error {
 	_, err := c.stream(ctx, http.MethodPut, c.fileURL(sandboxID, "/content", path), src, &size, "", nil)
 	return err
@@ -44,6 +44,22 @@ func (c *Client) ReadArchive(ctx context.Context, sandboxID, path string, dst io
 func (c *Client) WriteArchive(ctx context.Context, sandboxID, path string, src io.Reader, size int64) error {
 	_, err := c.stream(ctx, http.MethodPut, c.fileURL(sandboxID, "/archive", path), src, &size, "", nil)
 	return err
+}
+
+// ReadVolumeFile streams a file of the Volume's last commit.
+func (c *Client) ReadVolumeFile(ctx context.Context, volumeID, path string, dst io.Writer) error {
+	_, err := c.stream(ctx, http.MethodGet, c.volumeFileURL(volumeID, "/content", path), nil, nil, "", dst)
+	return err
+}
+
+// ReadVolumeArchive downloads a tar of path in the Volume's last commit.
+func (c *Client) ReadVolumeArchive(ctx context.Context, volumeID, path string, dst io.Writer) error {
+	_, err := c.stream(ctx, http.MethodGet, c.volumeFileURL(volumeID, "/archive", path), nil, nil, "", dst)
+	return err
+}
+
+func (c *Client) volumeFileURL(volumeID, suffix, path string) string {
+	return c.baseURL + "/api/v1/volumes/" + url.PathEscape(volumeID) + "/files" + suffix + "?" + url.Values{"path": {path}}.Encode()
 }
 
 func (c *Client) fileURL(sandboxID, suffix, path string) string {

@@ -40,7 +40,7 @@ func TestGvisorParity(t *testing.T) {
 		"egress_policy":         "enforced",
 		"cpu_memory_pid_limits": "enforced",
 		"exec_supervisor":       "enforced",
-		"workspace_rw_mount":    "enforced",
+		"workdir_writable":      "enforced",
 	} {
 		if values[name] != want {
 			t.Fatalf("%s = %q, want %q (capabilities %v)", name, values[name], want, node.Capabilities)
@@ -64,6 +64,14 @@ func TestGvisorParity(t *testing.T) {
 		if out := execStdout(t, admin, e.ID); !strings.Contains(out, "gVisor") {
 			t.Fatalf("the Sandbox kernel log does not come from gVisor:\n%s", out)
 		}
+	})
+
+	// overlay2 = "none" keeps root filesystem writes in the upperdir the
+	// stop commits (runtime.md §9, §16).
+	t.Run("stop-commits-the-filesystem", func(t *testing.T) {
+		id := createReadySandbox(t, admin, fmt.Sprintf("runsc-commit-%d", suffix), 128<<20)
+		t.Cleanup(func() { deleteSandbox(t, admin, id) })
+		assertStopCommits(t, admin, id)
 	})
 
 	t.Run("exec-log-stream", func(t *testing.T) {

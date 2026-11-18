@@ -2,7 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import { createFileRoute, Link, Outlet, redirect, useRouterState } from '@tanstack/react-router'
 import {
   Boxes,
-  HardDrive,
+  Database,
   KeyRound,
   Layers,
   LogOut,
@@ -57,7 +57,7 @@ export const Route = createFileRoute('/_authed')({
 })
 
 type NavItem = {
-  to: '/sandboxes' | '/snapshots' | '/workspaces' | '/resources' | '/secrets' | '/cli-auth' | '/admin/users' | '/admin/nodes' | '/admin/audit'
+  to: '/sandboxes' | '/snapshots' | '/volumes' | '/resources' | '/secrets' | '/cli-auth' | '/admin/users' | '/admin/nodes' | '/admin/audit'
   label: () => string
   icon: React.ComponentType
 }
@@ -66,11 +66,11 @@ type NavItem = {
 // server still enforces scope.
 const NAV: { label: () => string; items: readonly NavItem[] }[] = [
   {
-    label: () => m.nav_group_workspace(),
+    label: () => m.nav_group_build(),
     items: [
       { to: '/sandboxes', label: () => m.nav_sandboxes(), icon: Boxes },
       { to: '/snapshots', label: () => m.nav_snapshots(), icon: Layers },
-      { to: '/workspaces', label: () => m.nav_workspaces(), icon: HardDrive },
+      { to: '/volumes', label: () => m.nav_volumes(), icon: Database },
       { to: '/resources', label: () => m.nav_resources(), icon: Package },
     ],
   },

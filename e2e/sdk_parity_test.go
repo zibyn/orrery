@@ -112,7 +112,7 @@ func TestSDKParityFilesAPI(t *testing.T) {
 	}
 
 	// Upload through the SDK, read back through REST and the SDK.
-	content := []byte("hello workspace\n")
+	content := []byte("hello sandboxes\n")
 	if err := c.WriteFile(ctx, sandboxID, "src/hello.txt", bytes.NewReader(content), int64(len(content))); err != nil {
 		t.Fatalf("sdk WriteFile: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestSDKParityFilesAPI(t *testing.T) {
 	if err := c.ReadFile(ctx, sandboxID, "src/hello.txt", &ranged, "bytes=6-14"); err != nil {
 		t.Fatalf("sdk ranged ReadFile: %v", err)
 	}
-	if ranged.String() != "workspace" {
+	if ranged.String() != "sandboxes" {
 		t.Fatalf("sdk range = %q", ranged.String())
 	}
 
@@ -190,7 +190,7 @@ func TestSDKParityFilesAPI(t *testing.T) {
 	}
 
 	// Escaping paths are refused, never rewritten.
-	for _, path := range []string{"../escape.txt", "/etc/passwd", "src/../../escape.txt"} {
+	for _, path := range []string{"../escape.txt", "/../escape.txt", "/resources/x", "src/../../escape.txt"} {
 		var problem *client.Error
 		err := c.WriteFile(ctx, sandboxID, path, strings.NewReader("x"), 1)
 		if !errors.As(err, &problem) || problem.Status != http.StatusBadRequest || problem.Code != "invalid_request" {

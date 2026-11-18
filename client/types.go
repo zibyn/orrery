@@ -208,24 +208,33 @@ type DownloadURLs struct {
 	URLs []string `json:"urls"`
 }
 
-// Workspace is a persistent or ephemeral Sandbox filesystem.
-type Workspace struct {
+// Volume is a named, writable directory in object storage, held by at most
+// one Sandbox at a time.
+type Volume struct {
 	ID          string     `json:"id"`
-	Kind        string     `json:"kind"`
-	NodeID      *string    `json:"node_id"`
+	Name        string     `json:"name"`
 	State       string     `json:"state"`
-	Cause       *string    `json:"cause"`
-	Unavailable bool       `json:"unavailable"`
-	Conditions  []string   `json:"conditions"`
-	SandboxID   *string    `json:"sandbox_id"`
-	CreatedAt   time.Time  `json:"created_at"`
-	DeletedAt   *time.Time `json:"deleted_at"`
+	HeldBy      *string    `json:"held_by"`
+	CommittedAt *time.Time `json:"committed_at"`
+	Size        int64      `json:"size"`
+	// PendingMigration: migrated from a Workspace whose directory is still
+	// on its Node (api.md §3).
+	PendingMigration bool       `json:"pending_migration"`
+	CreatedAt        time.Time  `json:"created_at"`
+	DeletedAt        *time.Time `json:"deleted_at"`
 }
 
-// WorkspaceList is one page of Workspaces.
-type WorkspaceList struct {
-	Items      []Workspace `json:"items"`
-	NextCursor *string     `json:"next_cursor"`
+// VolumeList is one page of Volumes.
+type VolumeList struct {
+	Items      []Volume `json:"items"`
+	NextCursor *string  `json:"next_cursor"`
+}
+
+// SandboxVolume mounts a Volume (id, or name in a request) at an absolute
+// Path in a Sandbox.
+type SandboxVolume struct {
+	Volume string `json:"volume"`
+	Path   string `json:"path"`
 }
 
 // Snapshot is a named image with versions.
@@ -285,12 +294,6 @@ type SnapshotVersionRequest struct {
 	Build  *SnapshotBuild  `json:"build,omitempty"`
 }
 
-// SandboxWorkspace attaches an existing Workspace to a Sandbox.
-type SandboxWorkspace struct {
-	ID   string `json:"id"`
-	Mode string `json:"mode"`
-}
-
 // SandboxResource mounts a Resource Version in a Sandbox.
 type SandboxResource struct {
 	Resource string  `json:"resource"`
@@ -323,7 +326,7 @@ type CreateSandboxRequest struct {
 	Name      *string           `json:"name,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	Runtime   *string           `json:"runtime,omitempty"`
-	Workspace *SandboxWorkspace `json:"workspace,omitempty"`
+	Volumes   []SandboxVolume   `json:"volumes,omitempty"`
 	Snapshot  *string           `json:"snapshot,omitempty"`
 	Resources []SandboxResource `json:"resources,omitempty"`
 	Secrets   map[string]string `json:"secrets,omitempty"`
@@ -352,7 +355,7 @@ type Sandbox struct {
 	Memory        int64             `json:"memory"`
 	GPU           *SandboxGPU       `json:"gpu,omitempty"`
 	IdleStop      int32             `json:"idle_stop"`
-	Workspace     *SandboxWorkspace `json:"workspace,omitempty"`
+	Volumes       []SandboxVolume   `json:"volumes"`
 	Conditions    []string          `json:"conditions"`
 	QueuePosition *int64            `json:"queue_position,omitempty"`
 	BlockedReason *string           `json:"blocked_reason,omitempty"`
@@ -418,7 +421,7 @@ type Frame struct {
 	Encoding string `json:"encoding,omitempty"`
 }
 
-// FileEntry is one Workspace directory entry.
+// FileEntry is one directory entry of a Sandbox or Volume.
 type FileEntry struct {
 	Path       string    `json:"path"`
 	Name       string    `json:"name"`
@@ -475,9 +478,4 @@ type ListSandboxesParams struct {
 	HasGPU bool
 	Limit  int
 	Cursor string
-}
-
-// CreateWorkspaceRequest creates a Workspace.
-type CreateWorkspaceRequest struct {
-	Kind string `json:"kind,omitempty"`
 }

@@ -10,7 +10,7 @@ import "encoding/json"
 // refused (ADR-0014).
 const (
 	Major uint32 = 1
-	Minor uint32 = 5
+	Minor uint32 = 6
 )
 
 // Capability names are the Runtime Provider facts a Node self-checks
@@ -22,7 +22,7 @@ const (
 
 	CapProcessMountNamespace = "process_mount_namespace"
 	CapCPUMemoryPIDLimits    = "cpu_memory_pid_limits"
-	CapWorkspaceRWMount      = "workspace_rw_mount"
+	CapWorkdirWritable       = "workdir_writable"
 	CapGPUDeviceVisibility   = "gpu_device_visibility"
 	CapGPUMemoryLimit        = "gpu_memory_limit"
 	CapDiskCapacityQuota     = "disk_capacity_quota"
@@ -53,7 +53,7 @@ const (
 var Required = []string{
 	CapProcessMountNamespace,
 	CapCPUMemoryPIDLimits,
-	CapWorkspaceRWMount,
+	CapWorkdirWritable,
 	CapExecSupervisor,
 }
 
@@ -63,7 +63,7 @@ var Required = []string{
 // required of it (ADR-0009). Everything else still is.
 func RequiredFor(provider string) []string {
 	if provider == "local" {
-		return []string{CapCPUMemoryPIDLimits, CapWorkspaceRWMount, CapExecSupervisor}
+		return []string{CapCPUMemoryPIDLimits, CapWorkdirWritable, CapExecSupervisor}
 	}
 	return Required
 }
@@ -76,14 +76,12 @@ const (
 	SandboxPhaseRunning      SandboxPhase = "running"
 	SandboxPhaseGone         SandboxPhase = "gone"
 	SandboxPhaseCreateFailed SandboxPhase = "create_failed"
-)
-
-// WorkspacePhase is what a Node observes about a Workspace's storage.
-type WorkspacePhase string
-
-const (
-	WorkspacePhaseReady WorkspacePhase = "ready"
-	WorkspacePhaseGone  WorkspacePhase = "gone"
+	// The Runtime ended and the filesystem is being committed (runtime.md §16).
+	SandboxPhaseCommitting   SandboxPhase = "committing"
+	SandboxPhaseCommitFailed SandboxPhase = "commit_failed"
+	// The Node evicted a stopped Sandbox's cached diff (runtime.md §16), so
+	// it is no longer the placement preference.
+	SandboxPhaseDiskDropped SandboxPhase = "disk_dropped"
 )
 
 // Compatible applies the protocol version rule: a different major or a newer

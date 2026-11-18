@@ -97,8 +97,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runFiles(c, rest[1:], stderr)
 	case "resource":
 		err = runResource(c, rest[1:], stderr)
-	case "workspace":
-		err = runWorkspace(c, rest[1:], stderr)
 	case "node":
 		err = runNode(c, rest[1:], stderr)
 	case "port-forward":
@@ -138,7 +136,7 @@ commands:
   audit list
   exec run|cancel
   shell <sandbox-id> [-- argv...]   open an interactive terminal
-  files ls <sandbox-id> [path]      list a Workspace directory
+  files ls <sandbox-id> [path]      list a Sandbox directory
   files cp <src> <dst>              copy a file to or from <sandbox-id>:<path>
   resource create <name>
   resource ls
@@ -148,10 +146,6 @@ commands:
   resource push <dir> <name>        upload and publish a directory
   resource pull <name>[@version] <dir>
                                     download a version into a directory
-  workspace publish <id> <path> <name>
-                                    publish a Workspace path as a Resource version
-  workspace declare-lost <id>       declare a Workspace lost (admin)
-  workspace abandon <id>            abandon a stuck Workspace deletion (admin)
   node pause|resume|delete <id>     admin: pause, resume or delete a Node
   node declare-lost <id>            declare an unreachable Node lost (admin)
   port-forward <sandbox-id> [LOCAL:]REMOTE

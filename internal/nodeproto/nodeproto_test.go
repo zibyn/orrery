@@ -84,7 +84,7 @@ func TestCoreEnforcedByProvider(t *testing.T) {
 	local := map[string]string{
 		CapProcessMountNamespace: ValueUnsupported,
 		CapCPUMemoryPIDLimits:    ValueEnforced,
-		CapWorkspaceRWMount:      ValueEnforced,
+		CapWorkdirWritable:       ValueEnforced,
 		CapExecSupervisor:        ValueEnforced,
 	}
 	if !CoreEnforced(report("local", local)) {

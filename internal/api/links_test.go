@@ -22,7 +22,7 @@ func TestCreateSandboxCommandFlagsALinkTarget(t *testing.T) {
 		want bool
 	}{{"with links", []uuid.UUID{uuid.New()}, true}, {"without links", nil, false}} {
 		sb := store.Sandbox{ID: uuid.New(), Generation: 2, LinksFrom: tt.from}
-		if got := createSandboxCommand("c", sb, nil, nil, nil).GetLinkTarget(); got != tt.want {
+		if got := createSandboxCommand("c", sb, nil, nil).GetLinkTarget(); got != tt.want {
 			t.Errorf("%s: link_target = %v, want %v", tt.name, got, tt.want)
 		}
 	}

@@ -46,7 +46,6 @@ const CAUSE_LABELS: Record<string, () => string> = {
   runtime_create_failed: m.cause_runtime_create_failed,
   image_pull_failed: m.cause_image_pull_failed,
   resource_fetch_failed: m.cause_resource_fetch_failed,
-  workspace_lost: m.cause_workspace_lost,
   build_interrupted: m.cause_build_interrupted,
   import_failed: m.cause_import_failed,
   build_failed: m.cause_build_failed,
@@ -75,6 +74,16 @@ const PROBLEM_TITLES: Record<string, () => string> = {
   unavailable: m.problem_unavailable,
 }
 
+// Sandbox.conditions (api.md §3).
+const CONDITION_LABELS: Record<string, () => string> = {
+  changes_lost: m.condition_changes_lost,
+  commit_stalled: m.condition_commit_stalled,
+}
+
+export function conditionLabel(condition: string): string {
+  return CONDITION_LABELS[condition]?.() ?? condition
+}
+
 export function stateLabel(state: string): string {
   return STATE_LABELS[state]?.() ?? state
 }
@@ -99,18 +108,6 @@ export function scopeLabel(scope: string): string {
   if (scope === 'user') return m.scope_user()
   if (scope === 'admin') return m.scope_admin()
   return scope
-}
-
-export function workspaceModeLabel(mode: string): string {
-  if (mode === 'rw') return m.workspace_mode_rw()
-  if (mode === 'ro') return m.workspace_mode_ro()
-  return mode
-}
-
-export function workspaceKindLabel(kind: string): string {
-  if (kind === 'persistent') return m.workspace_kind_persistent()
-  if (kind === 'ephemeral') return m.workspace_kind_ephemeral()
-  return kind
 }
 
 export function sourceLabel(source: string): string {
