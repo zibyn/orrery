@@ -136,12 +136,19 @@ func (f *volumeFS) maybeFree(ino uint64, n *vnode) {
 }
 
 // unlockTree releases the tree lock, then removes the write-cache files of
-// the inodes freed under it, each once its content IO is done.
+// the inodes freed under it, each once its content IO is done and a seal
+// that froze it has hashed it.
 func (f *volumeFS) unlockTree() {
 	freed := f.freed
 	f.freed = nil
 	f.mu.Unlock()
 	for ino, n := range freed {
+		f.mu.Lock()
+		frozen := n.frozen
+		f.mu.Unlock()
+		if frozen != nil {
+			<-frozen
+		}
 		n.mu.Lock()
 		f.dropLocal(ino, n)
 		n.mu.Unlock()
@@ -155,7 +162,8 @@ const noCopy = -1
 // shared for IO, exclusive for a change of its extent. Local content comes
 // with n.file open; keep other than noCopy first copies committed content
 // up, keeping keep bytes. Opening or copying takes the lock exclusively,
-// even when shared was asked for.
+// even when shared was asked for. A change (exclusive, or a copy asked for)
+// to a frozen file waits until the seal has hashed it.
 func (f *volumeFS) lockContent(ino uint64, exclusive bool, keep int64) (*vnode, func(), fuse.Status) {
 	f.mu.Lock()
 	n, ok := f.st.Nodes[ino]
@@ -166,30 +174,33 @@ func (f *volumeFS) lockContent(ino uint64, exclusive bool, keep int64) (*vnode, 
 	case n.Type != manifest.TypeFile:
 		return nil, nil, fuse.EINVAL
 	}
-	f.sealing.RLock()
+	change := exclusive || keep != noCopy
 	for {
 		lock, unlock := n.mu.RLock, n.mu.RUnlock
 		if exclusive {
 			lock, unlock = n.mu.Lock, n.mu.Unlock
 		}
 		lock()
-		release := func() { unlock(); f.sealing.RUnlock() }
 		f.mu.Lock()
-		alive, local := f.st.Nodes[ino] == n, n.Local
+		alive, local, frozen := f.st.Nodes[ino] == n, n.Local, n.frozen
 		f.mu.Unlock()
 		switch {
 		case !alive:
-			release()
+			unlock()
 			return nil, nil, fuse.ENOENT
+		case change && frozen != nil:
+			unlock()
+			<-frozen
+			continue
 		case (local && n.file != nil) || (!local && keep == noCopy):
-			return n, release, fuse.OK
+			return n, unlock, fuse.OK
 		case exclusive:
 			if err := f.copyUp(ino, n, keep); err != nil {
-				release()
+				unlock()
 				f.log.Error("copy a Volume file up", "error", err)
 				return nil, nil, fuse.EIO
 			}
-			return n, release, fuse.OK
+			return n, unlock, fuse.OK
 		}
 		unlock()
 		exclusive = true
@@ -210,7 +221,7 @@ func (f *volumeFS) truncate(ino uint64, size int64) fuse.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n.Size, n.Mtime = size, now()
-	f.changed(n)
+	f.wrote(n)
 	return fuse.OK
 }
 
@@ -615,7 +626,7 @@ func (f *volumeFS) Write(_ <-chan struct{}, in *fuse.WriteIn, data []byte) (uint
 	defer f.mu.Unlock()
 	n.Size = max(n.Size, int64(in.Offset)+int64(written))
 	n.Mtime = now()
-	f.changed(n)
+	f.wrote(n)
 	return uint32(written), fuse.OK
 }
 
@@ -645,7 +656,7 @@ func (f *volumeFS) Fallocate(_ <-chan struct{}, in *fuse.FallocateIn) fuse.Statu
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n.Size = end
-	f.changed(n)
+	f.wrote(n)
 	return fuse.OK
 }
 
