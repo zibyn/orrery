@@ -302,6 +302,35 @@ func schemas() map[string]any {
 				"expires_at": nullableTime,
 			},
 		},
+		"CLILogin": map[string]any{
+			"type":     "object",
+			"required": []string{"device_code", "user_code", "verification_uri", "expires_in", "interval"},
+			"properties": map[string]any{
+				"device_code":      map[string]any{"type": "string", "description": "Secret; the CLI polls with it and never shows it."},
+				"user_code":        map[string]any{"type": "string", "description": "Eight letters as XXXX-XXXX, shown in the terminal and confirmed in the console."},
+				"verification_uri": map[string]any{"type": "string", "description": "The console page that approves the login; append ?code=<user_code>."},
+				"expires_in":       map[string]any{"type": "integer", "description": "Seconds until the login expires."},
+				"interval":         map[string]any{"type": "integer", "description": "Seconds between polls."},
+			},
+		},
+		"CLILoginApproveRequest": map[string]any{
+			"type":       "object",
+			"required":   []string{"user_code"},
+			"properties": map[string]any{"user_code": map[string]any{"type": "string", "description": "Case, spaces and the dash are ignored."}},
+		},
+		"CLILoginTokenRequest": map[string]any{
+			"type":       "object",
+			"required":   []string{"device_code"},
+			"properties": map[string]any{"device_code": map[string]any{"type": "string"}},
+		},
+		"CLILoginToken": map[string]any{
+			"type":     "object",
+			"required": []string{"status"},
+			"properties": map[string]any{
+				"status": map[string]any{"type": "string", "enum": []string{"pending", "approved"}},
+				"token":  map[string]any{"type": "string", "description": "A new user-scoped API Token, present only when approved and returned once."},
+			},
+		},
 		"BackchannelLogoutForm": map[string]any{
 			"type":     "object",
 			"required": []string{"logout_token"},

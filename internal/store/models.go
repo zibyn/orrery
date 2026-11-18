@@ -64,6 +64,14 @@ type CasObject struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type CliLogin struct {
+	DeviceHash []byte
+	UserCode   string
+	UserID     *uuid.UUID
+	ExpiresAt  pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+}
+
 type EnrollmentPacket struct {
 	ID         uuid.UUID
 	SecretHash []byte

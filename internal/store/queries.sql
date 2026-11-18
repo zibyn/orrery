@@ -1664,3 +1664,29 @@ DELETE FROM legacy_dirs WHERE node_id = $1;
 
 -- name: DeleteVolumeLegacyDir :exec
 DELETE FROM legacy_dirs WHERE volume_id = $1;
+
+-- CLI logins (ADR-0033)
+
+-- CreateCLILogin inserts only while fewer than $4 unexpired rows exist, so the
+-- unauthenticated endpoint cannot grow the table without bound.
+-- name: CreateCLILogin :execrows
+INSERT INTO cli_logins (device_hash, user_code, expires_at)
+SELECT $1, $2, $3
+WHERE (SELECT count(*) FROM cli_logins WHERE expires_at > now()) < sqlc.arg(max_pending)::bigint;
+
+-- name: ApproveCLILogin :execrows
+UPDATE cli_logins SET user_id = $2
+WHERE user_code = $1 AND user_id IS NULL AND expires_at > now();
+
+-- GetCLILogin reads an unexpired row by device code hash.
+-- name: GetCLILogin :one
+SELECT * FROM cli_logins WHERE device_hash = $1 AND expires_at > now();
+
+-- CollectCLILogin is the single-use claim of an approved login.
+-- name: CollectCLILogin :one
+DELETE FROM cli_logins
+WHERE device_hash = $1 AND user_id IS NOT NULL AND expires_at > now()
+RETURNING user_id;
+
+-- name: PurgeCLILogins :exec
+DELETE FROM cli_logins WHERE expires_at < now();

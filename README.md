@@ -51,7 +51,7 @@
 Sandbox 的创建走控制台、REST API、SDK 或 MCP；CLI 负责创建之后的操作：
 
 ```sh
-orrery login                           # 在控制台经 Polaris 登录，粘贴 token
+orrery login                           # 打印授权链接，在任意浏览器里经 Polaris 登录后授权
 orrery exec run <sandbox-id> -- uname -a
 orrery shell <sandbox-id> -- /bin/bash
 orrery files ls <sandbox-id> src

@@ -84,6 +84,9 @@
 | 名称 | 默认值 | 谁能改 | 说明 |
 |---|---|---|---|
 | Session 闲置期限 | 24 小时 | 常量 | 每次使用顺延；与 Coder 浏览器 session 一致 |
+| CLI 登录有效期 | 10 分钟 | 常量 | 与 GitHub device flow 的 15 分钟同量级（ADR-0033） |
+| CLI 登录轮询间隔 | 5 秒 | 常量 | RFC 8628 的默认值 |
+| 未过期 CLI 登录上限 | 1000 | 常量 | 全部署合计；匿名接口的防刷上限，超过时 `POST /cli-logins` 返回 `429` |
 | 新 User 的默认 Quota | `{gpus: 0, sandboxes: 0}`；`install.sh` 写入 `{gpus: 1, sandboxes: 5}` | 部署 | Polaris 首次登录建号和 `user-token` 建 Machine User 时都用它 |
 
 ## 部署配置

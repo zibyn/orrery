@@ -9,7 +9,6 @@ import {
   Package,
   ScrollText,
   Server,
-  Terminal,
   Users,
 } from 'lucide-react'
 import { useEffect } from 'react'
@@ -57,7 +56,7 @@ export const Route = createFileRoute('/_authed')({
 })
 
 type NavItem = {
-  to: '/sandboxes' | '/snapshots' | '/volumes' | '/resources' | '/secrets' | '/cli-auth' | '/admin/users' | '/admin/nodes' | '/admin/audit'
+  to: '/sandboxes' | '/snapshots' | '/volumes' | '/resources' | '/secrets' | '/admin/users' | '/admin/nodes' | '/admin/audit'
   label: () => string
   icon: React.ComponentType
 }
@@ -78,7 +77,6 @@ const NAV: { label: () => string; items: readonly NavItem[] }[] = [
     label: () => m.nav_group_developer(),
     items: [
       { to: '/secrets', label: () => m.nav_secrets(), icon: KeyRound },
-      { to: '/cli-auth', label: () => m.nav_cli(), icon: Terminal },
     ],
   },
 ]

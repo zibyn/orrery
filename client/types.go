@@ -54,6 +54,21 @@ type Token struct {
 
 // CreatedToken is a Token together with its plaintext value, which the API
 // returns only at creation time.
+// CLILogin is a started device login (api.md §3).
+type CLILogin struct {
+	DeviceCode      string `json:"device_code"`
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"verification_uri"`
+	ExpiresIn       int    `json:"expires_in"`
+	Interval        int    `json:"interval"`
+}
+
+// CLILoginToken is one poll's answer: Status is "pending" or "approved".
+type CLILoginToken struct {
+	Status string `json:"status"`
+	Token  string `json:"token,omitempty"`
+}
+
 type CreatedToken struct {
 	Token
 	// Plaintext is the bearer value; the API never returns it again.

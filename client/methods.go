@@ -30,6 +30,21 @@ func (c *Client) Me(ctx context.Context) (*User, error) {
 	return &out, err
 }
 
+// StartCLILogin opens a device login (ADR-0033); it needs no token.
+func (c *Client) StartCLILogin(ctx context.Context) (*CLILogin, error) {
+	var out CLILogin
+	err := c.do(ctx, http.MethodPost, "/api/v1/cli-logins", nil, nil, &out, "")
+	return &out, err
+}
+
+// PollCLILogin asks once whether the login was approved. Token is set only on
+// the single answer whose Status is "approved".
+func (c *Client) PollCLILogin(ctx context.Context, deviceCode string) (*CLILoginToken, error) {
+	var out CLILoginToken
+	err := c.do(ctx, http.MethodPost, "/api/v1/cli-logins/token", nil, map[string]string{"device_code": deviceCode}, &out, "")
+	return &out, err
+}
+
 // MyQuota returns the authenticated User's quota and usage.
 func (c *Client) MyQuota(ctx context.Context) (*UserQuota, error) {
 	var out UserQuota
