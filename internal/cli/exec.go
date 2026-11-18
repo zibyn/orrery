@@ -64,7 +64,15 @@ func runExecRun(c *client, args []string, stderr io.Writer) error {
 	// The Sandbox id comes before the program: flag.Parse leaves the first
 	// non-flag in NArg, so take it and treat the rest as argv.
 	sandboxID := fs.Arg(0)
-	req := orreryclient.ExecRequest{Argv: fs.Args()[1:]}
+	// flag.Parse stops at the id, so the `--` the usage shows is still here.
+	argv := fs.Args()[1:]
+	if argv[0] == "--" {
+		argv = argv[1:]
+	}
+	if len(argv) == 0 {
+		return fmt.Errorf("usage: orrery exec run [flags] <sandbox-id> -- argv...")
+	}
+	req := orreryclient.ExecRequest{Argv: argv}
 	if *cwd != "" {
 		req.Cwd = *cwd
 	}
