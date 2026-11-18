@@ -75,7 +75,7 @@ func (f *volumeFS) entry(ino uint64, out *fuse.EntryOut) {
 	f.fill(ino, n, &out.Attr)
 }
 
-// dir returns a directory inode under f.mu.
+// dir returns a directory inode under f.treeMu.
 func (f *volumeFS) dirNode(ino uint64) (*vnode, fuse.Status) {
 	n, ok := f.st.Nodes[ino]
 	switch {
@@ -98,8 +98,8 @@ func validName(name string) fuse.Status {
 }
 
 func (f *volumeFS) Lookup(_ <-chan struct{}, h *fuse.InHeader, name string, out *fuse.EntryOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	parent, st := f.dirNode(h.NodeId)
 	if !st.Ok() {
 		return st
@@ -113,7 +113,7 @@ func (f *volumeFS) Lookup(_ <-chan struct{}, h *fuse.InHeader, name string, out 
 }
 
 func (f *volumeFS) Forget(ino, nlookup uint64) {
-	f.mu.Lock()
+	f.treeMu.Lock()
 	defer f.unlockTree()
 	n, ok := f.st.Nodes[ino]
 	if !ok {
@@ -141,12 +141,15 @@ func (f *volumeFS) maybeFree(ino uint64, n *vnode) {
 func (f *volumeFS) unlockTree() {
 	freed := f.freed
 	f.freed = nil
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	for ino, n := range freed {
-		f.mu.Lock()
+		f.treeMu.Lock()
 		frozen := n.frozen
-		f.mu.Unlock()
+		f.treeMu.Unlock()
 		if frozen != nil {
+			// shortcut: the Forget, unlink or rename freeing n answers only
+			// once a seal has hashed it, seconds for a large file; drop the
+			// file in the background if that stall shows up.
 			<-frozen
 		}
 		n.mu.Lock()
@@ -163,11 +166,14 @@ const noCopy = -1
 // with n.file open; keep other than noCopy first copies committed content
 // up, keeping keep bytes. Opening or copying takes the lock exclusively,
 // even when shared was asked for. A change (exclusive, or a copy asked for)
-// to a frozen file waits until the seal has hashed it.
+// to a frozen file waits until the seal has hashed it. A copy asked for
+// means a write or truncate follows: local content turns dirty in the step
+// that finds it not frozen, before its bytes move, so a seal from then on
+// freezes it and waits rather than recording a clean copy's old digests.
 func (f *volumeFS) lockContent(ino uint64, exclusive bool, keep int64) (*vnode, func(), fuse.Status) {
-	f.mu.Lock()
+	f.treeMu.Lock()
 	n, ok := f.st.Nodes[ino]
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	switch {
 	case !ok:
 		return nil, nil, fuse.ENOENT
@@ -181,9 +187,12 @@ func (f *volumeFS) lockContent(ino uint64, exclusive bool, keep int64) (*vnode, 
 			lock, unlock = n.mu.Lock, n.mu.Unlock
 		}
 		lock()
-		f.mu.Lock()
+		f.treeMu.Lock()
 		alive, local, frozen := f.st.Nodes[ino] == n, n.Local, n.frozen
-		f.mu.Unlock()
+		if alive && local && frozen == nil && keep != noCopy {
+			n.SHA256, n.Blocks = "", nil
+		}
+		f.treeMu.Unlock()
 		switch {
 		case !alive:
 			unlock()
@@ -218,16 +227,16 @@ func (f *volumeFS) truncate(ino uint64, size int64) fuse.Status {
 		f.log.Error("truncate Volume file", "error", err)
 		return fuse.EIO
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n.Size, n.Mtime = size, now()
 	f.wrote(n)
 	return fuse.OK
 }
 
 func (f *volumeFS) GetAttr(_ <-chan struct{}, in *fuse.GetAttrIn, out *fuse.AttrOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n, ok := f.st.Nodes[in.NodeId]
 	if !ok {
 		return fuse.ENOENT
@@ -243,8 +252,8 @@ func (f *volumeFS) SetAttr(_ <-chan struct{}, in *fuse.SetAttrIn, out *fuse.Attr
 			return st
 		}
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n, ok := f.st.Nodes[in.NodeId]
 	if !ok {
 		return fuse.ENOENT
@@ -308,8 +317,8 @@ func (f *volumeFS) add(h *fuse.InHeader, name string, n *vnode, out *fuse.EntryO
 }
 
 func (f *volumeFS) Mknod(_ <-chan struct{}, in *fuse.MknodIn, name string, out *fuse.EntryOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	var t string
 	switch in.Mode & syscall.S_IFMT {
 	case syscall.S_IFREG:
@@ -325,26 +334,26 @@ func (f *volumeFS) Mknod(_ <-chan struct{}, in *fuse.MknodIn, name string, out *
 }
 
 func (f *volumeFS) Mkdir(_ <-chan struct{}, in *fuse.MkdirIn, name string, out *fuse.EntryOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	return f.add(&in.InHeader, name, &vnode{Type: manifest.TypeDir, Mode: in.Mode & 0o7777}, out)
 }
 
 func (f *volumeFS) Symlink(_ <-chan struct{}, h *fuse.InHeader, target, name string, out *fuse.EntryOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	return f.add(h, name, &vnode{Type: manifest.TypeSymlink, Mode: 0o777, Target: target}, out)
 }
 
 func (f *volumeFS) Create(_ <-chan struct{}, in *fuse.CreateIn, name string, out *fuse.CreateOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	return f.add(&in.InHeader, name, &vnode{Type: manifest.TypeFile, Mode: in.Mode & 0o7777, Local: true}, &out.EntryOut)
 }
 
 func (f *volumeFS) Link(_ <-chan struct{}, in *fuse.LinkIn, name string, out *fuse.EntryOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	parent, st := f.dirNode(in.NodeId)
 	if !st.Ok() {
 		return st
@@ -386,7 +395,7 @@ func (f *volumeFS) unlink(parent *vnode, name string, ino uint64, n *vnode) {
 }
 
 func (f *volumeFS) remove(ino uint64, name string, dir bool) fuse.Status {
-	f.mu.Lock()
+	f.treeMu.Lock()
 	defer f.unlockTree()
 	parent, st := f.dirNode(ino)
 	if !st.Ok() {
@@ -425,7 +434,7 @@ func (f *volumeFS) Rename(_ <-chan struct{}, in *fuse.RenameIn, oldName, newName
 		// them if a Sandbox workload needs them on a Volume.
 		return fuse.EINVAL
 	}
-	f.mu.Lock()
+	f.treeMu.Lock()
 	defer f.unlockTree()
 	from, st := f.dirNode(in.NodeId)
 	if !st.Ok() {
@@ -476,8 +485,8 @@ func (f *volumeFS) Rename(_ <-chan struct{}, in *fuse.RenameIn, oldName, newName
 }
 
 func (f *volumeFS) Readlink(_ <-chan struct{}, h *fuse.InHeader) ([]byte, fuse.Status) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n, ok := f.st.Nodes[h.NodeId]
 	if !ok || n.Type != manifest.TypeSymlink {
 		return nil, fuse.EINVAL
@@ -486,8 +495,8 @@ func (f *volumeFS) Readlink(_ <-chan struct{}, h *fuse.InHeader) ([]byte, fuse.S
 }
 
 func (f *volumeFS) GetXAttr(_ <-chan struct{}, h *fuse.InHeader, attr string, dest []byte) (uint32, fuse.Status) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n, ok := f.st.Nodes[h.NodeId]
 	if !ok {
 		return 0, fuse.ENOENT
@@ -503,8 +512,8 @@ func (f *volumeFS) GetXAttr(_ <-chan struct{}, h *fuse.InHeader, attr string, de
 }
 
 func (f *volumeFS) ListXAttr(_ <-chan struct{}, h *fuse.InHeader, dest []byte) (uint32, fuse.Status) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n, ok := f.st.Nodes[h.NodeId]
 	if !ok {
 		return 0, fuse.ENOENT
@@ -525,8 +534,8 @@ func (f *volumeFS) ListXAttr(_ <-chan struct{}, h *fuse.InHeader, dest []byte) (
 }
 
 func (f *volumeFS) SetXAttr(_ <-chan struct{}, in *fuse.SetXAttrIn, attr string, data []byte) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n, ok := f.st.Nodes[in.NodeId]
 	if !ok {
 		return fuse.ENOENT
@@ -549,8 +558,8 @@ func (f *volumeFS) SetXAttr(_ <-chan struct{}, in *fuse.SetXAttrIn, attr string,
 }
 
 func (f *volumeFS) RemoveXAttr(_ <-chan struct{}, h *fuse.InHeader, attr string) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n, ok := f.st.Nodes[h.NodeId]
 	if !ok {
 		return fuse.ENOENT
@@ -566,11 +575,11 @@ func (f *volumeFS) RemoveXAttr(_ <-chan struct{}, h *fuse.InHeader, attr string)
 // Open allocates no handle: Read and Write go by node ID, so open files
 // survive a handover. O_TRUNC is applied here when the kernel sends it.
 func (f *volumeFS) Open(_ <-chan struct{}, in *fuse.OpenIn, _ *fuse.OpenOut) fuse.Status {
-	f.mu.Lock()
+	f.treeMu.Lock()
 	n, ok := f.st.Nodes[in.NodeId]
 	dir := ok && n.isDir()
 	trunc := ok && in.Flags&syscall.O_TRUNC != 0 && n.Type == manifest.TypeFile && n.Size > 0
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	switch {
 	case !ok:
 		return fuse.ENOENT
@@ -587,9 +596,9 @@ func (f *volumeFS) Read(_ <-chan struct{}, in *fuse.ReadIn, dest []byte) (fuse.R
 	if !st.Ok() {
 		return nil, st
 	}
-	f.mu.Lock()
+	f.treeMu.Lock()
 	local, size, entry := n.Local, n.Size, contentEntry(n)
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	off := int64(in.Offset)
 	end := min(off+int64(in.Size), size)
 	if off >= end {
@@ -612,18 +621,21 @@ func (f *volumeFS) Read(_ <-chan struct{}, in *fuse.ReadIn, dest []byte) (fuse.R
 	return fuse.ReadResultData(dest[:got]), fuse.OK
 }
 
+// writeAt is pwrite(2); a test holds one partway.
+var writeAt = (*os.File).WriteAt
+
 func (f *volumeFS) Write(_ <-chan struct{}, in *fuse.WriteIn, data []byte) (uint32, fuse.Status) {
 	n, unlock, st := f.lockContent(in.NodeId, false, math.MaxInt64)
 	if !st.Ok() {
 		return 0, st
 	}
 	defer unlock()
-	written, err := n.file.WriteAt(data, int64(in.Offset))
+	written, err := writeAt(n.file, data, int64(in.Offset))
 	if err != nil {
 		return uint32(written), fuse.ToStatus(err)
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n.Size = max(n.Size, int64(in.Offset)+int64(written))
 	n.Mtime = now()
 	f.wrote(n)
@@ -639,9 +651,9 @@ func (f *volumeFS) Fallocate(_ <-chan struct{}, in *fuse.FallocateIn) fuse.Statu
 		return st
 	}
 	defer unlock()
-	f.mu.Lock()
+	f.treeMu.Lock()
 	size := n.Size
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	end := int64(in.Offset + in.Length)
 	if end <= size {
 		return fuse.OK
@@ -653,8 +665,8 @@ func (f *volumeFS) Fallocate(_ <-chan struct{}, in *fuse.FallocateIn) fuse.Statu
 	if err != nil {
 		return fuse.EIO
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n.Size = end
 	f.wrote(n)
 	return fuse.OK
@@ -684,8 +696,8 @@ func (f *volumeFS) Release(<-chan struct{}, *fuse.ReleaseIn)            {}
 func (f *volumeFS) FsyncDir(<-chan struct{}, *fuse.FsyncIn) fuse.Status { return fuse.OK }
 func (f *volumeFS) ReleaseDir(*fuse.ReleaseIn)                          {}
 func (f *volumeFS) OpenDir(_ <-chan struct{}, in *fuse.OpenIn, _ *fuse.OpenOut) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	_, st := f.dirNode(in.NodeId)
 	return st
 }
@@ -693,8 +705,8 @@ func (f *volumeFS) OpenDir(_ <-chan struct{}, in *fuse.OpenIn, _ *fuse.OpenOut) 
 // ReadDir lists entries after in.Offset; offsets are cookies, which stay
 // valid while other entries come and go.
 func (f *volumeFS) ReadDir(_ <-chan struct{}, in *fuse.ReadIn, out *fuse.DirEntryList) fuse.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	n, st := f.dirNode(in.NodeId)
 	if !st.Ok() {
 		return st

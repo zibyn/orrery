@@ -158,24 +158,26 @@ func goSeal(v vol) <-chan Sealed {
 	return sealed
 }
 
-// holdSeal stops a seal as it turns to path's frozen file, before hashing
-// it, until release; wait returns once a seal is held there.
+// holdSeal stops a seal as it hashes path's frozen file, until release;
+// wait returns once a seal is held there. A hold the test does not release
+// within 5 s means an op waited for it, and fails the test.
 func holdSeal(v vol, path string) (wait, release func()) {
 	ino := v.ino(path)
 	held, done := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	beforeHash = func(i uint64) {
+	hashing = func(i uint64) {
 		if i == ino {
 			once.Do(func() {
 				close(held)
 				select {
 				case <-done:
-				case <-time.After(5 * time.Second): // were others stuck behind it, free them to fail
+				case <-time.After(5 * time.Second): // free whatever is stuck behind it
+					v.t.Errorf("an op waited for the seal hashing %s", path)
 				}
 			})
 		}
 	}
-	v.t.Cleanup(func() { beforeHash = func(uint64) {} })
+	v.t.Cleanup(func() { hashing = func(uint64) {} })
 	wait = func() {
 		v.t.Helper()
 		select {
@@ -788,6 +790,29 @@ func TestVolumeUnwrittenCleanCopyIsDropped(t *testing.T) {
 	}
 }
 
+// An unlinked file still open keeps its clean copy across commits: no
+// Generation holds its objects any more, so once the block cache evicts
+// them the copy is all there is.
+func TestVolumeUnlinkedOpenFileKeepsItsCleanCopy(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("scratch", "temp data")
+	ino := v.ino("scratch") // the kernel's reference, as an open file holds
+	s, _ := v.seal()
+	if err := v.f.committed("gen-2", s.Seq); err != nil {
+		t.Fatal(err)
+	}
+	v.unlink("scratch")
+	if s, _ := v.seal(); !s.Dirty { // a commit period with scratch unwritten
+		t.Fatal("the unlink left the Volume clean")
+	}
+	os.Remove(v.f.store.path(digest([]byte("temp data")))) //nolint:errcheck // evicted, if it was there
+	res, st := v.f.Read(nil, &fuse.ReadIn{InHeader: hdr(ino), Size: 20}, make([]byte, 20))
+	v.check("read unlinked", st)
+	if got, _ := res.Bytes(nil); string(got) != "temp data" {
+		t.Fatalf("the unlinked open file reads %q", got)
+	}
+}
+
 // Moving a commit's objects into the block cache holds up no other op.
 func TestVolumeCommittedMovesObjectsOffTheTreeLock(t *testing.T) {
 	v, _ := newTestVolume(t)
@@ -870,5 +895,127 @@ func TestVolumeHandoverDuringSealKeepsUncommittedWrites(t *testing.T) {
 		if line := fmt.Sprintf("%s file 644  %s", path, d); !contains(lines, line) {
 			t.Errorf("the successor's seal lacks %q", line)
 		}
+	}
+}
+
+// A read of a frozen file answers while the seal hashes it: only changes to
+// it wait.
+func TestVolumeReadOfFrozenFileAnswersDuringItsHash(t *testing.T) {
+	v, _ := newTestVolume(t)
+	data := pattern(6<<20, 9)
+	v.create("large", string(data))
+	wait, release := holdSeal(v, "large")
+	defer release()
+	sealed := goSeal(v)
+	wait()
+
+	if got := v.read("large", 5<<20, 10); got != string(data[5<<20:5<<20+10]) {
+		t.Fatal("the frozen file reads other bytes")
+	}
+	select {
+	case <-sealed:
+		t.Fatal("the read waited for the hash")
+	default:
+	}
+	release()
+	if want := "large file 644  " + digestOf(data); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
+	}
+}
+
+// holdWrite stops writes to path inside pwrite, once their first landed
+// bytes are in the write-cache file, until release; wait returns once one
+// is held there.
+func holdWrite(v vol, path string, landed int) (wait, release func()) {
+	name := v.f.dataPath(v.ino(path))
+	held, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	writeAt = func(file *os.File, b []byte, off int64) (int, error) {
+		if file.Name() != name {
+			return file.WriteAt(b, off)
+		}
+		n, err := file.WriteAt(b[:landed], off)
+		if err != nil {
+			return n, err
+		}
+		once.Do(func() {
+			close(held)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second): // free whatever is stuck behind it
+				v.t.Errorf("an op waited for the write to %s", path)
+			}
+		})
+		m, err := file.WriteAt(b[landed:], off+int64(landed))
+		return n + m, err
+	}
+	v.t.Cleanup(func() { writeAt = (*os.File).WriteAt })
+	wait = func() {
+		v.t.Helper()
+		select {
+		case <-held:
+		case <-time.After(5 * time.Second):
+			v.t.Fatalf("no write reached %s", path)
+		}
+	}
+	return wait, sync.OnceFunc(func() { close(done) })
+}
+
+// goWrite writes in the background.
+func goWrite(v vol, path string, off int, data string) <-chan fuse.Status {
+	ino := v.ino(path)
+	wrote := make(chan fuse.Status, 1)
+	go func() {
+		_, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(ino), Offset: uint64(off)}, []byte(data))
+		wrote <- st
+	}()
+	return wrote
+}
+
+// A seal that begins once a write's bytes are readable has them, though
+// the write has not returned: here, to a clean copy.
+func TestVolumeSealHasWhatWasReadable(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("clean", "one")
+	v.seal()               // clean is a clean copy
+	v.create("a", "dirty") // hashed first: where the seal is held
+	wait, release := holdWrite(v, "clean", 3)
+	defer release()
+	wrote := goWrite(v, "clean", 0, "two")
+	wait()
+	if got := v.read("clean", 0, 10); got != "two" {
+		t.Fatalf("clean reads %q while its write runs", got)
+	}
+	waitSeal, releaseSeal := holdSeal(v, "a")
+	defer releaseSeal()
+	sealed := goSeal(v)
+	waitSeal() // the seal has its point in time
+	release()
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	releaseSeal()
+	if want := "clean file 644  " + digest([]byte("two")); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q, read before it began", want)
+	}
+}
+
+// A seal waits for a write already in flight to a file it freezes, so it
+// never hashes half a write.
+func TestVolumeSealWaitsForAWriteInFlight(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("log", "......")
+	wait, release := holdWrite(v, "log", 1)
+	defer release()
+	wrote := goWrite(v, "log", 0, "ab")
+	wait()
+	sealed := goSeal(v)
+	notYet(t, sealed, "the seal hashed a write in flight")
+	release()
+	if st := <-wrote; st != fuse.OK {
+		t.Fatalf("write = %v", st)
+	}
+	if want := "log file 644  " + digest([]byte("ab....")); !contains(treeLines(<-sealed), want) {
+		t.Fatalf("the seal lacks %q", want)
 	}
 }
