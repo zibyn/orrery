@@ -1,6 +1,6 @@
 # ADR-0016: Open egress, after-commit audit, and a Sandbox Token
 
-- Status: accepted; Sandbox Token storage amended in place by #72; Egress section superseded by ADR-0026
+- Status: accepted; Sandbox Token storage amended in place by #72; Egress section superseded by ADR-0026; Sandbox Token superseded by ADR-0032
 - Date: 2026-10-17
 
 ## Context
@@ -13,12 +13,12 @@ The recheck against Coder v2.38.0 and Daytona v0.190.0 (`docs/research/recheck-i
 
 **Audit.** An Audit Record is inserted after the transaction that made the change commits. A failed insert is logged and never fails the request. The table stays in PostgreSQL. It records control-plane mutations, Node enroll and revoke, Secret changes, deletions and Git token issues; it does not record Gateway or per-request authorizations. Retention is a deployment-configured period; nothing pins an Audit Record to a live object.
 
-**Sandbox Token.** In place of the Capability Channel, each Sandbox gets a Sandbox Token at creation, placed in the environment of each Exec. It authenticates to the `api` listener and can do exactly one thing: fetch a Git token for the Sandbox owner's linked account (ADR-0013). It is stored encrypted, delivered with every Exec, and becomes invalid when the Sandbox is deleted. (Amended in place by #72: it was stored hashed and delivered in `CreateSandbox`, so neither a restarted Agent nor a re-issued `CreateSandbox` could recover the plaintext ADR-0017 injects into each Exec.) The Git credential helper and `orrery token <provider>` call `api` with it over HTTPS.
+**Sandbox Token.** (Superseded by ADR-0032: Orrery manages no Git credentials, and there is no Sandbox Token.) In place of the Capability Channel, each Sandbox gets a Sandbox Token at creation, placed in the environment of each Exec. It authenticates to the `api` listener and can do exactly one thing: fetch a Git token for the Sandbox owner's linked account (ADR-0013). It is stored encrypted, delivered with every Exec, and becomes invalid when the Sandbox is deleted. (Amended in place by #72: it was stored hashed and delivered in `CreateSandbox`, so neither a restarted Agent nor a re-issued `CreateSandbox` could recover the plaintext ADR-0017 injects into each Exec.) The Git credential helper and `orrery token <provider>` call `api` with it over HTTPS.
 
 ## Consequences
 
 - ADR-0011 is superseded; the Capability Channel, its socket mount and its `capability_channel` capability are gone.
-- The Sandbox must reach `api` over the network; a deployment that hides `api` from Sandboxes loses Git authentication.
+- The Sandbox must reach `api` over the network; a deployment that hides `api` from Sandboxes loses Git authentication. (Superseded by ADR-0032: Sandboxes do not need `api` for Git.)
 - A crash between commit and audit insert loses that Audit Record.
 - Any code in a Sandbox can reach anything the Node can reach, unless the deployment network prevents it. (Superseded by ADR-0026: true now only under empty Egress Rules and on Local Nodes.)
 

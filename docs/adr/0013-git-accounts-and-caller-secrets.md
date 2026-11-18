@@ -1,6 +1,6 @@
 # ADR-0013: Git accounts and caller Secrets
 
-- Status: accepted; the in-Sandbox transport amended by ADR-0016
+- Status: superseded by ADR-0032 except Caller Secrets and their audit, which stand; the in-Sandbox transport amended by ADR-0016
 - Date: 2026-10-17
 
 ## Context
@@ -15,7 +15,7 @@ This is a coding sandbox: an Agent must be able to clone and push with plain `gi
 
 **In the Sandbox.** The Node Agent sets `credential.helper` (after resetting the image's helper list) to a platform helper. On `get`, the helper calls `api` with the Sandbox Token (ADR-0016) for the host; the Control Plane matches the host against the provider patterns, refreshes the owner's token if it has expired, writes an Audit Record and returns it. `store` and `erase` do nothing, so git never persists the token. With no linked account the request fails with the authorization URL, which the Agent can pass to its User; with more than one matching provider it fails rather than guessing. The same call backs `orrery token <provider>`, so `GH_TOKEN=$(orrery token github) gh pr create` works. Git itself runs in the Sandbox and reaches the remote over the Node's network.
 
-**Caller Secrets.** A Secret is a User-owned Control Plane resource with a name and a write-only value, stored encrypted in PostgreSQL. At Sandbox creation the caller maps environment variable names to Secret names and the values are injected then; later changes to a Secret reach only new Sandboxes. There is no file delivery and no in-place refresh. The platform never writes a Secret into the Workspace.
+**Caller Secrets.** A Secret is a User-owned Control Plane resource with a name and a write-only value, stored encrypted in PostgreSQL. At Sandbox creation the caller maps environment variable names to Secret names and the values are injected then; later changes to a Secret reach only new Sandboxes. There is no file delivery and no in-place refresh. (Amended by ADR-0032: an Exec may also name Secrets, resolved when it is created.) The platform never writes a Secret into the Workspace.
 
 **Audit.** Secret create, update and delete; the Secret names a Sandbox was created with; every Git token issue, with host and Sandbox. Never a value.
 
