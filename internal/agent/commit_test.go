@@ -40,6 +40,7 @@ type fakeGenerationNode struct {
 	puts        map[string]int // stored PUTs per object
 	putDelay    time.Duration  // how long each object PUT takes
 	failPut     string         // the object whose next PUT fails
+	holdPuts    bool           // object PUTs but failPut's answer only once canceled
 	inflight    int
 	maxInflight int
 }
@@ -48,18 +49,25 @@ func newFakeGenerationNode(t *testing.T) *fakeGenerationNode {
 	f := &fakeGenerationNode{objects: map[string][]byte{}, manifests: map[string][]byte{}, puts: map[string]int{}}
 	f.http = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		digest, object := strings.CutPrefix(r.URL.Path, "/objects/")
+		data, err := io.ReadAll(r.Body) // read first: then r's context ends when the client gives up
+		if err != nil {
+			return // a canceled PUT stores nothing
+		}
 		if r.Method == http.MethodPut && object {
 			f.mu.Lock()
 			f.inflight++
 			f.maxInflight = max(f.maxInflight, f.inflight)
-			delay := f.putDelay
+			delay, hold := f.putDelay, f.holdPuts && digest != f.failPut
 			f.mu.Unlock()
 			defer func() { f.mu.Lock(); f.inflight--; f.mu.Unlock() }()
 			time.Sleep(delay)
-		}
-		data, err := io.ReadAll(r.Body)
-		if err != nil {
-			return // a canceled PUT stores nothing
+			if hold {
+				select {
+				case <-r.Context().Done():
+					return // canceled: stores nothing
+				case <-time.After(5 * time.Second): // never canceled: store it, for the test to see
+				}
+			}
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()

@@ -144,18 +144,18 @@ func TestVolumeCommitUploadsConcurrently(t *testing.T) {
 	}
 }
 
-// One failed PUT fails the commit, stops the other uploads, and leaves no
-// upload for the daemon to retry; the next commit submits afresh on the same
-// base and uploads what the store still lacks. (A PUT canceled by the failure
-// may still land, so an object can arrive twice; CAS makes that harmless.)
+// One failed PUT fails the commit, cancels the other uploads in flight and
+// starts no more, and leaves no upload for the daemon to retry; the next
+// commit submits afresh on the same base and uploads what the store still
+// lacks.
 func TestVolumeCommitFailsOnOneFailedUpload(t *testing.T) {
 	root := t.TempDir()
 	volume := uuid.NewString()
 	node := newFakeGenerationNode(t)
-	node.putDelay = 20 * time.Millisecond
 	contents := manyContents(100)
 	vols := &fakeVolumes{sealed: dirtyVolume(t, root, volume, contents...)}
-	node.failPut = vols.sealed.Pending[0]
+	node.failPut = vols.sealed.Pending[0] // the first PUT to start
+	node.holdPuts = true                  // the others answer only once canceled
 	rt := newRuntime(ProviderContainerd, root, "node")
 	rt.client, rt.volumes = node, vols
 
@@ -167,9 +167,10 @@ func TestVolumeCommitFailsOnOneFailedUpload(t *testing.T) {
 	}
 	node.mu.Lock()
 	stored := len(node.objects)
+	node.holdPuts = false
 	node.mu.Unlock()
-	if stored > len(contents)/2 {
-		t.Fatalf("%d of %d objects uploaded after the first failure, want the rest canceled", stored, len(contents))
+	if stored != 0 {
+		t.Fatalf("%d of %d objects stored after the first failure, want the rest canceled", stored, len(contents))
 	}
 
 	if err := rt.commitVolumeOnce(context.Background(), 1, volume); err != nil {
