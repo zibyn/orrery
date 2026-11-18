@@ -79,8 +79,9 @@ type vnode struct {
 	names map[string]dirent // index of Kids, rebuilt on demand
 
 	// mu orders a file's content IO (shared) with its truncate, fallocate,
-	// copy-up, seal and drop (exclusive); file is its open write-cache file
-	// under mu, nil until first used.
+	// copy-up, seal and drop (exclusive). file is its open write-cache file,
+	// nil until first used: set and closed under mu, except that pause closes
+	// it once the FUSE session is drained and no seal runs.
 	mu   sync.RWMutex
 	file *os.File
 	// frozen, set under the tree lock, is open from a seal's snapshot until
@@ -90,7 +91,7 @@ type vnode struct {
 
 func (n *vnode) isDir() bool { return n.Type == manifest.TypeDir }
 
-// dirty reports content written since the last seal; f.mu is held.
+// dirty reports content written since the last seal; f.treeMu is held.
 func (n *vnode) dirty() bool { return n.Local && n.SHA256 == "" }
 
 func (n *vnode) index() map[string]dirent {
@@ -135,11 +136,13 @@ type volumeState struct {
 	Nodes   map[uint64]*vnode `json:"nodes"`
 }
 
-// volumeFS serves one Volume (runtime.md §17). The tree lock mu guards st:
-// the inode table, directory entries and every inode's metadata, and is
-// never held across disk IO. A file's content IO takes only that file's
-// vnode.mu, then mu briefly to publish size and mtime; mu is never held
-// while waiting for a vnode.mu. Lock order: sealMu, vnode.mu, mu.
+// volumeFS serves one Volume (runtime.md §17). The tree lock treeMu guards
+// st: the inode table, directory entries and every inode's metadata. While
+// the mount serves it is never held across disk IO; only pause, with the
+// FUSE session drained, writes the handover state under it. A file's content
+// IO takes only that file's vnode.mu, then treeMu briefly to publish size and
+// mtime; treeMu is never held while waiting for a vnode.mu. Lock order:
+// sealMu, vnode.mu, treeMu.
 type volumeFS struct {
 	fuse.RawFileSystem
 	dir   string // <data-root>/volumes/<id>; the mount is dir/mnt
@@ -149,9 +152,9 @@ type volumeFS struct {
 	// sealMu orders seals, commits and a pause, so a pause never sees a
 	// seal half done; st.Pending changes only under it.
 	sealMu sync.Mutex
-	mu     sync.Mutex
+	treeMu sync.Mutex
 	st     volumeState
-	freed  map[uint64]*vnode // freed under mu; unlockTree drops their files
+	freed  map[uint64]*vnode // freed under treeMu; unlockTree drops their files
 	paused bool              // handed to a successor: commands answer ErrHandedOver
 }
 
@@ -248,8 +251,8 @@ func loadVolumeFS(dir string, s *store, log *slog.Logger) (*volumeFS, error) {
 func (f *volumeFS) pause() error {
 	f.sealMu.Lock()
 	defer f.sealMu.Unlock()
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	data, err := json.Marshal(f.st)
 	if err != nil {
 		return err
@@ -271,15 +274,15 @@ func (f *volumeFS) pause() error {
 // it descends from head, or holds writes not committed yet (a re-sent
 // Create may name an older head than a periodic commit made since).
 func (f *volumeFS) keeps(head string) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	return f.st.Base == head || f.st.Seq != f.st.CommittedSeq || f.st.Upload != ""
 }
 
 func (f *volumeFS) resume() {
-	f.mu.Lock()
+	f.treeMu.Lock()
 	f.paused = false
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 }
 
 // openLocal opens n's write-cache file, creating it; n.mu is held
@@ -362,11 +365,11 @@ func (f *volumeFS) readCommitted(entry manifest.Entry, off int64, dest []byte) (
 }
 
 // copyUp opens n's write-cache file, first copying committed content into
-// it, keeping its first limit bytes. n.mu is held exclusively, f.mu not.
+// it, keeping its first limit bytes. n.mu is held exclusively, f.treeMu not.
 func (f *volumeFS) copyUp(ino uint64, n *vnode, limit int64) error {
-	f.mu.Lock()
+	f.treeMu.Lock()
 	local, entry := n.Local, contentEntry(n)
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	file, err := f.openLocal(ino, n)
 	if err != nil || local {
 		return err
@@ -386,9 +389,9 @@ func (f *volumeFS) copyUp(ino uint64, n *vnode, limit int64) error {
 		}
 		off += int64(len(chunk))
 	}
-	f.mu.Lock()
+	f.treeMu.Lock()
 	n.Local, n.SHA256, n.Blocks, n.Size = true, "", nil, keep
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	return nil
 }
 
@@ -419,24 +422,24 @@ var beforeHash = func(uint64) {}
 func (f *volumeFS) seal() (Sealed, error) {
 	f.sealMu.Lock()
 	defer f.sealMu.Unlock()
-	f.mu.Lock()
+	f.treeMu.Lock()
 	if f.paused {
-		f.mu.Unlock()
+		f.treeMu.Unlock()
 		return Sealed{}, ErrHandedOver
 	}
 	out := Sealed{Base: f.st.Base, Upload: f.st.Upload, UploadSeq: f.st.UploadSeq, Seq: f.st.Seq,
 		Dirty: f.st.Seq != f.st.CommittedSeq}
-	var clean, dirty []localFile
+	var clean, dirty []sealItem
 	for ino, n := range f.st.Nodes {
 		if n.Local && !n.dirty() {
-			clean = append(clean, localFile{ino: ino, n: n})
+			clean = append(clean, sealItem{ino: ino, n: n})
 		}
 	}
 	var m generation.Manifest
 	if out.Dirty {
 		m, dirty = f.snapshot()
 	}
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	var g errgroup.Group
 	g.SetLimit(min(runtime.NumCPU(), 8))
 	for _, c := range clean {
@@ -468,9 +471,9 @@ func (f *volumeFS) seal() (Sealed, error) {
 	return out, nil
 }
 
-// localFile is a write-cache file a seal hashes or drops; entry is a
+// sealItem is a write-cache file a seal hashes or drops; entry is a
 // hashed file's in the manifest.
-type localFile struct {
+type sealItem struct {
 	ino   uint64
 	n     *vnode
 	entry int
@@ -481,22 +484,22 @@ type localFile struct {
 func (f *volumeFS) dropClean(ino uint64, n *vnode) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	f.mu.Lock()
+	f.treeMu.Lock()
 	drop := f.st.Nodes[ino] == n && n.Local && !n.dirty()
 	if drop {
 		n.Local = false
 	}
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	if drop {
 		f.dropLocal(ino, n)
 	}
 }
 
-// snapshot walks the tree into a manifest with f.mu held, freezing each
+// snapshot walks the tree into a manifest with f.treeMu held, freezing each
 // dirty file; its entry gets its content once hashed.
-func (f *volumeFS) snapshot() (generation.Manifest, []localFile) {
+func (f *volumeFS) snapshot() (generation.Manifest, []sealItem) {
 	m := generation.Manifest{Kind: generation.KindTree}
-	var dirty []localFile
+	var dirty []sealItem
 	first := map[uint64]string{}
 	var walk func(ino uint64, prefix string)
 	walk = func(ino uint64, prefix string) {
@@ -518,7 +521,7 @@ func (f *volumeFS) snapshot() (generation.Manifest, []localFile) {
 				first[k.Ino] = path
 				if n.dirty() {
 					n.frozen = make(chan struct{})
-					dirty = append(dirty, localFile{ino: k.Ino, n: n, entry: len(m.Entries)})
+					dirty = append(dirty, sealItem{ino: k.Ino, n: n, entry: len(m.Entries)})
 				} else {
 					size := n.Size
 					e.Size, e.SHA256, e.Blocks = &size, n.SHA256, n.Blocks
@@ -528,7 +531,7 @@ func (f *volumeFS) snapshot() (generation.Manifest, []localFile) {
 			}
 			e.Mode, e.UID, e.GID, e.Mtime = n.Mode, n.UID, n.GID, n.Mtime
 			if len(n.Xattrs) > 0 {
-				e.Xattrs = maps.Clone(n.Xattrs) // read after f.mu is released
+				e.Xattrs = maps.Clone(n.Xattrs) // read after f.treeMu is released
 			}
 			m.Entries = append(m.Entries, e)
 			if n.isDir() {
@@ -548,14 +551,14 @@ func (f *volumeFS) sealFile(ino uint64, n *vnode, e *manifest.Entry) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	defer func() {
-		f.mu.Lock()
+		f.treeMu.Lock()
 		close(n.frozen)
 		n.frozen = nil
-		f.mu.Unlock()
+		f.treeMu.Unlock()
 	}()
-	f.mu.Lock()
+	f.treeMu.Lock()
 	size := n.Size
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	file, err := f.openLocal(ino, n)
 	if err != nil {
 		return err
@@ -583,7 +586,7 @@ func (f *volumeFS) sealFile(ino uint64, n *vnode, e *manifest.Entry) error {
 		objects[digest] = length
 		blocks = append(blocks, digest)
 	}
-	f.mu.Lock()
+	f.treeMu.Lock()
 	if f.st.Pending == nil {
 		f.st.Pending = map[string]int64{}
 	}
@@ -594,7 +597,7 @@ func (f *volumeFS) sealFile(ino uint64, n *vnode, e *manifest.Entry) error {
 		n.Blocks, n.SHA256 = nil, blocks[0]
 	}
 	e.Size, e.SHA256, e.Blocks = &size, n.SHA256, n.Blocks
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	return nil
 }
 
@@ -618,8 +621,8 @@ func (f *volumeFS) writeObject(r io.Reader) (string, error) {
 
 // setUpload records a CommitGeneration about to be sent for the seal at seq.
 func (f *volumeFS) setUpload(upload string, seq uint64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.treeMu.Lock()
+	defer f.treeMu.Unlock()
 	if f.paused {
 		return ErrHandedOver
 	}
@@ -638,9 +641,9 @@ var moveObject = os.Rename
 func (f *volumeFS) committed(generationID string, seq uint64) error {
 	f.sealMu.Lock()
 	defer f.sealMu.Unlock()
-	f.mu.Lock()
+	f.treeMu.Lock()
 	if f.paused {
-		f.mu.Unlock()
+		f.treeMu.Unlock()
 		return ErrHandedOver
 	}
 	f.st.Upload, f.st.UploadSeq = "", 0
@@ -648,7 +651,7 @@ func (f *volumeFS) committed(generationID string, seq uint64) error {
 		f.st.Base = generationID
 		f.st.CommittedSeq = max(f.st.CommittedSeq, seq)
 	}
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	if generationID == "" {
 		return nil
 	}
@@ -680,8 +683,8 @@ func (f *volumeFS) statfs(out *fuse.StatfsOut) {
 		out.Blocks, out.Bfree, out.Bavail, out.Bsize = s.Blocks, s.Bfree, s.Bavail, uint32(s.Bsize)
 		out.Frsize = uint32(s.Bsize)
 	}
-	f.mu.Lock()
+	f.treeMu.Lock()
 	out.Files = uint64(len(f.st.Nodes))
-	f.mu.Unlock()
+	f.treeMu.Unlock()
 	out.Ffree, out.NameLen = 1<<32, 255
 }
