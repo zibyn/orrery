@@ -296,7 +296,7 @@ func lockCommittingVolume(ctx context.Context, q *store.Queries, sandboxID, volu
 	if err != nil {
 		return nil, err
 	}
-	if v.State == "deleted" {
+	if v.State == VolumeDeleted {
 		return nil, status.Error(codes.FailedPrecondition, "the Volume is deleted")
 	}
 	return &v, nil
@@ -350,7 +350,7 @@ func (s *Server) recordGeneration(ctx context.Context, q *store.Queries, sb stor
 	}
 	if volume == nil {
 		// The Sandbox's own commit comes after its Volumes': the directories
-		// its last Create merged are now in object storage (migration 000037).
+		// its last Create merged are now in object storage (migration 000035).
 		return q.FinishLegacyDirs(ctx, sb.ID)
 	}
 	return nil

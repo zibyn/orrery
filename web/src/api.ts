@@ -121,6 +121,9 @@ export type Volume = {
   // From the head Generation; null until the first commit.
   committed_at: string | null
   size: number
+  // Migrated from a Workspace whose directory is still on its Node: the
+  // content shows up after a Sandbox mounting it starts there and commits.
+  pending_migration: boolean
   created_at: string
   deleted_at: string | null
 }

@@ -14,6 +14,9 @@ import (
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
+
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
+	"github.com/zibyn/orrery/internal/nodeproto"
 )
 
 // evictionInterval is how often the Node re-checks the disk watermark. It is
@@ -334,6 +337,14 @@ func (r *Runtime) evictSandboxDisk(ctx context.Context, key string) {
 	}
 	if err := r.dropSandboxDiskLocked(ctx, id); err != nil {
 		slog.Warn("evict a stopped Sandbox's disk", "sandbox_id", id, "error", err)
+		return
+	}
+	// The Control Plane stops preferring this Node for it (node-protocol.md).
+	// A report lost with the stream only costs a restore here.
+	if r.send != nil {
+		r.send(&nodev1.AgentMessage{Message: &nodev1.AgentMessage_SandboxObserved{SandboxObserved: &nodev1.SandboxObserved{
+			SandboxId: id.String(), Phase: string(nodeproto.SandboxPhaseDiskDropped),
+		}}})
 	}
 }
 

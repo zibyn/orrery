@@ -79,6 +79,9 @@ const (
 	// The Runtime ended and the filesystem is being committed (runtime.md §16).
 	SandboxPhaseCommitting   SandboxPhase = "committing"
 	SandboxPhaseCommitFailed SandboxPhase = "commit_failed"
+	// The Node evicted a stopped Sandbox's cached diff (runtime.md §16), so
+	// it is no longer the placement preference.
+	SandboxPhaseDiskDropped SandboxPhase = "disk_dropped"
 )
 
 // Compatible applies the protocol version rule: a different major or a newer

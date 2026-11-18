@@ -135,6 +135,27 @@ func TestRestartedSandboxPlacement(t *testing.T) {
 		}
 	})
 
+	t.Run("its Node evicted the cached diff, the preference is gone", func(t *testing.T) {
+		sb := f.sandbox("stopped", &newer.ID)
+		n := &nodeService{s: f.s}
+		dropped := &nodev1.SandboxObserved{SandboxId: sb.ID.String(), Phase: string(nodeproto.SandboxPhaseDiskDropped)}
+		n.recordSandboxObserved(f.ctx, older.ID, dropped) // not its Node: ignored
+		if got := f.get(sb.ID).NodeID; got == nil || *got != newer.ID {
+			t.Fatalf("node_id after another Node's report = %v, want %s", got, newer.ID)
+		}
+		n.recordSandboxObserved(f.ctx, newer.ID, dropped)
+		f.exec(`UPDATE sandboxes SET state = 'pending', desired_state = 'running' WHERE id = $1`, sb.ID)
+		got := f.admit(f.get(sb.ID), nil, f.nodes)
+		if got == nil || *got != older.ID {
+			t.Fatalf("placed on %v, want the earlier Node %s", got, older.ID)
+		}
+		// A report that races a new placement leaves the Node in place.
+		n.recordSandboxObserved(f.ctx, older.ID, dropped)
+		if got := f.get(sb.ID).NodeID; got == nil || *got != older.ID {
+			t.Fatalf("node_id of a placed Sandbox after a drop report = %v, want %s", got, older.ID)
+		}
+	})
+
 	t.Run("a paused Node takes no restarted Sandbox even when pinned there", func(t *testing.T) {
 		sb := f.sandbox("pending", &older.ID)
 		paused := older
@@ -145,7 +166,7 @@ func TestRestartedSandboxPlacement(t *testing.T) {
 	})
 }
 
-// Migration 000037: a directory from before ADR-0031 pins its Sandbox, and
+// Migration 000035: a directory from before ADR-0031 pins its Sandbox, and
 // the Sandboxes mounting its Volume, to its Node until a commit after the
 // next Create there holds it.
 func TestLegacyDirectoryPinsItsNode(t *testing.T) {

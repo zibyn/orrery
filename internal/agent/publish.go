@@ -27,7 +27,7 @@ const presignBatch = 500
 var publishHTTP = &http.Client{}
 
 // publishSandbox publishes a path of a running Sandbox's own filesystem
-// (node-protocol.md "Sandbox publish"). The path is relative to /workspace.
+// (node-protocol.md "Sandbox publish"). The path is resolved like the file API (api.md §5).
 // The command is redelivered after a reconnect, so every step is repeatable.
 func (r *Runtime) publishSandbox(ctx context.Context, sandboxID uuid.UUID, cmd *nodev1.PublishSandbox) error {
 	sfs, err := r.driver.filesystem(ctx, sandboxID)

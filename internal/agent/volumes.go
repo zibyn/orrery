@@ -215,7 +215,8 @@ func (r *Runtime) resumeVolumeCommits() {
 func (r *Runtime) commitVolumes(ctx context.Context, id uuid.UUID, generation int64, retrying func()) error {
 	volumes := readVolumeRecord(r.dataRoot, id)
 	for _, v := range volumes {
-		err := retryCommit(ctx, id, func() error { return r.commitVolumeOnce(ctx, generation, v.ID) }, retrying)
+		log := slog.With("sandbox_id", id, "volume_id", v.ID)
+		err := retryCommit(ctx, "Volume "+v.ID, log, func() error { return r.commitVolumeOnce(ctx, generation, v.ID) }, retrying)
 		if err != nil {
 			return err
 		}
@@ -275,11 +276,7 @@ func (r *Runtime) commitVolumeOnce(ctx context.Context, gen int64, volume string
 		}
 	}
 	ack, err := r.streamGeneration(ctx, &nodev1.GenerationChunk{VolumeId: volume, Generation: gen, BaseGenerationId: s.Base}, changed)
-	if code := status.Code(err); code == codes.FailedPrecondition {
-		return fmt.Errorf("%w: %w", errHolderRefused, err)
-	} else if code == codes.InvalidArgument {
-		return fmt.Errorf("%w: %w", errCommitFailed, err)
-	} else if err != nil {
+	if err := submitOutcome(err); err != nil {
 		return err
 	}
 	root, err := os.OpenRoot(volumeObjectsPath(r.dataRoot, volume))
@@ -293,10 +290,7 @@ func (r *Runtime) commitVolumeOnce(ctx context.Context, gen int64, volume string
 			sources[d] = manifest.Source{Path: d, Size: info.Size()}
 		}
 	}
-	if err := r.uploadPublishObjects(ctx, root, ack.GetMissingSha256(), sources); err != nil {
-		return err
-	}
-	if err := r.putGenerationManifest(ctx, ack.GetUploadId(), encoded); err != nil {
+	if err := r.uploadGeneration(ctx, root, ack, sources, encoded); err != nil {
 		return err
 	}
 	if err := r.volumes.SetVolumeUpload(ctx, volume, ack.GetUploadId(), s.Seq); err != nil {

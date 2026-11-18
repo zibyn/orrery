@@ -540,8 +540,8 @@ func (f *volumeFS) committed(generationID string, seq uint64) error {
 	f.st.Base = generationID
 	f.st.CommittedSeq = max(f.st.CommittedSeq, seq)
 	for digest := range f.st.Pending {
-		// shortcut: rename assumes objects/ and the block cache share a file
-		// system, as both live under the data root.
+		// shortcut: rename needs objects/ and the block cache on one file
+		// system (both are under the data root), copy instead if they split.
 		if err := os.Rename(f.objectPath(digest), f.store.path(digest)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}

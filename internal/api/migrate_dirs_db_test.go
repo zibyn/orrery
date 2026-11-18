@@ -12,7 +12,7 @@ import (
 
 // legacyDirsVersion is the migration that turns the Node-local directories
 // Sandboxes mounted before ADR-0031 into Sandbox filesystems and Volumes.
-const legacyDirsVersion = 37
+const legacyDirsVersion = 35
 
 // ADR-0031 "Migration": an ephemeral directory becomes its Sandbox's
 // /workspace (uploaded by its Node), a persistent one a Volume with its ID

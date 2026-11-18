@@ -208,6 +208,29 @@ Egress Rules 写在 Control Plane 的 `config.yaml`（`defaults.md`）。**Rules
 
 从自带用户系统切到 Polaris（ADR-0029）的那次升级前，先按 `docs/polaris-migration.md` 把现有 User 迁到 Polaris。去掉密码的那个版本在还有登录用的 User 没关联到所配置的 Polaris issuer 时拒绝迁移数据库，并列出这些 User。
 
+### 升级到卷与 Generation（ADR-0031）
+
+这次升级去掉 Workspace：Sandbox 的整个文件系统在停止时提交成 Generation，可以在任何 Node 上启动；卷放在对象存储里，取代持久 Workspace。`/workspaces` 接口、请求里的 `workspace` 字段、CLI 的 `workspace` 命令和 Workspaces 页面同版本删除，没有过渡期，用到它们的客户端升级后就报错，先改成 `volumes`。
+
+数据库迁移（`000035`）把 Workspace 换成替代它的东西：
+
+- 临时 Workspace 成为它的 Sandbox 自己的 `/workspace`；
+- 持久 Workspace 成为同 ID 的卷，名字 `workspace-<ID 前 8 位十六进制>`；以读写方式挂着它的 Sandbox 改为把这个卷挂在 `/workspace`；
+- 只读挂载直接删掉，要共享就把卷 publish 成 Resource 再挂；
+- 还在进行中的 Workspace publish 以 `publish_failed` 结束，升级后重新发起。
+
+**内容是惰性迁移的。** 迁移只改数据库，目录仍在原 Node 的 `<data-root>/workspaces/<id>`（表 `legacy_dirs`）：
+
+- 升级时正在运行的 Sandbox 保留原来的 bind mount 一直跑到停止。
+- 之后这个 Sandbox，以及挂着对应卷的 Sandbox，只放到目录所在的 Node 上；那台 Node 暂停、资源不够时就排队等。下一次在那里启动时 Agent 把目录合并进去，之后的提交（停止时，卷还会每 60 秒一次）把它上传到对象存储，这才不再固定在这台 Node 上。
+- 在那之前卷的 `pending_migration` 为真，控制台卷详情页会注明，文件接口和卷 publish 看到的是空目录，不是数据丢了。
+- 目录所在的 Node 被宣告 lost 或删除时，没上传的目录按丢失处理，和以前 Node 丢失时一样。所以升级后先别删 Node；想尽快把数据搬进对象存储，就把这些 Sandbox 各启动、停止一次。还剩多少没迁移：`docker compose exec -T postgres psql -U orrery orrery -c 'SELECT node_id, count(*) FROM legacy_dirs GROUP BY node_id'`。
+- 计数为 0 之后，`<data-root>/workspaces` 可以在各 Node 上手动删掉：Sandbox 或卷在合并前就被删除时，它的目录会一直留在那里。
+
+**把代码仓库拷出卷。** 卷经 FUSE（`orrery-resourcefs`）挂载，Git 这类大量小文件的操作在上面很慢。挂在 `/workspace` 的卷里如果有仓库，在 Sandbox 里把它拷进 Sandbox 自己的文件系统（卷挂载点以外的路径，例如 `cp -a /workspace/<仓库> ~/<仓库>`），之后在那里工作；Sandbox 自己的文件系统停止时一样会提交，换 Node 启动也还在。卷留给要在 Sandbox 之间交接的数据。
+
+另外：停止现在要等文件系统和卷提交完才结束，写了很多数据的 Sandbox 停得慢；对象存储要容纳所有 Sandbox 的差异，按这个估算容量。
+
 对象存储（RustFS 卷 `orrery_rustfs-data`）的备份由部署方负责，脚本只备份 PostgreSQL。
 
 `registry/config.yml` 同样只在首次安装时生成，升级不覆盖；其中开启了 `storage.delete`，purge 靠它删掉已删除 Snapshot 和 SnapshotVersion 的 registry manifest（#151）。只删 manifest，不回收 blob；blob GC 仍是运维流程（ADR-0014）。

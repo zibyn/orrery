@@ -2,6 +2,7 @@ package api
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,9 +10,7 @@ import (
 	"io"
 	"net/http"
 	"path"
-	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -51,27 +50,17 @@ type volumeTree struct {
 	entries map[string]generation.Entry
 }
 
-func errVolumePath() error { return errors.New("path must stay inside the Volume") }
+// errVolumePath marks a path that escapes the Volume.
+var errVolumePath = errors.New("path must stay inside the Volume")
 
 // volumeLocalPath is a request path relative to the Volume root; a leading
 // "/" names the root too. Paths that escape are refused, never rewritten.
 func volumeLocalPath(raw string) (string, error) {
-	raw = strings.TrimPrefix(raw, "/")
-	if strings.ContainsRune(raw, 0) {
-		return "", errVolumePath()
+	rel, ok := cleanLocalPath(strings.TrimPrefix(raw, "/"))
+	if !ok {
+		return "", errVolumePath
 	}
-	if raw == "" || raw == "." {
-		return ".", nil
-	}
-	for _, part := range strings.Split(raw, "/") {
-		if part == ".." {
-			return "", errVolumePath()
-		}
-	}
-	if !filepath.IsLocal(raw) {
-		return "", errVolumePath()
-	}
-	return path.Clean(raw), nil
+	return rel, nil
 }
 
 // loadVolumeTree reads the {id} Volume's head manifest for a file request,
@@ -215,7 +204,6 @@ func (s *Server) handleStatVolumeFile(w http.ResponseWriter, r *http.Request, p 
 
 // handleVolumeFileContent streams a file's objects from the owner's CAS
 // through presigned GETs, without a Node (api.md §3).
-// shortcut: no Range support; add it when a client needs partial reads.
 func (s *Server) handleVolumeFileContent(w http.ResponseWriter, r *http.Request, p *principal) {
 	tree, rel, ok := s.loadVolumeTree(w, r, p)
 	if !ok {
@@ -231,15 +219,79 @@ func (s *Server) handleVolumeFileContent(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	content := tree.file(e)
-	w.Header().Set("Content-Type", "application/octet-stream")
+	f := &objectFile{ctx: r.Context(), s: s, owner: tree.owner, digests: content.Blocks, block: -1}
+	if len(f.digests) == 0 {
+		f.digests = []string{content.SHA256}
+	}
 	if content.Size != nil {
-		w.Header().Set("Content-Length", strconv.FormatInt(*content.Size, 10))
+		f.size = *content.Size
 	}
-	w.WriteHeader(http.StatusOK)
-	if err := s.copyObjects(r.Context(), w, tree.owner, content); err != nil {
-		// Headers are already sent, so the body just ends short.
-		s.log.Warn("stream Volume file", "path", rel, "error", err)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	// ServeContent answers Range (api.md §5); an object that fails mid-body
+	// just ends it short, as the headers are sent.
+	http.ServeContent(w, r, "", time.Time{}, f)
+	if f.err != nil {
+		s.log.Warn("stream Volume file", "path", rel, "error", f.err)
 	}
+}
+
+// objectFile is a file entry's content as an io.ReadSeeker: a read fetches
+// and verifies the whole object it falls in (a block is at most
+// manifest.BlockSize), so any range costs at most one extra block per end.
+type objectFile struct {
+	ctx       context.Context
+	s         *Server
+	owner     string
+	digests   []string
+	size, off int64
+	block     int // index of buf in digests, -1 before the first fetch
+	buf       []byte
+	err       error
+}
+
+func (f *objectFile) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekCurrent:
+		offset += f.off
+	case io.SeekEnd:
+		offset += f.size
+	}
+	if offset < 0 {
+		return 0, errors.New("seek before the start")
+	}
+	f.off = offset
+	return offset, nil
+}
+
+func (f *objectFile) Read(p []byte) (int, error) {
+	if f.off >= f.size {
+		return 0, io.EOF
+	}
+	i, start := 0, f.off // a file of one object, legacy ones included
+	if len(f.digests) > 1 {
+		i, start = int(f.off/manifest.BlockSize), f.off%manifest.BlockSize
+	}
+	if i != f.block {
+		if i >= len(f.digests) {
+			return 0, io.ErrUnexpectedEOF
+		}
+		var buf bytes.Buffer
+		url, err := f.s.generations.PresignGetURL(f.ctx, f.owner, f.digests[i])
+		if err == nil {
+			err = castransfer.Get(f.ctx, objectHTTP, url, &buf, f.digests[i], 0)
+		}
+		if err != nil {
+			f.err = err
+			return 0, err
+		}
+		f.buf, f.block = buf.Bytes(), i
+	}
+	if start >= int64(len(f.buf)) {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, f.buf[start:])
+	f.off += int64(n)
+	return n, nil
 }
 
 // copyObjects writes a file entry's content: its one object, or its blocks

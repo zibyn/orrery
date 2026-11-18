@@ -235,8 +235,11 @@ type Volume struct {
 	HeldBy      *string    `json:"held_by"`
 	CommittedAt *time.Time `json:"committed_at"`
 	Size        int64      `json:"size"`
-	CreatedAt   time.Time  `json:"created_at"`
-	DeletedAt   *time.Time `json:"deleted_at"`
+	// PendingMigration: migrated from a Workspace whose directory is still
+	// on its Node (api.md §3).
+	PendingMigration bool       `json:"pending_migration"`
+	CreatedAt        time.Time  `json:"created_at"`
+	DeletedAt        *time.Time `json:"deleted_at"`
 }
 
 // VolumeList is one page of Volumes.

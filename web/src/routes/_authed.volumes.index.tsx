@@ -1,11 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { Database, Plus } from 'lucide-react'
+import { Database, Plus, Trash } from 'lucide-react'
 import { useState } from 'react'
 
 import { api, listAll, type Volume } from '@/api'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
@@ -40,6 +51,7 @@ function VolumesPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [creating, setCreating] = useState<{ name: string; key: string } | null>(null)
+  const [confirming, setConfirming] = useState<string | null>(null)
   const volumes = useQuery({
     queryKey: ['volumes'],
     queryFn: () => listAll<Volume>('/volumes'),
@@ -53,6 +65,11 @@ function VolumesPage() {
       await queryClient.invalidateQueries({ queryKey: ['volumes'] })
       void navigate({ to: '/volumes/$id', params: { id: volume.id } })
     },
+  })
+
+  const remove = useMutation({
+    mutationFn: (id: string) => api<Volume>('DELETE', `/volumes/${id}`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['volumes'] }),
   })
 
   const live = volumes.data?.filter((volume) => volume.state !== 'deleted')
@@ -144,34 +161,71 @@ function VolumesPage() {
       {live && live.length > 0 && (
         <ItemGroup>
           {live.map((volume) => (
-            // The row itself is the link, so the listitem role goes on a wrapper.
-            <div key={volume.id} role="listitem">
-              <Item
-                variant="outline"
-                data-testid={`volume-${volume.name}`}
-                render={<Link to="/volumes/$id" params={{ id: volume.id }} />}
-              >
-                <ItemMedia variant="icon">
-                  <Database />
-                </ItemMedia>
-                <ItemContent>
-                  <ItemTitle>{volume.name}</ItemTitle>
-                  <ItemDescription>
-                    {m.common_created({ time: formatTimestamp(volume.created_at) })}
-                    {volume.held_by && (
-                      <>
-                        {' '}
-                        · {m.volume_held_by()}{' '}
-                        <span className="font-mono">{volume.held_by.slice(0, 8)}</span>
-                      </>
-                    )}
-                  </ItemDescription>
-                </ItemContent>
-                <ItemActions>
-                  <StatusBadge state={volume.state} />
-                </ItemActions>
-              </Item>
-            </div>
+            <Item key={volume.id} variant="outline" role="listitem" data-testid={`volume-${volume.name}`}>
+              <ItemMedia variant="icon">
+                <Database />
+              </ItemMedia>
+              <ItemContent>
+                <ItemTitle>
+                  <Link to="/volumes/$id" params={{ id: volume.id }} className="hover:underline">
+                    {volume.name}
+                  </Link>
+                </ItemTitle>
+                <ItemDescription>
+                  {m.common_created({ time: formatTimestamp(volume.created_at) })}
+                  {volume.held_by && (
+                    <>
+                      {' '}
+                      · {m.volume_held_by()}{' '}
+                      <span className="font-mono">{volume.held_by.slice(0, 8)}</span>
+                    </>
+                  )}
+                </ItemDescription>
+              </ItemContent>
+              <ItemActions>
+                <StatusBadge state={volume.state} />
+                <AlertDialog
+                  open={confirming === volume.id}
+                  onOpenChange={(next) => setConfirming(next ? volume.id : null)}
+                >
+                  {/* A disabled button shows no tooltip, so the reason sits on a wrapper. */}
+                  <span title={volume.held_by ? m.volume_delete_held() : undefined}>
+                    <AlertDialogTrigger
+                      render={
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={remove.isPending || volume.held_by !== null}
+                          aria-description={volume.held_by ? m.volume_delete_held() : undefined}
+                        />
+                      }
+                    >
+                      <Trash data-icon="inline-start" />
+                      {m.common_delete()}
+                    </AlertDialogTrigger>
+                  </span>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>{m.volume_delete_confirm({ name: volume.name })}</AlertDialogTitle>
+                      <AlertDialogDescription>{m.common_irreversible()}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                      <AlertDialogAction
+                        variant="destructive"
+                        data-testid="confirm-action"
+                        onClick={() => {
+                          setConfirming(null)
+                          remove.mutate(volume.id)
+                        }}
+                      >
+                        {m.common_delete()}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </ItemActions>
+            </Item>
           ))}
         </ItemGroup>
       )}

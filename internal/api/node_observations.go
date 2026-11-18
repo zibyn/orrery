@@ -83,6 +83,11 @@ func (n *nodeService) recordSandboxObserved(ctx context.Context, nodeID uuid.UUI
 		}
 	case nodeproto.SandboxPhaseGone:
 		n.recordSandboxGone(ctx, id, obs.Generation)
+	case nodeproto.SandboxPhaseDiskDropped:
+		// Not fenced by generation: an Allocation means a newer placement.
+		if _, err := n.s.q.ForgetSandboxNode(ctx, store.ForgetSandboxNodeParams{ID: id, NodeID: &nodeID}); err != nil {
+			n.s.log.Warn("record SandboxObserved disk_dropped", "sandbox_id", id, "error", err)
+		}
 	}
 }
 

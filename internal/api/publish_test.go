@@ -9,17 +9,18 @@ func TestNormalizePublishPath(t *testing.T) {
 		want  string
 		ok    bool
 	}{
-		{"/workspace itself", "/workspace", ".", true},
-		{"/workspace/", "/workspace/", ".", true},
-		{"under /workspace", "/workspace/src/app", "src/app", true},
+		{"/workspace itself", "/workspace", "/workspace", true},
+		{"/workspace/", "/workspace/", "/workspace", true},
+		{"under /workspace", "/workspace/src/app", "/workspace/src/app", true},
+		{"root filesystem path", "/etc/app/", "/etc/app", true},
+		{"root itself", "/", "/", true},
 		{"relative path", "src/app", "src/app", true},
 		{"relative dot", ".", ".", true},
 		{"empty means root", "", ".", true},
 		{"clean dot segments", "./src/./app", "src/app", true},
-		{"absolute outside /workspace", "/etc/passwd", "", false},
 		{"parent traversal", "../secrets", "", false},
 		{"traversal inside", "src/../../secrets", "", false},
-		{"traversal out of /workspace", "/workspace/../etc", "", false},
+		{"absolute traversal", "/workspace/../etc", "", false},
 		{"NUL byte", "src\x00app", "", false},
 	}
 	for _, tt := range tests {

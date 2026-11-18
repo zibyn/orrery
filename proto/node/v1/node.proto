@@ -217,7 +217,8 @@ message GPU {
 message SandboxObserved {
   string sandbox_id = 1;
   int64 generation = 2;
-  // "running", "committing", "gone", "create_failed" or "commit_failed".
+  // "running", "committing", "gone", "create_failed", "commit_failed" or "disk_dropped"
+  // (a stopped Sandbox's cached diff was evicted; no generation).
   // After the Runtime ends the Agent reports "committing" and "gone" only
   // once the filesystem's Generation is committed (runtime.md §16).
   string phase = 3;
@@ -303,7 +304,7 @@ message MeshPeer {
 
 // PublishSandbox publishes a path of a running Sandbox's live filesystem as
 // a ResourceVersion through SubmitManifest (node-protocol.md "Sandbox
-// publish"). path is relative to /workspace.
+// publish"). path is resolved like the file API (api.md §5).
 message PublishSandbox {
   string command_id = 1;
   string version_id = 2;

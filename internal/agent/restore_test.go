@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
+	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/generation"
 )
 
@@ -125,6 +126,8 @@ func TestEvictCommittedSandboxDisk(t *testing.T) {
 	rt := newRuntime(ProviderContainerd, t.TempDir(), "a")
 	driver := &stopRecorder{dropped: make(chan struct{})}
 	rt.driver = driver
+	var sent []*nodev1.SandboxObserved
+	rt.send = func(m *nodev1.AgentMessage) { sent = append(sent, m.GetSandboxObserved()) }
 	committed, running := uuid.New(), uuid.New()
 	for _, id := range []uuid.UUID{committed, running} {
 		if err := writeStatTable(statTablePath(rt.dataRoot, id), statTable{Generation: "g1"}); err != nil {
@@ -157,5 +160,9 @@ func TestEvictCommittedSandboxDisk(t *testing.T) {
 	}
 	if rt.cachedDiffMatches(committed, "g1") {
 		t.Fatal("an evicted disk still claims to be the head")
+	}
+	// The Control Plane hears of it, so it stops preferring this Node.
+	if len(sent) != 1 || sent[0].GetSandboxId() != committed.String() || sent[0].GetPhase() != "disk_dropped" {
+		t.Fatalf("reports = %v, want one disk_dropped for %s", sent, committed)
 	}
 }

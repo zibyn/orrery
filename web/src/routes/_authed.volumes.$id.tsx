@@ -180,9 +180,11 @@ function VolumeDetailPage() {
       {current && live && (
         <div className="flex flex-col gap-2">
           <p className="text-sm text-muted-foreground" data-testid="volume-files-as-of">
-            {current.committed_at
-              ? m.volume_files_as_of({ time: formatTimestamp(current.committed_at) })
-              : m.volume_files_never()}
+            {current.pending_migration
+              ? m.volume_pending_migration()
+              : current.committed_at
+                ? m.volume_files_as_of({ time: formatTimestamp(current.committed_at) })
+                : m.volume_files_never()}
           </p>
           <SandboxFiles source={`/volumes/${id}`} readOnly />
         </div>

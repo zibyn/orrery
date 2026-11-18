@@ -78,7 +78,8 @@ func (r *Runtime) createSandbox(ctx context.Context, cmd *createSandboxSpec) (st
 		return cause, err
 	}
 	// shortcut: a Volume mounted for a Create that then fails stays mounted
-	// until a later mount of it here finds it stale (runtime.md §17).
+	// until a later mount of it here finds it stale (runtime.md §17), unmount
+	// it on failure if stale mounts pile up on Nodes.
 	if cause, err := r.mountVolumes(ctx, id, cmd.volumes); err != nil {
 		r.releaseResources(context.WithoutCancel(ctx), id)
 		return cause, err

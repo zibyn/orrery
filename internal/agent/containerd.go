@@ -164,7 +164,7 @@ func limitOpts(cpu float64, memory int64) []oci.SpecOpts {
 	}
 }
 
-// start creates the container and starts its task, on the snapshot named
+// start creates the container and starts its task, on the containerd snapshot named
 // name when one exists (a cached or restored filesystem, runtime.md §16).
 func (d *containerdDriver) start(ctx context.Context, name string, img containerd.Image, labels map[string]string, opts []oci.SpecOpts) (containerd.Container, error) {
 	snapshot := containerd.WithNewSnapshot(name, img)
@@ -235,10 +235,10 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 		}
 	}
 	// A stopped Runtime is never reused, and neither is its netns. Its
-	// snapshot is, when its diff is the head (runtime.md §16).
+	// containerd snapshot is, when its diff is the head (runtime.md §16).
 	_, statErr := d.client.SnapshotService(defaults.DefaultSnapshotter).Stat(ctx, name)
 	reuse := statErr == nil && d.r.cachedDiffMatches(id, cmd.restore)
-	// The lease keeps the snapshot from containerd's GC while no container
+	// The lease keeps the containerd snapshot from containerd's GC while no container
 	// holds it, until the new container does.
 	ctx, done, err := d.client.WithLease(ctx)
 	if err != nil {
@@ -320,7 +320,7 @@ func (d *containerdDriver) createSandbox(ctx context.Context, cmd *createSandbox
 	return "", nil
 }
 
-// restoreSnapshot prepares a fresh snapshot over the image and writes the
+// restoreSnapshot prepares a fresh containerd snapshot over the image and writes the
 // head Generation, if any, into its upperdir (runtime.md §9, §16).
 func (d *containerdDriver) restoreSnapshot(ctx context.Context, id uuid.UUID, name string, img containerd.Image, restore string) error {
 	if err := d.r.forgetCachedDiff(id); err != nil {
@@ -332,11 +332,11 @@ func (d *containerdDriver) restoreSnapshot(ctx context.Context, id uuid.UUID, na
 	}
 	mounts, err := d.client.SnapshotService(defaults.DefaultSnapshotter).Prepare(ctx, name, identity.ChainID(diffIDs).String())
 	if err != nil {
-		return fmt.Errorf("prepare snapshot: %w", err)
+		return fmt.Errorf("prepare containerd snapshot: %w", err)
 	}
 	upper := upperDir(mounts)
 	if upper == "" {
-		return errors.New("the new snapshot has no upperdir")
+		return errors.New("the new containerd snapshot has no upperdir")
 	}
 	if restore == "" {
 		return nil
@@ -351,11 +351,11 @@ func (d *containerdDriver) restoreSnapshot(ctx context.Context, id uuid.UUID, na
 func (d *containerdDriver) prepareWorkdir(ctx context.Context, id uuid.UUID, name string, volumes []volumeMount) error {
 	mounts, err := d.client.SnapshotService(defaults.DefaultSnapshotter).Mounts(ctx, name)
 	if err != nil {
-		return fmt.Errorf("read snapshot mounts: %w", err)
+		return fmt.Errorf("read containerd snapshot mounts: %w", err)
 	}
 	upper := upperDir(mounts)
 	if upper == "" {
-		return errors.New("the snapshot has no upperdir")
+		return errors.New("the containerd snapshot has no upperdir")
 	}
 	workdir := filepath.Join(upper, strings.TrimPrefix(containerWorkdir, "/"))
 	if !snapshotHas(mounts, workdir, containerWorkdir) {
@@ -412,7 +412,7 @@ func (d *containerdDriver) filesystem(ctx context.Context, id uuid.UUID) (sandbo
 }
 
 // snapshotHas reports whether path exists in the upperdir (upperPath) or any
-// lowerdir of an overlay snapshot. A whiteout in the upperdir counts as
+// lowerdir of an overlay containerd snapshot. A whiteout in the upperdir counts as
 // present: the Sandbox deleted it, and the Agent leaves that alone.
 func snapshotHas(mounts []mount.Mount, upperPath, path string) bool {
 	if _, err := os.Lstat(upperPath); err == nil {
@@ -440,7 +440,7 @@ func (d *containerdDriver) removeContainer(ctx context.Context, name string) err
 	return d.deleteContainer(ctx, name, false)
 }
 
-// deleteContainer is removeContainer, keeping the snapshot when asked.
+// deleteContainer is removeContainer, keeping the containerd snapshot when asked.
 func (d *containerdDriver) deleteContainer(ctx context.Context, name string, keepSnapshot bool) error {
 	c, err := d.client.LoadContainer(ctx, name)
 	if err == nil {
@@ -464,9 +464,9 @@ func (d *containerdDriver) deleteContainer(ctx context.Context, name string, kee
 	if keepSnapshot {
 		return nil
 	}
-	// A create that failed before the container existed can leave its snapshot.
+	// A create that failed before the container existed can leave its containerd snapshot.
 	if err := d.client.SnapshotService(defaults.DefaultSnapshotter).Remove(ctx, name); err != nil && !errdefs.IsNotFound(err) {
-		return fmt.Errorf("remove snapshot: %w", err)
+		return fmt.Errorf("remove containerd snapshot: %w", err)
 	}
 	return nil
 }
@@ -480,8 +480,8 @@ func (d *containerdDriver) teardown(ctx context.Context, id uuid.UUID) error {
 }
 
 // stopSandbox kills and deletes the task and removes the network, keeping
-// the container and its snapshot: the container's spec names the mounts the
-// commit leaves out, and the snapshot is the filesystem (runtime.md §9).
+// the container and its containerd snapshot: the container's spec names the mounts the
+// commit leaves out, and the containerd snapshot is the filesystem (runtime.md §9).
 func (d *containerdDriver) stopSandbox(ctx context.Context, sandboxID uuid.UUID) error {
 	// Untracked first: the kept container's exit event is this Stop's, not a
 	// Runtime death.
@@ -505,7 +505,7 @@ func (d *containerdDriver) stopSandbox(ctx context.Context, sandboxID uuid.UUID)
 // whole, not only the mount points inside them (runtime.md §16).
 var sandboxOwnedPaths = []string{".orrery", "resources"}
 
-// commitTarget is the snapshot's upperdir, without the container's mount
+// commitTarget is the containerd snapshot's upperdir, without the container's mount
 // points. No container means nothing is left to commit.
 func (d *containerdDriver) commitTarget(ctx context.Context, sandboxID uuid.UUID) (commitTarget, bool, error) {
 	c, err := d.client.LoadContainer(ctx, containerName(sandboxID))
@@ -539,8 +539,8 @@ func (d *containerdDriver) commitTarget(ctx context.Context, sandboxID uuid.UUID
 	return target, true, nil
 }
 
-// upperDir is the writable directory of an overlay snapshot, or the
-// directory of a snapshot without parents.
+// upperDir is the writable directory of an overlay containerd snapshot, or the
+// directory of a containerd snapshot without parents.
 func upperDir(mounts []mount.Mount) string {
 	if len(mounts) != 1 {
 		return ""
@@ -558,7 +558,7 @@ func upperDir(mounts []mount.Mount) string {
 	return ""
 }
 
-// dropSandboxDisk removes the container and its snapshot, the cached diff.
+// dropSandboxDisk removes the container and its containerd snapshot, the cached diff.
 func (d *containerdDriver) dropSandboxDisk(ctx context.Context, sandboxID uuid.UUID) error {
 	return d.removeContainer(ctx, containerName(sandboxID))
 }
@@ -969,7 +969,7 @@ func (d *containerdDriver) adopt(ctx context.Context, report func(string, int64)
 			if probing, _ := d.probing.Load().(string); probing != "" && (c.ID() == probing || c.ID() == probeTargetName(probing)) {
 				continue // this Agent's own self-check, removed when it ends
 			}
-			// Its snapshot goes with it; the data directory is left alone.
+			// Its containerd snapshot goes with it; the data directory is left alone.
 			slog.Info("removing a Runtime left by another Node",
 				"container_id", c.ID(), "node", labels[labelNode])
 			if err := d.removeContainer(ctx, c.ID()); err != nil {

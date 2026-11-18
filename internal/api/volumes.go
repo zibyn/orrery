@@ -31,8 +31,11 @@ type volumeDTO struct {
 	HeldBy      *string    `json:"held_by"`
 	CommittedAt *time.Time `json:"committed_at"`
 	Size        int64      `json:"size"`
-	CreatedAt   time.Time  `json:"created_at"`
-	DeletedAt   *time.Time `json:"deleted_at"`
+	// PendingMigration: the Volume came from a Workspace whose directory is
+	// still on its Node, uploaded by a commit after the next start there.
+	PendingMigration bool       `json:"pending_migration"`
+	CreatedAt        time.Time  `json:"created_at"`
+	DeletedAt        *time.Time `json:"deleted_at"`
 }
 
 type volumeList struct {
@@ -195,6 +198,9 @@ func (s *Server) volumeToDTO(ctx context.Context, v store.Volume) volumeDTO {
 	dto := volumeDTO{
 		ID: v.ID.String(), Name: v.Name, State: v.State,
 		CreatedAt: v.CreatedAt.Time.UTC(), DeletedAt: timePtr(v.DeletedAt),
+	}
+	if pending, err := s.q.VolumePendingMigration(ctx, &v.ID); err == nil {
+		dto.PendingMigration = pending
 	}
 	if holder, err := s.q.GetVolumeHolder(ctx, v.ID); err == nil {
 		id := holder.String()

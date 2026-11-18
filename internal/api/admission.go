@@ -274,7 +274,7 @@ func (r *reconciler) admit(ctx context.Context, tx pgx.Tx) error {
 		var pinned *uuid.UUID
 		if sb.Kind != string(SandboxKindBuild) {
 			// A directory from before ADR-0031 is merged on its Node, so the
-			// Sandbox starts there until then (migration 000037).
+			// Sandbox starts there until then (migration 000035).
 			// shortcut: the first of several Nodes wins and the others'
 			// directories wait; split them if a Sandbox ever has two.
 			legacy, err := q.ListLegacyDirNodes(ctx, sb.ID)

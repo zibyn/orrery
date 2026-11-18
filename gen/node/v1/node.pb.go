@@ -1494,7 +1494,8 @@ type SandboxObserved struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	SandboxId  string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
 	Generation int64                  `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
-	// "running", "committing", "gone", "create_failed" or "commit_failed".
+	// "running", "committing", "gone", "create_failed", "commit_failed" or "disk_dropped"
+	// (a stopped Sandbox's cached diff was evicted; no generation).
 	// After the Runtime ends the Agent reports "committing" and "gone" only
 	// once the filesystem's Generation is committed (runtime.md §16).
 	Phase string `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
@@ -2226,7 +2227,7 @@ func (x *MeshPeer) GetEndpoint() string {
 
 // PublishSandbox publishes a path of a running Sandbox's live filesystem as
 // a ResourceVersion through SubmitManifest (node-protocol.md "Sandbox
-// publish"). path is relative to /workspace.
+// publish"). path is resolved like the file API (api.md §5).
 type PublishSandbox struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`

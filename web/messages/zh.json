@@ -507,6 +507,7 @@
   "volume_delete_held": "正被沙箱持有；先停止或删除那个沙箱。",
   "volume_files_as_of": "内容截至最近一次提交（{time}）。",
   "volume_files_never": "还没有提交，卷是空的。",
+  "volume_pending_migration": "从 Workspace 迁移而来：文件还在原来的 Node 上，挂着这个卷的 Sandbox 在那台 Node 上启动并提交之后才会出现在这里。",
   "volume_new_sandbox": "用这个卷新建沙箱",
   "condition_changes_lost": "改动丢失：所在节点丢失，最近一次提交之后的改动没了",
   "condition_commit_stalled": "提交受阻：停止时的提交在重试",

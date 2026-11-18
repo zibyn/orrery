@@ -178,8 +178,9 @@ func (s *fsScan) addFile(fsys fs.FS, entry *generation.Entry, st unix.Stat_t, pr
 }
 
 // isGitDir: a directory holding both HEAD and objects/ (runtime.md §16).
-// shortcut: only the scanned tree is looked at, so a repository whose HEAD is
-// in the SnapshotVersion and only a lock in the upperdir keeps that lock.
+// shortcut: only the upperdir is looked at, so a *.lock is committed when its
+// repository's HEAD and objects/ come from the image and not the upperdir,
+// look through the image layers too if such locks break restored repositories.
 func isGitDir(dir string) bool {
 	head, err := os.Lstat(filepath.Join(dir, "HEAD"))
 	if err != nil || !head.Mode().IsRegular() {

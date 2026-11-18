@@ -334,7 +334,9 @@ func (f *volumeFS) Rmdir(_ <-chan struct{}, h *fuse.InHeader, name string) fuse.
 // there. The kernel refuses moving a directory into itself.
 func (f *volumeFS) Rename(_ <-chan struct{}, in *fuse.RenameIn, oldName, newName string) fuse.Status {
 	if in.Flags&^renameNoReplace != 0 {
-		return fuse.EINVAL // shortcut: RENAME_EXCHANGE and WHITEOUT are unsupported
+		// shortcut: RENAME_EXCHANGE and RENAME_WHITEOUT get EINVAL, implement
+		// them if a Sandbox workload needs them on a Volume.
+		return fuse.EINVAL
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

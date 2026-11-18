@@ -57,7 +57,7 @@ func cleanMarkPath(dataRoot string, id uuid.UUID) string {
 }
 
 // restoreFilesystem writes Generation genID into root, a fresh directory (a
-// new snapshot's upperdir or a Local working directory), fetching objects
+// new containerd snapshot's upperdir or a Local working directory), fetching objects
 // through the block cache, and records the stat table so the next commit is
 // based on genID (runtime.md §16).
 func (r *Runtime) restoreFilesystem(ctx context.Context, id uuid.UUID, genID, root string) error {

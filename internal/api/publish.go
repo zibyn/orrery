@@ -15,43 +15,44 @@ import (
 	"github.com/zibyn/orrery/internal/store"
 )
 
-// errPublishPath marks a path that is not a local path inside /workspace.
-var errPublishPath = errors.New("path must be relative to /workspace and stay inside it")
+// errPublishPath marks a path that escapes the Sandbox's filesystem.
+var errPublishPath = errors.New("path must stay inside the Sandbox's filesystem")
 
-// normalizePublishPath turns a publish request's path into the relative form
-// the Agent walks. "/workspace" and its descendants are accepted because that
-// is the Sandbox's working directory; any other absolute path
-// and any ".." segment is rejected (ADR-0012: paths stay within /workspace).
+// normalizePublishPath turns a publish request's path into the form the
+// Agent resolves (api.md §5): relative to /workspace, or absolute in the
+// root filesystem when it starts with "/". ".." segments are refused.
 func normalizePublishPath(raw string) (string, error) {
-	if strings.ContainsRune(raw, 0) {
+	rel, ok := cleanLocalPath(strings.TrimLeft(raw, "/"))
+	if !ok {
 		return "", errPublishPath
 	}
-	switch {
-	case raw == "/workspace" || raw == "/workspace/":
-		raw = "."
-	case strings.HasPrefix(raw, "/workspace/"):
-		raw = strings.TrimPrefix(raw, "/workspace/")
-	case strings.HasPrefix(raw, "/"):
-		return "", errPublishPath
+	if strings.HasPrefix(raw, "/") {
+		return path.Join("/", rel), nil
+	}
+	return rel, nil
+}
+
+// cleanLocalPath is raw cleaned, when it is lexically inside its root: no
+// NUL, no ".." segment, not absolute. "" and "." name the root. A path that
+// escapes is refused, never rewritten.
+func cleanLocalPath(raw string) (string, bool) {
+	if strings.ContainsRune(raw, 0) {
+		return "", false
 	}
 	if raw == "" || raw == "." {
-		return ".", nil
+		return ".", true
 	}
 	for _, segment := range strings.Split(raw, "/") {
 		if segment == ".." {
-			return "", errPublishPath
+			return "", false
 		}
-	}
-	cleaned := path.Clean(raw)
-	if cleaned == "." {
-		return ".", nil
 	}
 	// filepath.IsLocal is the same containment rule the Agent's file API
 	// applies; on Linux it shares the slash separator.
-	if path.IsAbs(cleaned) || !filepath.IsLocal(filepath.FromSlash(cleaned)) {
-		return "", errPublishPath
+	if !filepath.IsLocal(raw) {
+		return "", false
 	}
-	return cleaned, nil
+	return path.Clean(raw), true
 }
 
 // ensureOwnedResource resolves a Resource name, creating it when absent — the
@@ -184,7 +185,14 @@ func (s *Server) handlePublishSandbox(w http.ResponseWriter, r *http.Request, p 
 		writeProblem(w, "invalid_request", errPublishPath.Error())
 		return
 	}
-	absolute := path.Join("/workspace", publishPath)
+	absolute := publishPath
+	if !path.IsAbs(absolute) {
+		absolute = path.Join("/workspace", publishPath)
+	}
+	if pathWithin(absolute, "/resources") {
+		writeProblem(w, "invalid_request", "the path is on a Resource mount; a Resource is already published")
+		return
+	}
 	for _, v := range s.sandboxVolumes(ctx, sb.ID) {
 		if pathWithin(absolute, v.Path) {
 			writeProblem(w, "invalid_request", "the path is on Volume "+v.Volume+"; publish it with POST /volumes/{id}/publish")

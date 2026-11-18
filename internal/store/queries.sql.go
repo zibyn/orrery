@@ -2037,6 +2037,28 @@ func (q *Queries) FinishSandboxExecs(ctx context.Context, arg FinishSandboxExecs
 	return result.RowsAffected(), nil
 }
 
+const forgetSandboxNode = `-- name: ForgetSandboxNode :execrows
+UPDATE sandboxes SET node_id = NULL, updated_at = now()
+WHERE sandboxes.id = $1 AND sandboxes.node_id = $2
+  AND NOT EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = $1)
+`
+
+type ForgetSandboxNodeParams struct {
+	ID     uuid.UUID
+	NodeID *uuid.UUID
+}
+
+// ForgetSandboxNode drops the placement preference of a Sandbox whose Node
+// evicted its cached diff (runtime.md §16). A Sandbox placed since keeps its
+// Node: the report is about a disk its Create no longer uses.
+func (q *Queries) ForgetSandboxNode(ctx context.Context, arg ForgetSandboxNodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, forgetSandboxNode, arg.ID, arg.NodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getCASObject = `-- name: GetCASObject :one
 SELECT owner_id, sha256, size, created_at FROM cas_objects WHERE owner_id = $1 AND sha256 = $2
 `
@@ -4122,7 +4144,7 @@ WHERE sandbox_id = $1::uuid
    OR volume_id IN (SELECT sv.volume_id FROM sandbox_volumes sv WHERE sv.sandbox_id = $1::uuid)
 `
 
-// Legacy directories (#279, migration 000037): Node-local directories from
+// Legacy directories (#279, migration 000035): Node-local directories from
 // before ADR-0031 that their Node merges at the Sandbox's next Create there.
 // ListLegacyDirNodes is where a Sandbox must start while its own directory or
 // one of its Volumes' is still on a Node.
@@ -7330,4 +7352,17 @@ func (q *Queries) UpsertSecret(ctx context.Context, arg UpsertSecretParams) (Sec
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const volumePendingMigration = `-- name: VolumePendingMigration :one
+SELECT EXISTS (SELECT 1 FROM legacy_dirs WHERE volume_id = $1)
+`
+
+// VolumePendingMigration: the Volume's Workspace directory is still on a
+// Node, waiting for the next start there (legacy_dirs).
+func (q *Queries) VolumePendingMigration(ctx context.Context, volumeID *uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, volumePendingMigration, volumeID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

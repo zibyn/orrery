@@ -19,6 +19,7 @@ import (
 
 	nodev1 "github.com/zibyn/orrery/gen/node/v1"
 	"github.com/zibyn/orrery/internal/generation"
+	"github.com/zibyn/orrery/internal/manifest"
 )
 
 // commitRetryMin and commitRetryMax bound the backoff between commit
@@ -101,12 +102,14 @@ func writeStatTable(path string, table statTable) error {
 // committed or once the holder is refused (nothing is left to commit to), an
 // errCommitFailed, or ctx's error.
 func (r *Runtime) commitWithRetry(ctx context.Context, id uuid.UUID, gen int64, target commitTarget, retrying func()) error {
-	return retryCommit(ctx, id, func() error { return r.commitOnce(ctx, id, gen, target) }, retrying)
+	log := slog.With("sandbox_id", id)
+	return retryCommit(ctx, "the Sandbox filesystem", log, func() error { return r.commitOnce(ctx, id, gen, target) }, retrying)
 }
 
 // retryCommit runs one commit attempt until it succeeds, as commitWithRetry
-// describes; a Volume's commit shares it.
-func retryCommit(ctx context.Context, id uuid.UUID, once func() error, retrying func()) error {
+// describes; a Volume's commit shares it. what names what is committed in
+// the logs, log carries its ids.
+func retryCommit(ctx context.Context, what string, log *slog.Logger, once func() error, retrying func()) error {
 	delay := commitRetryMin
 	for failures := 0; ; {
 		err := once()
@@ -114,13 +117,13 @@ func retryCommit(ctx context.Context, id uuid.UUID, once func() error, retrying 
 		case err == nil:
 			return nil
 		case errors.Is(err, errHolderRefused):
-			slog.Info("Sandbox commit refused; nothing to commit to", "sandbox_id", id, "error", err)
+			log.Info("commit of "+what+" refused; nothing to commit to", "error", err)
 			return nil
 		case isCommitFailed(err) || ctx.Err() != nil:
 			return err
 		}
 		failures++
-		slog.Warn("commit a stopped Sandbox", "sandbox_id", id, "attempt", failures, "error", err, "retry_in", delay)
+		log.Warn("commit "+what, "attempt", failures, "error", err, "retry_in", delay)
 		if failures >= commitStalledAfter {
 			retrying()
 		}
@@ -136,7 +139,7 @@ func retryCommit(ctx context.Context, id uuid.UUID, once func() error, retrying 
 // commitOnce is one pass of node-protocol.md "Generation 提交".
 func (r *Runtime) commitOnce(ctx context.Context, id uuid.UUID, gen int64, target commitTarget) error {
 	if target.root == "" {
-		return fmt.Errorf("%w: the snapshot has no upperdir", errCommitFailed)
+		return fmt.Errorf("%w: the containerd snapshot has no upperdir", errCommitFailed)
 	}
 	if r.client == nil {
 		return errors.New("the Node is not connected")
@@ -158,11 +161,7 @@ func (r *Runtime) commitOnce(ctx context.Context, id uuid.UUID, gen int64, targe
 		return fmt.Errorf("%w: %w", errCommitFailed, err)
 	}
 	ack, err := r.submitGeneration(ctx, id, gen, table.Generation, scan.changed)
-	if code := status.Code(err); code == codes.FailedPrecondition {
-		return fmt.Errorf("%w: %w", errHolderRefused, err)
-	} else if code == codes.InvalidArgument {
-		return fmt.Errorf("%w: %w", errCommitFailed, err)
-	} else if err != nil {
+	if err := submitOutcome(err); err != nil {
 		return err
 	}
 	root, err := os.OpenRoot(target.root)
@@ -170,10 +169,7 @@ func (r *Runtime) commitOnce(ctx context.Context, id uuid.UUID, gen int64, targe
 		return fmt.Errorf("%w: %w", errCommitFailed, err)
 	}
 	defer root.Close() //nolint:errcheck // read-only handle
-	if err := r.uploadPublishObjects(ctx, root, ack.GetMissingSha256(), scan.objects); err != nil {
-		return err
-	}
-	if err := r.putGenerationManifest(ctx, ack.GetUploadId(), encoded); err != nil {
+	if err := r.uploadGeneration(ctx, root, ack, scan.objects, encoded); err != nil {
 		return err
 	}
 	pending := statTable{Generation: ack.GetUploadId(), Files: scan.files}
@@ -181,6 +177,29 @@ func (r *Runtime) commitOnce(ctx context.Context, id uuid.UUID, gen int64, targe
 		return err
 	}
 	return r.finishCommit(ctx, tablePath, pendingPath, pending.Generation)
+}
+
+// submitOutcome classifies a SubmitGeneration error: a refused holder, a
+// manifest no retry can fix (errCommitFailed), or a retryable error.
+func submitOutcome(err error) error {
+	switch status.Code(err) {
+	case codes.OK:
+		return nil
+	case codes.FailedPrecondition:
+		return fmt.Errorf("%w: %w", errHolderRefused, err)
+	case codes.InvalidArgument:
+		return fmt.Errorf("%w: %w", errCommitFailed, err)
+	}
+	return err
+}
+
+// uploadGeneration uploads the objects the store lacks from root, then the
+// manifest of the open upload.
+func (r *Runtime) uploadGeneration(ctx context.Context, root *os.Root, ack *nodev1.GenerationAck, objects map[string]manifest.Source, encoded []byte) error {
+	if err := r.uploadPublishObjects(ctx, root, ack.GetMissingSha256(), objects); err != nil {
+		return err
+	}
+	return r.putGenerationManifest(ctx, ack.GetUploadId(), encoded)
 }
 
 // settlePending finishes or drops a commit an earlier attempt sent: a retried

@@ -16,7 +16,7 @@ import (
 
 // Before ADR-0031 every Sandbox mounted a Node-local directory at /workspace,
 // kept at <data-root>/workspaces/<id>, and the Agent recorded which one in
-// the Sandbox directory. Migration 000037 turned them into what replaces
+// the Sandbox directory. Migration 000035 turned them into what replaces
 // them: an ephemeral one is its Sandbox's /workspace, a persistent one the
 // Volume with its ID. The Control Plane keeps such a Sandbox on this Node
 // until it has been created here once and committed; that Create merges the

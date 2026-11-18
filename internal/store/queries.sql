@@ -466,6 +466,14 @@ WHERE id = $1 AND state = 'pending' AND desired_state = 'running';
 -- name: SandboxPlaced :one
 SELECT EXISTS (SELECT 1 FROM allocations WHERE sandbox_id = $1);
 
+-- ForgetSandboxNode drops the placement preference of a Sandbox whose Node
+-- evicted its cached diff (runtime.md §16). A Sandbox placed since keeps its
+-- Node: the report is about a disk its Create no longer uses.
+-- name: ForgetSandboxNode :execrows
+UPDATE sandboxes SET node_id = NULL, updated_at = now()
+WHERE sandboxes.id = $1 AND sandboxes.node_id = $2
+  AND NOT EXISTS (SELECT 1 FROM allocations a WHERE a.sandbox_id = $1);
+
 -- name: SetSandboxProvisioning :execrows
 UPDATE sandboxes
 SET state = 'provisioning', updated_at = now()
@@ -1593,6 +1601,11 @@ WHERE owner_id = sqlc.arg('owner_id')
 ORDER BY id
 LIMIT sqlc.arg('limit');
 
+-- VolumePendingMigration: the Volume's Workspace directory is still on a
+-- Node, waiting for the next start there (legacy_dirs).
+-- name: VolumePendingMigration :one
+SELECT EXISTS (SELECT 1 FROM legacy_dirs WHERE volume_id = $1);
+
 -- GetVolumeHolder is the Sandbox holding the Volume, if any.
 -- name: GetVolumeHolder :one
 SELECT sandbox_id FROM sandbox_volumes WHERE volume_id = $1 AND held;
@@ -1645,7 +1658,7 @@ FOR SHARE OF v;
 
 
 
--- Legacy directories (#279, migration 000037): Node-local directories from
+-- Legacy directories (#279, migration 000035): Node-local directories from
 -- before ADR-0031 that their Node merges at the Sandbox's next Create there.
 
 -- ListLegacyDirNodes is where a Sandbox must start while its own directory or

@@ -460,11 +460,13 @@ func TestSandboxPublishRules(t *testing.T) {
 	v := a.createVolume("under")
 	sb := want[sandboxDTO](t, a.createSandbox(mountReq{v.ID, "/workspace/data"}), http.StatusCreated)
 	publish := "/sandboxes/" + sb.ID + "/publish"
-	for _, p := range []string{"data", "/workspace/data/x", "/etc"} {
+	for _, p := range []string{"data", "/workspace/data/x", "/resources/model", "/../etc"} {
 		a.do(http.MethodPost, publish, map[string]any{"path": p, "resource": "r"}).want(t, http.StatusBadRequest)
 	}
-	// Not ready yet.
-	a.do(http.MethodPost, publish, map[string]any{"path": "src", "resource": "r"}).want(t, http.StatusConflict)
+	// Valid paths, relative or in the root filesystem; the Sandbox is not ready yet.
+	for _, p := range []string{"src", "/etc/app", "/workspace/datax"} {
+		a.do(http.MethodPost, publish, map[string]any{"path": p, "resource": "r"}).want(t, http.StatusConflict)
+	}
 }
 
 // garbage reports whether the purge would collect Generation id.
@@ -492,5 +494,114 @@ func TestSandboxRemovedFieldNamesVolumes(t *testing.T) {
 	r.want(t, http.StatusBadRequest)
 	if code := problemCode(r.body); code != "invalid_request" || !strings.Contains(string(r.body), "volumes") {
 		t.Fatalf("workspace field = %s %s, want invalid_request naming volumes", code, r.body)
+	}
+}
+
+// A stop whose Volume commit failed leaves the writes on the Node: the
+// failed Sandbox keeps the Volume until it is deleted, so nobody mounts the
+// older head meanwhile (runtime.md §17).
+func TestCommitFailedKeepsTheVolume(t *testing.T) {
+	a := newVolumeAPI(t)
+	v := a.createVolume("stranded")
+	sb := want[sandboxDTO](t, a.createSandbox(mountReq{v.ID, "/data"}), http.StatusCreated)
+	id := uuid.MustParse(sb.ID)
+	cause := "commit_failed"
+	if n, err := a.s.q.MarkSandboxFailed(a.ctx, store.MarkSandboxFailedParams{ID: id, Generation: a.generation(id), Cause: &cause}); err != nil || n != 1 {
+		t.Fatalf("MarkSandboxFailed = %d, %v", n, err)
+	}
+	if got := want[volumeDTO](t, a.do(http.MethodGet, "/volumes/"+v.ID, nil), http.StatusOK); got.HeldBy == nil || *got.HeldBy != sb.ID {
+		t.Fatalf("held_by after commit_failed = %v, want %s", got.HeldBy, sb.ID)
+	}
+	a.createSandbox(mountReq{v.ID, "/data"}).want(t, http.StatusConflict)
+	a.do(http.MethodDelete, "/volumes/"+v.ID, nil).want(t, http.StatusConflict)
+
+	a.do(http.MethodDelete, "/sandboxes/"+sb.ID, nil).want(t, http.StatusAccepted)
+	if n, err := a.s.q.MarkSandboxDeleted(a.ctx, id); err != nil || n != 1 {
+		t.Fatalf("MarkSandboxDeleted = %d, %v", n, err)
+	}
+	want[sandboxDTO](t, a.createSandbox(mountReq{v.ID, "/data"}), http.StatusCreated)
+
+	// Any other failure releases the Volume.
+	w := a.createVolume("released")
+	other := want[sandboxDTO](t, a.createSandbox(mountReq{w.ID, "/data"}), http.StatusCreated)
+	cause = "runtime_create_failed"
+	if _, err := a.s.q.MarkSandboxFailed(a.ctx, store.MarkSandboxFailedParams{ID: uuid.MustParse(other.ID), Generation: a.generation(uuid.MustParse(other.ID)), Cause: &cause}); err != nil {
+		t.Fatal(err)
+	}
+	if got := want[volumeDTO](t, a.do(http.MethodGet, "/volumes/"+w.ID, nil), http.StatusOK); got.HeldBy != nil {
+		t.Fatalf("held_by after create failure = %v, want null", *got.HeldBy)
+	}
+}
+
+func (a *volumeAPI) generation(id uuid.UUID) int64 {
+	a.t.Helper()
+	sb, err := a.s.q.GetSandbox(a.ctx, id)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	return sb.Generation
+}
+
+// files/content answers Range like the Sandbox file API (api.md §5), also
+// across the blocks of a large file.
+func TestVolumeFileContentRange(t *testing.T) {
+	a := newVolumeAPI(t)
+	v := a.createVolume("ranged")
+	first := bytes.Repeat([]byte("a"), int(manifest.BlockSize))
+	first[len(first)-1] = 'b'
+	second := []byte("cde")
+	size := int64(len(first) + len(second))
+	a.commitVolume(v.ID, generation.Manifest{Kind: generation.KindTree, Entries: []generation.Entry{
+		{Entry: manifest.Entry{Path: "big", Type: manifest.TypeFile, Size: &size, Blocks: []string{
+			a.store.putContent(a.user, first), a.store.putContent(a.user, second),
+		}}, Mode: 0o644},
+	}})
+	get := func(rng string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/volumes/"+v.ID+"/files/content?path=big", nil)
+		req.Header.Set("Authorization", "Bearer "+a.token)
+		if rng != "" {
+			req.Header.Set("Range", rng)
+		}
+		rec := httptest.NewRecorder()
+		a.h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := get("bytes=4194302-4194304"); rec.Code != http.StatusPartialContent || rec.Body.String() != "abc" ||
+		rec.Header().Get("Content-Range") != "bytes 4194302-4194304/4194307" {
+		t.Fatalf("range across blocks = %d %.20q %q", rec.Code, rec.Body.String(), rec.Header().Get("Content-Range"))
+	}
+	if rec := get("bytes=-2"); rec.Code != http.StatusPartialContent || rec.Body.String() != "de" {
+		t.Fatalf("suffix range = %d %.20q", rec.Code, rec.Body.String())
+	}
+	if rec := get("bytes=9999999-"); rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("range past the end = %d", rec.Code)
+	}
+	if rec := get(""); rec.Code != http.StatusOK || int64(rec.Body.Len()) != size || rec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("whole file = %d, %d bytes, Accept-Ranges %q", rec.Code, rec.Body.Len(), rec.Header().Get("Accept-Ranges"))
+	}
+}
+
+// A Volume migrated from a Workspace whose directory is still on its Node
+// says so instead of looking empty (runtime.md §16 upgrade migration).
+func TestMigratedVolumePendingOnItsNode(t *testing.T) {
+	a := newVolumeAPI(t)
+	v := a.createVolume("workspace-0123abcd")
+	if v.PendingMigration {
+		t.Fatal("a new Volume is pending migration")
+	}
+	node := uuid.New()
+	for _, sql := range []string{
+		`INSERT INTO nodes (id, name, token_hash) VALUES ($1, $2::text, '')`,
+		`INSERT INTO legacy_dirs (id, node_id, volume_id) VALUES ($2, $1, $2)`,
+	} {
+		if _, err := a.s.pool.Exec(a.ctx, sql, node, uuid.MustParse(v.ID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := want[volumeDTO](t, a.do(http.MethodGet, "/volumes/"+v.ID, nil), http.StatusOK); !got.PendingMigration {
+		t.Fatalf("Volume with its directory on a Node = %+v, want pending_migration", got)
+	}
+	if list := want[volumeList](t, a.do(http.MethodGet, "/volumes", nil), http.StatusOK); len(list.Items) != 1 || !list.Items[0].PendingMigration {
+		t.Fatalf("list = %+v, want pending_migration", list.Items)
 	}
 }

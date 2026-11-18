@@ -507,6 +507,7 @@
   "volume_delete_held": "Held by a Sandbox; stop or delete that Sandbox first.",
   "volume_files_as_of": "Contents as of the last commit ({time}).",
   "volume_files_never": "Nothing committed yet, so the Volume is empty.",
+  "volume_pending_migration": "Migrated from a Workspace: its files are still on the Node they were on and show up here after a Sandbox mounting this Volume starts there and commits.",
   "volume_new_sandbox": "New Sandbox with this Volume",
   "condition_changes_lost": "Changes lost: the Node was lost, and writes after the last commit are gone",
   "condition_commit_stalled": "Commit stalled: the commit on stop is retrying",

@@ -67,12 +67,12 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | 方法与路径 | 说明 |
 |---|---|
 | `POST /volumes` · `GET /volumes` · `GET /volumes/{id}` · `DELETE /volumes/{id}` | `{name}`，名字在调用方未删除的卷里唯一，字符规则同 Sandbox 名字；接受 `Idempotency-Key`。卷不绑 Node，没有 provisioning，创建即 `ready`。被 Sandbox 持有时删除返回 `409`；删除立即变成 `deleted`，不向 Node 下发命令，对象由 CAS 清扫回收 |
-| `GET /volumes/{id}/files?path=` · `/files/stat` · `/files/content` · `/files/archive` | 只读，参数和返回同 §5 的同名接口，路径相对卷根。由 Control Plane 读 head Generation 的 manifest，内容经预签名 GET 取，不经 Node，不要求有 Sandbox，不推迟任何 Sandbox 的 Idle Stop。卷被持有时看到的是最近一次提交；还没有 Generation 时是空目录；卷已删除时返回 `409`。`files/content` 暂不支持 `Range`。没有写接口 |
+| `GET /volumes/{id}/files?path=` · `/files/stat` · `/files/content` · `/files/archive` | 只读，参数和返回同 §5 的同名接口，路径相对卷根。由 Control Plane 读 head Generation 的 manifest，内容经预签名 GET 取，不经 Node，不要求有 Sandbox，不推迟任何 Sandbox 的 Idle Stop。卷被持有时看到的是最近一次提交；还没有 Generation 时是空目录；卷已删除时返回 `409`。`files/content` 同样支持 `Range`。没有写接口 |
 | `POST /volumes/{id}/publish` | `{path, resource}` → `202` 和一个 `pending` 的 ResourceVersion；Control Plane 从 head Generation 取出 `path` 下的条目写成 manifest，不搬数据，不经 Node（`node-protocol.md`）。接受 `Idempotency-Key` |
 
 卷用来放数据：它经 FUSE 挂载，写开销是本地盘的 2.5–16 倍，有改动时每 60 秒和停止时提交，Node 丢失时丢掉最近一次提交之后的写入。Git 仓库和构建应放在 Sandbox 自己的文件系统里（`runtime.md` §17），平台不拦。
 
-字段：`name`、`state`（`ready`、`deleted`）、`held_by`（持有它的 Sandbox，没有时为 `null`）、`committed_at`（head Generation 的提交时间，没有时为 `null`）、`size`（head Generation 的字节数）。
+字段：`name`、`state`（`ready`、`deleted`）、`held_by`（持有它的 Sandbox，没有时为 `null`）、`committed_at`（head Generation 的提交时间，没有时为 `null`）、`size`（head Generation 的字节数）、`pending_migration`（从 Workspace 迁移来、目录还在原 Node 上没有上传：挂着它的 Sandbox 在那台 Node 上启动并提交之后才有内容，在此之前文件接口看到的是空目录；`runtime.md` §16 的升级迁移）。
 
 **Sandbox**
 
@@ -108,10 +108,10 @@ Sandbox 的文件系统属于它自己：根文件系统里写下的一切（装
 `volumes`（ADR-0031）：
 
 - `path` 是绝对路径，规范化后不能是 `/`，不能落在 `/resources`、`/proc`、`/sys`、`/dev`、`/.orrery` 之下，彼此不能互相包含；可以是 `/workspace`，这时卷盖住根文件系统里的 `/workspace`。不合规返回 `400`。
-- 一个卷同一时间只被一个 Sandbox 持有，总是读写：从进入 `pending` 起，到 `stopped`、`failed` 或删除完成为止；从 `stopped`/`failed` 删除不重新持有。创建或 `start` 时卷被别人持有返回 `409`。没有只读挂载：要共享，就把卷 publish 成 Resource 再挂载。
+- 一个卷同一时间只被一个 Sandbox 持有，总是读写：从进入 `pending` 起，到 `stopped`、`failed` 或删除完成为止（以 `failed/commit_failed` 结束的保持持有，直到删除，`runtime.md` §17）；从 `stopped`/`failed` 删除不重新持有。创建或 `start` 时卷被别人持有返回 `409`。没有只读挂载：要共享，就把卷 publish 成 Resource 再挂载。
 - 卷不增加放置约束。卷的写入每 60 秒和停止时提交一次，Node 丢失时丢掉最近一次提交之后的写入（`runtime.md` §17）。
 
-响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`volumes`、`state`、`cause`、`node_id`（运行中为所在 Node；停止后为上次运行它的 Node，只作放置偏好）、`conditions`（`commit_stalled`：停止时的提交在重试，Sandbox 停在 `stopping`；`changes_lost`：所在 Node 丢失，最近一次提交之后的改动没了），`pending` 时还有 `queue_position` 和 `blocked_reason`。
+响应字段另有 `runtime`、`egress`（不写时也回 `{mode: open}`）、`links`（不写时不返回）、`address`（Sandbox 当前的 IPv4 地址，每次 start 都会变，不在运行时为空）、`volumes`、`state`、`cause`、`node_id`（运行中为所在 Node；停止后为上次运行它的 Node，只作放置偏好；那台 Node 淘汰了它的缓存后为 `null`）、`conditions`（`commit_stalled`：停止时的提交在重试，Sandbox 停在 `stopping`；`changes_lost`：所在 Node 丢失，最近一次提交之后的改动没了），`pending` 时还有 `queue_position` 和 `blocked_reason`。
 
 `runtime`（ADR-0009）：
 
