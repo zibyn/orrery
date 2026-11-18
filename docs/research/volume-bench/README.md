@@ -10,7 +10,7 @@
 | `jfs.sh` | 格式化一个新的 JuiceFS 卷，并在前台挂载 |
 | `internal/resourcefs/volume_bench_test.go` | 卷目标的入口 `TestVolumeLocalBench`。按 Agent 的方式提交：seal → 并发上传对象（`castransfer.MaxUploads` 路，和 Agent 同一个常量）→ 上传 Generation manifest → `VolumeCommitted`，读写都走 RustFS。没有 `ORRERY_BENCH_SCRIPT` 时跳过，所以 `go test ./...` 和 CI 不会跑它 |
 | `baseline-*.txt` | 2026-11-18 的原始输出（commit `4eecdeb`） |
-| `after-*.txt` | spec #295 合并后的原始输出 |
+| `after-*.txt` | spec #295 合并后的原始输出；`after-diag.txt` 是调研文档 §4 的诊断运行 |
 
 ## 准备
 
