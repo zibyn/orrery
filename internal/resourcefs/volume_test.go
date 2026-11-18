@@ -1,14 +1,18 @@
 package resourcefs
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fuse"
 
@@ -310,6 +314,180 @@ func TestVolumeTruncateAndUnlinkedOpenFile(t *testing.T) {
 	}
 	if _, err := os.Stat(v.f.dataPath(ino)); !os.IsNotExist(err) {
 		t.Fatal("its local data stayed")
+	}
+}
+
+// A slow fsync holds up only its own file (runtime.md §17): open, read,
+// write and stat of another file answer while it runs.
+func TestVolumeFsyncBlocksOnlyItsFile(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("checkpoint", "weights")
+	v.create("notes", "draft")
+	slow, notes := v.ino("checkpoint"), v.ino("notes")
+	entered, release := make(chan struct{}), make(chan struct{})
+	syncFile = func(file *os.File) error {
+		if file.Name() == v.f.dataPath(slow) {
+			close(entered)
+			select {
+			case <-release:
+			case <-time.After(5 * time.Second): // were notes stuck behind it, free them to fail below
+			}
+		}
+		return file.Sync()
+	}
+	t.Cleanup(func() { syncFile = (*os.File).Sync })
+	synced := make(chan fuse.Status, 1)
+	go func() { synced <- v.f.Fsync(nil, &fuse.FsyncIn{InHeader: hdr(slow)}) }()
+	<-entered
+
+	v.check("open", v.f.Open(nil, &fuse.OpenIn{InHeader: hdr(notes)}, &fuse.OpenOut{}))
+	v.write("notes", 5, " two")
+	if got := v.read("notes", 0, 100); got != "draft two" {
+		t.Fatalf("notes read %q", got)
+	}
+	var attr fuse.AttrOut
+	v.check("stat", v.f.GetAttr(nil, &fuse.GetAttrIn{InHeader: hdr(notes)}, &attr))
+	if attr.Size != 9 {
+		t.Fatalf("notes is %d bytes, want 9", attr.Size)
+	}
+	select {
+	case <-synced:
+		t.Fatal("notes waited for the fsync of checkpoint")
+	default:
+	}
+	close(release)
+	if st := <-synced; st != fuse.OK {
+		t.Fatalf("fsync = %v", st)
+	}
+}
+
+// Concurrent IO keeps POSIX results: files written side by side read back
+// their own bytes, and writes racing truncates of one file leave a state some
+// serial order of them would. Seals run meanwhile.
+func TestVolumeConcurrentIO(t *testing.T) {
+	v, _ := newTestVolume(t)
+	const files, rounds, chunk, writers = 8, 100, 1000, 4
+	inos := make([]uint64, files)
+	for i := range inos {
+		v.create(fmt.Sprintf("f%d", i), "")
+		inos[i] = v.ino(fmt.Sprintf("f%d", i))
+	}
+	shared, big := v.ino("docs/a.txt"), v.ino("big") // committed, so the first change copies shared up
+	write := func(ino uint64, off int, data []byte) {
+		if n, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(ino), Offset: uint64(off)}, data); st != fuse.OK || int(n) != len(data) {
+			t.Errorf("write %d at %d: %d, %v", ino, off, n, st)
+		}
+	}
+	read := func(ino uint64, off, size int) []byte {
+		res, st := v.f.Read(nil, &fuse.ReadIn{InHeader: hdr(ino), Offset: uint64(off), Size: uint32(size)}, make([]byte, size))
+		if st != fuse.OK {
+			t.Errorf("read %d at %d: %v", ino, off, st)
+			return nil
+		}
+		data, _ := res.Bytes(nil)
+		return data
+	}
+	stop, sealed := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(sealed)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := v.f.seal(); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for i, ino := range inos {
+		wg.Go(func() {
+			for r := range rounds {
+				data := pattern(chunk, byte(i*rounds+r))
+				write(ino, r*chunk, data)
+				if !bytes.Equal(read(ino, r*chunk, chunk), data) {
+					t.Errorf("f%d round %d reads other bytes", i, r)
+				}
+				if st := v.f.Fsync(nil, &fuse.FsyncIn{InHeader: hdr(ino)}); st != fuse.OK {
+					t.Errorf("fsync f%d: %v", i, st)
+				}
+			}
+		})
+	}
+	// Each writer owns a region of shared; cuts land meanwhile.
+	cuts := []uint64{0, 1500, 2500, writers*chunk - 1}
+	for w := range writers {
+		wg.Go(func() {
+			for range rounds {
+				write(shared, w*chunk, bytes.Repeat([]byte{byte('a' + w)}, chunk))
+			}
+		})
+	}
+	wg.Go(func() {
+		for r := range rounds {
+			var attr fuse.AttrOut
+			in := &fuse.SetAttrIn{SetAttrInCommon: fuse.SetAttrInCommon{InHeader: hdr(shared), Valid: fuse.FATTR_SIZE, Size: cuts[r%len(cuts)]}}
+			if st := v.f.SetAttr(nil, in, &attr); st != fuse.OK {
+				t.Errorf("truncate: %v", st)
+			}
+		}
+	})
+	committed := pattern(9<<20, 3)
+	wg.Go(func() {
+		for r := range rounds {
+			if off := r * 90_000; !bytes.Equal(read(big, off, 100), committed[off:off+100]) {
+				t.Errorf("big at %d reads other bytes", off)
+			}
+		}
+	})
+	wg.Wait()
+	close(stop)
+	<-sealed
+
+	_, lines := v.seal()
+	for i := range inos {
+		var want []byte
+		for r := range rounds {
+			want = append(want, pattern(chunk, byte(i*rounds+r))...)
+		}
+		if line := fmt.Sprintf("f%d file 644  %s", i, digest(want)); !contains(lines, line) {
+			t.Errorf("f%d was not sealed with what was written to it", i)
+		}
+	}
+	var attr fuse.AttrOut
+	v.check("stat", v.f.GetAttr(nil, &fuse.GetAttrIn{InHeader: hdr(shared)}, &attr))
+	got := read(shared, 0, writers*chunk)
+	if uint64(len(got)) != attr.Size || (attr.Size%chunk != 0 && !slices.Contains(cuts, attr.Size)) {
+		t.Fatalf("shared is %d bytes and reads %d: no serial order ends so", attr.Size, len(got))
+	}
+	// Serially, a region holds its writer's bytes then zeros where a cut
+	// took them, and the region a write extended the file to is whole.
+	for w := 0; w*chunk < len(got); w++ {
+		region := got[w*chunk : min((w+1)*chunk, len(got))]
+		rest := bytes.TrimLeft(region, string(rune('a'+w)))
+		if len(bytes.TrimLeft(rest, "\x00")) != 0 || ((w+1)*chunk == len(got) && len(rest) != 0) {
+			t.Fatalf("region %d of shared is %q", w, region)
+		}
+	}
+}
+
+// A write whose copy-up fails leaves the file reading its committed bytes.
+func TestVolumeFailedCopyUpKeepsCommittedContent(t *testing.T) {
+	v, o := newTestVolume(t)
+	o.mu.Lock()
+	o.corrupt = true
+	o.mu.Unlock()
+	if _, st := v.f.Write(nil, &fuse.WriteIn{InHeader: hdr(v.ino("docs/a.txt"))}, []byte("x")); st != fuse.EIO {
+		t.Fatalf("write over a failed copy-up = %v, want EIO", st)
+	}
+	o.mu.Lock()
+	o.corrupt = false
+	o.mu.Unlock()
+	if got := v.read("docs/a.txt", 0, 10); got != "alpha" {
+		t.Fatalf("after a failed copy-up the file reads %q", got)
 	}
 }
 
