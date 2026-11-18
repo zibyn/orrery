@@ -790,6 +790,29 @@ func TestVolumeUnwrittenCleanCopyIsDropped(t *testing.T) {
 	}
 }
 
+// An unlinked file still open keeps its clean copy across commits: no
+// Generation holds its objects any more, so once the block cache evicts
+// them the copy is all there is.
+func TestVolumeUnlinkedOpenFileKeepsItsCleanCopy(t *testing.T) {
+	v, _ := newTestVolume(t)
+	v.create("scratch", "temp data")
+	ino := v.ino("scratch") // the kernel's reference, as an open file holds
+	s, _ := v.seal()
+	if err := v.f.committed("gen-2", s.Seq); err != nil {
+		t.Fatal(err)
+	}
+	v.unlink("scratch")
+	if s, _ := v.seal(); !s.Dirty { // a commit period with scratch unwritten
+		t.Fatal("the unlink left the Volume clean")
+	}
+	os.Remove(v.f.store.path(digest([]byte("temp data")))) //nolint:errcheck // evicted, if it was there
+	res, st := v.f.Read(nil, &fuse.ReadIn{InHeader: hdr(ino), Size: 20}, make([]byte, 20))
+	v.check("read unlinked", st)
+	if got, _ := res.Bytes(nil); string(got) != "temp data" {
+		t.Fatalf("the unlinked open file reads %q", got)
+	}
+}
+
 // Moving a commit's objects into the block cache holds up no other op.
 func TestVolumeCommittedMovesObjectsOffTheTreeLock(t *testing.T) {
 	v, _ := newTestVolume(t)

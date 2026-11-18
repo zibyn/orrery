@@ -482,12 +482,13 @@ type sealItem struct {
 }
 
 // dropClean drops n's clean copy unless it was written meanwhile; its reads
-// go back to the block cache.
+// go back to the block cache. An unlinked file keeps its copy: no Generation
+// may hold its objects.
 func (f *volumeFS) dropClean(ino uint64, n *vnode) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	f.treeMu.Lock()
-	drop := f.st.Nodes[ino] == n && n.Local && !n.dirty()
+	drop := f.st.Nodes[ino] == n && n.Local && !n.dirty() && n.Nlink > 0
 	if drop {
 		n.Local = false
 	}
