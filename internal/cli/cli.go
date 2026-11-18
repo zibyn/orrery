@@ -1,13 +1,13 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,7 +65,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	base := firstNonEmpty(*apiURL, os.Getenv("ORRERY_SANDBOX_API_URL"), os.Getenv("ORRERY_URL"), fc.APIURL, "http://localhost:8080")
 	if rest[0] == "login" {
-		if err := runLogin(base, path, rest[1:], os.Stdin, stdout, stderr); err != nil {
+		if err := runLogin(base, path, rest[1:], stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
@@ -175,10 +175,11 @@ examples:
 `)
 }
 
-// runLogin gets the CLI a named API Token (ADR-0029): the User signs in at
-// the console's /cli-auth through Polaris, creates a token there with the
-// browser Session, and pastes it back.
-func runLogin(base, configPath string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+// runLogin gets the CLI a named API Token through a device login (ADR-0033):
+// it prints a console link and a short code, the User approves it in any
+// browser, and the CLI polls until the server hands over the token. It never
+// opens a browser itself, since the CLI usually runs on a remote machine.
+func runLogin(base, configPath string, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -187,43 +188,35 @@ func runLogin(base, configPath string, args []string, stdin io.Reader, stdout, s
 	if fs.NArg() != 0 {
 		return fmt.Errorf("usage: orrery login")
 	}
-	return consoleLogin(base, configPath, stdin, stdout, stderr)
-}
-
-// consoleLogin: the console creates the token with the browser Session, and
-// the User pastes it here like `coder login`.
-func consoleLogin(base, configPath string, stdin io.Reader, stdout, stderr io.Writer) error {
-	consoleURL := strings.TrimRight(base, "/") + "/login?return=%2Fcli-auth"
-	fmt.Fprintf(stderr, "Open %s, sign in, and create a token on the CLI authorization page.\n", consoleURL)
-	fmt.Fprint(stderr, "Paste the token: ")
-	token, err := readLine(stdin)
+	anon := orreryclient.New(base, "")
+	login, err := anon.StartCLILogin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("start login: %w", err)
 	}
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return fmt.Errorf("no token pasted")
+	fmt.Fprintf(stderr, "Open this link in a browser and approve the login:\n\n  %s?code=%s\n\nCheck that the page shows the code %s.\nWaiting for approval...\n",
+		login.VerificationURI, url.QueryEscape(login.UserCode), login.UserCode)
+	deadline := time.Now().Add(time.Duration(login.ExpiresIn) * time.Second)
+	var token string
+	for token == "" {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the login expired before it was approved; run orrery login again")
+		}
+		time.Sleep(time.Duration(login.Interval) * time.Second)
+		poll, err := anon.PollCLILogin(ctx, login.DeviceCode)
+		if err != nil {
+			return fmt.Errorf("poll login: %w", err)
+		}
+		token = poll.Token
 	}
-	// Validate before storing: a typo must not replace a working config.
-	c := orreryclient.New(base, token)
-	me, err := c.Me(ctx)
+	me, err := orreryclient.New(base, token).Me(ctx)
 	if err != nil {
-		return fmt.Errorf("the token was rejected: %w", err)
+		return fmt.Errorf("the new token was rejected: %w", err)
 	}
 	if err := writeConfig(configPath, fileConfig{APIURL: base, Token: token}); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "logged in as %s; token written to %s\n", me.Name, configPath)
 	return nil
-}
-
-// readLine reads one trimmed line, accepting EOF as the end of the input.
-func readLine(r io.Reader) (string, error) {
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
-	}
-	return strings.TrimRight(line, "\r\n"), nil
 }
 
 func writeConfig(path string, fc fileConfig) error {

@@ -1,6 +1,6 @@
 # ADR-0029: Polaris is the only identity provider; machine Users come from a local command
 
-- Status: accepted; supersedes ADR-0020's login methods, OIDC matching rules and password handling, and amends ADR-0010's caller identity
+- Status: accepted; supersedes ADR-0020's login methods, OIDC matching rules and password handling, and amends ADR-0010's caller identity; the pasted CLI login and its loopback alternative superseded by ADR-0033
 - Date: 2026-11-09
 
 ## Context

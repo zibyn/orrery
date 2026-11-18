@@ -107,6 +107,7 @@ func (s *Server) purgeExpiredRows(ctx context.Context) {
 			{"ResourceVersion idempotency keys", func() error { return q.PurgeResourceVersionIdempotencyKeys(ctx) }},
 			{"Enrollment Packets", func() error { return q.PurgeEnrollmentPackets(ctx) }},
 			{"expired tokens", func() error { return q.PurgeExpiredTokens(ctx) }},
+			{"CLI logins", func() error { return q.PurgeCLILogins(ctx) }},
 			{"terminal admission requests", func() error { return q.PurgeTerminalAdmissionRequests(ctx) }},
 			{"Execution Logs", func() error {
 				if s.cfg.ExecLogRetention <= 0 {

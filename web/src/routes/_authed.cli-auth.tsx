@@ -1,61 +1,47 @@
+import { useMutation } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { CircleCheck, Terminal } from 'lucide-react'
 import { useState } from 'react'
 
-import { api, type CreatedToken } from '@/api'
+import { api } from '@/api'
 import { PageHeader } from '@/components/page-header'
-import { TokenReveal } from '@/components/token-reveal'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
 import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/components/ui/item'
 import { useLocale } from '@/lib/i18n'
 import { m } from '@/paraglide/messages'
 
-// The page itself creates the token with the Session (api.md §8). A loader,
-// unlike an effect, runs once, so StrictMode cannot mint two tokens.
-function createCliToken(): Promise<CreatedToken> {
-  const name = `cli-${new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '')}-${crypto.randomUUID().slice(0, 8)}`
-  return api('POST', '/users/me/tokens', { name, scope: 'user' })
-}
-
+// orrery login lands here with ?code= (ADR-0033). Nothing is created until
+// the User clicks Approve, so opening or refreshing the page is harmless; the
+// token itself goes straight to the polling CLI and never shows here.
 export const Route = createFileRoute('/_authed/cli-auth')({
-  loader: ({ context }) =>
-    context.queryClient.fetchQuery({
-      queryKey: ['cli-token'],
-      queryFn: createCliToken,
-      staleTime: Infinity,
-      gcTime: Infinity,
-      retry: false,
-    }),
+  validateSearch: (search: Record<string, unknown>): { code?: string } => ({
+    code: typeof search.code === 'string' ? search.code : undefined,
+  }),
   component: CliAuthPage,
-  errorComponent: CliAuthError,
 })
-
-function CliAuthError() {
-  useLocale() // re-render on a language switch (see lib/i18n.tsx)
-  return (
-    <div className="mx-auto flex max-w-xl flex-col gap-3 py-6">
-      <PageHeader title={m.cli_title()} />
-      <p className="text-sm text-muted-foreground">{m.cli_create_error()}</p>
-    </div>
-  )
-}
 
 function CliAuthPage() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
-  const token = Route.useLoaderData()
-  const [done, setDone] = useState(false)
+  const { code: fromLink } = Route.useSearch()
+  const [code, setCode] = useState(fromLink ?? '')
+  const approve = useMutation({
+    mutationFn: () => api<void>('POST', '/cli-logins/approve', { user_code: code }),
+  })
 
-  if (done) {
+  if (approve.isSuccess) {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-3 py-6">
-        <PageHeader title={m.cli_title()} description={m.cli_token_created()} />
+        <PageHeader title={m.cli_title()} />
         <Item variant="outline">
           <ItemMedia variant="icon" className="text-success">
             <CircleCheck />
           </ItemMedia>
           <ItemContent>
-            <ItemTitle>{m.cli_signed_in()}</ItemTitle>
-            <ItemDescription>{m.cli_paste_hint()}</ItemDescription>
+            <ItemTitle>{m.cli_approved()}</ItemTitle>
+            <ItemDescription>{m.cli_approved_hint()}</ItemDescription>
           </ItemContent>
         </Item>
       </div>
@@ -76,7 +62,30 @@ function CliAuthPage() {
       />
       <Card>
         <CardContent className="py-5">
-          <TokenReveal token={token.token} onDone={() => setDone(true)} />
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              approve.mutate()
+            }}
+          >
+            <Field>
+              <FieldLabel htmlFor="cli-code">{m.cli_code()}</FieldLabel>
+              <Input
+                id="cli-code"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="XXXX-XXXX"
+                className="font-mono text-lg tracking-widest uppercase"
+              />
+              <FieldDescription>{m.cli_code_hint()}</FieldDescription>
+            </Field>
+            <Button type="submit" disabled={code.trim() === '' || approve.isPending}>
+              {m.cli_approve()}
+            </Button>
+          </form>
         </CardContent>
       </Card>
     </div>

@@ -139,6 +139,24 @@ func (q *Queries) ApplyPolarisEvent(ctx context.Context, arg ApplyPolarisEventPa
 	return i, err
 }
 
+const approveCLILogin = `-- name: ApproveCLILogin :execrows
+UPDATE cli_logins SET user_id = $2
+WHERE user_code = $1 AND user_id IS NULL AND expires_at > now()
+`
+
+type ApproveCLILoginParams struct {
+	UserCode string
+	UserID   *uuid.UUID
+}
+
+func (q *Queries) ApproveCLILogin(ctx context.Context, arg ApproveCLILoginParams) (int64, error) {
+	result, err := q.db.Exec(ctx, approveCLILogin, arg.UserCode, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const cancelExec = `-- name: CancelExec :one
 UPDATE execs
 SET cancel_requested_at = COALESCE(cancel_requested_at, now())
@@ -259,6 +277,20 @@ WHERE id = $1 AND deleted_at IS NOT NULL
 func (q *Queries) ClearSnapshotCurrent(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, clearSnapshotCurrent, id)
 	return err
+}
+
+const collectCLILogin = `-- name: CollectCLILogin :one
+DELETE FROM cli_logins
+WHERE device_hash = $1 AND user_id IS NOT NULL AND expires_at > now()
+RETURNING user_id
+`
+
+// CollectCLILogin is the single-use claim of an approved login.
+func (q *Queries) CollectCLILogin(ctx context.Context, deviceHash []byte) (*uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, collectCLILogin, deviceHash)
+	var user_id *uuid.UUID
+	err := row.Scan(&user_id)
+	return user_id, err
 }
 
 const consumeGenerationUpload = `-- name: ConsumeGenerationUpload :execrows
@@ -590,6 +622,36 @@ func (q *Queries) CreateBuildSandbox(ctx context.Context, arg CreateBuildSandbox
 		&i.HeadGenerationID,
 	)
 	return i, err
+}
+
+const createCLILogin = `-- name: CreateCLILogin :execrows
+
+INSERT INTO cli_logins (device_hash, user_code, expires_at)
+SELECT $1, $2, $3
+WHERE (SELECT count(*) FROM cli_logins WHERE expires_at > now()) < $4::bigint
+`
+
+type CreateCLILoginParams struct {
+	DeviceHash []byte
+	UserCode   string
+	ExpiresAt  pgtype.Timestamptz
+	MaxPending int64
+}
+
+// CLI logins (ADR-0033)
+// CreateCLILogin inserts only while fewer than $4 unexpired rows exist, so the
+// unauthenticated endpoint cannot grow the table without bound.
+func (q *Queries) CreateCLILogin(ctx context.Context, arg CreateCLILoginParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createCLILogin,
+		arg.DeviceHash,
+		arg.UserCode,
+		arg.ExpiresAt,
+		arg.MaxPending,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const createEnrollmentPacket = `-- name: CreateEnrollmentPacket :one
@@ -2045,6 +2107,24 @@ func (q *Queries) GetCASObject(ctx context.Context, arg GetCASObjectParams) (Cas
 		&i.OwnerID,
 		&i.Sha256,
 		&i.Size,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getCLILogin = `-- name: GetCLILogin :one
+SELECT device_hash, user_code, user_id, expires_at, created_at FROM cli_logins WHERE device_hash = $1 AND expires_at > now()
+`
+
+// GetCLILogin reads an unexpired row by device code hash.
+func (q *Queries) GetCLILogin(ctx context.Context, deviceHash []byte) (CliLogin, error) {
+	row := q.db.QueryRow(ctx, getCLILogin, deviceHash)
+	var i CliLogin
+	err := row.Scan(
+		&i.DeviceHash,
+		&i.UserCode,
+		&i.UserID,
+		&i.ExpiresAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -6123,6 +6203,15 @@ WHERE id IN (
 // caller skips this query then (defaults.md).
 func (q *Queries) PurgeAuditRecords(ctx context.Context, retentionSeconds int64) error {
 	_, err := q.db.Exec(ctx, purgeAuditRecords, retentionSeconds)
+	return err
+}
+
+const purgeCLILogins = `-- name: PurgeCLILogins :exec
+DELETE FROM cli_logins WHERE expires_at < now()
+`
+
+func (q *Queries) PurgeCLILogins(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, purgeCLILogins)
 	return err
 }
 

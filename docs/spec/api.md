@@ -30,7 +30,7 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | `precondition_failed` | 412 | `If-Match` 不匹配 |
 | `payload_too_large` | 413 | 单文件超过 1 TiB、Secret 超过 24 KiB |
 | `unsupported` | 422 | 所选 Runtime 不能 `enforced` 一项必需能力；`runtime: local` 带了 `snapshot` 或 `resources`；`egress.mode` 不是 `open`，但没有 Node 的 `egress_policy` 为 `enforced` |
-| `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限 |
+| `quota_exceeded` | 429 | 创建时已超出 User Quota 或 Secret 个数上限；未过期的 CLI 登录达到上限 |
 | `internal` | 500 | 平台缺陷 |
 | `unavailable` | 503 | 运行中的 Sandbox 所在 Node 不可达，OIDC 登录、Back-Channel Logout 时 Polaris discovery 失败，或 import 的源 registry 在解析期限内没有响应；可以重试 |
 
@@ -56,6 +56,9 @@ REST/OpenAPI 是唯一语义权威（ADR-0015）。本文锁定资源、路径�
 | 方法与路径 | 说明 |
 |---|---|
 | `DELETE /sessions/current` | 退出登录，删掉当前 Session |
+| `POST /cli-logins` | 不需要认证，`orrery login` 调用（ADR-0033）。返回 `{device_code, user_code, verification_uri, expires_in, interval}`：`device_code` 是密钥，只用来轮询；`user_code` 是 8 个辅音字母 `XXXX-XXXX`；`verification_uri` 是控制台的 `/cli-auth`，CLI 打印它加 `?code=<user_code>`，不打开浏览器。未过期的登录超过上限（`defaults.md`）时返回 `429` |
+| `POST /cli-logins/approve` | 需要登录。`{user_code}`，大小写、空格和 `-` 不计。把未过期、未授权的登录记到调用方 User 名下，返回 `204`；没有这样的登录返回 `404`。只做标记，不生成 token |
+| `POST /cli-logins/token` | 不需要认证，CLI 每 `interval` 秒调一次。`{device_code}`：未授权返回 `{status: "pending"}`；已授权时在这次请求里给授权的 User 生成一个 `user` scope 的命名 API Token，删除这次登录，返回 `{status: "approved", token}`，只返回这一次；过期、不存在或已领取返回 `404` |
 | `GET /oidc/login?return=` | 302 到 IdP（authorization code + PKCE），`state` 和 verifier 存在 HttpOnly cookie 里 |
 | `GET /oidc/account` | 302 到 Polaris 账号中心 `{issuer}/account?client_id=`，控制台的「编辑资料」链接指向这里（ADR-0029） |
 | `GET /oidc/callback` | 只按 (`issuer`, `sub`) 匹配 User，匹配不到就建号，用部署默认 Quota（ADR-0029）。每次登录都从 claims 复制 name 和 email：name 被占用时用 `sub` 消歧，email 被占用时保留已存的值。用 `oidc.audience` 校验 code exchange 拿到的 access token，`entitlements` 含 `orrery:admin` 就设 `is_admin`，否则清掉；access token 无效或 audience 不对时 `400`。Session 记下 ID token 的 `sid`。已停用的 User 返回 `403`，不发 Session。成功后设 Session cookie 并 302 回 `return` |
@@ -367,7 +370,7 @@ Sandbox 不在 `ready` 时返回 `409`。字段：`state` 从时间戳派生（`
 | 页面 | 用到的接口 |
 |---|---|
 | 登录 `/login?return=` | `GET /oidc/login`，只有「使用 Polaris 登录」（ADR-0029） |
-| CLI 授权 `/cli-auth` | `POST /users/me/tokens`，页面显示明文，用户粘贴回 `orrery login` |
+| CLI 授权 `/cli-auth?code=` | `POST /cli-logins/approve`：页面预填 `code`，提示与终端核对，点「授权」才调用；打开或刷新页面不生成任何东西，token 不在页面上出现。不在侧边栏里，只由 `orrery login` 打印的链接进入（ADR-0033） |
 | Sandbox 列表与详情 | `GET /sandboxes`（admin 多一个 owner 下拉，选项来自 `GET /users`，默认自己）；创建、start、stop、删除；`queue_position`、`blocked_reason`、`conditions`。创建表单：name、snapshot（`GET /snapshots`，自己的和平台的）、cpu、memory、gpu 数量与型号（`GET /capacity`）、卷（从 `GET /volumes` 选，可加多个，每个填挂载路径）、idle_stop。resources、secrets、labels 用 CLI |
 | Exec | `GET /sandboxes/{id}/execs`、`output?follow=true` 跟随、`POST /execs/{id}/cancel` |
 | 终端 | `POST /sandboxes/{id}/execs` 带 `pty`，argv 默认 `["/bin/sh", "-l"]`，可改；然后 `GET /execs/{id}/pty`。不提供非 PTY 的运行表单 |
