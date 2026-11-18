@@ -190,7 +190,7 @@ func TestSDKParityFilesAPI(t *testing.T) {
 	}
 
 	// Escaping paths are refused, never rewritten.
-	for _, path := range []string{"../escape.txt", "/etc/passwd", "src/../../escape.txt"} {
+	for _, path := range []string{"../escape.txt", "/../escape.txt", "/resources/x", "src/../../escape.txt"} {
 		var problem *client.Error
 		err := c.WriteFile(ctx, sandboxID, path, strings.NewReader("x"), 1)
 		if !errors.As(err, &problem) || problem.Status != http.StatusBadRequest || problem.Code != "invalid_request" {

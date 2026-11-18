@@ -468,6 +468,10 @@ func TestRenderNetworkLinkWithoutPortsIsTCPAndUDPOnly(t *testing.T) {
 // a Sandbox directory (from before an upgrade too) or held by another
 // Sandbox is never handed out again, nor the gateway or broadcast address.
 func TestAllocateAddress(t *testing.T) {
+	// The host's own Sandbox netns would take addresses from the test subnet.
+	live := liveAddresses
+	liveAddresses = func() map[netip.Addr]bool { return map[netip.Addr]bool{} }
+	t.Cleanup(func() { liveAddresses = live })
 	dataRoot := t.TempDir()
 	d := &containerdDriver{r: newRuntime(ProviderContainerd, dataRoot, uuid.NewString()), subnet: "10.213.0.0/29"}
 	recorded := uuid.New()

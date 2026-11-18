@@ -153,12 +153,16 @@ func (r *Runtime) stopSandbox(ctx context.Context, sandboxID uuid.UUID, generati
 	return nil
 }
 
-// dropSandboxDisk removes a Sandbox's cached diff and what describes it
-// (DropSandboxDisk, eviction).
+// dropSandboxDisk serves DropSandboxDisk, sent once the Sandbox is deleted:
+// its cached diff goes, and so does its whole directory (records, network
+// state, stat tables), which nothing reads again.
 func (r *Runtime) dropSandboxDisk(ctx context.Context, id uuid.UUID) error {
 	r.diskMu.Lock()
 	defer r.diskMu.Unlock()
-	return r.dropSandboxDiskLocked(ctx, id)
+	if err := r.dropSandboxDiskLocked(ctx, id); err != nil {
+		return err
+	}
+	return os.RemoveAll(sandboxPath(r.dataRoot, id))
 }
 
 func (r *Runtime) dropSandboxDiskLocked(ctx context.Context, id uuid.UUID) error {

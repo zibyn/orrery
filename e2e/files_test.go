@@ -87,8 +87,9 @@ func TestFilesAPI(t *testing.T) {
 		t.Fatalf("deleted file = %d, want 404", status)
 	}
 
-	// Paths that leave /workspace are rejected, never rewritten.
-	for _, p := range []string{"../escape.txt", "/etc/passwd", "src/../../escape.txt"} {
+	// Paths that escape the root filesystem, or lie on a Resource mount, are
+	// rejected, never rewritten; other absolute paths are in the root (api.md §5).
+	for _, p := range []string{"../escape.txt", "/../escape.txt", "/resources/x", "src/../../escape.txt"} {
 		if status := put(p, []byte("x")); status != http.StatusBadRequest {
 			t.Fatalf("upload %q = %d, want 400", p, status)
 		}

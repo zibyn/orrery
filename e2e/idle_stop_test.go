@@ -91,6 +91,7 @@ func TestIdleStopRestart(t *testing.T) {
 // former holder cannot start while another holds it.
 func TestVolumeHoldHandover(t *testing.T) {
 	admin := adminToken(t)
+	startAgentNode(t, admin, fmt.Sprintf("e2e-handover-node-%d", time.Now().UnixNano()))
 	raiseSandboxQuota(t, admin, 100)
 	name := fmt.Sprintf("e2e-handover-%d", time.Now().UnixNano())
 	createVolume(t, admin, name)

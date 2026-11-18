@@ -33,6 +33,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
+	"github.com/moby/sys/mountinfo"
 	"github.com/opencontainers/image-spec/identity"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
@@ -74,7 +75,7 @@ type containerdDriver struct {
 }
 
 // runscOptions is the TOML passed to every runsc container (runtime.md §9).
-const runscOptions = "[runsc_config]\n  host-uds = \"create\"\n  overlay2 = \"none\"\n"
+const runscOptions = "[runsc_config]\n  host-uds = \"create\"\n  overlay2 = \"none\"\n  file-access = \"shared\"\n"
 
 // runsc reports whether this Node runs Sandboxes under runsc.
 func (d *containerdDriver) runsc() bool { return d.runscConfig != "" }
@@ -404,11 +405,57 @@ func (d *containerdDriver) filesystem(ctx context.Context, id uuid.UUID) (sandbo
 			refused = append(refused, strings.TrimPrefix(filepath.Clean(m.Destination), "/"))
 		}
 	}
+	dir := fmt.Sprintf("/proc/%d/root", task.Pid())
+	if d.runsc() {
+		// The task is gVisor's sandbox process, whose root is not the
+		// container's: use the shim's rootfs mount, where the gofer writes
+		// (runtime.md §9).
+		if dir, err = d.rootfsMount(ctx, c); err != nil {
+			return sandboxFS{}, err
+		}
+	}
 	return sandboxFS{
-		dir:     fmt.Sprintf("/proc/%d/root", task.Pid()),
+		dir:     dir,
 		base:    strings.TrimPrefix(containerWorkdir, "/"),
 		refused: refused,
 	}, nil
+}
+
+// rootfsMount is the host mount point of a running container's rootfs: the
+// overlay the shim mounted over its containerd snapshot, found by upperdir.
+func (d *containerdDriver) rootfsMount(ctx context.Context, c containerd.Container) (string, error) {
+	info, err := c.Info(ctx)
+	if err != nil {
+		return "", err
+	}
+	mounts, err := d.client.SnapshotService(info.Snapshotter).Mounts(ctx, info.SnapshotKey)
+	if err != nil {
+		return "", fmt.Errorf("read containerd snapshot mounts: %w", err)
+	}
+	upper := upperDir(mounts)
+	host, err := mountinfo.GetMounts(mountinfo.FSTypeFilter("overlay"))
+	if err != nil {
+		return "", err
+	}
+	if dir := overlayMountOf(host, upper); dir != "" {
+		return dir, nil
+	}
+	return "", fmt.Errorf("no host mount of the containerd snapshot with upperdir %q", upper)
+}
+
+// overlayMountOf is the mount point of the overlay whose upperdir is upper.
+func overlayMountOf(mounts []*mountinfo.Info, upper string) string {
+	if upper == "" {
+		return ""
+	}
+	for _, m := range mounts {
+		for _, option := range strings.Split(m.VFSOptions, ",") {
+			if option == "upperdir="+upper {
+				return m.Mountpoint
+			}
+		}
+	}
+	return ""
 }
 
 // snapshotHas reports whether path exists in the upperdir (upperPath) or any

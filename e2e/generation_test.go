@@ -12,12 +12,13 @@ import (
 	"github.com/zibyn/orrery/internal/generation"
 )
 
-// TestStopCommitsTheFilesystem is #275's commit-on-stop scenario on the
-// default Node: what a Sandbox writes to its root filesystem is in the head
+// TestStopCommitsTheFilesystem is #275's commit-on-stop scenario on its own
+// Node: what a Sandbox writes to its root filesystem is in the head
 // Generation once the stop ends (runtime.md §16). TestGvisorParity runs the
 // same check under runsc.
 func TestStopCommitsTheFilesystem(t *testing.T) {
 	admin := adminToken(t)
+	startAgentNode(t, admin, fmt.Sprintf("e2e-commit-node-%d", time.Now().UnixNano()))
 	id := createReadySandbox(t, admin, fmt.Sprintf("commit-%d", time.Now().UnixNano()), 128<<20)
 	t.Cleanup(func() { deleteSandbox(t, admin, id) })
 	assertStopCommits(t, admin, id)

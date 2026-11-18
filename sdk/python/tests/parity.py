@@ -166,7 +166,7 @@ def files_api(client: Orrery) -> None:
         client.delete_file(sandbox.id, "src/moved.txt")
         expect_code(lambda: client.read_file(sandbox.id, "src/moved.txt"), "not_found")
 
-        for path in ("../escape.txt", "/etc/passwd", "src/../../escape.txt"):
+        for path in ("../escape.txt", "/../escape.txt", "/resources/x", "src/../../escape.txt"):
             expect_code(lambda: client.write_file(sandbox.id, path, b"x"), "invalid_request")
             expect_code(lambda: client.read_file(sandbox.id, path), "invalid_request")
 

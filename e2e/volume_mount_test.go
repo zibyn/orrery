@@ -16,6 +16,7 @@ import (
 // the rest, and a second Sandbox mounting the Volume reads all of it.
 func TestVolumeWritesSurviveTheHolder(t *testing.T) {
 	admin := adminToken(t)
+	startAgentNode(t, admin, fmt.Sprintf("e2e-volume-rw-node-%d", time.Now().UnixNano()))
 	raiseSandboxQuota(t, admin, 10)
 	name := fmt.Sprintf("e2e-volume-rw-%d", time.Now().UnixNano())
 	status, data := call(t, http.MethodPost, "/api/v1/volumes", admin, map[string]any{"name": name})
