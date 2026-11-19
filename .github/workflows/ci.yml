@@ -106,11 +106,17 @@ jobs:
       - run: make console
       - run: pip install httpx && python -m unittest discover -s sdk/python/tests
 
+  # Four jobs, each with its own stack, run a quarter of the suite each
+  # (ORRERY_E2E_SHARD in scripts/e2e.sh); serial, it took about 16 minutes.
   e2e:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -134,8 +140,9 @@ jobs:
       # The containerd Agents need root, and they run as the test process's
       # user, so the whole script runs under sudo with the job's environment.
       # GPU and remote-host scenarios skip themselves without ORRERY_E2E_GPU_SSH.
-      - run: sudo -E env "PATH=$PATH" ./scripts/e2e.sh -timeout 80m
+      - run: sudo -E env "PATH=$PATH" ./scripts/e2e.sh -timeout 30m
         env:
+          ORRERY_E2E_SHARD: ${{ matrix.shard }}/4
           # CI-only BuildKit cache; local e2e runs keep the plain build
           # (deploy/compose.ci.yaml).
           ORRERY_E2E_COMPOSE_OVERRIDE: ${{ github.workspace }}/deploy/compose.ci.yaml
