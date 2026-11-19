@@ -53,7 +53,6 @@ TestSnapshotVersionDeletePurge 3
 TestMachineUserToken 1
 TestVolumeLifecycleWithoutNode 1
 TestAuditQuery 0
-TestEgressModeUnsupported 0
 TestExecOOMSentryKilled 0
 TestGPUQueueAndDeadline 0
 TestGPUSandboxDefaultSnapshot 0
