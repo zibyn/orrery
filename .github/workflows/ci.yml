@@ -2,7 +2,8 @@
 # the Compose e2e suite once; a push to main or a v* tag only publishes (:main,
 # or :vX.Y.Z, :latest and the GitHub Release), since the merged PR already
 # passed the gate (#179). There is no scheduled run; workflow_dispatch runs
-# the full gate, and the Playwright console suite, by hand.
+# the full gate, and the Playwright console suite, by hand, with the e2e
+# Agents on runc or runsc.
 name: ci
 
 on:
@@ -11,6 +12,12 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      isolation:
+        description: Isolation Runtime for the e2e Agents (pull requests always run runc)
+        type: choice
+        options: [runc, runsc]
+        default: runc
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -143,6 +150,8 @@ jobs:
       - run: sudo -E env "PATH=$PATH" ./scripts/e2e.sh -timeout 30m
         env:
           ORRERY_E2E_SHARD: ${{ matrix.shard }}/4
+          # Empty means the Agent default, runc; runsc only by hand.
+          ORRERY_E2E_ISOLATION: ${{ inputs.isolation == 'runsc' && 'runsc' || '' }}
           # CI-only BuildKit cache; local e2e runs keep the plain build
           # (deploy/compose.ci.yaml).
           ORRERY_E2E_COMPOSE_OVERRIDE: ${{ github.workspace }}/deploy/compose.ci.yaml
