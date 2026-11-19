@@ -498,5 +498,11 @@
   "volume_new_sandbox": "用这个卷新建沙箱",
   "condition_changes_lost": "改动丢失：所在节点丢失，最近一次提交之后的改动没了",
   "condition_commit_stalled": "提交受阻：停止时的提交在重试",
-  "label_volume": "卷"
+  "label_volume": "卷",
+  "pager_label": "分页",
+  "pager_status": "第 {page} / {pageCount} 页",
+  "pager_previous": "上一页",
+  "pager_next": "下一页",
+  "sandboxes_owner_search": "搜索用户名或邮箱",
+  "sandboxes_owner_empty": "没有匹配的用户"
 }

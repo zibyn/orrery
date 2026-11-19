@@ -4,9 +4,18 @@ import { Box, ChevronRight, Plus } from 'lucide-react'
 import { useState } from 'react'
 
 import { listAll, type Sandbox, type User } from '@/api'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { buttonVariants } from '@/components/ui/button'
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from '@/components/ui/combobox'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldLabel } from '@/components/ui/field'
 import {
@@ -18,7 +27,6 @@ import {
   ItemMedia,
   ItemTitle,
 } from '@/components/ui/item'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Spinner } from '@/components/ui/spinner'
 import { useLocale } from '@/lib/i18n'
 import { sandboxListPollInterval } from '@/lib/sandbox'
@@ -26,6 +34,7 @@ import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/')({
+  validateSearch: pageSearch,
   component: SandboxesPage,
 })
 
@@ -49,6 +58,12 @@ function SandboxesPage() {
   })
 
   const count = sandboxes.data?.length
+  // The admin first, then the other live Users; '' (the API default) means the admin.
+  const ownerOptions = [user, ...(users.data ?? []).filter((item) => item.id !== user.id && !item.deleted_at)]
+  const ownerLabel = (item: User) =>
+    item.id === user.id ? m.sandboxes_owner_me({ name: user.name }) : item.name
+
+  const paged = usePagedList(sandboxes.data)
 
   return (
     <div className="flex flex-col gap-6">
@@ -69,19 +84,41 @@ function SandboxesPage() {
                 <FieldLabel htmlFor="sandbox-owner" className="whitespace-nowrap">
                   {m.sandboxes_owner()}
                 </FieldLabel>
-                <NativeSelect
-                  id="sandbox-owner"
-                  className="min-w-32"
-                  value={owner}
-                  onChange={(e) => setOwner(e.target.value)}
+                {/* Searchable, since an admin may pick from dozens of Users. */}
+                <Combobox
+                  items={ownerOptions}
+                  value={ownerOptions.find((item) => item.id === (owner || user.id)) ?? null}
+                  onValueChange={(next) => {
+                    setOwner(next && next.id !== user.id ? next.id : '')
+                    paged.onPageChange(1)
+                  }}
+                  itemToStringLabel={ownerLabel}
+                  isItemEqualToValue={(a, b) => a.id === b.id}
+                  filter={(item, query) =>
+                    `${item.name} ${item.email ?? ''}`.toLowerCase().includes(query.trim().toLowerCase())
+                  }
                 >
-                  <NativeSelectOption value="">{m.sandboxes_owner_me({ name: user.name })}</NativeSelectOption>
-                  {users.data?.map((item) => (
-                    <NativeSelectOption key={item.id} value={item.id}>
-                      {item.name}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
+                  <ComboboxInput
+                    id="sandbox-owner"
+                    className="w-56"
+                    placeholder={m.sandboxes_owner_search()}
+                  />
+                  <ComboboxContent>
+                    <ComboboxEmpty>{m.sandboxes_owner_empty()}</ComboboxEmpty>
+                    <ComboboxList>
+                      {(item: User) => (
+                        <ComboboxItem key={item.id} value={item}>
+                          <div className="flex min-w-0 flex-col">
+                            <span className="truncate">{ownerLabel(item)}</span>
+                            {item.email && (
+                              <span className="truncate text-xs text-muted-foreground">{item.email}</span>
+                            )}
+                          </div>
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
               </Field>
             )}
             <Link
@@ -116,7 +153,7 @@ function SandboxesPage() {
 
       {sandboxes.data && sandboxes.data.length > 0 && (
         <ItemGroup>
-          {sandboxes.data.map((sandbox) => (
+          {paged.items.map((sandbox) => (
             // The listitem wraps the row so the row itself keeps its link role.
             <div key={sandbox.id} role="listitem">
               <Item
@@ -145,6 +182,8 @@ function SandboxesPage() {
           ))}
         </ItemGroup>
       )}
+
+      <ListPager {...paged} />
     </div>
   )
 }

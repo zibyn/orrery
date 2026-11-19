@@ -4,6 +4,7 @@ import { Pencil, ShieldCheck, Trash } from 'lucide-react'
 import { useState } from 'react'
 
 import { api, listAll, type QuotaUsage, type User } from '@/api'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import {
   AlertDialog,
@@ -55,6 +56,7 @@ import { identityLabel } from '@/lib/labels'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/admin/users')({
+  validateSearch: pageSearch,
   component: UsersPage,
 })
 
@@ -74,6 +76,8 @@ function UsersPage() {
     queryKey: ['me', 'quota'],
     queryFn: () => api<QuotaUsage>('GET', '/users/me/quota'),
   })
+
+  const paged = usePagedList(users.data)
 
   return (
     <div className="flex flex-col gap-6">
@@ -114,11 +118,13 @@ function UsersPage() {
 
       {users.data && users.data.length > 0 && (
         <ItemGroup className="gap-2">
-          {users.data.map((user) => (
+          {paged.items.map((user) => (
             <UserRow key={user.id} user={user} isSelf={user.id === me.id} />
           ))}
         </ItemGroup>
       )}
+
+      <ListPager {...paged} />
     </div>
   )
 }

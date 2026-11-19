@@ -4,6 +4,7 @@ import { Database, Plus, Trash } from 'lucide-react'
 import { useState } from 'react'
 
 import { api, listAll, type Volume } from '@/api'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -43,6 +44,7 @@ import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/volumes/')({
+  validateSearch: pageSearch,
   component: VolumesPage,
 })
 
@@ -74,6 +76,8 @@ function VolumesPage() {
 
   const live = volumes.data?.filter((volume) => volume.state !== 'deleted')
   const count = live?.length
+
+  const paged = usePagedList(live)
 
   return (
     <div className="flex flex-col gap-6">
@@ -160,7 +164,7 @@ function VolumesPage() {
 
       {live && live.length > 0 && (
         <ItemGroup>
-          {live.map((volume) => (
+          {paged.items.map((volume) => (
             <Item key={volume.id} variant="outline" role="listitem" data-testid={`volume-${volume.name}`}>
               <ItemMedia variant="icon">
                 <Database />
@@ -229,6 +233,8 @@ function VolumesPage() {
           ))}
         </ItemGroup>
       )}
+
+      <ListPager {...paged} />
     </div>
   )
 }

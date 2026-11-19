@@ -498,5 +498,11 @@
   "volume_new_sandbox": "New Sandbox with this Volume",
   "condition_changes_lost": "Changes lost: the Node was lost, and writes after the last commit are gone",
   "condition_commit_stalled": "Commit stalled: the commit on stop is retrying",
-  "label_volume": "Volume"
+  "label_volume": "Volume",
+  "pager_label": "Pagination",
+  "pager_status": "Page {page} of {pageCount}",
+  "pager_previous": "Previous",
+  "pager_next": "Next",
+  "sandboxes_owner_search": "Search name or email",
+  "sandboxes_owner_empty": "No matching users"
 }

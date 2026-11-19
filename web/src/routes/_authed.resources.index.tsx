@@ -3,6 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Package } from 'lucide-react'
 
 import { listAll, type Resource } from '@/api'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import {
@@ -20,6 +21,7 @@ import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/resources/')({
+  validateSearch: pageSearch,
   component: ResourcesPage,
 })
 
@@ -31,6 +33,8 @@ function ResourcesPage() {
   })
 
   const count = resources.data?.length
+
+  const paged = usePagedList(resources.data)
 
   return (
     <div className="flex flex-col gap-6">
@@ -67,7 +71,7 @@ function ResourcesPage() {
 
       {resources.data && resources.data.length > 0 && (
         <ItemGroup>
-          {resources.data.map((resource) => (
+          {paged.items.map((resource) => (
             // The row itself is the link, so the listitem role goes on a wrapper.
             <div key={resource.id} role="listitem">
               <Item
@@ -99,6 +103,8 @@ function ResourcesPage() {
           ))}
         </ItemGroup>
       )}
+
+      <ListPager {...paged} />
     </div>
   )
 }

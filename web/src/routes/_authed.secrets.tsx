@@ -4,6 +4,7 @@ import { KeyRound, Pencil, Plus, Trash } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { api, listAll, type Secret } from '@/api'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import {
   AlertDialog,
@@ -50,6 +51,7 @@ import { formatTimestamp } from '@/lib/tokens'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/secrets')({
+  validateSearch: pageSearch,
   component: SecretsPage,
 })
 
@@ -113,6 +115,8 @@ function SecretsPage() {
     setReplacing(secretName !== '')
     setOpen(true)
   }
+
+  const paged = usePagedList(secrets.data)
 
   return (
     <div className="flex flex-col gap-6">
@@ -198,7 +202,7 @@ function SecretsPage() {
 
       {secrets.data && secrets.data.length > 0 && (
         <ItemGroup className="gap-2">
-          {secrets.data.map((secret) => (
+          {paged.items.map((secret) => (
             <Item key={secret.name} variant="outline" role="listitem">
               <ItemMedia variant="icon">
                 <KeyRound />
@@ -246,6 +250,8 @@ function SecretsPage() {
           ))}
         </ItemGroup>
       )}
+
+      <ListPager {...paged} />
     </div>
   )
 }

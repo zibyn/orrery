@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import type { Terminal as XTerminal } from '@xterm/xterm'
 
 import { api, type Exec, type ExecResultFrame, listAll, type Sandbox } from '@/api'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { TerminalView } from '@/components/terminal'
@@ -37,8 +38,9 @@ import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/sandboxes/$id_/execs')({
-  validateSearch: (search: Record<string, unknown>): { exec?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { exec?: string; page?: number } => ({
     exec: typeof search.exec === 'string' ? search.exec : undefined,
+    ...pageSearch(search),
   }),
   component: ExecsPage,
 })
@@ -60,6 +62,7 @@ function ExecsPage() {
     refetchInterval: (query) => execListPollInterval(query.state.data),
   })
   const selected = execs.data?.find((exec) => exec.id === selectedId)
+  const paged = usePagedList(execs.data)
 
   const cancel = useMutation({
     mutationFn: (execId: string) => api<Exec>('POST', `/execs/${execId}/cancel`),
@@ -129,9 +132,9 @@ function ExecsPage() {
               <CardTitle>{m.execs_recent()}</CardTitle>
               <CardDescription>{m.execs_recent_description()}</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex flex-col gap-3">
               <ItemGroup className="gap-1">
-                {execs.data.map((exec) => (
+                {paged.items.map((exec) => (
                   <Item
                     key={exec.id}
                     role="listitem"
@@ -143,7 +146,7 @@ function ExecsPage() {
                       <Link
                         to="/sandboxes/$id/execs"
                         params={{ id }}
-                        search={{ exec: exec.id }}
+                        search={(prev) => ({ ...prev, exec: exec.id })}
                         aria-current={selectedId === exec.id ? 'true' : undefined}
                         className="flex min-w-0 flex-col gap-1"
                       >
@@ -171,6 +174,7 @@ function ExecsPage() {
                   </Item>
                 ))}
               </ItemGroup>
+              <ListPager {...paged} />
             </CardContent>
           </Card>
 

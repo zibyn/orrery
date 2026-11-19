@@ -3,6 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Layers, Plus } from 'lucide-react'
 
 import { listAll, type Snapshot } from '@/api'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { buttonVariants } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
@@ -23,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/snapshots/')({
+  validateSearch: pageSearch,
   component: SnapshotsPage,
 })
 
@@ -35,6 +37,8 @@ function SnapshotsPage() {
   })
 
   const count = snapshots.data?.length
+
+  const paged = usePagedList(snapshots.data)
 
   return (
     <div className="flex flex-col gap-6">
@@ -80,7 +84,7 @@ function SnapshotsPage() {
 
       {snapshots.data && snapshots.data.length > 0 && (
         <ItemGroup>
-          {snapshots.data.map((snapshot) => (
+          {paged.items.map((snapshot) => (
             // The row itself is the link, so the listitem role goes on a wrapper.
             <div key={snapshot.id} role="listitem">
               <Item
@@ -113,6 +117,8 @@ function SnapshotsPage() {
           ))}
         </ItemGroup>
       )}
+
+      <ListPager {...paged} />
     </div>
   )
 }

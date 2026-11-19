@@ -5,6 +5,7 @@ import { useState } from 'react'
 
 import { api, type CapacityNode, listAll, type ListResponse, type Node } from '@/api'
 import { NodeCapacity } from '@/components/node-capacity'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -51,6 +52,7 @@ import { m } from '@/paraglide/messages'
 import { getLocale } from '@/paraglide/runtime'
 
 export const Route = createFileRoute('/_authed/admin/nodes')({
+  validateSearch: pageSearch,
   component: NodesPage,
 })
 
@@ -90,6 +92,8 @@ function NodesPage() {
   const rows = mergeNodeCapacity(nodes.data ?? [], capacity.data?.items ?? [])
   // The server's problem detail explains why a pause/resume/delete was refused
   // (for example delete preconditions, or resuming a lost Node).
+
+  const paged = usePagedList(rows)
 
   return (
     <div className="flex flex-col gap-6">
@@ -137,7 +141,7 @@ function NodesPage() {
 
       {rows.length > 0 && (
         <ItemGroup className="gap-2">
-          {rows.map((row) => (
+          {paged.items.map((row) => (
             <Item key={row.id} variant="outline" role="listitem" data-testid="node-row">
               <ItemMedia variant="icon">
                 <Server />
@@ -239,6 +243,8 @@ function NodesPage() {
           ))}
         </ItemGroup>
       )}
+
+      <ListPager {...paged} />
     </div>
   )
 }
