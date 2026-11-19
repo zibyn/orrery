@@ -10,6 +10,7 @@ import {
   type Resource,
   type ResourceVersion,
 } from '@/api'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -70,8 +71,9 @@ import { m } from '@/paraglide/messages'
 const MANIFEST_SHOWN = 1000
 
 export const Route = createFileRoute('/_authed/resources/$id')({
-  validateSearch: (search: Record<string, unknown>): { version?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { version?: string; page?: number } => ({
     version: typeof search.version === 'string' ? search.version : undefined,
+    ...pageSearch(search),
   }),
   component: ResourceDetailPage,
 })
@@ -131,6 +133,8 @@ function ResourceDetailPage() {
     refetchInterval: (query) => resourceVersionPollInterval(query.state.data?.state),
   })
   const selected = listed ?? unlisted.data
+
+  const paged = usePagedList(versions.data)
 
   return (
     <div className="flex flex-col gap-6">
@@ -233,7 +237,7 @@ function ResourceDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {versions.data.map((version) => {
+                {paged.items.map((version) => {
                   const isCurrent = current?.current_version_id === version.id
                   return (
                     <TableRow key={version.id} data-testid={`version-${version.id}`}>
@@ -278,7 +282,7 @@ function ResourceDetailPage() {
                             <Link
                               to="/resources/$id"
                               params={{ id }}
-                              search={{ version: version.id }}
+                              search={(prev) => ({ ...prev, version: version.id })}
                               data-testid={`version-files-${version.id}`}
                               className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
                             >
@@ -306,6 +310,7 @@ function ResourceDetailPage() {
               </TableBody>
             </Table>
           )}
+          <ListPager {...paged} className="border-t px-5 py-3" />
         </CardContent>
       </Card>
 

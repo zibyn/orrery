@@ -171,9 +171,6 @@
   "audit_loading": "Loading audit log…",
   "audit_load_error": "Could not load the audit log",
   "audit_empty": "No audit records match.",
-  "audit_newest": "Newest",
-  "audit_older": "Older records",
-  "audit_newer": "Newer records",
   "nodes_title": "Nodes",
   "nodes_description": "Compute hosts and their GPU capacity. Enrolling a Node or declaring one lost is done with the CLI.",
   "nodes_count_one": "{count} node",
@@ -504,5 +501,6 @@
   "pager_previous": "Previous",
   "pager_next": "Next",
   "sandboxes_owner_search": "Search name or email",
-  "sandboxes_owner_empty": "No matching users"
+  "sandboxes_owner_empty": "No matching users",
+  "pager_status_open": "Page {page}"
 }

@@ -2,6 +2,7 @@ import { useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const PAGE_SIZE = 20
@@ -39,31 +40,33 @@ export function usePagedList<T>(items: readonly T[] | undefined) {
   }
 }
 
+// pageCount is unknown for a server-cursor list (audit): hasNext says whether
+// the server reported another page.
 export function ListPager({
   page,
   pageCount,
+  hasNext,
   onPageChange,
+  className,
 }: {
   page: number
-  pageCount: number
+  pageCount?: number
+  hasNext?: boolean
   onPageChange: (page: number) => void
+  className?: string
 }) {
-  if (pageCount <= 1) return null
+  const canNext = pageCount === undefined ? Boolean(hasNext) : page < pageCount
+  if (page <= 1 && !canNext) return null
   return (
-    <nav aria-label={m.pager_label()} className="flex items-center justify-end gap-2">
+    <nav aria-label={m.pager_label()} className={cn('flex items-center justify-end gap-2', className)}>
       <span className="mr-2 text-sm text-muted-foreground tabular-nums">
-        {m.pager_status({ page, pageCount })}
+        {pageCount === undefined ? m.pager_status_open({ page }) : m.pager_status({ page, pageCount })}
       </span>
       <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
         <ChevronLeft data-icon="inline-start" />
         {m.pager_previous()}
       </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={page >= pageCount}
-        onClick={() => onPageChange(page + 1)}
-      >
+      <Button variant="outline" size="sm" disabled={!canNext} onClick={() => onPageChange(page + 1)}>
         {m.pager_next()}
         <ChevronRight data-icon="inline-end" />
       </Button>

@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { z } from 'zod'
 
 import { api, listAll, type CreatedToken, type Token } from '@/api'
+import { ListPager, pageSearch, paginate, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { TokenReveal } from '@/components/token-reveal'
 import {
@@ -62,6 +63,7 @@ type NewToken = {
 }
 
 export const Route = createFileRoute('/_authed/account')({
+  validateSearch: pageSearch,
   component: AccountPage,
 })
 
@@ -105,6 +107,10 @@ function AccountPage() {
         Number(Boolean(b.current)) - Number(Boolean(a.current)) ||
         b.created_at.localeCompare(a.created_at),
     )
+  const pagedTokens = usePagedList(apiTokens)
+  // Sessions page in local state: ?page= already belongs to the token list.
+  const [sessionPage, setSessionPage] = useState(1)
+  const pagedSessions = paginate(sessions, sessionPage)
 
   const createForm = useForm({
     defaultValues: { name: '', scope: 'user' as NewToken['scope'], expires_at: '' },
@@ -271,7 +277,7 @@ function AccountPage() {
             <p className="text-sm text-muted-foreground">{m.account_no_api_tokens()}</p>
           ) : (
             <ItemGroup className="gap-2">
-              {apiTokens.map((token) => (
+              {pagedTokens.items.map((token) => (
                 <Item key={token.id} variant="outline" role="listitem">
                   <ItemMedia variant="icon">
                     <KeyRound />
@@ -320,6 +326,7 @@ function AccountPage() {
               ))}
             </ItemGroup>
           )}
+          <ListPager {...pagedTokens} />
         </section>
       )}
 
@@ -330,7 +337,7 @@ function AccountPage() {
             <p className="text-xs text-muted-foreground">{m.account_sessions_description()}</p>
           </div>
           <ItemGroup className="gap-2">
-            {sessions.map((session) => {
+            {pagedSessions.items.map((session) => {
               const isCurrent = Boolean(session.current)
               return (
                 <Item key={session.id} variant="outline" role="listitem">
@@ -391,6 +398,7 @@ function AccountPage() {
               )
             })}
           </ItemGroup>
+          <ListPager {...pagedSessions} onPageChange={setSessionPage} />
         </section>
       )}
     </div>

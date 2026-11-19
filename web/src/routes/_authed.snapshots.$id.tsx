@@ -5,6 +5,7 @@ import { useState } from 'react'
 
 import { api, listAll, type Snapshot, type SnapshotVersion } from '@/api'
 import { BuildLog } from '@/components/build-log'
+import { ListPager, pageSearch, usePagedList } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -56,8 +57,9 @@ import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
 export const Route = createFileRoute('/_authed/snapshots/$id')({
-  validateSearch: (search: Record<string, unknown>): { version?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { version?: string; page?: number } => ({
     version: typeof search.version === 'string' ? search.version : undefined,
+    ...pageSearch(search),
   }),
   component: SnapshotDetailPage,
 })
@@ -119,6 +121,8 @@ function SnapshotDetailPage() {
       ]),
   })
   const logMode = selected ? buildLogMode(selected) : 'none'
+
+  const paged = usePagedList(versions.data)
 
   return (
     <div className="flex flex-col gap-6">
@@ -264,7 +268,7 @@ function SnapshotDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {versions.data.map((version) => (
+                {paged.items.map((version) => (
                   <TableRow key={version.id} data-testid={`version-${version.id}`}>
                     <TableCell className="pl-5">
                       <div className="flex items-center gap-2">
@@ -297,7 +301,7 @@ function SnapshotDetailPage() {
                         <Link
                           to="/snapshots/$id"
                           params={{ id }}
-                          search={{ version: version.id }}
+                          search={(prev) => ({ ...prev, version: version.id })}
                           data-testid={`build-log-link-${version.id}`}
                           className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
                         >
@@ -323,6 +327,7 @@ function SnapshotDetailPage() {
               </TableBody>
             </Table>
           )}
+          <ListPager {...paged} className="border-t px-5 py-3" />
         </CardContent>
       </Card>
 

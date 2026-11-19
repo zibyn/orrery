@@ -171,9 +171,6 @@
   "audit_loading": "正在加载审计日志…",
   "audit_load_error": "无法加载审计日志",
   "audit_empty": "没有匹配的审计记录。",
-  "audit_newest": "最新",
-  "audit_older": "更早的记录",
-  "audit_newer": "较新的记录",
   "nodes_title": "节点",
   "nodes_description": "计算节点及其 GPU 容量。注册节点或宣告节点丢失请使用 CLI。",
   "nodes_count_one": "{count} 个节点",
@@ -504,5 +501,6 @@
   "pager_previous": "上一页",
   "pager_next": "下一页",
   "sandboxes_owner_search": "搜索用户名或邮箱",
-  "sandboxes_owner_empty": "没有匹配的用户"
+  "sandboxes_owner_empty": "没有匹配的用户",
+  "pager_status_open": "第 {page} 页"
 }

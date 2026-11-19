@@ -4,6 +4,7 @@ import { Filter } from 'lucide-react'
 import { useState, type ChangeEvent } from 'react'
 
 import { api, type AuditRecord, type ListResponse } from '@/api'
+import { ListPager, PAGE_SIZE } from '@/components/list-pager'
 import { PageHeader } from '@/components/page-header'
 import {
   Breadcrumb,
@@ -41,7 +42,7 @@ function AuditPage() {
 
   const records = useQuery({
     queryKey: ['audit', applied, cursor],
-    queryFn: () => api<ListResponse<AuditRecord>>('GET', auditPath(applied, cursor)),
+    queryFn: () => api<ListResponse<AuditRecord>>('GET', auditPath(applied, cursor, PAGE_SIZE)),
     placeholderData: keepPreviousData,
   })
 
@@ -160,27 +161,15 @@ function AuditPage() {
         </ItemGroup>
       )}
 
-      <div className="flex gap-2">
-        {cursors.length > 1 && (
-          <>
-            <Button variant="outline" onClick={() => setCursors([null])}>
-              {m.audit_newest()}
-            </Button>
-            <Button variant="outline" onClick={() => setCursors((stack) => stack.slice(0, -1))}>
-              {m.audit_newer()}
-            </Button>
-          </>
-        )}
-        {records.data?.next_cursor && (
-          <Button
-            variant="outline"
-            disabled={records.isPlaceholderData}
-            onClick={() => setCursors((stack) => [...stack, records.data?.next_cursor ?? null])}
-          >
-            {m.audit_older()}
-          </Button>
-        )}
-      </div>
+      <ListPager
+        page={cursors.length}
+        hasNext={Boolean(records.data?.next_cursor) && !records.isPlaceholderData}
+        onPageChange={(page) =>
+          setCursors((stack) =>
+            page < stack.length ? stack.slice(0, page) : [...stack, records.data?.next_cursor ?? null],
+          )
+        }
+      />
     </div>
   )
 }

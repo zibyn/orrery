@@ -4,6 +4,7 @@ import { ArrowUp, Download, File, Folder, PackagePlus, Upload } from 'lucide-rea
 import { useRef, useState } from 'react'
 
 import { api, apiRaw, type FileEntry, type ResourceVersion } from '@/api'
+import { ListPager, paginate } from '@/components/list-pager'
 import { StatusBadge } from '@/components/status-badge'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -47,6 +48,8 @@ import { m } from '@/paraglide/messages'
 // `${source}/publish` (docs/spec/api.md §3, §8).
 export function SandboxFiles({ source, readOnly = false }: { source: string; readOnly?: boolean }) {
   const [path, setPath] = useState('')
+  // The page belongs to the directory it was picked in; opening another starts at 1.
+  const [pageAt, setPageAt] = useState({ path, page: 1 })
   const queryClient = useQueryClient()
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -54,6 +57,7 @@ export function SandboxFiles({ source, readOnly = false }: { source: string; rea
     queryKey: ['files', source, path],
     queryFn: () => api<{ items: FileEntry[] }>('GET', filesPath(source, path)),
   })
+  const paged = paginate(listing.data?.items ?? [], pageAt.path === path ? pageAt.page : 1)
 
   const upload = useMutation({
     mutationFn: (file: File) =>
@@ -206,7 +210,7 @@ export function SandboxFiles({ source, readOnly = false }: { source: string; rea
         )}
         {listing.data && listing.data.items.length > 0 && (
           <ItemGroup className="gap-1">
-            {listing.data.items.map((entry) => {
+            {paged.items.map((entry) => {
               const entryPath = entry.path || joinPath(path, entry.name)
               // Only files have a content download; directories are archived,
               // and the API rejects content requests for symlinks/other types.
@@ -275,6 +279,7 @@ export function SandboxFiles({ source, readOnly = false }: { source: string; rea
             })}
           </ItemGroup>
         )}
+        <ListPager {...paged} onPageChange={(page) => setPageAt({ path, page })} />
       </CardContent>
     </Card>
   )
