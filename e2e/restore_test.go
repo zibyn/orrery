@@ -12,7 +12,8 @@ import (
 
 // TestStoppedSandboxStartsOnAnotherNode is #276's two-Node scenario
 // (ADR-0031, runtime.md §16): a Sandbox installs a package and commits a Git
-// repository under /workspace on Node A and stops; with A paused, start puts
+// repository under /workspace on Node A and stops, and that stop commits the
+// root filesystem as well (#275's assertStopCommits); with A paused, start puts
 // it on Node B, restored from its head Generation, with the package, the
 // files and a clean `git status`. Back on B it stops again and its next
 // commit is based on what B restored.
@@ -40,6 +41,7 @@ git init -q -b main && git config user.email e2e@orrery && git config user.name 
 printf 'hello\n' > README && mkdir -p bin && printf '#!/bin/sh\necho tool\n' > bin/tool && chmod 755 bin/tool
 git add . && git commit -q -m first
 rm -f /etc/motd`)
+	assertStopCommits(t, admin, id)
 	stop := func() {
 		t.Helper()
 		if status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+id+"/stop", admin, nil); status != http.StatusAccepted {
@@ -47,7 +49,6 @@ rm -f /etc/motd`)
 		}
 		waitForSandboxState(t, admin, id, "stopped", 3*time.Minute)
 	}
-	stop()
 	headA := psqlCount(t, fmt.Sprintf("SELECT head_generation_id FROM sandboxes WHERE id = '%s'", id))
 
 	if status, data := call(t, http.MethodPost, "/api/v1/nodes/"+nodeA.ID+"/pause", admin, nil); status != http.StatusAccepted {

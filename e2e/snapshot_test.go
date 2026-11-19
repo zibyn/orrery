@@ -34,13 +34,21 @@ type snapshotVersionView struct {
 
 // TestSnapshotImport is the "snapshot-import" acceptance scenario (#88): an
 // alpine RepoDigest imported into a Snapshot becomes runnable, proving the
-// Agent pulls from the platform registry with the HelloAck credential.
+// Agent pulls from the platform registry with the HelloAck credential. It also
+// imports from the platform registry itself with an auth_secret and runs that:
+// authorize source, copy, pull with the deployment credential. Both imports
+// share one Node.
 func TestSnapshotImport(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
 	alpineRef := os.Getenv("ORRERY_E2E_ALPINE_REF")
 	if alpineRef == "" {
 		t.Fatal("ORRERY_E2E_ALPINE_REF is not set; run ./scripts/e2e.sh")
+	}
+	addr := os.Getenv("ORRERY_E2E_REGISTRY_ADDR")
+	credential := os.Getenv("ORRERY_E2E_REGISTRY_CREDENTIAL")
+	if addr == "" || credential == "" {
+		t.Fatal("ORRERY_E2E_REGISTRY_ADDR and ORRERY_E2E_REGISTRY_CREDENTIAL are not set; run ./scripts/e2e.sh")
 	}
 	suffix := time.Now().UnixNano()
 	name := fmt.Sprintf("e2e-import-%d", suffix)
@@ -54,6 +62,20 @@ func TestSnapshotImport(t *testing.T) {
 	if version.Source != "import" {
 		t.Fatalf("version source = %q", version.Source)
 	}
+
+	dockerConfig, digestRef := pushUniqueImage(t, addr, credential, suffix)
+	secretName := fmt.Sprintf("e2e-import-auth-%d", suffix)
+	if status, data := call(t, http.MethodPut, "/api/v1/secrets/"+secretName, admin,
+		map[string]string{"value": credential}); status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("create auth Secret: %d %s", status, data)
+	}
+	private := createTestSnapshot(t, admin, fmt.Sprintf("e2e-private-%d", suffix))
+	privateVersion := importIntoSnapshot(t, admin, private.ID, digestRef, secretName)
+	waitForSnapshotVersion(t, admin, private.ID, privateVersion.ID, "ready", 2*time.Minute)
+
+	// Only the platform registry can serve the private image now.
+	imageID := strings.TrimSpace(dockerCLI(t, dockerConfig, "image", "inspect", digestRef, "--format", "{{.Id}}"))
+	dockerCLI(t, dockerConfig, "image", "rm", "-f", imageID)
 
 	nodeName := fmt.Sprintf("e2e-import-node-%d", suffix)
 	state, dataRoot := enrollAgent(t, admin, nodeName)
@@ -73,6 +95,16 @@ func TestSnapshotImport(t *testing.T) {
 	}
 	deleteSandbox(t, admin, created.ID)
 
+	created = createSandbox(t, admin, map[string]any{
+		"name":      fmt.Sprintf("private-%d", suffix),
+		"cpu":       0.5,
+		"memory":    128 << 20,
+		"idle_stop": 0,
+		"snapshot":  private.Name,
+	})
+	waitForSandboxState(t, admin, created.ID, "ready", 3*time.Minute)
+	deleteSandbox(t, admin, created.ID)
+
 	// Platform Snapshots are read-only through the API (api.md §3).
 	platformName := os.Getenv("ORRERY_E2E_PLATFORM_SNAPSHOT")
 	if platformName != "" {
@@ -88,48 +120,6 @@ func TestSnapshotImport(t *testing.T) {
 			t.Fatalf("mutate platform Snapshot = %d %s, want 403", status, data)
 		}
 	}
-}
-
-// TestSnapshotImportPrivateSource imports from the platform registry itself
-// with an auth_secret, then runs a Sandbox from the result: the whole path is
-// authorize source, copy, pull with the deployment credential.
-func TestSnapshotImportPrivateSource(t *testing.T) {
-	admin := adminToken(t)
-	raiseSandboxQuota(t, admin, 100)
-	addr := os.Getenv("ORRERY_E2E_REGISTRY_ADDR")
-	credential := os.Getenv("ORRERY_E2E_REGISTRY_CREDENTIAL")
-	if addr == "" || credential == "" {
-		t.Fatal("ORRERY_E2E_REGISTRY_ADDR and ORRERY_E2E_REGISTRY_CREDENTIAL are not set; run ./scripts/e2e.sh")
-	}
-	suffix := time.Now().UnixNano()
-	dockerConfig, digestRef := pushUniqueImage(t, addr, credential, suffix)
-
-	secretName := fmt.Sprintf("e2e-import-auth-%d", suffix)
-	if status, data := call(t, http.MethodPut, "/api/v1/secrets/"+secretName, admin,
-		map[string]string{"value": credential}); status != http.StatusOK && status != http.StatusCreated {
-		t.Fatalf("create auth Secret: %d %s", status, data)
-	}
-	snapshot := createTestSnapshot(t, admin, fmt.Sprintf("e2e-private-%d", suffix))
-	version := importIntoSnapshot(t, admin, snapshot.ID, digestRef, secretName)
-	waitForSnapshotVersion(t, admin, snapshot.ID, version.ID, "ready", 2*time.Minute)
-
-	// Only the platform registry can serve this image now.
-	imageID := strings.TrimSpace(dockerCLI(t, dockerConfig, "image", "inspect", digestRef, "--format", "{{.Id}}"))
-	dockerCLI(t, dockerConfig, "image", "rm", "-f", imageID)
-
-	nodeName := fmt.Sprintf("e2e-private-node-%d", suffix)
-	state, dataRoot := enrollAgent(t, admin, nodeName)
-	startAgent(t, state, dataRoot)
-	waitForNodeReady(t, admin, nodeName)
-	created := createSandbox(t, admin, map[string]any{
-		"name":      fmt.Sprintf("private-%d", suffix),
-		"cpu":       0.5,
-		"memory":    128 << 20,
-		"idle_stop": 0,
-		"snapshot":  snapshot.Name,
-	})
-	waitForSandboxState(t, admin, created.ID, "ready", 3*time.Minute)
-	deleteSandbox(t, admin, created.ID)
 }
 
 // TestSnapshotDeleteGuard is the "snapshot-delete-guard" scenario: current

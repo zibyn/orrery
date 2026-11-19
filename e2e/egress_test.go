@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,17 @@ import (
 // recommendedDeny is defaults.md's recommended Egress Rules deny list.
 var recommendedDeny = []string{"169.254.169.254/32", "10.213.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
 
-// TestEgressRules is #164's scenario on a containerd Node: the registration
-// probe proves egress_policy, Rules reach Sandboxes created or started after a
-// Control Plane restart, deny drops, allow overrides deny, and two Sandboxes
-// on one Node cannot reach each other under the recommended Rules.
+type egressView struct {
+	Mode  string   `json:"mode"`
+	Allow []string `json:"allow"`
+}
+
+// TestEgressRules is #164's and #165's scenarios on one containerd Node: the
+// registration probe proves egress_policy; with no Rules, a caller's none and
+// allowlist Modes narrow the open deployment and are reapplied on restart;
+// then Rules reach Sandboxes created or started after a Control Plane restart,
+// deny drops, allow overrides deny and applies to Mode none too, and two
+// Sandboxes on one Node cannot reach each other under the recommended Rules.
 func TestEgressRules(t *testing.T) {
 	if composeArgs() == nil || os.Getenv("ORRERY_CONFIG_DIR") == "" {
 		t.Skip("needs the Compose stack and its config.yaml (scripts/e2e.sh)")
@@ -31,22 +39,44 @@ func TestEgressRules(t *testing.T) {
 	if got := capabilityValues(node)["egress_policy"]; got != "enforced" {
 		t.Fatalf("egress_policy = %q, want enforced (capabilities %v)", got, node.Capabilities)
 	}
-
-	a := createReadySandbox(t, admin, fmt.Sprintf("egress-a-%d", suffix), 64<<20)
-	b := createReadySandbox(t, admin, fmt.Sprintf("egress-b-%d", suffix), 64<<20)
-	t.Cleanup(func() { // the later scenarios share the admin's Sandbox quota
-		for _, id := range []string{a, b} {
-			_, _ = call(t, http.MethodDelete, "/api/v1/sandboxes/"+id, admin, nil)
+	sandbox := func(name string, egress map[string]any) string {
+		body := map[string]any{"name": fmt.Sprintf("%s-%d", name, suffix), "cpu": 0.5, "memory": 64 << 20, "idle_stop": 0}
+		if egress != nil {
+			body["egress"] = egress
 		}
-	})
+		id := createReadySandboxWith(t, admin, body)
+		t.Cleanup(func() { _, _ = call(t, http.MethodDelete, "/api/v1/sandboxes/"+id, admin, nil) })
+		return id
+	}
+
+	a := sandbox("egress-a", nil)
+	b := sandbox("egress-b", nil)
+	assertEgress(t, admin, a, egressView{Mode: "open"})
 	listen(t, admin, a)
 	listen(t, admin, b)
-	// No Rules: the e2e deployment is fully open.
-	assertReach(t, admin, b, sandboxAddress(t, admin, a), 28001, true)
+	addr := sandboxAddress(t, admin, a)
+	// No Rules: the e2e deployment is fully open, so only a Mode narrows.
+	assertReach(t, admin, b, addr, 28001, true)
+
+	none := sandbox("egress-none", map[string]any{"mode": "none"})
+	assertEgress(t, admin, none, egressView{Mode: "none"})
+	assertReach(t, admin, none, addr, 28001, false)
+
+	allow := []string{addr + ":28001"}
+	listed := sandbox("egress-allowlist", map[string]any{"mode": "allowlist", "allow": allow})
+	assertEgress(t, admin, listed, egressView{Mode: "allowlist", Allow: allow})
+	assertReach(t, admin, listed, addr, 28001, true)
+	assertReach(t, admin, listed, addr, 28002, false)
+
+	// The Mode is stored and sent again on every start.
+	restartSandbox(t, admin, listed)
+	assertEgress(t, admin, listed, egressView{Mode: "allowlist", Allow: allow})
+	assertReach(t, admin, listed, addr, 28001, true)
+	assertReach(t, admin, listed, addr, 28002, false)
 
 	setEgressRules(t, agent, nil, recommendedDeny)
 	// A running Sandbox keeps the Policy it was created with.
-	assertReach(t, admin, b, sandboxAddress(t, admin, a), 28001, true)
+	assertReach(t, admin, b, addr, 28001, true)
 	restartSandbox(t, admin, a)
 	restartSandbox(t, admin, b)
 	listen(t, admin, a)
@@ -64,6 +94,11 @@ func TestEgressRules(t *testing.T) {
 	restartSandbox(t, admin, b)
 	assertReach(t, admin, b, addrA, 28001, true)
 	assertReach(t, admin, b, addrA, 28002, false)
+	// Rules allow applies to none too (runtime.md §13).
+	restartSandbox(t, admin, none)
+	assertEgress(t, admin, none, egressView{Mode: "none"})
+	assertReach(t, admin, none, addrA, 28001, true)
+	assertReach(t, admin, none, addrA, 28002, false)
 }
 
 // setEgressRules rewrites the e2e config.yaml's egress section and restarts
@@ -179,5 +214,17 @@ func assertReach(t *testing.T, admin, from, addr string, port int, want bool) {
 	got := result != nil && result.ExitCode != nil && *result.ExitCode == 0
 	if got != want {
 		t.Fatalf("Sandbox %s reaching %s:%d = %v, want %v (result %+v)", from, addr, port, got, want, result)
+	}
+}
+
+func assertEgress(t *testing.T, admin, id string, want egressView) {
+	t.Helper()
+	status, data := call(t, http.MethodGet, "/api/v1/sandboxes/"+id, admin, nil)
+	var sb struct {
+		Egress egressView `json:"egress"`
+	}
+	mustJSON(t, data, &sb)
+	if status != http.StatusOK || sb.Egress.Mode != want.Mode || !slices.Equal(sb.Egress.Allow, want.Allow) {
+		t.Fatalf("Sandbox %s egress = %d %s, want %+v", id, status, data, want)
 	}
 }
