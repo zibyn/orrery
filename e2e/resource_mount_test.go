@@ -145,8 +145,7 @@ func TestResourceUploadMount(t *testing.T) {
 // TestObjectStoreOutage is the "object-store-outage" acceptance scenario
 // (#86, ADR-0030): while RustFS is down a Sandbox with Resources cannot read
 // its manifest and stays provisioning; if the store recovers within the retry
-// window the Sandbox becomes ready, otherwise it ends
-// failed/resource_fetch_failed.
+// window the Sandbox becomes ready.
 func TestObjectStoreOutage(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 100)
@@ -181,18 +180,9 @@ func TestObjectStoreOutage(t *testing.T) {
 	composeService(t, "start", "rustfs")
 	waitForSandboxState(t, admin, first.ID, "ready", 180*time.Second)
 
-	// Kept down past the backoff, the Sandbox ends failed with the fetch
-	// cause (defaults.md: 1, 2, 4, 8, 16 seconds). The failure needs a version
-	// whose manifest the Node has not cached yet, so push a second Resource
-	// while the store is still up.
-	uncached := fmt.Sprintf("outage-uncached-%d", suffix)
-	uncachedSrc := t.TempDir()
-	writeTestFile(t, filepath.Join(uncachedSrc, "payload.txt"), "never fetched\n", 0o644)
-	mustJSON(t, cli.run(t, "", "resource", "push", uncachedSrc, uncached), &version)
-	composeService(t, "stop", "rustfs")
-	second := createResourceSandbox(t, admin, fmt.Sprintf("outage-fail-%d", suffix), uncached)
-	defer deleteSandbox(t, admin, second.ID)
-	waitForFailed(t, admin, second.ID, "resource_fetch_failed")
+	// Kept down past the backoff, the mount fails with resource_fetch_failed:
+	// TestRetryResourceFetch (internal/agent); an Agent cause reaching the
+	// Sandbox is TestSandboxLifecycle's runtime_create_failed.
 }
 
 func createResourceSandbox(t *testing.T, admin, name, resource string) sandboxView {
