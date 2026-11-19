@@ -34,7 +34,7 @@ function CliAuthPage() {
   if (approve.isSuccess) {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-3 py-6">
-        <PageHeader title={m.cli_title()} />
+        <PageHeader inline title={m.cli_title()} />
         <Item variant="outline">
           <ItemMedia variant="icon" className="text-success">
             <CircleCheck />
@@ -51,6 +51,7 @@ function CliAuthPage() {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6 py-6">
       <PageHeader
+        inline
         above={
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
             <Terminal className="size-3.5" />
