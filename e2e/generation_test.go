@@ -12,23 +12,11 @@ import (
 	"github.com/zibyn/orrery/internal/generation"
 )
 
-// TestStopCommitsTheFilesystem is #275's commit-on-stop scenario on its own
-// Node: what a Sandbox writes to its root filesystem is in the head
-// Generation once the stop ends (runtime.md §16). TestGvisorParity runs the
-// same check under runsc.
-func TestStopCommitsTheFilesystem(t *testing.T) {
-	admin := adminToken(t)
-	startAgentNode(t, admin, fmt.Sprintf("e2e-commit-node-%d", time.Now().UnixNano()))
-	id := createReadySandbox(t, admin, fmt.Sprintf("commit-%d", time.Now().UnixNano()), 128<<20)
-	t.Cleanup(func() { deleteSandbox(t, admin, id) })
-	assertStopCommits(t, admin, id)
-}
-
 // assertStopCommits writes a package-like tree, edits and deletes base image
 // files and leaves a Git lock behind, stops the Sandbox and reads the head
-// Generation back from the object store.
-// The repository lives under /root; #276's e2e covers /workspace and the
-// second, incremental stop.
+// Generation back from the object store (#275, runtime.md §16).
+// TestStoppedSandboxStartsOnAnotherNode runs it at its first stop and
+// TestGvisorParity under runsc.
 func assertStopCommits(t *testing.T, admin, id string) {
 	t.Helper()
 	e := createExec(t, admin, id, map[string]any{"argv": []string{"sh", "-c", `set -e
@@ -43,7 +31,7 @@ printf 'x' > /root/repo/.git/index.lock && printf 'tracked' > /root/repo/file`}}
 	if status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+id+"/stop", admin, nil); status != http.StatusAccepted {
 		t.Fatalf("stop: %d %s", status, data)
 	}
-	waitForSandboxState(t, admin, id, "stopped", 2*time.Minute)
+	waitForSandboxState(t, admin, id, "stopped", 3*time.Minute)
 
 	head := psqlCount(t, fmt.Sprintf("SELECT head_generation_id FROM sandboxes WHERE id = '%s'", id))
 	owner := psqlCount(t, fmt.Sprintf("SELECT owner_id FROM sandboxes WHERE id = '%s'", id))

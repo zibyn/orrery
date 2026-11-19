@@ -60,58 +60,27 @@ func waitForNodeHealth(t *testing.T, admin, name, wantStatus, wantHealth string)
 	}
 }
 
-// TestMultiNodePlacement is #93's "multi-node-placement" scenario: with two
-// Nodes enrolled on one containerd, a Sandbox is admitted only on a connected
-// Node. The policy would prefer the older Node, so the two Agents are brought
-// up out of order to make a placement on a disconnected Node visible.
-func TestMultiNodePlacement(t *testing.T) {
-	admin := adminToken(t)
-	raiseSandboxQuota(t, admin, 10)
-	suffix := time.Now().UnixNano()
-	firstName := fmt.Sprintf("e2e-multi-first-%d", suffix)
-	secondName := fmt.Sprintf("e2e-multi-second-%d", suffix)
-
-	// Enroll both so created_at is fixed by enrollment order: the first Node is
-	// the older one, which the placement policy prefers on a tie.
-	firstState, firstRoot := enrollAgent(t, admin, firstName)
-	secondState, secondRoot := enrollAgent(t, admin, secondName)
-
-	// Only the second (younger) Node is connected when the Sandbox is placed.
-	startAgentWith(t, secondState, secondRoot)
-	waitForNodeReady(t, admin, secondName)
-	second := findNode(t, admin, secondName)
-	first := findNode(t, admin, firstName)
-
-	sb := getSandbox(t, admin, createReadySandbox(t, admin, fmt.Sprintf("multi-%d", suffix), 128<<20))
-	if sb.NodeID == nil || *sb.NodeID != second.ID {
-		t.Fatalf("Sandbox node_id = %v, want the connected Node %s (the other Node is %s)",
-			sb.NodeID, second.ID, first.ID)
-	}
-	// Every Runtime instance carries its Node's ownership label (runtime.md §8).
-	if got := sandboxContainerLabel(t, sb.ID, "orrery.node"); got != second.ID {
-		t.Fatalf("container orrery.node = %q, want %q", got, second.ID)
-	}
-
-	deleteSandbox(t, admin, sb.ID)
-	// The older Node still joins cleanly afterwards.
-	startAgentWith(t, firstState, firstRoot)
-	waitForNodeReady(t, admin, firstName)
-}
-
-// TestUnhealthyRuntime is #93's "unhealthy-runtime" scenario: a Node whose
-// Runtime self-check and heartbeat report unhealthy receives no new placement.
-// The shared Runtime cannot be stopped for one Agent, so the unhealthy Agent
-// is given an unreachable --containerd socket.
+// TestUnhealthyRuntime is #93's "unhealthy-runtime" and "multi-node-placement"
+// scenarios: of three Nodes on one containerd, only the connected, healthy one
+// receives the Sandbox. The policy would prefer the older Node on a tie, so the
+// healthy Node is enrolled last, after one never started and one whose Runtime
+// self-check and heartbeat report unhealthy. The shared Runtime cannot be
+// stopped for one Agent, so the unhealthy Agent is given an unreachable
+// --containerd socket.
 func TestUnhealthyRuntime(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
 	suffix := time.Now().UnixNano()
-	healthyName := fmt.Sprintf("e2e-healthy-node-%d", suffix)
+	offlineName := fmt.Sprintf("e2e-offline-node-%d", suffix)
 	unhealthyName := fmt.Sprintf("e2e-unhealthy-node-%d", suffix)
+	healthyName := fmt.Sprintf("e2e-healthy-node-%d", suffix)
 
-	healthy, _ := startAgentNode(t, admin, healthyName)
-
+	// Enrollment order fixes created_at: offline is the oldest, healthy the youngest.
+	offlineState, offlineRoot := enrollAgent(t, admin, offlineName)
 	state, dataRoot := enrollAgent(t, admin, unhealthyName)
+	healthy, _ := startAgentNode(t, admin, healthyName)
+	offline := findNode(t, admin, offlineName)
+
 	startAgentWith(t, state, dataRoot, "--containerd", filepath.Join(t.TempDir(), "unreachable.sock"))
 	unhealthy := waitForNodeHealth(t, admin, unhealthyName, "unavailable", "unhealthy")
 	if unhealthy.ID == healthy.ID {
@@ -122,10 +91,19 @@ func TestUnhealthyRuntime(t *testing.T) {
 	}
 
 	sb := getSandbox(t, admin, createReadySandbox(t, admin, fmt.Sprintf("unhealthy-%d", suffix), 128<<20))
-	deleteSandbox(t, admin, sb.ID)
 	if sb.NodeID == nil || *sb.NodeID != healthy.ID {
-		t.Fatalf("Sandbox node_id = %v, want the healthy Node %s", sb.NodeID, healthy.ID)
+		t.Fatalf("Sandbox node_id = %v, want the healthy Node %s (offline %s, unhealthy %s)",
+			sb.NodeID, healthy.ID, offline.ID, unhealthy.ID)
 	}
+	// Every Runtime instance carries its Node's ownership label (runtime.md §8).
+	if got := sandboxContainerLabel(t, sb.ID, "orrery.node"); got != healthy.ID {
+		t.Fatalf("container orrery.node = %q, want %q", got, healthy.ID)
+	}
+
+	deleteSandbox(t, admin, sb.ID)
+	// The older Node still joins cleanly afterwards.
+	startAgentWith(t, offlineState, offlineRoot)
+	waitForNodeReady(t, admin, offlineName)
 }
 
 // TestVersionGate is #93's "version-gate" scenario (ADR-0014): a newer minor

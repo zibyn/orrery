@@ -5,6 +5,8 @@ package e2e
 import (
 	"archive/tar"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,10 +16,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zibyn/orrery/client"
 )
 
 // TestFilesAPI is the "files-api" acceptance scenario (#39 M1 item 15): content
 // round-trips through the Tunnel, and escaping paths and symlinks are rejected.
+// It also runs the Go SDK parity half (#108) on the same Sandbox under sdk*
+// paths, checking each client package result against REST.
 func TestFilesAPI(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
@@ -158,13 +164,131 @@ func TestFilesAPI(t *testing.T) {
 		t.Fatalf("cli download = %q %v", back, err)
 	}
 
-	// Preconditions: a Sandbox that is not ready answers 409.
+	// SDK parity: upload through the SDK, read back through REST and the SDK.
+	ctx := context.Background()
+	c := sdkClient(t)
+	if err := c.WriteFile(ctx, sandboxID, "sdksrc/hello.txt", bytes.NewReader(content), int64(len(content))); err != nil {
+		t.Fatalf("sdk WriteFile: %v", err)
+	}
+	status, got = get("sdksrc/hello.txt", nil)
+	if status != http.StatusOK || !bytes.Equal(got, content) {
+		t.Fatalf("REST download = %d %q", status, got)
+	}
+	var sdkDownloaded bytes.Buffer
+	if err := c.ReadFile(ctx, sandboxID, "sdksrc/hello.txt", &sdkDownloaded, ""); err != nil {
+		t.Fatalf("sdk ReadFile: %v", err)
+	}
+	if !bytes.Equal(sdkDownloaded.Bytes(), content) {
+		t.Fatalf("sdk download = %q", sdkDownloaded.Bytes())
+	}
+	var ranged bytes.Buffer
+	if err := c.ReadFile(ctx, sandboxID, "sdksrc/hello.txt", &ranged, "bytes=6-14"); err != nil {
+		t.Fatalf("sdk ranged ReadFile: %v", err)
+	}
+	if ranged.String() != "sandboxes" {
+		t.Fatalf("sdk range = %q", ranged.String())
+	}
+
+	// List and stat through the SDK agree with REST.
+	sdkList, err := c.ListFiles(ctx, sandboxID, "sdksrc")
+	if err != nil {
+		t.Fatalf("sdk ListFiles: %v", err)
+	}
+	status, data = call(t, http.MethodGet, files+"?path=sdksrc", admin, nil)
+	mustJSON(t, data, &list)
+	if status != http.StatusOK || len(sdkList.Items) != len(list.Items) {
+		t.Fatalf("sdk list = %+v, REST list = %+v", sdkList, list)
+	}
+	for i, item := range sdkList.Items {
+		if item.Path != list.Items[i].Path || item.Type != list.Items[i].Type || item.Size != list.Items[i].Size {
+			t.Fatalf("entry %d: sdk %+v, REST %+v", i, item, list.Items[i])
+		}
+	}
+	entry, err := c.StatFile(ctx, sandboxID, "sdksrc/hello.txt")
+	if err != nil {
+		t.Fatalf("sdk StatFile: %v", err)
+	}
+	status, data = call(t, http.MethodGet, files+"/stat?path=sdksrc/hello.txt", admin, nil)
+	if status != http.StatusOK || entry.Type != "file" || entry.Size != int64(len(content)) ||
+		!strings.Contains(string(data), `"type":"file"`) {
+		t.Fatalf("sdk stat = %+v, REST = %s", entry, data)
+	}
+
+	// SDK mkdir, move and delete.
+	if err := c.Mkdir(ctx, sandboxID, "sdkempty"); err != nil {
+		t.Fatalf("sdk Mkdir: %v", err)
+	}
+	status, data = call(t, http.MethodGet, files+"/stat?path=sdkempty", admin, nil)
+	if status != http.StatusOK || !strings.Contains(string(data), `"type":"dir"`) {
+		t.Fatalf("REST stat of mkdir = %d %s", status, data)
+	}
+	if err := c.MoveFile(ctx, sandboxID, "sdksrc/hello.txt", "sdksrc/moved.txt"); err != nil {
+		t.Fatalf("sdk MoveFile: %v", err)
+	}
+	if status, _ := get("sdksrc/moved.txt", nil); status != http.StatusOK {
+		t.Fatalf("sdk moved file = %d", status)
+	}
+	if err := c.DeleteFile(ctx, sandboxID, "sdksrc/moved.txt"); err != nil {
+		t.Fatalf("sdk DeleteFile: %v", err)
+	}
+	if status, _ := get("sdksrc/moved.txt", nil); status != http.StatusNotFound {
+		t.Fatalf("sdk deleted file = %d, want 404", status)
+	}
+
+	// The SDK surfaces escaping paths as 400 invalid_request.
+	var problem *client.Error
+	for _, p := range []string{"../escape.txt", "/../escape.txt", "/resources/x", "src/../../escape.txt"} {
+		err := c.WriteFile(ctx, sandboxID, p, strings.NewReader("x"), 1)
+		if !errors.As(err, &problem) || problem.Status != http.StatusBadRequest || problem.Code != "invalid_request" {
+			t.Fatalf("sdk write %q = %v, want 400 invalid_request", p, err)
+		}
+		err = c.ReadFile(ctx, sandboxID, p, &bytes.Buffer{}, "")
+		if !errors.As(err, &problem) || problem.Status != http.StatusBadRequest {
+			t.Fatalf("sdk read %q = %v, want 400", p, err)
+		}
+	}
+
+	// An escaping symlink is listed but never followed by the SDK either.
+	e = createExec(t, admin, sandboxID, map[string]any{"argv": []string{"ln", "-s", "/etc", "sdkescape"}})
+	assertExitedWith(t, waitExecFinished(t, admin, e.ID, 10*time.Second), "exited")
+	if err := c.ReadFile(ctx, sandboxID, "sdkescape/passwd", &bytes.Buffer{}, ""); !errors.As(err, &problem) ||
+		problem.Status != http.StatusBadRequest {
+		t.Fatalf("sdk escaping symlink = %v, want 400", err)
+	}
+	link, err := c.StatFile(ctx, sandboxID, "sdkescape")
+	if err != nil || link.Type != "symlink" {
+		t.Fatalf("sdk symlink stat = %+v, %v", link, err)
+	}
+
+	// SDK archive download and upload preserve the subtree.
+	if err := c.WriteFile(ctx, sandboxID, "sdktree/a.txt", strings.NewReader("alpha"), 5); err != nil {
+		t.Fatalf("sdk WriteFile: %v", err)
+	}
+	var archive bytes.Buffer
+	if err := c.ReadArchive(ctx, sandboxID, "sdktree", &archive); err != nil {
+		t.Fatalf("sdk ReadArchive: %v", err)
+	}
+	if names := tarNames(t, archive.Bytes()); len(names) < 2 {
+		t.Fatalf("sdk archive = %v", names)
+	}
+	if err := c.WriteArchive(ctx, sandboxID, "sdkunpacked", bytes.NewReader(archive.Bytes()), int64(archive.Len())); err != nil {
+		t.Fatalf("sdk WriteArchive: %v", err)
+	}
+	if status, got := get("sdkunpacked/sdktree/a.txt", nil); status != http.StatusOK || string(got) != "alpha" {
+		t.Fatalf("sdk unpacked = %d %q", status, got)
+	}
+
+	// Preconditions: a Sandbox that is not ready answers 409, over REST and the SDK.
 	if status, data := call(t, http.MethodPost, "/api/v1/sandboxes/"+sandboxID+"/stop", admin, nil); status != http.StatusAccepted {
 		t.Fatalf("stop = %d %s", status, data)
 	}
 	call(t, http.MethodGet, "/api/v1/sandboxes/"+sandboxID+"?wait_for=stopped", admin, nil)
 	if status := put("stopped.txt", []byte("x")); status != http.StatusConflict {
 		t.Fatalf("upload to stopped Sandbox = %d, want 409", status)
+	}
+	if err := c.WriteFile(ctx, sandboxID, "stopped.txt", strings.NewReader("x"), 1); !errors.As(err, &problem) ||
+		problem.Status != http.StatusConflict || problem.Code != "conflict" {
+		t.Fatalf("sdk write to stopped Sandbox = %v, want 409 conflict", err)
 	}
 }
 

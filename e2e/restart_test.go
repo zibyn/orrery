@@ -103,13 +103,25 @@ func assertExitedWith(t *testing.T, e execView, cause string) {
 	}
 }
 
-// TestAgentRestartSurvives is the non-PTY part of the "agent-restart-survives"
-// acceptance scenario (#39 M1 item 8): the Agent is killed mid-Exec, comes back
-// on the same data root, and the log is complete and free of repeats.
+// TestAgentRestartSurvives is the "agent-restart-survives" acceptance scenario
+// (#39 M1 item 8): the Agent is killed mid-Exec and comes back on the same data
+// root; the Exec log is complete and free of repeats, and a PTY reattaches to
+// the same Supervisor, so the shell process and its state are still there.
 func TestAgentRestartSurvives(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
+	// The reattach must land inside the idle window, or the reclaim fires (#174).
+	idle := ptyIdle(t)
 	sandboxID, agent, state, dataRoot := readySandboxWithAgent(t, admin)
+
+	p := createExec(t, admin, sandboxID, map[string]any{
+		"argv": []string{"sh"},
+		"pty":  map[string]any{"rows": 24, "cols": 80},
+	})
+	waitExecRunning(t, admin, p.ID, 30*time.Second)
+	a := dialPTY(t, admin, p.ID)
+	a.send("x=42; echo READ\"\"Y-OK\n")
+	a.waitContains("READY-OK", 20*time.Second)
 
 	const count = 60
 	e := createExec(t, admin, sandboxID, numberedLines(count))
@@ -118,8 +130,35 @@ func TestAgentRestartSurvives(t *testing.T) {
 	// resume from stored_seq, not a replay from zero.
 	time.Sleep(500 * time.Millisecond)
 
+	a.close()
+	detached := time.Now()
 	agent.stop()
 	startAgent(t, state, dataRoot)
+
+	// The old tunnel died with the Agent; reattach through the new one.
+	var b *ptyClient
+	for {
+		var err error
+		b, err = tryDialPTY(admin, p.ID)
+		if took := time.Since(detached); took >= idle {
+			if b != nil {
+				b.close()
+			}
+			t.Fatalf("reattach took %s, longer than the PTY idle window %s (last dial error: %v)", took.Round(time.Millisecond), idle, err)
+		}
+		if err == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Logf("reattach took %s (PTY idle window %s)", time.Since(detached).Round(time.Millisecond), idle)
+	b.t = t
+	defer b.close()
+	b.waitContains("READY-OK", 20*time.Second) // the ring survived the restart
+	b.send("echo value=$x\n")
+	b.waitContains("value=42", 20*time.Second) // same shell process, same variable
+	b.send("exit\n")
+	assertExitedWith(t, waitExecFinished(t, admin, p.ID, 30*time.Second), "exited")
 
 	assertExitedWith(t, waitExecFinished(t, admin, e.ID, 60*time.Second), "exited")
 	if got, want := execStdout(t, admin, e.ID), expectedLines(count); got != want {

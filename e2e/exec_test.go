@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/net/websocket"
+
+	"github.com/zibyn/orrery/client"
 )
 
 type execView struct {
@@ -204,15 +207,16 @@ func followExec(t *testing.T, admin, id string, timeout time.Duration) (stdout, 
 	}
 }
 
-// TestExecLogStream is the "exec-log-stream" acceptance scenario (#51).
+// TestExecLogStream is the "exec-log-stream" acceptance scenario (#51) and its
+// Go SDK parity half (#108): the same command through the client package must
+// match the REST run, so both share one Sandbox.
 func TestExecLogStream(t *testing.T) {
 	admin := adminToken(t)
 	raiseSandboxQuota(t, admin, 10)
 	sandboxID := readyExecSandbox(t, admin, 128<<20)
 
-	e := createExec(t, admin, sandboxID, map[string]any{
-		"argv": []string{"sh", "-c", "printf 'hello '; printf 'oops' >&2; printf '\\377'; exit 7"},
-	})
+	command := []string{"sh", "-c", "printf 'hello '; printf 'oops' >&2; printf '\\377'; exit 7"}
+	e := createExec(t, admin, sandboxID, map[string]any{"argv": command})
 	stdout, stderr, frames, result := followExec(t, admin, e.ID, 30*time.Second)
 	// The invalid byte is stdout too; only its encoding differs.
 	if want := []byte{'h', 'e', 'l', 'l', 'o', ' ', 0xff}; !bytes.Equal(stdout, want) {
@@ -265,9 +269,60 @@ func TestExecLogStream(t *testing.T) {
 	cat := createExec(t, admin, sandboxID, map[string]any{
 		"argv": []string{"cat"}, "stdin": "ping\n",
 	})
-	out, _, _, result := followExec(t, admin, cat.ID, 30*time.Second)
-	if string(out) != "ping\n" || result.Cause != "exited" {
-		t.Fatalf("cat output = %q, result = %+v", out, result)
+	out, _, _, catResult := followExec(t, admin, cat.ID, 30*time.Second)
+	if string(out) != "ping\n" || catResult.Cause != "exited" {
+		t.Fatalf("cat output = %q, result = %+v", out, catResult)
+	}
+
+	// SDK parity: the same command through the client package matches the REST run above.
+	ctx := context.Background()
+	c := sdkClient(t)
+	created, err := c.CreateExec(ctx, sandboxID, client.ExecRequest{Argv: command}, "")
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+	var sdkOut, sdkErr bytes.Buffer
+	final, err := c.FollowOutput(ctx, created.ID, &sdkOut, &sdkErr)
+	if err != nil {
+		t.Fatalf("FollowOutput: %v", err)
+	}
+	if !bytes.Equal(sdkOut.Bytes(), stdout) {
+		t.Fatalf("sdk stdout = %q, REST stdout = %q", sdkOut.Bytes(), stdout)
+	}
+	if sdkErr.String() != "oops" || sdkErr.String() != string(stderr) {
+		t.Fatalf("sdk stderr = %q, REST stderr = %q", sdkErr.String(), stderr)
+	}
+	if final.State != "finished" || final.Result == nil || final.Result.Cause != "exited" ||
+		final.Result.ExitCode == nil || *final.Result.ExitCode != 7 {
+		t.Fatalf("sdk result = %+v", final)
+	}
+	if result.Cause != final.Result.Cause {
+		t.Fatalf("REST result = %+v, sdk result = %+v", result, final.Result)
+	}
+
+	// The SDK's Exec read and output page agree with REST.
+	direct := getExec(t, admin, created.ID)
+	if direct.State != final.State || direct.Result == nil || direct.Result.Cause != final.Result.Cause {
+		t.Fatalf("sdk GetExec = %+v, REST = %+v", final, direct)
+	}
+	sdkPage, err := c.ExecOutput(ctx, created.ID, 0)
+	if err != nil {
+		t.Fatalf("ExecOutput: %v", err)
+	}
+	status, data = call(t, http.MethodGet, "/api/v1/execs/"+created.ID+"/output?after=0", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("output page: %d %s", status, data)
+	}
+	var restPage []execFrame
+	mustJSON(t, data, &restPage)
+	if len(sdkPage) != len(restPage) {
+		t.Fatalf("sdk page has %d frames, REST has %d", len(sdkPage), len(restPage))
+	}
+	for i := range sdkPage {
+		f, r := sdkPage[i], restPage[i]
+		if f.Seq != r.Seq || f.Stream != r.Stream || f.Data != r.Data || f.Encoding != r.Encoding {
+			t.Fatalf("frame %d: sdk %+v, REST %+v", i, f, r)
+		}
 	}
 }
 
