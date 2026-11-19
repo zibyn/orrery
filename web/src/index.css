@@ -122,8 +122,11 @@
     @apply border-border outline-ring/50;
   }
 
+  /* No rubber-band overscroll (as on ui.shadcn.com): it would expose the
+     canvas colour around the inset sidebar frame. */
   html {
     color-scheme: light dark;
+    overscroll-behavior: none;
   }
 
   body {
