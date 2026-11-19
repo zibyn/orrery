@@ -266,7 +266,7 @@ func assertReachSoon(t *testing.T, admin, from, addr string, port int) {
 		if time.Now().After(deadline) {
 			t.Fatalf("Sandbox %s never reached %s:%d (last result %+v)", from, addr, port, result)
 		}
-		time.Sleep(time.Second)
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
