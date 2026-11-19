@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Ban, Box, Copy, Layers, Pin, Plus, ScrollText, Trash } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { api, listAll, type Snapshot, type SnapshotVersion } from '@/api'
 import { BuildLog } from '@/components/build-log'
@@ -88,16 +88,24 @@ function SnapshotDetailPage() {
     refetchInterval: (query) => snapshotVersionsPollInterval(query.state.data && [query.state.data]),
   })
   const selected = listed ?? unlisted.data
+  const building = [...(versions.data ?? []), ...(selected ? [selected] : [])].some(
+    (version) => !isSnapshotVersionTerminal(version.state),
+  )
   const snapshot = useQuery({
     queryKey: ['snapshot', id],
     queryFn: () => api<Snapshot>('GET', `/snapshots/${id}`),
     // The current pointer moves when a build becomes ready.
-    refetchInterval: [...(versions.data ?? []), ...(selected ? [selected] : [])].some(
-      (version) => !isSnapshotVersionTerminal(version.state),
-    )
-      ? 2000
-      : false,
+    refetchInterval: building ? 2000 : false,
   })
+  // The last poll can predate the ready build's pointer move, so read the
+  // Snapshot once more when the builds end.
+  const wasBuilding = useRef(false)
+  useEffect(() => {
+    if (wasBuilding.current && !building) {
+      void queryClient.invalidateQueries({ queryKey: ['snapshot', id] })
+    }
+    wasBuilding.current = building
+  }, [building, id, queryClient])
 
   const current = snapshot.data
 
