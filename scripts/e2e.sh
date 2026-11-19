@@ -95,11 +95,11 @@ CGO_ENABLED=0 "$GO" build -o .e2e/orrery-agent ./cmd/orrery-agent
 CGO_ENABLED=0 "$GO" build -o .e2e/orrery ./cmd/orrery
 
 # A small Exec log cap keeps the truncation scenario fast, and a short PTY
-# idle window keeps the pty-idle scenario fast; 15s leaves margin over an Agent
+# idle window keeps the pty-idle scenario fast; 10s is 2.5x an Agent
 # restart plus PTY reattach under runsc (about 4s since #178, #174). A short admission deadline
 # keeps the queue-and-deadline scenario fast.
 export ORRERY_EXEC_LOG_CAP="${ORRERY_EXEC_LOG_CAP:-1048576}"
-export ORRERY_PTY_IDLE_SECONDS="${ORRERY_PTY_IDLE_SECONDS:-15}"
+export ORRERY_PTY_IDLE_SECONDS="${ORRERY_PTY_IDLE_SECONDS:-10}"
 export ORRERY_ADMISSION_TIMEOUT="${ORRERY_ADMISSION_TIMEOUT:-10s}"
 # The retention scenario (#90) observes a real sweep without waiting for the
 # documented 10-minute cadence and 30-day TTL. Production defaults are
@@ -107,6 +107,9 @@ export ORRERY_ADMISSION_TIMEOUT="${ORRERY_ADMISSION_TIMEOUT:-10s}"
 export ORRERY_RESOURCE_VERSION_TTL="${ORRERY_RESOURCE_VERSION_TTL:-1s}"
 # Test hook only: production uses the 10-minute constant (defaults.md).
 export ORRERY_TEST_PURGE_INTERVAL="${ORRERY_TEST_PURGE_INTERVAL:-1s}"
+# The Agents inherit it: a running Volume commits every 5s instead of 60s, so
+# the periodic-commit scenario does not wait out a minute.
+export ORRERY_TEST_VOLUME_COMMIT_INTERVAL="${ORRERY_TEST_VOLUME_COMMIT_INTERVAL:-5s}"
 # The Gateway tests reach port subdomains with a Host header, so no DNS entry
 # is needed; only the domain the server signs into tickets matters.
 export ORRERY_APPS_DOMAIN="${ORRERY_APPS_DOMAIN:-apps.test}"

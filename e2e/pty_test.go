@@ -157,12 +157,9 @@ func TestPTYMultiIdle(t *testing.T) {
 	a.waitContains("B-OUT", 20*time.Second) // every attachment sees every writer
 	b.waitContains("B-OUT", 20*time.Second)
 
-	// An attached session outlives the idle window.
-	time.Sleep(idle + time.Second)
-	if getExec(t, admin, e.ID).State == "finished" {
-		t.Fatal("PTY was reaped while attachments were open")
-	}
-
+	// That an attached session outlives the window is
+	// TestPTYIdleReapsOnlyWithoutAttachments (internal/supervisor); here the
+	// configured window reaches the Supervisor.
 	a.close()
 	b.close()
 	assertExitedWith(t, waitExecFinished(t, admin, e.ID, idle+30*time.Second), "pty_idle")

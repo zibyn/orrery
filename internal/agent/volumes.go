@@ -23,8 +23,14 @@ import (
 )
 
 // volumeCommitInterval is how often a dirty Volume is committed while its
-// Sandbox runs (runtime.md §17). A var so tests are fast.
-var volumeCommitInterval = 60 * time.Second
+// Sandbox runs (runtime.md §17). A var so tests are fast;
+// ORRERY_TEST_VOLUME_COMMIT_INTERVAL is the e2e hook, never deployment config.
+var volumeCommitInterval = func() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv("ORRERY_TEST_VOLUME_COMMIT_INTERVAL")); err == nil && d > 0 {
+		return d
+	}
+	return 60 * time.Second
+}()
 
 // volumeMounter is orrery-resourcefs's writable side as the Agent drives
 // it; tests fake it.

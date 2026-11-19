@@ -51,7 +51,7 @@ head -c 9437184 /dev/urandom > /data/run/big && sha256sum /data/run/big | cut -d
 		if time.Now().After(deadline) {
 			t.Fatalf("no periodic commit within 2 minutes: %d %s", status, data)
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 	execOutput(t, admin, writer, `set -e
 printf 'late' > /data/run/late

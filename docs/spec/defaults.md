@@ -213,6 +213,6 @@ egress:
 
 **不出现在 `config.yaml` 的键**。`api_addr`、`node_addr`、`node_tls_cert`、`node_tls_key` 由代码默认值给出，只可用环境变量（`ORRERY_API_ADDR`、`ORRERY_NODE_ADDR`、`ORRERY_NODE_TLS_CERT`、`ORRERY_NODE_TLS_KEY`）覆盖。
 
-**环境变量模式**。`ORRERY_CONFIG_FILE` 未设置时保留现有变量名，包括 `ORRERY_ENCRYPTION_KEYS_FILE`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_PLATFORM_SNAPSHOTS`、`ORRERY_DEFAULT_SNAPSHOT`、`ORRERY_DEFAULT_GPU_SNAPSHOT`，用于测试和 CI。`ORRERY_TEST_PURGE_INTERVAL` 是测试钩子，不属于部署配置。
+**环境变量模式**。`ORRERY_CONFIG_FILE` 未设置时保留现有变量名，包括 `ORRERY_ENCRYPTION_KEYS_FILE`、`ORRERY_OIDC_CLIENT_SECRET_FILE`、`ORRERY_PLATFORM_SNAPSHOTS`、`ORRERY_DEFAULT_SNAPSHOT`、`ORRERY_DEFAULT_GPU_SNAPSHOT`，用于测试和 CI。`ORRERY_TEST_PURGE_INTERVAL` 和 Agent 读取的 `ORRERY_TEST_VOLUME_COMMIT_INTERVAL` 是测试钩子，不属于部署配置。
 
 **对象存储布局**。只用一个 bucket：CAS 对象在 `cas/<owner_id>/sha256/<hex>`，manifest 在 `manifests/<owner_id>/<address>`，registry 的 s3 driver 用 `rootdirectory: /registry`。registry 里用户 Snapshot 在 `snapshots/<snapshot_id>`，平台 Snapshot 在 `platform/<name>`，一律按 digest 引用，不打 tag。e2e 和参考部署用 RustFS 1.0.2；安装脚本用一个一次性容器建 bucket。
