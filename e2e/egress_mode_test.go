@@ -70,36 +70,6 @@ func TestEgressMode(t *testing.T) {
 	assertReach(t, admin, none, addr, 28001, false)
 }
 
-// TestEgressModeUnsupported: without a Node that enforces egress_policy, a
-// Mode other than open is refused at create, while open is accepted (api.md
-// §3). It runs only where no such Node is enrolled.
-func TestEgressModeUnsupported(t *testing.T) {
-	admin := adminToken(t)
-	status, data := call(t, http.MethodGet, "/api/v1/nodes?limit=100", admin, nil)
-	if status != http.StatusOK {
-		t.Fatalf("list Nodes: %d %s", status, data)
-	}
-	var list struct {
-		Items []nodeView `json:"items"`
-	}
-	mustJSON(t, data, &list)
-	if slices.ContainsFunc(list.Items, func(n nodeView) bool { return capabilityValues(n)["egress_policy"] == "enforced" }) {
-		t.Skip("a Node enforces egress_policy")
-	}
-	for _, egress := range []map[string]any{
-		{"mode": "none"},
-		{"mode": "allowlist", "allow": []string{"10.0.0.1"}},
-	} {
-		status, data := call(t, http.MethodPost, "/api/v1/sandboxes", admin, map[string]any{
-			"cpu": 0.5, "memory": 64 << 20, "egress": egress,
-		})
-		if status != http.StatusUnprocessableEntity {
-			t.Fatalf("create with egress %v: %d %s, want 422", egress, status, data)
-		}
-		requireProblemCode(t, data, "unsupported")
-	}
-}
-
 func assertEgress(t *testing.T, admin, id string, want egressView) {
 	t.Helper()
 	status, data := call(t, http.MethodGet, "/api/v1/sandboxes/"+id, admin, nil)

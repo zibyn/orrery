@@ -428,6 +428,31 @@ if [ -n "${ORRERY_E2E_CONSOLE:-}" ]; then
   exit 0
 fi
 
+# ORRERY_E2E_SHARD=i/n runs shard i of n: every test lands in exactly one
+# shard, greedily balanced by e2e/durations.txt, so CI splits the suite across
+# jobs that each own a whole stack (tests share one admin User and restart the
+# Control Plane, so they cannot run in parallel against one stack).
+if [ -n "${ORRERY_E2E_SHARD:-}" ]; then
+  shard="${ORRERY_E2E_SHARD%/*}" shards="${ORRERY_E2E_SHARD#*/}"
+  if ! [[ "$shard" =~ ^[1-9][0-9]*$ && "$shards" =~ ^[1-9][0-9]*$ ]] || [ "$shard" -gt "$shards" ]; then
+    echo "ORRERY_E2E_SHARD=$ORRERY_E2E_SHARD: want i/n with 1 <= i <= n" >&2
+    exit 1
+  fi
+  run="$("$GO" test -tags e2e -list . ./e2e/ | grep '^Test' |
+    awk 'NR == FNR { if ($1 !~ /^#/) w[$1] = $2; next } { print ($1 in w ? w[$1] : 15), $1 }' e2e/durations.txt - |
+    LC_ALL=C sort -k1,1nr -k2,2 |
+    awk -v i="$shard" -v n="$shards" '{
+      m = 1; for (s = 2; s <= n; s++) if (load[s] < load[m]) m = s
+      load[m] += $1
+      if (m == i) { printf "%s%s", sep, $2; sep = "|" }
+    }')"
+  if [ -z "$run" ]; then
+    echo "shard $ORRERY_E2E_SHARD has no tests" >&2
+    exit 1
+  fi
+  set -- "$@" -run "^(${run})\$"
+fi
+
 ORRERY_E2E_API_URL="$API_URL" \
 ORRERY_E2E_CLI="$PWD/.e2e/orrery" \
 ORRERY_E2E_AGENT="$PWD/.e2e/orrery-agent" \

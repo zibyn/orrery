@@ -169,7 +169,12 @@ func sandboxAddress(t *testing.T, admin, id string) string {
 // assertReach dials addr:port from inside the Sandbox.
 func assertReach(t *testing.T, admin, from, addr string, port int, want bool) {
 	t.Helper()
-	e := createExec(t, admin, from, map[string]any{"argv": []string{"nc", "-z", "-w", "3", addr, fmt.Sprint(port)}})
+	// Denied traffic is dropped, so a refusal waits out the whole timeout.
+	timeout := "3"
+	if !want {
+		timeout = "1"
+	}
+	e := createExec(t, admin, from, map[string]any{"argv": []string{"nc", "-z", "-w", timeout, addr, fmt.Sprint(port)}})
 	result := waitExecFinished(t, admin, e.ID, 30*time.Second).Result
 	got := result != nil && result.ExitCode != nil && *result.ExitCode == 0
 	if got != want {
