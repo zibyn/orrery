@@ -17,7 +17,7 @@ import type * as React from 'react'
 import { api, ApiError, getMe, type User } from '@/api'
 import { LocaleSwitch } from '@/components/locale-switch'
 import { Logo } from '@/components/logo'
-import { PageHeaderSlotsContext } from '@/components/page-header'
+import { PageHeaderSlotContext } from '@/components/page-header'
 import { Separator } from '@/components/ui/separator'
 import {
   Sidebar,
@@ -93,8 +93,7 @@ function AuthedShell() {
   useLocale() // re-render on a language switch (see lib/i18n.tsx)
   const { user } = Route.useRouteContext()
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  const [crumbs, setCrumbs] = useState<HTMLElement | null>(null)
-  const [overview, setOverview] = useState<HTMLElement | null>(null)
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
   const logout = useMutation({
     mutationFn: () => api('DELETE', '/sessions/current'),
     onSuccess: () => {
@@ -122,15 +121,12 @@ function AuthedShell() {
         <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur md:rounded-t-xl lg:px-6">
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 data-vertical:h-4 data-vertical:self-center" />
-          <div ref={setCrumbs} className="min-w-0 flex-1 truncate" />
+          <div ref={setSlot} className="flex min-w-0 flex-1 items-center gap-3" />
         </header>
-        <main id="main">
-          <div ref={setOverview} className="border-b empty:hidden" />
-          <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-            <PageHeaderSlotsContext value={{ crumbs, overview }}>
-              <Outlet />
-            </PageHeaderSlotsContext>
-          </div>
+        <main id="main" className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <PageHeaderSlotContext value={slot}>
+            <Outlet />
+          </PageHeaderSlotContext>
         </main>
       </SidebarInset>
     </SidebarProvider>

@@ -5,14 +5,13 @@ import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage } from '@/co
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
-// Where the console shell wants each page's header parts: the breadcrumb in
-// the sticky top bar, the overview in the band between the bar and the page.
-export type PageHeaderSlots = { crumbs: HTMLElement | null; overview: HTMLElement | null }
-export const PageHeaderSlotsContext = React.createContext<PageHeaderSlots | null>(null)
+// The console shell's sticky top bar, where each page puts its header.
+export const PageHeaderSlotContext = React.createContext<HTMLElement | null>(null)
 
 // One heading block per page: breadcrumb, title, description, inline meta and
-// right-aligned actions. Inside the console shell it renders into the shell's
-// header slots; `inline` (or no shell) keeps it in the page flow.
+// right-aligned actions. Inside the console shell it renders into the top bar
+// as breadcrumb, meta and actions (the title stays for screen readers, the
+// description is dropped); `inline` (or no shell) keeps it in the page flow.
 export function PageHeader({
   title,
   description,
@@ -30,27 +29,24 @@ export function PageHeader({
   inline?: boolean
   className?: string
 }) {
-  const slots = React.useContext(PageHeaderSlotsContext)
-  const overview = (
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="flex min-w-0 flex-col gap-1">
-        <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">{title}</h1>
-        {description && <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>}
-        {meta && (
-          <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
-            {meta}
-          </div>
-        )}
-      </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
-    </div>
-  )
+  const slot = React.useContext(PageHeaderSlotContext)
 
-  if (inline || !slots) {
+  if (inline || !slot) {
     return (
       <div className={cn('flex flex-col gap-3', className)}>
         {above}
-        {overview}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-col gap-1">
+            <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">{title}</h1>
+            {description && <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>}
+            {meta && (
+              <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
+                {meta}
+              </div>
+            )}
+          </div>
+          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+        </div>
       </div>
     )
   }
@@ -65,16 +61,21 @@ export function PageHeader({
       </BreadcrumbList>
     </Breadcrumb>
   )
-  return (
+  return createPortal(
     <>
-      {slots.crumbs && createPortal(crumbs, slots.crumbs)}
-      {slots.overview &&
-        createPortal(
-          <div className={cn('mx-auto w-full max-w-6xl px-4 py-5 sm:px-6 lg:px-8', className)}>
-            {overview}
-          </div>,
-          slots.overview,
-        )}
-    </>
+      <h1 className="sr-only">{title}</h1>
+      <div className="min-w-0 max-w-[50%] shrink-0 truncate">{crumbs}</div>
+      {meta && (
+        <div className="hidden shrink-0 items-center gap-2 text-xs text-muted-foreground lg:flex">
+          {meta}
+        </div>
+      )}
+      {actions && (
+        <div className={cn('ml-auto flex min-w-0 items-center gap-2 overflow-x-auto', className)}>
+          {actions}
+        </div>
+      )}
+    </>,
+    slot,
   )
 }
