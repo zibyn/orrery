@@ -1,6 +1,8 @@
-# Seconds per e2e test under runc, from a full `scripts/e2e.sh -v` run; scripts/e2e.sh
-# balances ORRERY_E2E_SHARD by it. A test missing here counts 15s. Refresh:
-#   grep -E '^--- (PASS|FAIL|SKIP)' e2e.log | sed -E 's/^--- \w+: (\S+) \(([0-9.]+)s\)/\1 \2/' | awk '{printf "%s %d\n", $1, $2+0.5}' | sort -k2,2nr
+# Seconds per e2e test under runc, from the PR e2e jobs' -v logs; scripts/e2e.sh
+# balances ORRERY_E2E_SHARD by it. A test missing here counts 15s. Refresh from
+# a passing PR run:
+#   gh run view <run> --log | grep -oE -- '--- (PASS|FAIL|SKIP): Test[^ /]+ \([0-9.]+s\)' |
+#     sed -E 's/^--- \w+: (\S+) \(([0-9.]+)s\)/\1 \2/' | awk '{printf "%s %d\n", $1, $2+0.5}' | LC_ALL=C sort -k2,2nr -k1,1
 TestEgressRules 96
 TestObjectStoreOutage 56
 TestPTYMultiIdle 53

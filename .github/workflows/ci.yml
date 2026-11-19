@@ -147,7 +147,7 @@ jobs:
       # The containerd Agents need root, and they run as the test process's
       # user, so the whole script runs under sudo with the job's environment.
       # GPU and remote-host scenarios skip themselves without ORRERY_E2E_GPU_SSH.
-      - run: sudo -E env "PATH=$PATH" ./scripts/e2e.sh -timeout 30m
+      - run: sudo -E env "PATH=$PATH" ./scripts/e2e.sh -timeout 30m -v
         env:
           ORRERY_E2E_SHARD: ${{ matrix.shard }}/4
           # Empty means the Agent default, runc; runsc only by hand.
