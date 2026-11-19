@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { PAGE_SIZE, pageSearch, paginate } from './list-pager'
+import { PAGE_SIZE, pageNumbers, pageSearch, paginate } from './list-pager'
 
 describe('paginate', () => {
   const items = Array.from({ length: PAGE_SIZE * 2 + 3 }, (_, i) => i)
@@ -27,5 +27,19 @@ describe('pageSearch', () => {
     expect(pageSearch({ page: 1 })).toEqual({ page: undefined })
     expect(pageSearch({ page: 'x' })).toEqual({ page: undefined })
     expect(pageSearch({ page: 1.5 })).toEqual({ page: undefined })
+  })
+})
+
+describe('pageNumbers', () => {
+  it('shows every page when there are few', () => {
+    expect(pageNumbers(1, 3)).toEqual([1, 2, 3])
+  })
+  it('elides the gaps around the current page', () => {
+    expect(pageNumbers(5, 10)).toEqual([1, null, 4, 5, 6, null, 10])
+    expect(pageNumbers(1, 10)).toEqual([1, 2, null, 10])
+    expect(pageNumbers(10, 10)).toEqual([1, null, 9, 10])
+  })
+  it('has no ellipsis for a gap of one page it already shows', () => {
+    expect(pageNumbers(3, 5)).toEqual([1, 2, 3, 4, 5])
   })
 })

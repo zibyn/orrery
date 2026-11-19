@@ -1,7 +1,14 @@
-import { useNavigate, useSearch } from '@tanstack/react-router'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { Link, useSearch } from '@tanstack/react-router'
 
-import { Button } from '@/components/ui/button'
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from '@/components/ui/pagination'
 import { cn } from '@/lib/utils'
 import { m } from '@/paraglide/messages'
 
@@ -25,23 +32,26 @@ export function paginate<T>(items: readonly T[], page = 1) {
   }
 }
 
-// The current page of a list whose route uses pageSearch; changing page pushes
-// history, so Back returns to the previous page.
-export function usePagedList<T>(items: readonly T[] | undefined) {
-  const { page } = useSearch({ strict: false })
-  const navigate = useNavigate()
-  return {
-    ...paginate(items ?? [], page),
-    onPageChange: (next: number) =>
-      void navigate({
-        to: '.',
-        search: (prev: Record<string, unknown>) => ({ ...prev, page: next > 1 ? next : undefined }),
-      }),
-  }
+// Page numbers to show: the first, the last and the current one with its
+// neighbours; null marks a gap drawn as an ellipsis.
+export function pageNumbers(page: number, pageCount: number): (number | null)[] {
+  const shown = [...new Set([1, page - 1, page, page + 1, pageCount])]
+    .filter((n) => n >= 1 && n <= pageCount)
+    .sort((a, b) => a - b)
+  return shown.flatMap((n, i) => (i > 0 && n - shown[i - 1] > 1 ? [null, n] : [n]))
 }
 
-// pageCount is unknown for a server-cursor list (audit): hasNext says whether
-// the server reported another page.
+// The current page of a list whose route uses pageSearch. Its ListPager
+// renders links, so Back and open-in-new-tab work.
+export function usePagedList<T>(items: readonly T[] | undefined) {
+  const { page } = useSearch({ strict: false })
+  return paginate(items ?? [], page)
+}
+
+// Without onPageChange the page lives in `?page=` and every target is a Link;
+// with it (a page kept in state, or the audit cursor stack) they are buttons.
+// pageCount is unknown for a server-cursor list: hasNext says whether the
+// server reported another page.
 export function ListPager({
   page,
   pageCount,
@@ -52,24 +62,55 @@ export function ListPager({
   page: number
   pageCount?: number
   hasNext?: boolean
-  onPageChange: (page: number) => void
+  onPageChange?: (page: number) => void
   className?: string
 }) {
   const canNext = pageCount === undefined ? Boolean(hasNext) : page < pageCount
   if (page <= 1 && !canNext) return null
+
+  const target = (to: number, enabled = true) =>
+    !enabled ? (
+      <button type="button" disabled />
+    ) : onPageChange ? (
+      <button type="button" onClick={() => onPageChange(to)} />
+    ) : (
+      <Link
+        to="."
+        // Page 1 has no ?page=; without this every page would count as page 1.
+        activeOptions={{ explicitUndefined: true }}
+        search={(prev: Record<string, unknown>) => ({ ...prev, page: to > 1 ? to : undefined })}
+      />
+    )
+
   return (
-    <nav aria-label={m.pager_label()} className={cn('flex items-center justify-end gap-2', className)}>
-      <span className="mr-2 text-sm text-muted-foreground tabular-nums">
-        {pageCount === undefined ? m.pager_status_open({ page }) : m.pager_status({ page, pageCount })}
-      </span>
-      <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
-        <ChevronLeft data-icon="inline-start" />
-        {m.pager_previous()}
-      </Button>
-      <Button variant="outline" size="sm" disabled={!canNext} onClick={() => onPageChange(page + 1)}>
-        {m.pager_next()}
-        <ChevronRight data-icon="inline-end" />
-      </Button>
-    </nav>
+    <Pagination aria-label={m.pager_label()} className={cn('justify-end', className)}>
+      <PaginationContent>
+        <PaginationItem>
+          <PaginationPrevious
+            text={m.pager_previous()}
+            aria-label={m.pager_previous()}
+            render={target(page - 1, page > 1)}
+          />
+        </PaginationItem>
+        {(pageCount === undefined ? [page] : pageNumbers(page, pageCount)).map((n, i) => (
+          <PaginationItem key={n ?? `gap-${i}`}>
+            {n === null ? (
+              <PaginationEllipsis />
+            ) : (
+              <PaginationLink isActive={n === page} render={target(n)}>
+                {n}
+              </PaginationLink>
+            )}
+          </PaginationItem>
+        ))}
+        <PaginationItem>
+          <PaginationNext
+            text={m.pager_next()}
+            aria-label={m.pager_next()}
+            render={target(page + 1, canNext)}
+          />
+        </PaginationItem>
+      </PaginationContent>
+    </Pagination>
   )
 }

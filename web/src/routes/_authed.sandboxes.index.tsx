@@ -64,6 +64,7 @@ function SandboxesPage() {
     item.id === user.id ? m.sandboxes_owner_me({ name: user.name }) : item.name
 
   const paged = usePagedList(sandboxes.data)
+  const navigate = Route.useNavigate()
 
   return (
     <div className="flex flex-col gap-6">
@@ -90,7 +91,7 @@ function SandboxesPage() {
                   value={ownerOptions.find((item) => item.id === (owner || user.id)) ?? null}
                   onValueChange={(next) => {
                     setOwner(next && next.id !== user.id ? next.id : '')
-                    paged.onPageChange(1)
+                    void navigate({ to: '.', search: { page: undefined } })
                   }}
                   itemToStringLabel={ownerLabel}
                   isItemEqualToValue={(a, b) => a.id === b.id}

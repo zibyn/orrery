@@ -497,10 +497,8 @@
   "condition_commit_stalled": "提交受阻：停止时的提交在重试",
   "label_volume": "卷",
   "pager_label": "分页",
-  "pager_status": "第 {page} / {pageCount} 页",
   "pager_previous": "上一页",
   "pager_next": "下一页",
   "sandboxes_owner_search": "搜索用户名或邮箱",
-  "sandboxes_owner_empty": "没有匹配的用户",
-  "pager_status_open": "第 {page} 页"
+  "sandboxes_owner_empty": "没有匹配的用户"
 }
