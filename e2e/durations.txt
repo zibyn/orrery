@@ -1,48 +1,52 @@
-# Seconds per e2e test under runc, from a full `scripts/e2e.sh -v` run; scripts/e2e.sh
-# balances ORRERY_E2E_SHARD by it. A test missing here counts 15s. Refresh:
-#   grep -E '^--- (PASS|FAIL|SKIP)' e2e.log | sed -E 's/^--- \w+: (\S+) \(([0-9.]+)s\)/\1 \2/' | awk '{printf "%s %d\n", $1, $2+0.5}' | sort -k2,2nr
-TestEgressRules 96
-TestObjectStoreOutage 56
-TestPTYMultiIdle 53
-TestUnavailableVersionRecovers 47
-TestNodeUnreachableLost 42
-TestUnhealthyRuntime 36
-TestStoppedSandboxStartsOnAnotherNode 35
-TestSandboxLinks 32
-TestRetireNode 28
-TestCacheEviction 27
-TestSnapshotBuildRun 26
+# Seconds per e2e test under runc, from the PR e2e jobs' -v logs; scripts/e2e.sh
+# balances ORRERY_E2E_SHARD by it. A test missing here counts 15s. Refresh from
+# a passing PR run:
+#   gh run view <run> --log | grep -oE -- '--- (PASS|FAIL|SKIP): Test[^ /]+ \([0-9.]+s\)' |
+#     sed -E 's/^--- \w+: (\S+) \(([0-9.]+)s\)/\1 \2/' | awk '{printf "%s %d\n", $1, $2+0.5}' | LC_ALL=C sort -k2,2nr -k1,1
+TestVolumeWritesSurviveTheHolder 74
+TestEgressRules 54
+TestObjectStoreOutage 51
+TestPTYMultiIdle 51
+TestUnavailableVersionRecovers 45
+TestNodeUnreachableLost 40
+TestUnhealthyRuntime 30
+TestRetireNode 25
+TestStoppedSandboxStartsOnAnotherNode 25
 TestAdmissionQueueAndDeadline 24
-TestAgentRestartSurvives 23
-TestSnapshotBuildSurvivesSnapshotDelete 22
-TestSnapshotImport 19
-TestControlPlaneRestart 18
-TestIdleStopRestart 18
-TestPublishFromSandbox 16
-TestResourceUploadMount 16
-TestSandboxLifecycle 16
-TestExecLogStream 15
+TestCacheEviction 23
+TestSnapshotBuildRun 21
+TestSandboxLinks 20
+TestSnapshotBuildSurvivesSnapshotDelete 20
+TestAgentRestartSurvives 17
+TestControlPlaneRestart 17
+TestIdleStopRestart 16
 TestMCPTools 15
-TestSDKParityPython 15
-TestSecretInject 15
-TestFilesAPI 14
-TestPublishAgentRestart 14
-TestRuntimeLostStopsSandbox 14
-TestSnapshotDeleteGuard 14
-TestExecCancelTimeout 13
-TestExecDeleteCascade 13
-TestExecLogCap 13
-TestExecOOMKilled 13
-TestLimitsReadbackMismatch 13
-TestPortForward 13
-TestStartReAdmissionQuota 13
-TestIdempotencyKeyAfterDelete 12
-TestSnapshotBuildNeedsBuildkit 12
-TestVolumeWritesSurviveTheHolder 12
-TestEnrollNode 11
-TestSnapshotDeletePurgesSharedManifest 3
-TestSnapshotVersionDeletePurge 3
-TestMachineUserToken 1
+TestPublishFromSandbox 14
+TestResourceUploadMount 14
+TestSDKParityPython 13
+TestSnapshotImport 13
+TestExecCancelTimeout 12
+TestExecEnvironment 12
+TestPublishAgentRestart 12
+TestRuntimeLostStopsSandbox 12
+TestSandboxLifecycle 12
+TestSecretInject 12
+TestStartReAdmissionQuota 12
+TestExecDeleteCascade 11
+TestExecLogStream 11
+TestExecOOMKilled 11
+TestExecSecretInject 11
+TestFilesAPI 11
+TestIdempotencyKeyAfterDelete 11
+TestPortForward 11
+TestSnapshotDeleteGuard 11
+TestEnrollNode 10
+TestExecLogCap 10
+TestLimitsReadbackMismatch 10
+TestSnapshotBuildNeedsBuildkit 10
+TestSnapshotDeletePurgesSharedManifest 2
+TestSnapshotVersionDeletePurge 2
+TestResourceUploadChecksum 1
 TestVolumeLifecycleWithoutNode 1
 TestAuditQuery 0
 TestExecOOMSentryKilled 0
@@ -52,10 +56,10 @@ TestGPUSandboxReady 0
 TestGvisorParity 0
 TestLocalRuntime 0
 TestMCPToolListStable 0
+TestMachineUserToken 0
 TestObjectStoreChecksum 0
 TestPresignAuthorization 0
 TestQuotaExceeded 0
-TestResourceUploadChecksum 0
 TestSDKParityGPUSandboxReady 0
 TestSandboxLinksAcrossNodes 0
 TestSecretQuota 0
