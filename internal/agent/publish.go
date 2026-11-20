@@ -90,7 +90,7 @@ func (r *Runtime) submitManifest(ctx context.Context, versionID string, m manife
 	}
 	if len(m.Entries) == 0 {
 		if err := stream.Send(&nodev1.ManifestChunk{VersionId: versionID}); err != nil {
-			return nil, err
+			return nil, sendStatus(err, stream.CloseAndRecv)
 		}
 	}
 	for start := 0; start < len(m.Entries); start += publishChunkEntries {
@@ -118,7 +118,7 @@ func (r *Runtime) submitManifest(ctx context.Context, versionID string, m manife
 			chunk.Entries = append(chunk.Entries, converted)
 		}
 		if err := stream.Send(chunk); err != nil {
-			return nil, err
+			return nil, sendStatus(err, stream.CloseAndRecv)
 		}
 	}
 	ack, err := stream.CloseAndRecv()

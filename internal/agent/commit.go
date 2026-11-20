@@ -239,7 +239,7 @@ func (r *Runtime) streamGeneration(ctx context.Context, first *nodev1.Generation
 	for i, e := range changed {
 		if i > 0 && i%publishChunkEntries == 0 {
 			if err := stream.Send(chunk); err != nil {
-				return nil, err
+				return nil, sendStatus(err, stream.CloseAndRecv)
 			}
 			chunk = &nodev1.GenerationChunk{}
 		}
@@ -249,9 +249,22 @@ func (r *Runtime) streamGeneration(ctx context.Context, first *nodev1.Generation
 		})
 	}
 	if err := stream.Send(chunk); err != nil {
-		return nil, err
+		return nil, sendStatus(err, stream.CloseAndRecv)
 	}
 	return stream.CloseAndRecv()
+}
+
+// sendStatus is a client stream Send's error. Send returns a bare io.EOF once
+// the server has ended the stream; closeAndRecv then yields the status it
+// ended it with (a refused holder, a proxy's 413), which the retry needs.
+func sendStatus[T any](err error, closeAndRecv func() (T, error)) error {
+	if err != io.EOF {
+		return err
+	}
+	if _, recvErr := closeAndRecv(); recvErr != nil {
+		return recvErr
+	}
+	return err
 }
 
 // putGenerationManifest uploads the full manifest to the upload's key. The

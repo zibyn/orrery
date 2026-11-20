@@ -32,6 +32,7 @@ type fakeGenerationNode struct {
 	mu          sync.Mutex
 	unavailable int
 	refuse      error
+	sendEOF     bool // Send fails as on a stream the server already ended
 	head        string
 	bases       []string
 	submitted   [][]string // sha256 of the submitted file entries, per submit
@@ -100,6 +101,9 @@ type fakeGenerationStream struct {
 }
 
 func (s *fakeGenerationStream) Send(c *nodev1.GenerationChunk) error {
+	if s.f.sendEOF {
+		return io.EOF
+	}
 	s.chunks = append(s.chunks, c)
 	return nil
 }
@@ -220,6 +224,23 @@ func TestCommitEndsWhenTheHolderIsRefused(t *testing.T) {
 	target := commitTarget{root: t.TempDir(), kind: generation.KindDiff}
 	if err := rt.commitWithRetry(context.Background(), uuid.New(), 3, target, func() {}); err != nil {
 		t.Fatalf("refused commit = %v, want it to end", err)
+	}
+}
+
+// A server that ends the stream before reading it fails Send with a bare
+// io.EOF; the stream's status still decides, so a refused holder ends the stop.
+func TestCommitReadsTheStatusBehindSendEOF(t *testing.T) {
+	fastCommitRetries(t)
+	f := newFakeGenerationNode(t)
+	f.sendEOF = true
+	f.refuse = status.Error(codes.FailedPrecondition, "the Sandbox is deleted")
+	rt := newRuntime(ProviderContainerd, t.TempDir(), "node")
+	rt.client = f
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	target := commitTarget{root: t.TempDir(), kind: generation.KindDiff}
+	if err := rt.commitWithRetry(ctx, uuid.New(), 3, target, func() {}); err != nil {
+		t.Fatalf("refused commit behind io.EOF = %v, want it to end", err)
 	}
 }
 
